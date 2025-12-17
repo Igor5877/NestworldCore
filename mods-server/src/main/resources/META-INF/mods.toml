@@ -1,0 +1,63 @@
+# mods.toml — метадані Forge-моду
+# Формат TOML v0.5.0
+
+# Тип завантажувача моду. Для Forge завжди "javafml".
+modLoader = "javafml"
+
+# Мінімальна версія Forge, на якій працює мод.
+# Наприклад, [47,) означає: від версії 47 і вище (1.20.1+).
+loaderVersion = "[47,)"
+
+# Ліцензія моду. Тут вказуєш умови поширення.
+license = "All Rights Reserved"
+
+# URL для баг-трекеру або GitHub Issues (корисно, якщо публікуєш мод).
+issueTrackerURL = "https://github.com/yourusername/yourproject/issues"
+
+# Якщо мод чисто клієнтський (наприклад, мінімапа чи шейдери),
+# можна увімкнути це поле, і Forge не буде вантажити його на сервері.
+# clientSideOnly = true
+
+
+# Основна інформація про мод
+[[mods]]
+# Унікальний ідентифікатор моду (використовується у коді та залежностях).
+modId = "skyblock"
+
+# Версія твого моду
+version = "0.1.0"
+
+# Назва моду, яка буде показуватись у списку модів
+displayName = "Dynamic SkyBlock"
+
+# Автор або команда розробників
+authors = "YourName"
+
+# Опис моду, багаторядковий формат дозволяє робити довгі тексти
+description = '''
+Dynamic SkyBlock — це мод для керування острівними світами через LXD-контейнери.
+'''
+
+# Налаштування перевірки клієнт/сервер:
+# MATCH_VERSION — клієнт і сервер повинні мати однакову версію моду
+# IGNORE_SERVER_VERSION — мод може бути лише на клієнті
+# IGNORE_ALL_VERSION — мод може бути де завгодно, без перевірки
+displayTest = "IGNORE_ALL_VERSION"
+
+
+# Залежності моду
+[[dependencies.skyblock]]
+# Залежність від Forge
+modId = "forge"
+mandatory = true                 # обов’язково потрібна
+versionRange = "[47,)"           # мінімальна версія
+ordering = "NONE"                # порядок завантаження відносно залежності
+side = "BOTH"                    # потрібен і на клієнті, і на сервері
+
+[[dependencies.skyblock]]
+# Залежність від Minecraft
+modId = "minecraft"
+mandatory = true
+versionRange = "[1.20.1,1.21)"   # працює з версією Minecraft 1.20.1 до 1.21
+ordering = "NONE"
+side = "BOTH"
