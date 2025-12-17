@@ -1,11 +1,26 @@
 modLoader="javafml"
-loaderVersion="[1,)"
-license="All rights reserved"
+loaderVersion="[24,]"
+issueTrackerURL="https://minecraftforge.net/"
+logoFile="forge_logo.png"
+license="LGPL v2.1"
 
 [[mods]]
-modId="skyblock"
-version="1.0"
-displayName="Dynamic SkyBlock Island System"
-description='''
-A dynamic SkyBlock island system integrated into the server core.
-'''
+    modId="forge"
+    version="${global.forgeVersion}"
+    updateJSONURL="https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
+    displayURL="https://minecraftforge.net/"
+    displayName="Forge"
+    credits="Anyone who has contributed on Github and supports our development"
+    authors="LexManos,cpw"
+    description='''
+    Forge, a broad compatibility API.
+    '''
+
+[[mods]]
+    modId="skyblock"
+    version="1.0.0" # або реальна версія твоєї інтеграції
+    displayName="Skyblock Core Integration"
+    description="""
+    Skyblock core mod for Nestworld.
+    """
+    authors="Igor NestWorld"
