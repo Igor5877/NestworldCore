@@ -968,6 +968,7 @@ project(':forge') {
         implementation project(':lowcodelanguage')
         implementation project(':mclanguage')
         runtimeOnly "cpw.mods:bootstraplauncher:${BOOTSTRAPLAUNCHER_VERSION}"
+        implementation 'com.electronwill.night-config:toml:3.6.6'
     }
     dependencies sharedDeps
 

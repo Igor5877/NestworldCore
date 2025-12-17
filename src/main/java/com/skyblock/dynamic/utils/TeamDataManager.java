@@ -20,11 +20,10 @@ public class TeamDataManager {
         SkyBlockMod.LOGGER.info("Attempting to synchronously fetch team data from API...");
         try {
             // Спочатку завантажуємо конфіг, щоб отримати URL та UUID
-            Config.loadConfig();
             String ownerUuid = Config.getOwnerUuid();
             String apiBaseUrl = Config.getApiBaseUrl();
 
-            if (ownerUuid == null || apiBaseUrl == null) {
+            if (ownerUuid == null || ownerUuid.isEmpty() || apiBaseUrl == null || apiBaseUrl.isEmpty()) {
                 throw new IllegalStateException("owner_uuid or api_base_url is not set in skyblock_island_data.toml");
             }
 
