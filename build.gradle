@@ -610,6 +610,9 @@ project(':fmlonly') {
         implementation project(':lowcodelanguage')
         implementation project(':mclanguage')
         runtimeOnly "cpw.mods:bootstraplauncher:${BOOTSTRAPLAUNCHER_VERSION}"
+        implementation 'org.java-websocket:Java-WebSocket:1.5.3'
+        implementation 'com.electronwill.night-config:toml:3.6.6'
+        implementation files('libs/ftb-quests-2001.4.14-transformProductionForge.jar')
     }
     dependencies sharedDeps
 
