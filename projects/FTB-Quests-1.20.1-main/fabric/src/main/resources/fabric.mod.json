@@ -1,0 +1,32 @@
+{
+	"schemaVersion": 1,
+	"id": "ftbquests",
+	"version": "${version}",
+	"name": "FTB Quests",
+	"description": "Lets you easily create and play with quests",
+	"authors": [
+		"FTB Team"
+	],
+	"contact": {
+		"sources": "https://github.com/FTBTeam/FTB-Quests",
+		"issues": "https://github.com/FTBTeam/FTB-Mods-Issues/issues"
+	},
+	"license": "All Rights Reserved",
+	"entrypoints": {
+		"main": [
+			"dev.ftb.mods.ftbquests.fabric.FTBQuestsFabric"
+		],
+		"rei_client": [
+		]
+	},
+	"mixins": [
+		"ftbquests-fabric.mixins.json"
+	],
+	"depends": {
+		"fabric": "*",
+		"minecraft": "~1.20.1",
+		"architectury": ">=9.0.8",
+		"ftblibrary": ">=2001.2.1",
+		"ftbteams": ">=2001.1.4-build.1"
+	}
+}

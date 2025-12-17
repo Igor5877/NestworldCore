@@ -1,0 +1,6 @@
+#The base URL for the SkyBlock API (e.g., http://localhost:8000/api/v1)
+apiBaseUrl = "http://localhost:8000/api/v1"
+#Timeout in seconds for API requests to the SkyBlock API.
+#Range: 5 ~ 60
+apiRequestTimeoutSeconds = 10
+

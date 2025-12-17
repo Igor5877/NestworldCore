@@ -1,0 +1,124 @@
+package dev.ftb.mods.ftbquests.quest.task;
+
+import dev.ftb.mods.ftblibrary.config.ConfigGroup;
+import dev.ftb.mods.ftblibrary.config.NameMap;
+import dev.ftb.mods.ftbquests.quest.IslandData;
+import dev.ftb.mods.ftbquests.quest.Quest;
+import net.fabricmc.api.EnvType;
+import net.fabricmc.api.Environment;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.stats.Stats;
+import net.minecraft.world.item.ItemStack;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * @author LatvianModder
+ */
+public class StatTask extends Task {
+	private ResourceLocation stat;
+	private int value = 1;
+
+	public StatTask(long id, Quest quest) {
+		super(id, quest);
+		stat = Stats.MOB_KILLS;
+	}
+
+	@Override
+	public TaskType getType() {
+		return TaskTypes.STAT;
+	}
+
+	@Override
+	public long getMaxProgress() {
+		return value;
+	}
+
+	@Override
+	public String formatMaxProgress() {
+		return Integer.toString(value);
+	}
+
+	@Override
+	public String formatProgress(IslandData islandData, long progress) {
+		return Long.toUnsignedString(progress);
+	}
+
+	@Override
+	public void writeData(CompoundTag nbt) {
+		super.writeData(nbt);
+		nbt.putString("stat", stat.toString());
+		nbt.putInt("value", value);
+	}
+
+	@Override
+	public void readData(CompoundTag nbt) {
+		super.readData(nbt);
+		stat = new ResourceLocation(nbt.getString("stat"));
+		value = nbt.getInt("value");
+	}
+
+	@Override
+	public void writeNetData(FriendlyByteBuf buffer) {
+		super.writeNetData(buffer);
+		buffer.writeResourceLocation(stat);
+		buffer.writeVarInt(value);
+	}
+
+	@Override
+	public void readNetData(FriendlyByteBuf buffer) {
+		super.readNetData(buffer);
+		stat = buffer.readResourceLocation();
+		value = buffer.readVarInt();
+	}
+
+	@Override
+	@Environment(EnvType.CLIENT)
+	public void fillConfigGroup(ConfigGroup config) {
+		super.fillConfigGroup(config);
+
+		List<ResourceLocation> list = new ArrayList<>();
+		Stats.CUSTOM.iterator().forEachRemaining(s -> list.add(s.getValue()));
+		config.addEnum("stat", stat, v -> stat = v, NameMap.of(Stats.MOB_KILLS, list).name(v -> Component.translatable("stat." + v.getNamespace() + "." + v.getPath())).create());
+		config.addInt("value", value, v -> value = v, 1, 1, Integer.MAX_VALUE);
+	}
+
+	@Override
+	@Environment(EnvType.CLIENT)
+	public MutableComponent getAltTitle() {
+		return Component.translatable("stat." + stat.getNamespace() + "." + stat.getPath());
+	}
+
+	@Override
+	public int autoSubmitOnPlayerTick() {
+		return 3;
+	}
+
+	@Override
+	public void submitTask(IslandData islandData, ServerPlayer player, ItemStack craftedItem) {
+		if (islandData.isCompleted(this) || !checkTaskSequence(islandData)) {
+			return;
+		}
+
+		ResourceLocation statId = BuiltInRegistries.CUSTOM_STAT.get(stat);
+
+		// workaround for a bug where mods might register a modded stat in the vanilla namespace
+		//  https://github.com/FTBTeam/FTB-Mods-Issues/issues/724
+		if (statId == null) statId = BuiltInRegistries.CUSTOM_STAT.get(new ResourceLocation(stat.getPath()));
+
+		if (statId != null) {
+			// could be null, if someone brought an FTB Quests save from a different world and the stat's missing here
+			int set = Math.min(value, player.getStats().getValue(Stats.CUSTOM.get(statId)));
+			if (set > islandData.getProgress(this)) {
+				islandData.setProgress(this, set);
+			}
+		}
+	}
+}

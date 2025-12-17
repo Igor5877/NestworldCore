@@ -15,3 +15,12 @@ license="LGPL v2.1"
     description='''
     Forge, a broad compatibility API.
     '''
+
+[[mods]]
+    modId="skyblock"
+    version="1.0.0" # або реальна версія твоєї інтеграції
+    displayName="Skyblock Core Integration"
+    description="""
+    Skyblock core mod for Nestworld.
+    """
+    authors="Igor NestWorld"

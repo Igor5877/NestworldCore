@@ -1,0 +1,48 @@
+modLoader = "javafml"
+loaderVersion = "[39,)"
+issueTrackerURL = "https://github.com/FTBTeam/FTB-Mods-Issues/issues"
+license = "All Rights Reserved"
+
+[[mods]]
+modId = "ftbquests"
+version = "${version}"
+displayName = "FTB Quests"
+authors = "FTB Team"
+description = '''
+Lets you easily create and play with quests
+'''
+
+[[dependencies.ftbquests]]
+modId = "minecraft"
+mandatory = true
+versionRange = "[1.20.1,)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.ftbquests]]
+modId = "architectury"
+mandatory = true
+versionRange = "[9.0.8,)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.ftbquests]]
+modId = "ftblibrary"
+mandatory = true
+versionRange = "[2001.2.1,)"
+ordering = "AFTER"
+side = "BOTH"
+
+#[[dependencies.ftbquests]]
+#modId = "ftbteams"
+#mandatory = true
+#versionRange = "[2001.1.4,)"
+#ordering = "AFTER"
+#side = "BOTH"
+
+[[dependencies.ftbquests]]
+modId = "itemfilters"
+mandatory = false
+versionRange = "[2001.1.0-build.55,)"
+ordering = "AFTER"
+side = "BOTH"

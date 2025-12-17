@@ -1,0 +1,68 @@
+[17груд.2025 06:28:22.906] [main/INFO] [cpw.mods.modlauncher.Launcher/MODLAUNCHER]: ModLauncher running: args [--launchTarget, forgeserver, --fml.forgeVersion, 47.4.15-feat-skyblock-core-integration-5725520437098718416, --fml.mcVersion, 1.20.1, --fml.forgeGroup, net.minecraftforge, --fml.mcpVersion, 20230612.114412]
+[17груд.2025 06:28:22.908] [main/INFO] [cpw.mods.modlauncher.Launcher/MODLAUNCHER]: ModLauncher 10.0.9+10.0.9+main.dcd20f30 starting: java version 21.0.9 by Ubuntu; OS Linux arch amd64 version 6.8.0-87-generic
+[17груд.2025 06:28:23.039] [main/INFO] [net.minecraftforge.fml.loading.ImmediateWindowHandler/]: ImmediateWindowProvider not loading because launch target is forgeserver
+[17груд.2025 06:28:23.095] [main/INFO] [mixin/]: SpongePowered MIXIN Subsystem Version=0.8.5 Source=union:/home/igor/Документи/GitHub/NestworldCore/server_files/libraries/org/spongepowered/mixin/0.8.5/mixin-0.8.5.jar%2365!/ Service=ModLauncher Env=SERVER
+[17груд.2025 06:28:23.416] [main/WARN] [net.minecraftforge.fml.loading.moddiscovery.ModFileParser/LOADING]: Mod file /home/igor/Документи/GitHub/NestworldCore/server_files/libraries/net/minecraftforge/fmlcore/1.20.1-47.4.15-feat-skyblock-core-integration-5725520437098718416/fmlcore-1.20.1-47.4.15-feat-skyblock-core-integration-5725520437098718416.jar is missing mods.toml file
+[17груд.2025 06:28:23.418] [main/WARN] [net.minecraftforge.fml.loading.moddiscovery.ModFileParser/LOADING]: Mod file /home/igor/Документи/GitHub/NestworldCore/server_files/libraries/net/minecraftforge/javafmllanguage/1.20.1-47.4.15-feat-skyblock-core-integration-5725520437098718416/javafmllanguage-1.20.1-47.4.15-feat-skyblock-core-integration-5725520437098718416.jar is missing mods.toml file
+[17груд.2025 06:28:23.420] [main/WARN] [net.minecraftforge.fml.loading.moddiscovery.ModFileParser/LOADING]: Mod file /home/igor/Документи/GitHub/NestworldCore/server_files/libraries/net/minecraftforge/lowcodelanguage/1.20.1-47.4.15-feat-skyblock-core-integration-5725520437098718416/lowcodelanguage-1.20.1-47.4.15-feat-skyblock-core-integration-5725520437098718416.jar is missing mods.toml file
+[17груд.2025 06:28:23.422] [main/WARN] [net.minecraftforge.fml.loading.moddiscovery.ModFileParser/LOADING]: Mod file /home/igor/Документи/GitHub/NestworldCore/server_files/libraries/net/minecraftforge/mclanguage/1.20.1-47.4.15-feat-skyblock-core-integration-5725520437098718416/mclanguage-1.20.1-47.4.15-feat-skyblock-core-integration-5725520437098718416.jar is missing mods.toml file
+[17груд.2025 06:28:23.470] [main/INFO] [net.minecraftforge.fml.loading.moddiscovery.JarInJarDependencyLocator/]: No dependencies to load found. Skipping!
+[17груд.2025 06:28:24.413] [main/INFO] [cpw.mods.modlauncher.LaunchServiceHandler/MODLAUNCHER]: Launching target 'forgeserver' with arguments []
+[17груд.2025 06:28:28.668] [modloading-worker-0/INFO] [net.minecraftforge.common.ForgeMod/FORGEMOD]: Forge mod loading, version 47.4.15-feat-skyblock-core-integration-5725520437098718416, for MC 1.20.1 with MCP 20230612.114412
+[17груд.2025 06:28:28.669] [modloading-worker-0/INFO] [net.minecraftforge.common.MinecraftForge/FORGE]: MinecraftForge v47.4.15-feat-skyblock-core-integration-5725520437098718416 Initialized
+[17груд.2025 06:28:28.678] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id architectury:sync_ids
+[17груд.2025 06:28:28.680] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftblibrary:edit_nbt_response
+[17груд.2025 06:28:28.743] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:submit_task
+[17груд.2025 06:28:28.744] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:claim_reward
+[17груд.2025 06:28:28.745] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:get_emergency_items
+[17груд.2025 06:28:28.745] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:claim_all_rewards
+[17груд.2025 06:28:28.746] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:claim_choice_reward
+[17груд.2025 06:28:28.747] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:toggle_pinned
+[17груд.2025 06:28:28.748] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:toggle_chapter_pinned
+[17груд.2025 06:28:28.748] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:toggle_editing_mode
+[17груд.2025 06:28:28.749] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:force_save
+[17груд.2025 06:28:28.750] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:set_custom_image
+[17груд.2025 06:28:28.752] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:task_screen_config_resp
+[17груд.2025 06:28:28.752] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:change_progress
+[17груд.2025 06:28:28.753] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:create_object
+[17груд.2025 06:28:28.754] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:create_task_at
+[17груд.2025 06:28:28.754] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:delete_object
+[17груд.2025 06:28:28.755] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:edit_object
+[17груд.2025 06:28:28.755] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:move_chapter
+[17груд.2025 06:28:28.756] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:move_quest
+[17груд.2025 06:28:28.757] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:change_chapter_group
+[17груд.2025 06:28:28.758] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:move_chapter_group
+[17груд.2025 06:28:28.759] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:copy_quest
+[17груд.2025 06:28:28.761] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:copy_chapter_image
+[17груд.2025 06:28:28.762] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:sync_structures_request
+[17груд.2025 06:28:28.763] [modloading-worker-0/INFO] [dev.architectury.networking.forge.NetworkManagerImpl/]: Registering C2S receiver with id ftbquests:request_island_data
+[17груд.2025 06:28:29.004] [main/INFO] [com.skyblock.dynamic.SkyBlockMod/]: SkyBlockMod: Common configuration reloaded from skyblock-common.toml.
+[17груд.2025 06:28:29.004] [modloading-worker-0/INFO] [com.skyblock.dynamic.SkyBlockMod/]: SkyBlockMod: Common Setup Initialized.
+[17груд.2025 06:28:29.166] [Forge Version Check/INFO] [net.minecraftforge.fml.VersionChecker/]: [forge] Starting version check at https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json
+[17груд.2025 06:28:29.738] [main/INFO] [com.mojang.authlib.yggdrasil.YggdrasilAuthenticationService/]: Environment: authHost='https://authserver.mojang.com', accountsHost='https://api.mojang.com', sessionHost='https://sessionserver.mojang.com', servicesHost='https://api.minecraftservices.com', name='PROD'
+[17груд.2025 06:28:29.900] [Forge Version Check/INFO] [net.minecraftforge.fml.VersionChecker/]: [forge] Found status: AHEAD Current: 47.4.15-feat-skyblock-core-integration-5725520437098718416 Target: null
+[17груд.2025 06:28:30.163] [main/WARN] [net.minecraft.server.packs.VanillaPackResourcesBuilder/]: Assets URL 'union:/home/igor/Документи/GitHub/NestworldCore/server_files/libraries/net/minecraft/server/1.20.1-20230612.114412/server-1.20.1-20230612.114412-srg.jar%23107!/assets/.mcassetsroot' uses unexpected schema
+[17груд.2025 06:28:30.163] [main/WARN] [net.minecraft.server.packs.VanillaPackResourcesBuilder/]: Assets URL 'union:/home/igor/Документи/GitHub/NestworldCore/server_files/libraries/net/minecraft/server/1.20.1-20230612.114412/server-1.20.1-20230612.114412-srg.jar%23107!/data/.mcassetsroot' uses unexpected schema
+[17груд.2025 06:28:31.356] [main/INFO] [net.minecraft.world.item.crafting.RecipeManager/]: Loaded 7 recipes
+[17груд.2025 06:28:31.432] [main/INFO] [net.minecraft.advancements.AdvancementList/]: Loaded 1271 advancements
+[17груд.2025 06:28:31.972] [Server thread/INFO] [net.minecraft.server.dedicated.DedicatedServer/]: Starting minecraft server version 1.20.1
+[17груд.2025 06:28:31.973] [Server thread/INFO] [net.minecraft.server.dedicated.DedicatedServer/]: Loading properties
+[17груд.2025 06:28:31.973] [Server thread/INFO] [net.minecraft.server.dedicated.DedicatedServer/]: Default game type: SURVIVAL
+[17груд.2025 06:28:31.973] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: Generating keypair
+[17груд.2025 06:28:32.070] [Server thread/INFO] [net.minecraft.server.dedicated.DedicatedServer/]: Starting Minecraft server on *:25565
+[17груд.2025 06:28:32.091] [Server thread/INFO] [net.minecraft.server.network.ServerConnectionListener/]: Using epoll channel type
+[17груд.2025 06:28:32.180] [Server thread/INFO] [com.skyblock.dynamic.SkyBlockMod/]: SkyBlockMod: Attempting to load island context from: ./world/serverconfig/skyblock_island_data.toml
+[17груд.2025 06:28:32.181] [Server thread/WARN] [com.skyblock.dynamic.SkyBlockMod/]: SkyBlockMod: skyblock_island_data.toml not found. Using default context (not an island server).
+[17груд.2025 06:28:32.189] [Server thread/INFO] [net.minecraft.server.dedicated.DedicatedServer/]: Preparing level "world"
+[17груд.2025 06:28:33.099] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: Preparing start region for dimension minecraft:overworld
+[17груд.2025 06:28:34.715] [Worker-Main-10/INFO] [net.minecraft.server.level.progress.LoggerChunkProgressListener/]: Preparing spawn area: 0%
+[17груд.2025 06:28:34.716] [Worker-Main-10/INFO] [net.minecraft.server.level.progress.LoggerChunkProgressListener/]: Preparing spawn area: 0%
+[17груд.2025 06:28:34.716] [Worker-Main-10/INFO] [net.minecraft.server.level.progress.LoggerChunkProgressListener/]: Preparing spawn area: 0%
+[17груд.2025 06:28:34.717] [Worker-Main-10/INFO] [net.minecraft.server.level.progress.LoggerChunkProgressListener/]: Preparing spawn area: 0%
+[17груд.2025 06:28:35.101] [Worker-Main-10/INFO] [net.minecraft.server.level.progress.LoggerChunkProgressListener/]: Preparing spawn area: 51%
+[17груд.2025 06:28:35.362] [Server thread/INFO] [net.minecraft.server.level.progress.LoggerChunkProgressListener/]: Time elapsed: 2262 ms
+[17груд.2025 06:28:35.363] [Server thread/INFO] [net.minecraft.server.dedicated.DedicatedServer/]: Done (3.199s)! For help, type "help"
+[17груд.2025 06:28:35.377] [LanServerPinger #1/WARN] [net.minecraft.client.server.LanServerPinger/]: LanServerPinger: Не вдалося призначити вказану адресу
+[17груд.2025 06:28:35.383] [Server thread/INFO] [net.minecraftforge.server.permission.PermissionAPI/]: Successfully initialized permission handler forge:default_handler
+[17груд.2025 06:28:35.388] [Server thread/INFO] [dev.ftb.mods.ftbquests.quest.team.TeamManager/]: No FTB Quests teams file found, starting fresh.
+[17груд.2025 06:28:35.389] [Server thread/INFO] [com.skyblock.dynamic.SkyBlockMod/]: SkyBlockMod: Server started. Running as a HUB SERVER.

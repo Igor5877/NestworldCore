@@ -1,0 +1,137 @@
+plugins {
+	id "com.github.johnrengelman.shadow" version "7.1.0"
+	id "com.matthewprenger.cursegradle"
+}
+
+def ENV = System.getenv()
+
+architectury {
+	platformSetupLoomIde()
+	forge()
+}
+
+configurations {
+	common
+	shadowCommon // Don't use shadow from the shadow plugin because we don't want IDEA to index this.
+	compileClasspath.extendsFrom common
+	runtimeClasspath.extendsFrom common
+	developmentForge.extendsFrom common
+}
+
+repositories {
+	mavenLocal()
+}
+
+dependencies {
+	forge "net.minecraftforge:forge:${rootProject.minecraft_version}-${rootProject.forge_version}"
+
+	modApi "dev.architectury:architectury-forge:${rootProject.architectury_version}"
+
+	modApi("dev.ftb.mods:ftb-library-forge:${rootProject.ftb_library_version}") { transitive false }
+	// modApi("dev.ftb.mods:ftb-teams-forge:${rootProject.ftb_teams_version}") { transitive false }
+
+	common(project(path: ":common", configuration: "namedElements")) { transitive false }
+	shadowCommon(project(path: ":common", configuration: "transformProductionForge")) { transitive false }
+}
+
+apply from: "https://raw.githubusercontent.com/FTBTeam/mods-meta/main/gradle/extra-local-mods.gradle"
+
+processResources {
+	inputs.property "version", project.version
+
+	filesMatching("META-INF/mods.toml") {
+		expand "version": project.version
+	}
+}
+
+shadowJar {
+	exclude "fabric.mod.json"
+
+	configurations = [project.configurations.shadowCommon]
+	setArchiveClassifier("dev-shadow")
+}
+
+remapJar {
+	input.set shadowJar.archiveFile
+	dependsOn shadowJar
+	archiveBaseName.set "${rootProject.archives_base_name}-${project.name}"
+	archiveClassifier.set null
+}
+
+jar {
+	manifest {
+		attributes([
+				"Specification-Title"     : project.mod_id,
+				"Specification-Vendor"    : project.mod_author,
+				"Specification-Version"   : "1",
+				"Implementation-Title"    : project.name,
+				"Implementation-Version"  : version,
+				"Implementation-Vendor"   : project.mod_author,
+				"Implementation-Timestamp": new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+		])
+	}
+
+	setArchiveClassifier("dev")
+}
+
+components.java {
+	withVariantsFromConfiguration(project.configurations.shadowRuntimeElements) {
+		skip()
+	}
+}
+
+if (ENV.CURSEFORGE_KEY) {
+	curseforge {
+		apiKey = ENV.CURSEFORGE_KEY
+		project {
+			id = project.curseforge_id_forge
+			releaseType = ftbPublishing.relType
+			addGameVersion "Forge"
+			addGameVersion project.minecraft_version
+			addGameVersion "Java 17"
+			mainArtifact(remapJar.archiveFile)
+			relations {
+				requiredDependency 'architectury-api'
+				requiredDependency 'ftb-library-forge'
+				requiredDependency 'ftb-teams-forge'
+				optionalDependency 'ftb-xmod-compat'
+			}
+			changelog = createChangelog(project)
+			changelogType = 'markdown'
+		}
+	}
+}
+
+publishing {
+	publications {
+		mavenForge(MavenPublication) {
+			artifactId = "${rootProject.archives_base_name}-${project.name}"
+			version ftbPublishing.mavenVersion
+			from components.java
+		}
+	}
+
+	repositories {
+		if (ftbPublishing.ftbToken) {
+			maven {
+				url ftbPublishing.ftbURL
+				credentials {
+					username = ftbPublishing.ftbUser
+					password = ftbPublishing.ftbToken
+				}
+			}
+		}
+
+		if (ftbPublishing.sapsToken) {
+			maven {
+				url ftbPublishing.sapsURL
+				credentials {
+					username = ftbPublishing.sapsUser
+					password = ftbPublishing.sapsToken
+				}
+			}
+		}
+	}
+}
+
+rootProject.tasks.getByName("curseforgePublish").dependsOn tasks.getByName("curseforge")
