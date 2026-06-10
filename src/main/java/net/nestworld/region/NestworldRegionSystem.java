@@ -27,8 +27,12 @@ public class NestworldRegionSystem {
 
     private static final Logger LOGGER = LogManager.getLogger("NestWorld/RegionSystem");
 
-    /** Chunk span covered by the initial single region (32×32 = 512×512 blocks). */
-    private static final int INITIAL_REGION_HALF_SPAN = 16; // chunks from 0
+    /**
+     * Half-span of the initial single region in chunks. Covers the entire
+     * playable world (world border is ±30,000,000 blocks = ±1,875,000 chunks)
+     * so every entity always belongs to some region; splits subdivide from here.
+     */
+    private static final int INITIAL_REGION_HALF_SPAN = 1_875_000;
 
     private static NestworldRegionSystem INSTANCE;
 
@@ -90,8 +94,8 @@ public class NestworldRegionSystem {
             return;
         }
 
-        // Start with one region that covers a 32×32 chunk square centred on spawn.
-        // As players spread out, the system will split and spawn more regions.
+        // Start with one region covering the whole world; adaptive splits
+        // subdivide it as load appears.
         grid           = new WorldGrid();
         int r = INITIAL_REGION_HALF_SPAN;
         WorldRegion initial = new WorldRegion(grid.nextId(), -r, -r, r, r);

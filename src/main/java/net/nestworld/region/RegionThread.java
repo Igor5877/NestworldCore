@@ -2,9 +2,6 @@ package net.nestworld.region;
 
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.level.block.EntityBlock;
-import net.minecraft.world.level.block.entity.BlockEntity;
-import net.minecraft.world.level.block.entity.BlockEntityTicker;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -38,7 +35,7 @@ public class RegionThread extends Thread {
     private final Object tickSignal = new Object();
 
     // Timing diagnostics, logged every 200 ticks
-    private long entNanos = 0, beNanos = 0;
+    private long entNanos = 0;
     private int timedTicks = 0, lastTickedCount = 0;
 
     // -----------------------------------------------------------------------
@@ -127,18 +124,13 @@ public class RegionThread extends Thread {
                     clearChunkCache(); // chunks may have unloaded since last tick
                     long e0 = System.nanoTime();
                     tickEntities();
-                    long e1 = System.nanoTime();
-                    tickBlockEntities();
-                    long e2 = System.nanoTime();
-                    entNanos += e1 - e0;
-                    beNanos += e2 - e1;
+                    entNanos += System.nanoTime() - e0;
                     if (++timedTicks >= 200) {
-                        LOGGER.info("[{}] avg ms over {} ticks: entities={} ({} owned, {} ticked) blockEntities={}",
+                        LOGGER.info("[{}] avg ms over {} ticks: entities={} ({} owned, {} ticked)",
                                 getName(), timedTicks,
                                 String.format("%.2f", entNanos / 1e6 / timedTicks),
-                                region.getOwnedEntityIds().size(), lastTickedCount,
-                                String.format("%.2f", beNanos / 1e6 / timedTicks));
-                        entNanos = 0; beNanos = 0; timedTicks = 0;
+                                region.getOwnedEntityIds().size(), lastTickedCount);
+                        entNanos = 0; timedTicks = 0;
                     }
                 } finally {
                     region.getChunkLock().unlockWrite(stamp);
@@ -187,36 +179,9 @@ public class RegionThread extends Thread {
         lastTickedCount = ticked;
     }
 
-    /**
-     * Ticks all block entities in the region's chunk columns.
-     * Uses getChunkNow() — never triggers a synchronous chunk load.
-     * Cross-region capability accesses during this phase are served
-     * from BoundaryManager's ghost-zone cache (read-only, no lock needed).
-     */
-    private void tickBlockEntities() {
-        for (int cx = region.getMinChunkX(); cx <= region.getMaxChunkX(); cx++) {
-            for (int cz = region.getMinChunkZ(); cz <= region.getMaxChunkZ(); cz++) {
-                var chunk = level.getChunkSource().getChunkNow(cx, cz);
-                if (chunk == null) continue;
-
-                for (BlockEntity be : chunk.getBlockEntities().values()) {
-                    if (be.isRemoved()) continue;
-                    try {
-                        if (be.getBlockState().getBlock() instanceof EntityBlock eb) {
-                            @SuppressWarnings("unchecked")
-                            BlockEntityTicker<BlockEntity> ticker = (BlockEntityTicker<BlockEntity>)
-                                    eb.getTicker(level, be.getBlockState(), be.getType());
-                            if (ticker != null) {
-                                ticker.tick(level, be.getBlockPos(), be.getBlockState(), be);
-                            }
-                        }
-                    } catch (Throwable t) {
-                        LOGGER.warn("[{}] BlockEntity at {} tick error: {}", getName(), be.getBlockPos(), t.getMessage());
-                    }
-                }
-            }
-        }
-    }
+    // Block entities are ticked by the vanilla path on the main thread
+    // (the ServerLevel patch skips only the entity loop), which applies the
+    // correct ticking-chunk gating for regions of any size.
 
     // -----------------------------------------------------------------------
     // Crash recovery
@@ -225,12 +190,7 @@ public class RegionThread extends Thread {
     private void handleCrash(Throwable t) {
         LOGGER.error("[{}] CRASH in region {} — starting emergency save", getName(), region, t);
         try {
-            for (int cx = region.getMinChunkX(); cx <= region.getMaxChunkX(); cx++) {
-                for (int cz = region.getMinChunkZ(); cz <= region.getMaxChunkZ(); cz++) {
-                    var chunk = level.getChunkSource().getChunkNow(cx, cz);
-                    if (chunk != null) level.getChunkSource().save(false);
-                }
-            }
+            level.getChunkSource().save(false);
             LOGGER.info("[{}] Emergency save complete for {}", getName(), region);
         } catch (Throwable saveErr) {
             LOGGER.error("[{}] Emergency save failed for {}", getName(), region, saveErr);

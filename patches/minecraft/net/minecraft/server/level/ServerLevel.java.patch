@@ -42,11 +42,11 @@
        if (flag) {
           this.m_8886_();
        }
-@@ -312,3 +_,3 @@
+@@ -320,3 +_,4 @@
  
--      if (flag || this.f_8551_++ < 300) {
-+      if ((flag || this.f_8551_++ < 300) && !(net.nestworld.region.NestworldRegionSystem.isInitialised() && this.m_46472_() == net.minecraft.world.level.Level.f_46428_)) {
-          profilerfiller.m_6180_("entities");
++         if (!(net.nestworld.region.NestworldRegionSystem.isInitialised() && this.m_46472_() == net.minecraft.world.level.Level.f_46428_))
+          this.f_143243_.m_156910_((p_184065_) -> {
+             if (!p_184065_.m_213877_()) {
 @@ -337,7 +_,9 @@
                       }
  
