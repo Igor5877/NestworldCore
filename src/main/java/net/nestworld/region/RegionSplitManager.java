@@ -139,7 +139,7 @@ public class RegionSplitManager {
      * Returns the children, or null if the region cannot be split.
      */
     public WorldRegion[] doSplit(WorldRegion region) {
-        WorldRegion[] children = tree.split(region);
+        WorldRegion[] children = tree.split(region, entityMedianCut(region));
         if (children == null) return null; // at min size or not in tree
 
         pool.remove(region);
@@ -155,6 +155,26 @@ public class RegionSplitManager {
         LOGGER.info("Split {} -> [{}, {}]  (cost was {} ms)",
                 region, children[0], children[1], String.format("%.1f", region.getAvgTickMs()));
         return children;
+    }
+
+    /**
+     * Chunk coordinate (on the region's preferred split axis) of the median
+     * owned entity — the cut that actually halves the region's entity load.
+     * Falls back to the spatial midpoint when the region owns no entities.
+     */
+    private int entityMedianCut(WorldRegion region) {
+        net.minecraft.server.level.ServerLevel level = pool.getLevel();
+        SplitAxis axis = region.preferredSplitAxis();
+        java.util.ArrayList<Integer> coords = new java.util.ArrayList<>();
+        for (java.util.UUID id : region.getOwnedEntityIds()) {
+            net.minecraft.world.entity.Entity entity = level.getEntity(id);
+            if (entity == null) continue;
+            net.minecraft.core.BlockPos pos = entity.blockPosition();
+            coords.add((axis == SplitAxis.X ? pos.getX() : pos.getZ()) >> 4);
+        }
+        if (coords.isEmpty()) return Integer.MIN_VALUE; // spatial midpoint
+        java.util.Collections.sort(coords);
+        return coords.get(coords.size() / 2);
     }
 
     /**

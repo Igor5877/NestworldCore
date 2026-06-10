@@ -39,7 +39,7 @@
     public void m_6807_(BlockState p_55630_, Level p_55631_, BlockPos p_55632_, BlockState p_55633_, boolean p_55634_) {
        if (!p_55633_.m_60713_(p_55630_.m_60734_()) && !p_55631_.f_46443_) {
 +         if (alternate.current.AlternateCurrentMod.on && p_55631_ instanceof net.minecraft.server.level.ServerLevel serverlevel) {
-+            serverlevel.nestworldWireHandler.onWireAdded(p_55632_);
++            net.nestworld.region.NestworldRedstone.wireAdded(serverlevel, p_55632_);
 +         }
           this.m_55530_(p_55631_, p_55632_, p_55630_);
  
@@ -50,7 +50,7 @@
              }
  
 +            if (alternate.current.AlternateCurrentMod.on && p_55569_ instanceof net.minecraft.server.level.ServerLevel serverlevel) {
-+               serverlevel.nestworldWireHandler.onWireRemoved(p_55570_, p_55568_);
++               net.nestworld.region.NestworldRedstone.wireRemoved(serverlevel, p_55570_, p_55568_);
 +            }
              this.m_55530_(p_55569_, p_55570_, p_55568_);
              this.m_55637_(p_55569_, p_55570_);
@@ -58,7 +58,7 @@
 @@ -321,6 +_,9 @@
     public void m_6861_(BlockState p_55561_, Level p_55562_, BlockPos p_55563_, Block p_55564_, BlockPos p_55565_, boolean p_55566_) {
        if (!p_55562_.f_46443_) {
-+         if (alternate.current.AlternateCurrentMod.on && p_55562_ instanceof net.minecraft.server.level.ServerLevel serverlevel && serverlevel.nestworldWireHandler.onWireUpdated(p_55563_)) {
++         if (alternate.current.AlternateCurrentMod.on && p_55562_ instanceof net.minecraft.server.level.ServerLevel serverlevel && net.nestworld.region.NestworldRedstone.wireUpdated(serverlevel, p_55563_)) {
 +            return; // NestWorld: AC handled the update; skip vanilla to avoid dupe bugs
 +         }
           if (p_55561_.m_60710_(p_55562_, p_55563_)) {

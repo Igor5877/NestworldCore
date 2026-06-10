@@ -32,7 +32,11 @@ public class RegionThread extends Thread {
     private volatile boolean running = true;
     /** Latch for the tick currently being requested; null when idle. */
     private volatile CountDownLatch tickLatch = null;
+    /** When set, the next round executes this instead of an entity tick. */
+    private java.util.List<Runnable> pendingWork = null; // guarded by tickSignal
     private final Object tickSignal = new Object();
+    /** Work-round nanos folded into the next entity round's TPS record. */
+    private long workRoundNanos = 0;
 
     // Timing diagnostics, logged every 200 ticks
     private long entNanos = 0;
@@ -74,6 +78,33 @@ public class RegionThread extends Thread {
     }
 
     // -----------------------------------------------------------------------
+    // Per-thread Alternate Current handler, bounded to this region's chunks.
+    // Wire updates triggered from this thread (scheduled ticks, entities on
+    // pressure plates) run here; networks reaching outside the region abort
+    // and are deferred to the main thread (see NestworldRedstone).
+    // -----------------------------------------------------------------------
+    private alternate.current.wire.WireHandler acWireHandler;
+
+    /**
+     * Re-entrancy depth of NestworldRedstone wire calls on this thread. A
+     * NetworkOutOfBounds abort may only reset the handler at depth 1 —
+     * resetting mid-update from a nested neighborChanged would corrupt the
+     * outer update's queues (observed as NPEs in entity ticks).
+     */
+    int wireCallDepth = 0;
+
+    public alternate.current.wire.WireHandler acWireHandler() {
+        if (acWireHandler == null) {
+            acWireHandler = new alternate.current.wire.WireHandler(
+                    level, level.nestworldWireHandler.getConfig());
+            acWireHandler.setBounds(
+                    region.getMinChunkX() << 4, region.getMinChunkZ() << 4,
+                    ((region.getMaxChunkX() + 1) << 4) - 1, ((region.getMaxChunkZ() + 1) << 4) - 1);
+        }
+        return acWireHandler;
+    }
+
+    // -----------------------------------------------------------------------
     // Pool-facing control API
     // -----------------------------------------------------------------------
 
@@ -83,6 +114,19 @@ public class RegionThread extends Thread {
      */
     public void requestTick(CountDownLatch latch) {
         synchronized (tickSignal) {
+            tickLatch = latch;
+            tickSignal.notifyAll();
+        }
+    }
+
+    /**
+     * Signals this thread to run an arbitrary work list (e.g. this region's
+     * bucket of due scheduled block ticks) under the region write lock instead
+     * of an entity tick. Non-blocking; the latch is counted down when done.
+     */
+    public void requestWork(java.util.List<Runnable> work, CountDownLatch latch) {
+        synchronized (tickSignal) {
+            pendingWork = work;
             tickLatch = latch;
             tickSignal.notifyAll();
         }
@@ -103,7 +147,8 @@ public class RegionThread extends Thread {
     public void run() {
         while (running) {
             CountDownLatch latch;
-            // Block until the pool requests a tick
+            java.util.List<Runnable> work;
+            // Block until the pool requests a tick or a work round
             synchronized (tickSignal) {
                 while (running && tickLatch == null) {
                     try { tickSignal.wait(); }
@@ -111,6 +156,8 @@ public class RegionThread extends Thread {
                 }
                 latch = tickLatch;
                 tickLatch = null;
+                work = pendingWork;
+                pendingWork = null;
             }
             if (!running) {
                 if (latch != null) latch.countDown();
@@ -122,15 +169,25 @@ public class RegionThread extends Thread {
                 long stamp = region.getChunkLock().writeLock();
                 try {
                     clearChunkCache(); // chunks may have unloaded since last tick
-                    long e0 = System.nanoTime();
-                    tickEntities();
-                    entNanos += System.nanoTime() - e0;
-                    if (++timedTicks >= 200) {
-                        LOGGER.info("[{}] avg ms over {} ticks: entities={} ({} owned, {} ticked)",
-                                getName(), timedTicks,
-                                String.format("%.2f", entNanos / 1e6 / timedTicks),
-                                region.getOwnedEntityIds().size(), lastTickedCount);
-                        entNanos = 0; timedTicks = 0;
+                    if (work != null) {
+                        for (Runnable r : work) {
+                            try {
+                                r.run();
+                            } catch (Throwable t) {
+                                LOGGER.warn("[{}] scheduled-tick error: {}", getName(), t.toString());
+                            }
+                        }
+                    } else {
+                        long e0 = System.nanoTime();
+                        tickEntities();
+                        entNanos += System.nanoTime() - e0;
+                        if (++timedTicks >= 200) {
+                            LOGGER.info("[{}] avg ms over {} ticks: entities={} ({} owned, {} ticked)",
+                                    getName(), timedTicks,
+                                    String.format("%.2f", entNanos / 1e6 / timedTicks),
+                                    region.getOwnedEntityIds().size(), lastTickedCount);
+                            entNanos = 0; timedTicks = 0;
+                        }
                     }
                 } finally {
                     region.getChunkLock().unlockWrite(stamp);
@@ -139,7 +196,21 @@ public class RegionThread extends Thread {
                 handleCrash(crash);
                 // after crash, running == false; latch is still counted down below
             } finally {
-                region.recordTickDuration(System.nanoTime() - tickStart);
+                // Work rounds and the entity round are halves of the same game
+                // tick — fold work time into the entity round's TPS record so
+                // region cost (split heuristic) reflects the full tick.
+                if (work != null) {
+                    workRoundNanos += System.nanoTime() - tickStart;
+                    // Entity-less regions are skipped by the entity round, so
+                    // record here or their cost would never update.
+                    if (region.getOwnedEntityIds().isEmpty()) {
+                        region.recordTickDuration(workRoundNanos);
+                        workRoundNanos = 0;
+                    }
+                } else {
+                    region.recordTickDuration(System.nanoTime() - tickStart + workRoundNanos);
+                    workRoundNanos = 0;
+                }
                 latch.countDown();
             }
         }

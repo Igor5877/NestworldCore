@@ -45,6 +45,19 @@ public class RegionTree {
      * (size already 1×1) or is not found in this tree.
      */
     public WorldRegion[] split(WorldRegion region) {
+        return split(region, Integer.MIN_VALUE);
+    }
+
+    /**
+     * Splits {@code region} along its preferred axis at the given cut: the
+     * last chunk coordinate (on that axis) that goes to child A. Pass
+     * {@link Integer#MIN_VALUE} for the spatial midpoint. Callers should
+     * prefer the load median: a midpoint cut of a world-sized region around a
+     * single hotspot just peels off an empty half each time, producing a
+     * degenerate comb of idle regions whose tree siblings are all hot — so
+     * they can never merge back.
+     */
+    public WorldRegion[] split(WorldRegion region, int cut) {
         lock.writeLock().lock();
         try {
             Leaf leaf = findLeaf(root, region);
@@ -56,11 +69,13 @@ public class RegionTree {
 
             WorldRegion childA, childB;
             if (axis == SplitAxis.X) {
-                int mid = (minX + maxX) / 2;
+                int mid = cut == Integer.MIN_VALUE ? (minX + maxX) / 2
+                        : Math.max(minX, Math.min(cut, maxX - 1));
                 childA = new WorldRegion(grid.nextId(), minX,   minZ, mid,  maxZ);
                 childB = new WorldRegion(grid.nextId(), mid + 1, minZ, maxX, maxZ);
             } else {
-                int mid = (minZ + maxZ) / 2;
+                int mid = cut == Integer.MIN_VALUE ? (minZ + maxZ) / 2
+                        : Math.max(minZ, Math.min(cut, maxZ - 1));
                 childA = new WorldRegion(grid.nextId(), minX, minZ,   maxX, mid);
                 childB = new WorldRegion(grid.nextId(), minX, mid + 1, maxX, maxZ);
             }

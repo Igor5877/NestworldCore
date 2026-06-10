@@ -267,10 +267,18 @@ public class WireHandler {
 	private boolean updating;
 
 	public WireHandler(ServerLevel level, LevelStorageAccess storage) {
-		this.level = level;
-		this.config = Config.forLevel(level, storage);
+		this(level, Config.forLevel(level, storage));
 
 		this.config.load();
+	}
+
+	/**
+	 * NestWorld: secondary constructor for per-region-thread handlers that share
+	 * the level's already-loaded config instead of re-reading it from disk.
+	 */
+	public WireHandler(ServerLevel level, Config config) {
+		this.level = level;
+		this.config = config;
 
 		this.nodes = new Long2ObjectOpenHashMap<>();
 		this.search = new SimpleQueue();
@@ -280,6 +288,54 @@ public class WireHandler {
 
 		this.nodeCache = new Node[16];
 		this.fillNodeCache(0, 16);
+	}
+
+	// ------------------------------------------------------------------------
+	// NestWorld additions: a handler used from a region thread is confined to
+	// its region's chunks. If a wire network reaches outside these bounds the
+	// whole update is aborted (NetworkOutOfBounds) and re-run on the main
+	// thread next tick, because writing another region's chunks would race
+	// that region's owner thread.
+	// ------------------------------------------------------------------------
+
+	private int boundMinX = Integer.MIN_VALUE;
+	private int boundMinZ = Integer.MIN_VALUE;
+	private int boundMaxX = Integer.MAX_VALUE;
+	private int boundMaxZ = Integer.MAX_VALUE;
+
+	/** Restrict this handler to the given block-coordinate bounds (inclusive). */
+	public void setBounds(int minX, int minZ, int maxX, int maxZ) {
+		this.boundMinX = minX;
+		this.boundMinZ = minZ;
+		this.boundMaxX = maxX;
+		this.boundMaxZ = maxZ;
+	}
+
+	private void checkBounds(BlockPos pos) {
+		if (pos.getX() < boundMinX || pos.getX() > boundMaxX
+				|| pos.getZ() < boundMinZ || pos.getZ() > boundMaxZ) {
+			throw NetworkOutOfBounds.INSTANCE;
+		}
+	}
+
+	/**
+	 * Discard all transient state after an aborted update so the handler can be
+	 * reused. Must be called after catching {@link NetworkOutOfBounds}.
+	 */
+	public void nestworldReset() {
+		nodes.clear();
+		search.clear();
+		updates.clear();
+		nodeCount = 0;
+		updating = false;
+	}
+
+	/** Stackless control-flow exception — see {@link #checkBounds}. */
+	public static final class NetworkOutOfBounds extends RuntimeException {
+		public static final NetworkOutOfBounds INSTANCE = new NetworkOutOfBounds();
+		private NetworkOutOfBounds() {
+			super(null, null, false, false);
+		}
 	}
 
 	public Config getConfig() {
@@ -318,6 +374,7 @@ public class WireHandler {
 	 * at the given position.
 	 */
 	private Node getNextNode(BlockPos pos) {
+		checkBounds(pos); // NestWorld: abort if the network leaves this handler's region
 		return getNextNode(pos, level.getBlockState(pos));
 	}
 

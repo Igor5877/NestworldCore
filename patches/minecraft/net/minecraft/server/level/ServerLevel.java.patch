@@ -35,6 +35,22 @@
           }
  
           this.m_8804_();
+@@ -291,8 +_,12 @@
+       if (!this.m_46659_()) {
+          long k = this.m_46467_();
+          profilerfiller.m_6180_("blockTicks");
+-         this.f_8553_.m_193225_(k, 65536, this::m_184112_);
+-         profilerfiller.m_6182_("fluidTicks");
+-         this.f_184047_.m_193225_(k, 65536, this::m_184076_);
++         if (net.nestworld.region.NestworldRegionSystem.isInitialised() && this.m_46472_() == net.minecraft.world.level.Level.f_46428_) {
++            net.nestworld.region.NestworldRegionSystem.get().runScheduledTicksPhase(this, k);
++         } else {
++            this.f_8553_.m_193225_(k, 65536, this::m_184112_);
++            profilerfiller.m_6182_("fluidTicks");
++            this.f_184047_.m_193225_(k, 65536, this::m_184076_);
++         }
+          profilerfiller.m_7238_();
+       }
 @@ -305,7 +_,7 @@
        this.m_8807_();
        this.f_8557_ = false;
@@ -92,6 +108,21 @@
        }
  
     }
+@@ -671,6 +_,14 @@
+          blockstate.m_222963_(this, p_184113_, this.f_46441_);
+       }
+ 
+    }
++
++   public void nestworldRunBlockTick(BlockPos pos, Block block) {
++      this.m_184112_(pos, block);
++   }
++
++   public void nestworldRunFluidTick(BlockPos pos, Fluid fluid) {
++      this.m_184076_(pos, fluid);
++   }
+ 
+    public void m_8647_(Entity p_8648_) {
 @@ -681,6 +_,7 @@
           return BuiltInRegistries.f_256780_.m_7981_(p_8648_.m_6095_()).toString();
        });
@@ -195,6 +226,16 @@
        this.f_220350_.m_214152_(p_215052_, p_215053_, p_215054_);
     }
  
+@@ -985,6 +_,8 @@
+ 
+    public void m_7696_(BlockPos p_8746_, Block p_8747_, int p_8748_, int p_8749_) {
+-      this.f_8556_.add(new BlockEventData(p_8746_, p_8747_, p_8748_, p_8749_));
++      synchronized (this.f_8556_) {
++         this.f_8556_.add(new BlockEventData(p_8746_, p_8747_, p_8748_, p_8749_));
++      }
+    }
+ 
+    private void m_8807_() {
 @@ -1380,6 +_,12 @@
        });
     }

@@ -83,13 +83,49 @@ public class RegionThreadPool {
 
         if (threads.isEmpty()) return;
 
-        CountDownLatch latch = new CountDownLatch(threads.size());
+        // Regions with no owned entities have nothing to do — leave their
+        // threads parked. With many regions (deep split trees) the wakeup +
+        // latch round-trip for dozens of idle threads costs real milliseconds.
+        java.util.List<RegionThread> workers = new java.util.ArrayList<>();
+        for (RegionThread t : threads) {
+            if (!t.region.getOwnedEntityIds().isEmpty()) workers.add(t);
+        }
+        if (workers.isEmpty()) return;
 
-        // Signal all threads to start their tick
-        for (RegionThread t : threads) t.requestTick(latch);
+        CountDownLatch latch = new CountDownLatch(workers.size());
 
-        // Service the chunk task queue while waiting — this is what lets
-        // region threads safely call getChunk().join().
+        // Signal the working threads to start their tick
+        for (RegionThread t : workers) t.requestTick(latch);
+
+        awaitLatch(latch);
+    }
+
+    /**
+     * Runs each region's work list (e.g. its bucket of due scheduled block
+     * ticks) on that region's thread, in parallel, and blocks until all are
+     * done. Called from the main thread mid-tick (inside ServerLevel.tick).
+     */
+    public void runWorkRound(java.util.Map<WorldRegion, java.util.List<Runnable>> assignments) {
+        if (assignments.isEmpty()) return;
+
+        java.util.List<RegionThread> workers = new java.util.ArrayList<>();
+        for (RegionThread t : threads) {
+            java.util.List<Runnable> work = assignments.get(t.region);
+            if (work != null && !work.isEmpty()) workers.add(t);
+        }
+        if (workers.isEmpty()) return;
+
+        CountDownLatch latch = new CountDownLatch(workers.size());
+        for (RegionThread t : workers) t.requestWork(assignments.get(t.region), latch);
+
+        awaitLatch(latch);
+    }
+
+    /**
+     * Waits for a round to finish while servicing the chunk task queue —
+     * this is what lets region threads safely call getChunk().join().
+     */
+    private void awaitLatch(CountDownLatch latch) {
         long start = System.nanoTime();
         while (latch.getCount() > 0) {
             boolean didWork = level.getChunkSource().pollTask();
@@ -97,7 +133,7 @@ public class RegionThreadPool {
                 LockSupport.parkNanos(50_000); // 50 µs
             }
             if (System.nanoTime() - start > TICK_WAIT_LIMIT_NANOS) {
-                LOGGER.error("Region tick exceeded {} s — abandoning wait ({} threads still running)",
+                LOGGER.error("Region round exceeded {} s — abandoning wait ({} threads still running)",
                         TimeUnit.NANOSECONDS.toSeconds(TICK_WAIT_LIMIT_NANOS), latch.getCount());
                 break;
             }
@@ -132,4 +168,5 @@ public class RegionThreadPool {
 
     public List<RegionThread> getThreads() { return threads; }
     public int getRegionCount() { return threads.size(); }
+    public ServerLevel getLevel() { return level; }
 }

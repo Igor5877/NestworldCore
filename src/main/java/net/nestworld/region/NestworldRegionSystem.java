@@ -147,12 +147,23 @@ public class NestworldRegionSystem {
     public void tickAllRegions(BooleanSupplier hasTime) {
         runAutosplitTest();
         long t0 = System.nanoTime();
-        // 1. Vanilla global tick (time, weather, chunk I/O) — entity tick skipped by patch
+        // 1. Vanilla global tick (time, weather, chunk I/O) — entity tick skipped by
+        // patch; due scheduled block/fluid ticks are parallelized from within it
+        // via runScheduledTicksPhase (ServerLevel patch calls back into us).
         overworld.tick(hasTime);
         long t1 = System.nanoTime();
 
-        // 2. Apply boundary redstone signals
+        // 2. Apply boundary redstone signals + wire updates whose network left
+        // their region last tick (deferred by NestworldRedstone)
         signalQueue.flush();
+        net.minecraft.core.BlockPos wirePos;
+        while ((wirePos = deferredWireUpdates.poll()) != null) {
+            try {
+                overworld.nestworldWireHandler.onWireUpdated(wirePos);
+            } catch (Throwable t) {
+                LOGGER.warn("Deferred wire update at {} failed: {}", wirePos, t.toString());
+            }
+        }
         long t2 = System.nanoTime();
 
         // 3. Reassign entities that moved between regions
@@ -204,6 +215,70 @@ public class NestworldRegionSystem {
                     String.format("%.2f", phaseNanos[5] / 1e6 / timedTicks));
             java.util.Arrays.fill(phaseNanos, 0L);
             timedTicks = 0;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Parallel scheduled block/fluid ticks (called back from ServerLevel patch)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Scheduled ticks in chunks this close to a region edge run on the main
+     * thread: their update cascades (pistons, observers, comparators) can reach
+     * a few blocks past the origin, and from the band that could cross into a
+     * neighbouring region mid-round and race its thread. Interior cascades
+     * can't travel 2 chunks (32 blocks) in a single update, and wires are
+     * separately bounds-checked by the per-thread Alternate Current handler.
+     */
+    private static final int BORDER_BAND_CHUNKS = 2;
+
+    /** Wire updates whose network left its region; re-run on main next tick. */
+    private final java.util.Queue<net.minecraft.core.BlockPos> deferredWireUpdates =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    public void deferWireUpdate(net.minecraft.core.BlockPos pos) {
+        deferredWireUpdates.add(pos.immutable());
+    }
+
+    /**
+     * Replaces the vanilla blockTicks/fluidTicks drain inside ServerLevel.tick
+     * for the managed overworld. Vanilla's collection logic still runs on the
+     * main thread (so priority/time ordering is preserved), but instead of
+     * executing each tick it buckets them: ticks in a region's interior execute
+     * on that region's thread in parallel; ticks in the border band, or outside
+     * any region, run on the main thread first (regions are parked then, so
+     * their cascades may safely cross borders).
+     */
+    public void runScheduledTicksPhase(ServerLevel level, long gameTime) {
+        java.util.Map<WorldRegion, java.util.List<Runnable>> buckets = new java.util.IdentityHashMap<>();
+        java.util.List<Runnable> mainBucket = new java.util.ArrayList<>();
+
+        level.getBlockTicks().tick(gameTime, 65536, (pos, block) ->
+                routeScheduledTick(pos, () -> level.nestworldRunBlockTick(pos, block), buckets, mainBucket));
+        level.getFluidTicks().tick(gameTime, 65536, (pos, fluid) ->
+                routeScheduledTick(pos, () -> level.nestworldRunFluidTick(pos, fluid), buckets, mainBucket));
+
+        for (Runnable r : mainBucket) {
+            try {
+                r.run();
+            } catch (Throwable t) {
+                LOGGER.warn("Main-band scheduled tick failed: {}", t.toString());
+            }
+        }
+        pool.runWorkRound(buckets);
+    }
+
+    private void routeScheduledTick(net.minecraft.core.BlockPos pos, Runnable run,
+                                    java.util.Map<WorldRegion, java.util.List<Runnable>> buckets,
+                                    java.util.List<Runnable> mainBucket) {
+        int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
+        WorldRegion region = grid.getRegionForChunk(cx, cz);
+        if (region != null
+                && cx >= region.getMinChunkX() + BORDER_BAND_CHUNKS && cx <= region.getMaxChunkX() - BORDER_BAND_CHUNKS
+                && cz >= region.getMinChunkZ() + BORDER_BAND_CHUNKS && cz <= region.getMaxChunkZ() - BORDER_BAND_CHUNKS) {
+            buckets.computeIfAbsent(region, r -> new java.util.ArrayList<>()).add(run);
+        } else {
+            mainBucket.add(run);
         }
     }
 

@@ -1,0 +1,32 @@
+--- a/net/minecraft/world/ticks/LevelTicks.java
++++ b/net/minecraft/world/ticks/LevelTicks.java
+@@ -55,4 +_,4 @@
+ 
+-   public void m_193231_(ChunkPos p_193232_, LevelChunkTicks<T> p_193233_) {
++   public synchronized void m_193231_(ChunkPos p_193232_, LevelChunkTicks<T> p_193233_) {
+       long i = p_193232_.m_45588_();
+       this.f_193202_.put(i, p_193233_);
+@@ -66,4 +_,4 @@
+ 
+-   public void m_193229_(ChunkPos p_193230_) {
++   public synchronized void m_193229_(ChunkPos p_193230_) {
+       long i = p_193230_.m_45588_();
+       LevelChunkTicks<T> levelchunkticks = this.f_193202_.remove(i);
+@@ -76,4 +_,4 @@
+ 
+-   public void m_183393_(ScheduledTick<T> p_193252_) {
++   public synchronized void m_183393_(ScheduledTick<T> p_193252_) {
+       long i = ChunkPos.m_151388_(p_193252_.f_193377_());
+       LevelChunkTicks<T> levelchunkticks = this.f_193202_.get(i);
+@@ -207,4 +_,4 @@
+ 
+-   public boolean m_183582_(BlockPos p_193254_, T p_193255_) {
++   public synchronized boolean m_183582_(BlockPos p_193254_, T p_193255_) {
+       LevelChunkTicks<T> levelchunkticks = this.f_193202_.get(ChunkPos.m_151388_(p_193254_));
+       return levelchunkticks != null && levelchunkticks.m_183582_(p_193254_, p_193255_);
+@@ -212,4 +_,4 @@
+ 
+-   public boolean m_183588_(BlockPos p_193282_, T p_193283_) {
++   public synchronized boolean m_183588_(BlockPos p_193282_, T p_193283_) {
+       this.m_193287_();
+       return this.f_193207_.contains(ScheduledTick.m_193397_(p_193283_, p_193282_));
