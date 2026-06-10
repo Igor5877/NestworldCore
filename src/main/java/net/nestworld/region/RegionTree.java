@@ -5,12 +5,13 @@ import java.util.List;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
- * Binary Space Partitioning tree of WorldRegions.
+ * Binary Space Partitioning (BSP) tree of WorldRegions.
  *
- * Leaves are active regions (each gets a RegionThread).
- * Internal nodes record the axis and coordinate of a past split.
- * All structural mutations (split / merge) must happen while all
- * region threads are paused at the tick barrier.
+ * Leaves  = active regions, each backed by a RegionThread.
+ * Branches = internal split points (two children, one axis).
+ *
+ * All structural mutations (split / merge) acquire the write lock so they are
+ * applied atomically between ticks.
  */
 public class RegionTree {
 
@@ -18,17 +19,15 @@ public class RegionTree {
     private Node root;
     private final WorldGrid grid;
 
-    public RegionTree(WorldGrid grid, WorldRegion initial) {
+    public RegionTree(WorldGrid grid, WorldRegion initialRegion) {
         this.grid = grid;
-        this.root = new Leaf(initial);
-        grid.register(initial);
+        this.root = new Leaf(initialRegion);
+        grid.register(initialRegion);
     }
 
-    // -----------------------------------------------------------------------
-    // Public API (called from RegionSplitManager while threads are at barrier)
-    // -----------------------------------------------------------------------
+    // --- Public API ---
 
-    /** Returns all currently active (leaf) regions. Thread-safe read. */
+    /** Returns all active (leaf) regions in an unordered list. */
     public List<WorldRegion> getActiveRegions() {
         lock.readLock().lock();
         try {
@@ -41,8 +40,9 @@ public class RegionTree {
     }
 
     /**
-     * Splits the given region along its preferred axis.
-     * @return array of [childA, childB], or null if the region cannot be split.
+     * Splits {@code region} into two child regions along its preferred axis.
+     * Returns the pair [childA, childB], or null if the region cannot be split
+     * (size already 1×1) or is not found in this tree.
      */
     public WorldRegion[] split(WorldRegion region) {
         lock.writeLock().lock();
@@ -54,32 +54,33 @@ public class RegionTree {
             int minX = region.getMinChunkX(), maxX = region.getMaxChunkX();
             int minZ = region.getMinChunkZ(), maxZ = region.getMaxChunkZ();
 
-            WorldRegion a, b;
+            WorldRegion childA, childB;
             if (axis == SplitAxis.X) {
-                int midX = (minX + maxX) / 2;
-                a = new WorldRegion(grid.nextId(), minX, minZ, midX,   maxZ);
-                b = new WorldRegion(grid.nextId(), midX + 1, minZ, maxX, maxZ);
+                int mid = (minX + maxX) / 2;
+                childA = new WorldRegion(grid.nextId(), minX,   minZ, mid,  maxZ);
+                childB = new WorldRegion(grid.nextId(), mid + 1, minZ, maxX, maxZ);
             } else {
-                int midZ = (minZ + maxZ) / 2;
-                a = new WorldRegion(grid.nextId(), minX, minZ, maxX, midZ);
-                b = new WorldRegion(grid.nextId(), minX, midZ + 1, maxX, maxZ);
+                int mid = (minZ + maxZ) / 2;
+                childA = new WorldRegion(grid.nextId(), minX, minZ,   maxX, mid);
+                childB = new WorldRegion(grid.nextId(), minX, mid + 1, maxX, maxZ);
             }
 
             grid.unregister(region);
-            grid.register(a);
-            grid.register(b);
+            grid.register(childA);
+            grid.register(childB);
 
-            replaceNode(root, null, leaf, new Branch(axis, new Leaf(a), new Leaf(b)));
-            return new WorldRegion[]{a, b};
+            Branch branch = new Branch(axis, new Leaf(childA), new Leaf(childB));
+            replaceNode(root, null, leaf, branch);
+
+            return new WorldRegion[]{childA, childB};
         } finally {
             lock.writeLock().unlock();
         }
     }
 
     /**
-     * Merges two sibling leaf regions back into their parent.
-     * The caller must ensure both regions have no active threads before calling.
-     * @return the merged region, or null if the two regions are not siblings.
+     * Merges two sibling leaf regions back into one parent region.
+     * Returns the merged region, or null if they are not siblings in this tree.
      */
     public WorldRegion merge(WorldRegion a, WorldRegion b) {
         lock.writeLock().lock();
@@ -108,18 +109,20 @@ public class RegionTree {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Internal tree traversal
-    // -----------------------------------------------------------------------
+    // --- Tree traversal ---
 
     private void collectLeaves(Node node, List<WorldRegion> out) {
-        if (node instanceof Leaf l)        out.add(l.region);
-        else if (node instanceof Branch b) { collectLeaves(b.left, out); collectLeaves(b.right, out); }
+        if (node instanceof Leaf l) {
+            out.add(l.region);
+        } else if (node instanceof Branch b) {
+            collectLeaves(b.left, out);
+            collectLeaves(b.right, out);
+        }
     }
 
     private Leaf findLeaf(Node node, WorldRegion target) {
-        if (node instanceof Leaf l)        return l.region == target ? l : null;
-        else if (node instanceof Branch b) {
+        if (node instanceof Leaf l) return l.region == target ? l : null;
+        if (node instanceof Branch b) {
             Leaf found = findLeaf(b.left, target);
             return found != null ? found : findLeaf(b.right, target);
         }
@@ -128,39 +131,42 @@ public class RegionTree {
 
     private Branch findParent(Node node, Leaf targetA, Leaf targetB) {
         if (node instanceof Branch b) {
-            if ((b.left == targetA && b.right == targetB) ||
-                (b.left == targetB && b.right == targetA)) return b;
+            if ((b.left == targetA && b.right == targetB)
+                    || (b.left == targetB && b.right == targetA)) return b;
             Branch found = findParent(b.left, targetA, targetB);
             return found != null ? found : findParent(b.right, targetA, targetB);
         }
         return null;
     }
 
-    /** Replaces oldNode with newNode anywhere in the subtree rooted at current. */
-    private void replaceNode(Node current, Branch parent, Node oldNode, Node newNode) {
-        if (current == oldNode) { root = newNode; return; }
-        if (current instanceof Branch b) {
-            if (b.left  == oldNode) { b.left  = newNode; return; }
-            if (b.right == oldNode) { b.right = newNode; return; }
-            replaceNode(b.left,  b, oldNode, newNode);
-            replaceNode(b.right, b, oldNode, newNode);
+    /** Replaces {@code target} with {@code replacement} anywhere in the subtree rooted at {@code node}. */
+    private void replaceNode(Node node, Branch parentOfNode, Node target, Node replacement) {
+        if (node == target) {
+            if (parentOfNode == null) { root = replacement; return; }
+            if (parentOfNode.left == target) parentOfNode.left = replacement;
+            else parentOfNode.right = replacement;
+            return;
+        }
+        if (node instanceof Branch b) {
+            replaceNode(b.left, b, target, replacement);
+            replaceNode(b.right, b, target, replacement);
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Node types
-    // -----------------------------------------------------------------------
+    // --- Node types ---
 
     private abstract static class Node {}
 
     private static final class Leaf extends Node {
         WorldRegion region;
-        Leaf(WorldRegion r) { region = r; }
+        Leaf(WorldRegion r) { this.region = r; }
     }
 
     private static final class Branch extends Node {
         final SplitAxis axis;
         Node left, right;
-        Branch(SplitAxis axis, Node left, Node right) { this.axis = axis; this.left = left; this.right = right; }
+        Branch(SplitAxis axis, Node left, Node right) {
+            this.axis = axis; this.left = left; this.right = right;
+        }
     }
 }

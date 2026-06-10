@@ -12,6 +12,7 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
+import net.nestworld.region.NestworldRegionSystem;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -20,19 +21,17 @@ public class SkyBlockMod {
     public static final Logger LOGGER = LogManager.getLogger();
 
     public SkyBlockMod() {
-        // Реєструємо обробник події FMLCommonSetupEvent
         IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
         modEventBus.addListener(this::commonSetup);
 
-        // Реєструємо звичайні обробники подій гри
         MinecraftForge.EVENT_BUS.register(this);
         MinecraftForge.EVENT_BUS.register(new PlayerEventHandler());
+
+        // Register region sharding system lifecycle hooks
+        MinecraftForge.EVENT_BUS.register(NestworldRegionSystem.class);
     }
 
-    // Цей метод буде викликано на ранньому етапі завантаження
     private void commonSetup(final FMLCommonSetupEvent event) {
-        // Виконуємо наш блокуючий запит ДО того, як сервер повністю запуститься
-        // Це гарантує, що дані будуть готові для FTB Quests
         TeamDataManager.loadTeamData();
     }
 
