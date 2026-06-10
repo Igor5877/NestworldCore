@@ -9,6 +9,11 @@
     public static final Codec<ResourceKey<Level>> f_46427_ = ResourceKey.m_195966_(Registries.f_256858_);
     public static final ResourceKey<Level> f_46428_ = ResourceKey.m_135785_(Registries.f_256858_, new ResourceLocation("overworld"));
     public static final ResourceKey<Level> f_46429_ = ResourceKey.m_135785_(Registries.f_256858_, new ResourceLocation("the_nether"));
+@@ -97,3 +_,3 @@
+    public float f_46440_;
+-   public final RandomSource f_46441_ = RandomSource.m_216327_();
++   public final RandomSource f_46441_ = RandomSource.m_216337_(); // NestWorld: thread-safe random for parallel region entity ticking
+    /** @deprecated */
 @@ -110,8 +_,14 @@
     private final RegistryAccess f_268710_;
     private final DamageSources f_268497_;

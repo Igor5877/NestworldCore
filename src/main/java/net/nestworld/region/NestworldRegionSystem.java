@@ -72,6 +72,11 @@ public class NestworldRegionSystem {
         }
     }
 
+    @SubscribeEvent
+    public static void onRegisterCommands(net.minecraftforge.event.RegisterCommandsEvent event) {
+        NestworldCommand.register(event.getDispatcher());
+    }
+
     // -----------------------------------------------------------------------
     // Initialisation
     // -----------------------------------------------------------------------
@@ -87,10 +92,10 @@ public class NestworldRegionSystem {
 
         // Start with one region that covers a 32×32 chunk square centred on spawn.
         // As players spread out, the system will split and spawn more regions.
-        int r = INITIAL_REGION_HALF_SPAN;
-        WorldRegion initial = new WorldRegion(0, -r, -r, r, r);
-
         grid           = new WorldGrid();
+        int r = INITIAL_REGION_HALF_SPAN;
+        WorldRegion initial = new WorldRegion(grid.nextId(), -r, -r, r, r);
+
         tree           = new RegionTree(grid, initial);
         pool           = new RegionThreadPool(overworld);
         boundaryManager = new BoundaryManager(overworld, grid);
@@ -128,7 +133,15 @@ public class NestworldRegionSystem {
     private final long[] phaseNanos = new long[6];
     private int timedTicks = 0;
 
+    // Self-test driven by env var NESTWORLD_AUTOSPLIT=<tick>: forces a split at
+    // that tick and a merge back 600 ticks later, exercising the full lifecycle.
+    private static final int AUTOSPLIT_AT_TICK =
+            Integer.parseInt(System.getenv().getOrDefault("NESTWORLD_AUTOSPLIT", "-1"));
+    private long totalTicks = 0;
+    private WorldRegion[] autosplitChildren = null;
+
     public void tickAllRegions(BooleanSupplier hasTime) {
+        runAutosplitTest();
         long t0 = System.nanoTime();
         // 1. Vanilla global tick (time, weather, chunk I/O) — entity tick skipped by patch
         overworld.tick(hasTime);
@@ -174,6 +187,21 @@ public class NestworldRegionSystem {
         }
     }
 
+    private void runAutosplitTest() {
+        if (AUTOSPLIT_AT_TICK < 0) return;
+        totalTicks++;
+        if (totalTicks == AUTOSPLIT_AT_TICK) {
+            WorldRegion target = tree.getActiveRegions().get(0);
+            LOGGER.info("[AUTOSPLIT TEST] forcing split of {}", target);
+            autosplitChildren = splitManager.doSplit(target);
+            LOGGER.info("[AUTOSPLIT TEST] split result: {}", (Object) autosplitChildren);
+        } else if (totalTicks == AUTOSPLIT_AT_TICK + 600 && autosplitChildren != null) {
+            LOGGER.info("[AUTOSPLIT TEST] forcing merge of {} + {}", autosplitChildren[0], autosplitChildren[1]);
+            WorldRegion merged = splitManager.doMerge(autosplitChildren[0], autosplitChildren[1]);
+            LOGGER.info("[AUTOSPLIT TEST] merge result: {}", merged);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Shutdown
     // -----------------------------------------------------------------------
@@ -193,6 +221,7 @@ public class NestworldRegionSystem {
     public WorldGrid getGrid()                        { return grid; }
     public RegionTree getTree()                       { return tree; }
     public RegionThreadPool getPool()                 { return pool; }
+    public RegionSplitManager getSplitManager()       { return splitManager; }
     public BoundarySignalQueue getSignalQueue()       { return signalQueue; }
     public BoundaryEntityTransfer getEntityTransfer() { return entityTransfer; }
     public CrossRegionCapabilityBus getCapabilityBus(){ return capabilityBus; }

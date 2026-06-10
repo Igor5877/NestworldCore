@@ -4,19 +4,22 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Monitors per-region TPS and decides when to split or merge regions.
  *
- * <p>Called by NestworldRegionSystem every 20 ticks (1 second of game time).
- * Split/merge operations are queued and applied at the next tick barrier so
- * all region threads are paused while the BSP tree is mutated.
+ * <p>Called by NestworldRegionSystem every tick; evaluates TPS every 20 ticks
+ * (1 second of game time). Split/merge operations are applied while all
+ * region threads are parked between ticks, so the BSP tree mutates atomically.
  *
  * <p>Hysteresis prevents thrashing:
  * <ul>
- *   <li>Split: TPS &lt; {@value #SPLIT_TPS_THRESHOLD} for {@value #SPLIT_TICKS_REQUIRED} consecutive ticks</li>
- *   <li>Merge: TPS &gt; {@value #MERGE_TPS_THRESHOLD} for {@value #MERGE_TICKS_REQUIRED} consecutive ticks</li>
+ *   <li>Split: TPS &lt; {@value #SPLIT_TPS_THRESHOLD} for {@value #SPLIT_CHECKS_REQUIRED} consecutive evaluations (100 game ticks)</li>
+ *   <li>Merge: TPS &gt; {@value #MERGE_TPS_THRESHOLD} for {@value #MERGE_CHECKS_REQUIRED} consecutive evaluations (500 game ticks)</li>
  * </ul>
  *
  * <p>A region at minimum size (1×1 chunk) is never split further.
@@ -26,17 +29,25 @@ public class RegionSplitManager {
     private static final Logger LOGGER = LogManager.getLogger("NestWorld/SplitManager");
 
     // --- Thresholds ---
+    // Counters advance once per evaluation (every 20 game ticks), so the design
+    // targets "100 ticks below 15 TPS" = 5 evaluations, "500 ticks above 18" = 25.
     private static final double SPLIT_TPS_THRESHOLD = 15.0;
     private static final double MERGE_TPS_THRESHOLD = 18.0;
-    private static final int    SPLIT_TICKS_REQUIRED = 100; // 5 s
-    private static final int    MERGE_TICKS_REQUIRED = 500; // 25 s
+    private static final int    SPLIT_CHECKS_REQUIRED = 5;  // 100 game ticks
+    private static final int    MERGE_CHECKS_REQUIRED = 25; // 500 game ticks
 
     private final RegionTree tree;
     private final RegionThreadPool pool;
 
-    // Pending operations applied atomically at the tick barrier
-    private final List<SplitRequest> pendingSplits = new ArrayList<>();
-    private final List<MergeRequest>  pendingMerges  = new ArrayList<>();
+    // Pending splits applied at the next evaluation
+    private final List<WorldRegion> pendingSplits = new ArrayList<>();
+    /**
+     * Merge candidates persist across evaluations (insertion-ordered) because
+     * sibling regions rarely cross the threshold in the same second. A candidate
+     * is dropped when its TPS falls back under the merge threshold or it is no
+     * longer an active region.
+     */
+    private final Set<WorldRegion> mergeCandidates = new LinkedHashSet<>();
 
     private int checkInterval = 0;
 
@@ -51,101 +62,111 @@ public class RegionSplitManager {
 
     /**
      * Must be called from the main thread each tick, after all region threads
-     * have finished (i.e. after the tick barrier).
-     * Every 20 ticks it evaluates TPS for every region.
+     * have finished their tick. Every 20 ticks it evaluates TPS per region.
      */
     public void onTick() {
         if (++checkInterval < 20) return;
         checkInterval = 0;
 
-        for (WorldRegion region : tree.getActiveRegions()) {
+        List<WorldRegion> active = tree.getActiveRegions();
+        for (WorldRegion region : active) {
             double tps = region.getCurrentTps();
 
             if (tps < SPLIT_TPS_THRESHOLD) {
                 region.ticksAboveThreshold = 0;
-                if (++region.ticksBelowThreshold >= SPLIT_TICKS_REQUIRED && region.canSplit()) {
-                    pendingSplits.add(new SplitRequest(region));
+                mergeCandidates.remove(region);
+                if (++region.ticksBelowThreshold >= SPLIT_CHECKS_REQUIRED && region.canSplit()) {
+                    pendingSplits.add(region);
                     region.resetThresholdCounters();
                 }
             } else if (tps > MERGE_TPS_THRESHOLD) {
                 region.ticksBelowThreshold = 0;
-                if (++region.ticksAboveThreshold >= MERGE_TICKS_REQUIRED) {
-                    // Only queue a merge when both siblings of a pair are above the threshold
-                    // (evaluated in applyPending where we can check sibling state)
-                    region.resetThresholdCounters();
-                    pendingMerges.add(new MergeRequest(region));
+                if (++region.ticksAboveThreshold >= MERGE_CHECKS_REQUIRED) {
+                    mergeCandidates.add(region); // persists until merged or TPS drops
                 }
             } else {
                 region.ticksBelowThreshold = 0;
                 region.ticksAboveThreshold = 0;
+                mergeCandidates.remove(region);
             }
         }
+        // Drop candidates that are no longer active leaves (already merged/split)
+        mergeCandidates.retainAll(active);
 
         applyPending();
     }
 
     // -----------------------------------------------------------------------
-    // Apply queued operations between ticks (region threads are at barrier)
+    // Apply queued operations between ticks (region threads are parked)
     // -----------------------------------------------------------------------
 
     private void applyPending() {
-        // --- Splits ---
-        for (SplitRequest req : pendingSplits) {
-            WorldRegion[] children = tree.split(req.region);
-            if (children == null) continue; // already at min size or not found
-
-            pool.remove(req.region);
-            pool.spawn(children[0]);
-            pool.spawn(children[1]);
-
-            // Migrate entity ownership: assign each entity to the child that covers it
-            for (java.util.UUID uuid : req.region.getOwnedEntityIds()) {
-                // Entity position lookup deferred to BoundaryEntityTransfer on next tick;
-                // for now give both entities to child A as a safe default.
-                children[0].addEntity(uuid);
-            }
-
-            LOGGER.info("Split {} -> [{}, {}]  (TPS was {})",
-                    req.region, children[0], children[1], String.format("%.1f", req.region.getCurrentTps()));
+        for (WorldRegion region : pendingSplits) {
+            doSplit(region);
         }
         pendingSplits.clear();
 
-        // --- Merges ---
-        // Collect all regions that requested a merge, then find pairs that are siblings
-        List<WorldRegion> mergeQueue = new ArrayList<>();
-        for (MergeRequest req : pendingMerges) mergeQueue.add(req.region);
-
-        for (int i = 0; i < mergeQueue.size(); i++) {
-            WorldRegion a = mergeQueue.get(i);
-            for (int j = i + 1; j < mergeQueue.size(); j++) {
-                WorldRegion b = mergeQueue.get(j);
-                WorldRegion merged = tree.merge(a, b); // returns null if not siblings
-                if (merged == null) continue;
-
-                pool.remove(a);
-                pool.remove(b);
-                pool.spawn(merged);
-
-                // Migrate entity ownership to the new merged region
-                for (java.util.UUID uuid : a.getOwnedEntityIds()) merged.addEntity(uuid);
-                for (java.util.UUID uuid : b.getOwnedEntityIds()) merged.addEntity(uuid);
-
-                LOGGER.info("Merged [{}, {}] -> {}  (TPS were {}, {})",
-                        a, b, merged, String.format("%.1f", a.getCurrentTps()), String.format("%.1f", b.getCurrentTps()));
-
-                mergeQueue.remove(j);
-                mergeQueue.remove(i);
-                i--;
-                break;
+        // Try to pair up merge candidates that are tree siblings
+        List<WorldRegion> candidates = new ArrayList<>(mergeCandidates);
+        for (int i = 0; i < candidates.size(); i++) {
+            WorldRegion a = candidates.get(i);
+            if (!mergeCandidates.contains(a)) continue;
+            for (int j = i + 1; j < candidates.size(); j++) {
+                WorldRegion b = candidates.get(j);
+                if (!mergeCandidates.contains(b)) continue;
+                if (doMerge(a, b) != null) {
+                    mergeCandidates.remove(a);
+                    mergeCandidates.remove(b);
+                    break;
+                }
             }
         }
-        pendingMerges.clear();
     }
 
     // -----------------------------------------------------------------------
-    // Request records
+    // Core operations (also used by the /nestworld admin command)
     // -----------------------------------------------------------------------
 
-    private record SplitRequest(WorldRegion region) {}
-    private record MergeRequest(WorldRegion region) {}
+    /**
+     * Splits a region into two children, migrating threads and entity ownership.
+     * Returns the children, or null if the region cannot be split.
+     */
+    public WorldRegion[] doSplit(WorldRegion region) {
+        WorldRegion[] children = tree.split(region);
+        if (children == null) return null; // at min size or not in tree
+
+        pool.remove(region);
+        pool.spawn(children[0]);
+        pool.spawn(children[1]);
+
+        // Hand all entities to child A; BoundaryEntityTransfer reassigns any
+        // that actually live in child B on the next tick via the grid lookup.
+        for (java.util.UUID uuid : region.getOwnedEntityIds()) {
+            children[0].addEntity(uuid);
+        }
+
+        LOGGER.info("Split {} -> [{}, {}]  (TPS was {})",
+                region, children[0], children[1], String.format("%.1f", region.getCurrentTps()));
+        return children;
+    }
+
+    /**
+     * Merges two sibling regions into one, migrating threads and entity ownership.
+     * Returns the merged region, or null if the two are not tree siblings.
+     */
+    public WorldRegion doMerge(WorldRegion a, WorldRegion b) {
+        WorldRegion merged = tree.merge(a, b);
+        if (merged == null) return null;
+
+        pool.remove(a);
+        pool.remove(b);
+        pool.spawn(merged);
+
+        for (java.util.UUID uuid : a.getOwnedEntityIds()) merged.addEntity(uuid);
+        for (java.util.UUID uuid : b.getOwnedEntityIds()) merged.addEntity(uuid);
+
+        LOGGER.info("Merged [{}, {}] -> {}  (TPS were {}, {})",
+                a, b, merged, String.format("%.1f", a.getCurrentTps()), String.format("%.1f", b.getCurrentTps()));
+        return merged;
+    }
 }
