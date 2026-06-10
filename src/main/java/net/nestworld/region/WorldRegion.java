@@ -38,6 +38,9 @@ public class WorldRegion {
 
     volatile RegionThread owningThread;
 
+    /** Pinned regions (manual /nestworld split) are exempt from automatic merge. */
+    public volatile boolean pinned = false;
+
     public WorldRegion(int id, int minChunkX, int minChunkZ, int maxChunkX, int maxChunkZ) {
         this.id = id;
         this.minChunkX = minChunkX;

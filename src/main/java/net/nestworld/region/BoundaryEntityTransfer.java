@@ -49,8 +49,23 @@ public class BoundaryEntityTransfer {
      * atomically reassigns ownership from the old region to the new one.
      */
     public void checkAndReassign() {
+        // Prune ownership records of entities that despawned or unloaded —
+        // without this the owned sets grow forever as the player explores.
+        // Loaded entities are (re-)assigned in the loop below, so pruning a
+        // briefly-unloaded entity is harmless.
+        for (WorldRegion region : grid.getAllRegions()) {
+            region.getOwnedEntityIds().removeIf(uuid -> {
+                Entity e = level.getEntity(uuid);
+                return e == null || e.isRemoved();
+            });
+        }
+
         for (Entity entity : level.getAllEntities()) {
             if (entity.isRemoved()) continue;
+            // Players are ticked on the main thread (their position is mutated
+            // by the network thread; region-thread ticking causes races that
+            // manifest as "moved too quickly" rubber-banding).
+            if (entity instanceof net.minecraft.world.entity.player.Player) continue;
 
             UUID uuid = entity.getUUID();
             if (inTransfer.containsKey(uuid)) {

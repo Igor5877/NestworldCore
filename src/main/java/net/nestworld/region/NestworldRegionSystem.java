@@ -157,6 +157,19 @@ public class NestworldRegionSystem {
 
         // 3. Reassign entities that moved between regions
         entityTransfer.checkAndReassign();
+
+        // 3b. Tick players on the main thread — their state is shared with the
+        // network thread, so region-thread ticking races on position and causes
+        // rubber-banding. Passengers are ticked by their vehicle's region.
+        // (copy — ticking can mutate the list via dimension change/disconnect)
+        for (net.minecraft.server.level.ServerPlayer player : java.util.List.copyOf(overworld.players())) {
+            if (player.isRemoved() || player.isPassenger()) continue;
+            try {
+                overworld.tickNonPassenger(player);
+            } catch (Throwable t) {
+                LOGGER.warn("Player {} tick error: {}", player.getGameProfile().getName(), t.getMessage());
+            }
+        }
         long t3 = System.nanoTime();
 
         // 4. Parallel tick — blocks until all region threads finish
@@ -170,6 +183,9 @@ public class NestworldRegionSystem {
         // 6. Adaptive split / merge
         splitManager.onTick();
         long t6 = System.nanoTime();
+
+        // 7. Optional border visualisation for players
+        renderBorderParticles();
 
         phaseNanos[0] += t1 - t0;
         phaseNanos[1] += t2 - t1;
@@ -188,6 +204,62 @@ public class NestworldRegionSystem {
                     String.format("%.2f", phaseNanos[5] / 1e6 / timedTicks));
             java.util.Arrays.fill(phaseNanos, 0L);
             timedTicks = 0;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Region border visualisation (/nestworld borders)
+    // -----------------------------------------------------------------------
+
+    /** When true, region borders near players are outlined with particles. */
+    public static volatile boolean showBorders = false;
+    private static final int BORDER_VIEW_RANGE = 96;   // blocks
+    private int borderParticleTimer = 0;
+
+    private void renderBorderParticles() {
+        if (!showBorders || (++borderParticleTimer % 10) != 0) return;
+
+        for (net.minecraft.server.level.ServerPlayer player : overworld.players()) {
+            int px = player.getBlockX(), py = player.getBlockY(), pz = player.getBlockZ();
+
+            for (WorldRegion r : grid.getAllRegions()) {
+                // Block-space edges of the region (east/south edges are exclusive)
+                int west = r.getMinChunkX() << 4;
+                int east = (r.getMaxChunkX() + 1) << 4;
+                int north = r.getMinChunkZ() << 4;
+                int south = (r.getMaxChunkZ() + 1) << 4;
+
+                drawBorderPlaneX(player, west,  north, south, px, py, pz);
+                drawBorderPlaneX(player, east,  north, south, px, py, pz);
+                drawBorderPlaneZ(player, north, west,  east,  px, py, pz);
+                drawBorderPlaneZ(player, south, west,  east,  px, py, pz);
+            }
+        }
+    }
+
+    private void drawBorderPlaneX(net.minecraft.server.level.ServerPlayer player,
+                                  int x, int zMin, int zMax, int px, int py, int pz) {
+        if (Math.abs(px - x) > BORDER_VIEW_RANGE) return;
+        int from = Math.max(zMin, pz - BORDER_VIEW_RANGE);
+        int to   = Math.min(zMax, pz + BORDER_VIEW_RANGE);
+        for (int z = from; z <= to; z += 2) {
+            for (int y = py - 8; y <= py + 12; y += 4) {
+                overworld.sendParticles(player, net.minecraft.core.particles.ParticleTypes.END_ROD,
+                        false, x + 0.0, y + 0.5, z + 0.5, 1, 0, 0, 0, 0);
+            }
+        }
+    }
+
+    private void drawBorderPlaneZ(net.minecraft.server.level.ServerPlayer player,
+                                  int z, int xMin, int xMax, int px, int py, int pz) {
+        if (Math.abs(pz - z) > BORDER_VIEW_RANGE) return;
+        int from = Math.max(xMin, px - BORDER_VIEW_RANGE);
+        int to   = Math.min(xMax, px + BORDER_VIEW_RANGE);
+        for (int x = from; x <= to; x += 2) {
+            for (int y = py - 8; y <= py + 12; y += 4) {
+                overworld.sendParticles(player, net.minecraft.core.particles.ParticleTypes.END_ROD,
+                        false, x + 0.5, y + 0.5, z + 0.0, 1, 0, 0, 0, 0);
+            }
         }
     }
 

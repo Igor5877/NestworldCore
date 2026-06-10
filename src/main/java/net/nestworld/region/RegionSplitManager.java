@@ -81,7 +81,7 @@ public class RegionSplitManager {
                 }
             } else if (tps > MERGE_TPS_THRESHOLD) {
                 region.ticksBelowThreshold = 0;
-                if (++region.ticksAboveThreshold >= MERGE_CHECKS_REQUIRED) {
+                if (++region.ticksAboveThreshold >= MERGE_CHECKS_REQUIRED && !region.pinned) {
                     mergeCandidates.add(region); // persists until merged or TPS drops
                 }
             } else {

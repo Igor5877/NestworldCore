@@ -23,6 +23,7 @@ public final class NestworldCommand {
         dispatcher.register(Commands.literal("nestworld")
                 .requires(src -> src.hasPermission(2))
                 .then(Commands.literal("status").executes(ctx -> status(ctx.getSource())))
+                .then(Commands.literal("borders").executes(ctx -> toggleBorders(ctx.getSource())))
                 .then(Commands.literal("split")
                         .then(Commands.argument("id", IntegerArgumentType.integer(0))
                                 .executes(ctx -> split(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "id")))))
@@ -32,6 +33,15 @@ public final class NestworldCommand {
                                         .executes(ctx -> merge(ctx.getSource(),
                                                 IntegerArgumentType.getInteger(ctx, "a"),
                                                 IntegerArgumentType.getInteger(ctx, "b")))))));
+    }
+
+    private static int toggleBorders(CommandSourceStack src) {
+        NestworldRegionSystem.showBorders = !NestworldRegionSystem.showBorders;
+        boolean on = NestworldRegionSystem.showBorders;
+        src.sendSuccess(() -> Component.literal(
+                on ? "Region borders: VISIBLE (END_ROD particles, range 96)"
+                   : "Region borders: hidden"), true);
+        return on ? 1 : 0;
     }
 
     private static int status(CommandSourceStack src) {
@@ -69,8 +79,13 @@ public final class NestworldCommand {
             src.sendFailure(Component.literal("Region " + id + " cannot be split (already 1x1?)"));
             return 0;
         }
+        // Manual splits are pinned so the idle-TPS hysteresis doesn't
+        // immediately merge them back while someone is inspecting them.
+        children[0].pinned = true;
+        children[1].pinned = true;
         src.sendSuccess(() -> Component.literal(
-                "Split #" + id + " -> #" + children[0].getId() + " + #" + children[1].getId()), true);
+                "Split #" + id + " -> #" + children[0].getId() + " + #" + children[1].getId()
+                + " (pinned — won't auto-merge; use /nestworld merge)"), true);
         return 1;
     }
 
