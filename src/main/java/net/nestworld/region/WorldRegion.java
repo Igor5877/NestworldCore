@@ -33,8 +33,8 @@ public class WorldRegion {
     private final AtomicLong windowSumNs = new AtomicLong(0);
 
     // Counters for split/merge hysteresis (guarded by RegionSplitManager's lock)
-    int ticksBelowThreshold = 0;
-    int ticksAboveThreshold = 0;
+    int splitPressureChecks = 0;
+    int mergePressureChecks = 0;
 
     volatile RegionThread owningThread;
 
@@ -87,6 +87,18 @@ public class WorldRegion {
         return Math.min(20.0, 1_000_000_000.0 / avgNs);
     }
 
+    /**
+     * Average duration of this region's own tick work in milliseconds.
+     *
+     * <p>Unlike {@link #getCurrentTps()} (which caps at 20 and therefore reads
+     * "healthy" for any duration under the full 50 ms budget) this is the raw
+     * cost the region contributes to the server tick — the split/merge
+     * heuristic compares it against a share of the budget.
+     */
+    public double getAvgTickMs() {
+        return windowSumNs.get() / (double) Math.max(1, tickDurationsNs.length) / 1_000_000.0;
+    }
+
     // --- Split eligibility ---
 
     /** A region can be split only when it covers more than 1 chunk in at least one axis. */
@@ -100,8 +112,8 @@ public class WorldRegion {
     }
 
     public void resetThresholdCounters() {
-        ticksBelowThreshold = 0;
-        ticksAboveThreshold = 0;
+        splitPressureChecks = 0;
+        mergePressureChecks = 0;
     }
 
     // --- Accessors ---
@@ -117,7 +129,7 @@ public class WorldRegion {
 
     @Override
     public String toString() {
-        return String.format("Region{id=%d, chunks=(%d,%d)–(%d,%d), tps=%.1f}",
-                id, minChunkX, minChunkZ, maxChunkX, maxChunkZ, getCurrentTps());
+        return String.format("Region{id=%d, chunks=(%d,%d)–(%d,%d), cost=%.1fms}",
+                id, minChunkX, minChunkZ, maxChunkX, maxChunkZ, getAvgTickMs());
     }
 }

@@ -10,16 +10,23 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Monitors per-region TPS and decides when to split or merge regions.
+ * Monitors per-region tick cost and decides when to split or merge regions.
  *
- * <p>Called by NestworldRegionSystem every tick; evaluates TPS every 20 ticks
+ * <p>Called by NestworldRegionSystem every tick; evaluates cost every 20 ticks
  * (1 second of game time). Split/merge operations are applied while all
  * region threads are parked between ticks, so the BSP tree mutates atomically.
  *
+ * <p>Thresholds are expressed as the region's own tick cost in milliseconds
+ * rather than per-region TPS: region TPS is capped at 20, so a region eating
+ * 45 of the 50 ms budget still reported a "healthy" 20 TPS while the server
+ * as a whole fell behind. Comparing raw cost against a share of the budget
+ * makes the heuristic see overload the way the server does.
+ *
  * <p>Hysteresis prevents thrashing:
  * <ul>
- *   <li>Split: TPS &lt; {@value #SPLIT_TPS_THRESHOLD} for {@value #SPLIT_CHECKS_REQUIRED} consecutive evaluations (100 game ticks)</li>
- *   <li>Merge: TPS &gt; {@value #MERGE_TPS_THRESHOLD} for {@value #MERGE_CHECKS_REQUIRED} consecutive evaluations (500 game ticks)</li>
+ *   <li>Split: cost &gt; {@value #SPLIT_MS_THRESHOLD} ms for {@value #SPLIT_CHECKS_REQUIRED} consecutive evaluations (100 game ticks)</li>
+ *   <li>Merge: cost &lt; {@value #MERGE_MS_THRESHOLD} ms for {@value #MERGE_CHECKS_REQUIRED} consecutive evaluations (500 game ticks);
+ *       two 10 ms siblings merge into ≤ ~20 ms, comfortably under the split threshold</li>
  * </ul>
  *
  * <p>A region at minimum size (1×1 chunk) is never split further.
@@ -30,9 +37,9 @@ public class RegionSplitManager {
 
     // --- Thresholds ---
     // Counters advance once per evaluation (every 20 game ticks), so the design
-    // targets "100 ticks below 15 TPS" = 5 evaluations, "500 ticks above 18" = 25.
-    private static final double SPLIT_TPS_THRESHOLD = 15.0;
-    private static final double MERGE_TPS_THRESHOLD = 18.0;
+    // targets "100 ticks above 25 ms" = 5 evaluations, "500 ticks under 10 ms" = 25.
+    private static final double SPLIT_MS_THRESHOLD = 25.0; // half the 50 ms tick budget
+    private static final double MERGE_MS_THRESHOLD = 10.0;
     private static final int    SPLIT_CHECKS_REQUIRED = 5;  // 100 game ticks
     private static final int    MERGE_CHECKS_REQUIRED = 25; // 500 game ticks
 
@@ -44,8 +51,8 @@ public class RegionSplitManager {
     /**
      * Merge candidates persist across evaluations (insertion-ordered) because
      * sibling regions rarely cross the threshold in the same second. A candidate
-     * is dropped when its TPS falls back under the merge threshold or it is no
-     * longer an active region.
+     * is dropped when its tick cost rises back above the merge threshold or it
+     * is no longer an active region.
      */
     private final Set<WorldRegion> mergeCandidates = new LinkedHashSet<>();
 
@@ -70,23 +77,23 @@ public class RegionSplitManager {
 
         List<WorldRegion> active = tree.getActiveRegions();
         for (WorldRegion region : active) {
-            double tps = region.getCurrentTps();
+            double costMs = region.getAvgTickMs();
 
-            if (tps < SPLIT_TPS_THRESHOLD) {
-                region.ticksAboveThreshold = 0;
+            if (costMs > SPLIT_MS_THRESHOLD) {
+                region.mergePressureChecks = 0;
                 mergeCandidates.remove(region);
-                if (++region.ticksBelowThreshold >= SPLIT_CHECKS_REQUIRED && region.canSplit()) {
+                if (++region.splitPressureChecks >= SPLIT_CHECKS_REQUIRED && region.canSplit()) {
                     pendingSplits.add(region);
                     region.resetThresholdCounters();
                 }
-            } else if (tps > MERGE_TPS_THRESHOLD) {
-                region.ticksBelowThreshold = 0;
-                if (++region.ticksAboveThreshold >= MERGE_CHECKS_REQUIRED && !region.pinned) {
-                    mergeCandidates.add(region); // persists until merged or TPS drops
+            } else if (costMs < MERGE_MS_THRESHOLD) {
+                region.splitPressureChecks = 0;
+                if (++region.mergePressureChecks >= MERGE_CHECKS_REQUIRED && !region.pinned) {
+                    mergeCandidates.add(region); // persists until merged or cost rises
                 }
             } else {
-                region.ticksBelowThreshold = 0;
-                region.ticksAboveThreshold = 0;
+                region.splitPressureChecks = 0;
+                region.mergePressureChecks = 0;
                 mergeCandidates.remove(region);
             }
         }
@@ -145,8 +152,8 @@ public class RegionSplitManager {
             children[0].addEntity(uuid);
         }
 
-        LOGGER.info("Split {} -> [{}, {}]  (TPS was {})",
-                region, children[0], children[1], String.format("%.1f", region.getCurrentTps()));
+        LOGGER.info("Split {} -> [{}, {}]  (cost was {} ms)",
+                region, children[0], children[1], String.format("%.1f", region.getAvgTickMs()));
         return children;
     }
 
@@ -165,8 +172,8 @@ public class RegionSplitManager {
         for (java.util.UUID uuid : a.getOwnedEntityIds()) merged.addEntity(uuid);
         for (java.util.UUID uuid : b.getOwnedEntityIds()) merged.addEntity(uuid);
 
-        LOGGER.info("Merged [{}, {}] -> {}  (TPS were {}, {})",
-                a, b, merged, String.format("%.1f", a.getCurrentTps()), String.format("%.1f", b.getCurrentTps()));
+        LOGGER.info("Merged [{}, {}] -> {}  (costs were {} ms, {} ms)",
+                a, b, merged, String.format("%.1f", a.getAvgTickMs()), String.format("%.1f", b.getAvgTickMs()));
         return merged;
     }
 }

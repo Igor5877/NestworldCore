@@ -1,5 +1,14 @@
 --- a/net/minecraft/world/level/entity/PersistentEntitySectionManager.java
 +++ b/net/minecraft/world/level/entity/PersistentEntitySectionManager.java
+@@ -44,7 +_,7 @@
+    public PersistentEntitySectionManager(Class<T> p_157503_, LevelCallback<T> p_157504_, EntityPersistentStorage<T> p_157505_) {
+       this.f_157494_ = new EntityLookup<>();
+-      this.f_157495_ = new EntitySectionStorage<>(p_157503_, this.f_157497_);
++      this.f_157495_ = new net.nestworld.region.ConcurrentEntitySectionStorage<>(p_157503_, this.f_157497_);
+       this.f_157497_.defaultReturnValue(Visibility.HIDDEN);
+       this.f_157498_.defaultReturnValue(PersistentEntitySectionManager.ChunkLoadStatus.FRESH);
+       this.f_157492_ = p_157504_;
+       this.f_157493_ = p_157505_;
 @@ -71,7 +_,16 @@
        return this.m_157538_(p_157534_, false);
     }

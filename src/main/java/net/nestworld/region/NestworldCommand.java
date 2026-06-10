@@ -51,14 +51,19 @@ public final class NestworldCommand {
         }
         NestworldRegionSystem sys = NestworldRegionSystem.get();
         var regions = sys.getTree().getActiveRegions();
-        src.sendSuccess(() -> Component.literal(
-                "NestWorld: " + regions.size() + " active region(s)"), false);
+        // Server-wide MSPT so the per-region costs can be read against the
+        // actual tick health (region cost alone says nothing about redstone
+        // and other main-thread work).
+        double serverMspt = src.getServer().getAverageTickTime();
+        src.sendSuccess(() -> Component.literal(String.format(
+                "NestWorld: %d active region(s), server %.1f ms/tick (%.1f TPS)",
+                regions.size(), serverMspt, Math.min(20.0, 1000.0 / Math.max(serverMspt, 0.001)))), false);
         for (WorldRegion r : regions) {
             src.sendSuccess(() -> Component.literal(String.format(
-                    "  #%d chunks(%d,%d)-(%d,%d) tps=%.1f entities=%d",
+                    "  #%d chunks(%d,%d)-(%d,%d) cost=%.1fms entities=%d",
                     r.getId(), r.getMinChunkX(), r.getMinChunkZ(),
                     r.getMaxChunkX(), r.getMaxChunkZ(),
-                    r.getCurrentTps(), r.getOwnedEntityIds().size())), false);
+                    r.getAvgTickMs(), r.getOwnedEntityIds().size())), false);
         }
         return regions.size();
     }

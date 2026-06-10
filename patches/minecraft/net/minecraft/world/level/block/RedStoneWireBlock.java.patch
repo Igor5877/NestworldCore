@@ -25,3 +25,43 @@
     }
  
     public boolean m_7898_(BlockState p_55585_, LevelReader p_55586_, BlockPos p_55587_) {
+@@ -219,6 +_,9 @@
+    }
+ 
+    private void m_55530_(Level p_55531_, BlockPos p_55532_, BlockState p_55533_) {
++      if (alternate.current.AlternateCurrentMod.on) {
++         return; // NestWorld: Alternate Current computes wire power in WireHandler
++      }
+       int i = this.m_55527_(p_55531_, p_55532_);
+       if (p_55533_.m_61143_(f_55500_) != i) {
+          if (p_55531_.m_8055_(p_55532_) == p_55533_) {
+@@ -279,6 +_,9 @@
+    public void m_6807_(BlockState p_55630_, Level p_55631_, BlockPos p_55632_, BlockState p_55633_, boolean p_55634_) {
+       if (!p_55633_.m_60713_(p_55630_.m_60734_()) && !p_55631_.f_46443_) {
++         if (alternate.current.AlternateCurrentMod.on && p_55631_ instanceof net.minecraft.server.level.ServerLevel serverlevel) {
++            serverlevel.nestworldWireHandler.onWireAdded(p_55632_);
++         }
+          this.m_55530_(p_55631_, p_55632_, p_55630_);
+ 
+          for(Direction direction : Direction.Plane.VERTICAL) {
+             p_55631_.m_46672_(p_55632_.m_121945_(direction), this);
+@@ -296,6 +_,9 @@
+                p_55569_.m_46672_(p_55570_.m_121945_(direction), this);
+             }
+ 
++            if (alternate.current.AlternateCurrentMod.on && p_55569_ instanceof net.minecraft.server.level.ServerLevel serverlevel) {
++               serverlevel.nestworldWireHandler.onWireRemoved(p_55570_, p_55568_);
++            }
+             this.m_55530_(p_55569_, p_55570_, p_55568_);
+             this.m_55637_(p_55569_, p_55570_);
+          }
+@@ -321,6 +_,9 @@
+    public void m_6861_(BlockState p_55561_, Level p_55562_, BlockPos p_55563_, Block p_55564_, BlockPos p_55565_, boolean p_55566_) {
+       if (!p_55562_.f_46443_) {
++         if (alternate.current.AlternateCurrentMod.on && p_55562_ instanceof net.minecraft.server.level.ServerLevel serverlevel && serverlevel.nestworldWireHandler.onWireUpdated(p_55563_)) {
++            return; // NestWorld: AC handled the update; skip vanilla to avoid dupe bugs
++         }
+          if (p_55561_.m_60710_(p_55562_, p_55563_)) {
+             this.m_55530_(p_55562_, p_55563_, p_55561_);
+          } else {
+             m_49950_(p_55561_, p_55562_, p_55563_);

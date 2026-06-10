@@ -1,6 +1,6 @@
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -188,11 +_,12 @@
+@@ -188,11 +_,13 @@
     private final List<CustomSpawner> f_8558_;
     @Nullable
     private EndDragonFight f_8559_;
@@ -11,14 +11,16 @@
     private final boolean f_8561_;
     private final RandomSequences f_286969_;
 +   private net.minecraftforge.common.util.LevelCapabilityData capabilityData;
++   public alternate.current.wire.WireHandler nestworldWireHandler;
  
     public ServerLevel(MinecraftServer p_214999_, Executor p_215000_, LevelStorageSource.LevelStorageAccess p_215001_, ServerLevelData p_215002_, ResourceKey<Level> p_215003_, LevelStem p_215004_, ChunkProgressListener p_215005_, boolean p_215006_, long p_215007_, List<CustomSpawner> p_215008_, boolean p_215009_, @Nullable RandomSequences p_288977_) {
        super(p_215002_, p_215003_, p_214999_.m_206579_(), p_215004_.f_63975_(), p_214999_::m_129905_, false, p_215006_, p_215007_, p_214999_.m_213994_());
-@@ -240,6 +_,7 @@
+@@ -240,6 +_,8 @@
              return new RandomSequences(i);
           }, "random_sequences");
        });
 +      this.initCapabilities();
++      this.nestworldWireHandler = new alternate.current.wire.WireHandler(this, p_215001_);
     }
  
     /** @deprecated */
