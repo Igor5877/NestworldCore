@@ -142,7 +142,7 @@
  
           try {
 +            if (net.nestworld.region.NestworldRegionSystem.isInitialised() && serverlevel.dimension() == net.minecraft.world.level.Level.OVERWORLD) {
-+               net.nestworld.region.NestworldRegionSystem.get().tickAllRegions();
++               net.nestworld.region.NestworldRegionSystem.get().tickAllRegions(p_129954_);
 +            } else {
              serverlevel.m_8793_(p_129954_);
 +            }

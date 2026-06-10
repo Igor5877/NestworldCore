@@ -42,6 +42,11 @@
        if (flag) {
           this.m_8886_();
        }
+@@ -312,3 +_,3 @@
+ 
+-      if (flag || this.f_8551_++ < 300) {
++      if ((flag || this.f_8551_++ < 300) && !(net.nestworld.region.NestworldRegionSystem.isInitialised() && this.m_46472_() == net.minecraft.world.level.Level.f_46428_)) {
+          profilerfiller.m_6180_("entities");
 @@ -337,7 +_,9 @@
                       }
  

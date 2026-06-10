@@ -3,7 +3,9 @@ package net.nestworld.region;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
-import net.minecraftforge.event.server.ServerAboutToStartEvent;
+
+import java.util.function.BooleanSupplier;
+import net.minecraftforge.event.server.ServerStartingEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import org.apache.logging.log4j.LogManager;
@@ -57,7 +59,7 @@ public class NestworldRegionSystem {
     // -----------------------------------------------------------------------
 
     @SubscribeEvent
-    public static void onServerAboutToStart(ServerAboutToStartEvent event) {
+    public static void onServerStarting(ServerStartingEvent event) {
         INSTANCE = new NestworldRegionSystem();
         INSTANCE.init(event.getServer());
     }
@@ -113,26 +115,31 @@ public class NestworldRegionSystem {
      * {@code MinecraftServer.tickChildren()}.
      *
      * Execution order each game tick:
-     *  1. Flush cross-boundary redstone signals from last tick.
-     *  2. Reassign entities that crossed region boundaries.
-     *  3. Parallel-tick all regions (region threads + barrier sync).
-     *  4. Sync ghost zones for next tick's cross-region reads.
-     *  5. Evaluate TPS and apply any pending split / merge operations.
+     *  1. Run overworld.tick() for global state (time, weather, chunk loading).
+     *     Entity/block-entity ticking is skipped by the ServerLevel patch.
+     *  2. Flush cross-boundary redstone signals from last tick.
+     *  3. Reassign entities that crossed region boundaries.
+     *  4. Parallel-tick all regions (region threads + barrier sync).
+     *  5. Sync ghost zones for next tick's cross-region reads.
+     *  6. Evaluate TPS and apply any pending split / merge operations.
      */
-    public void tickAllRegions() {
-        // 1. Apply boundary redstone signals
+    public void tickAllRegions(BooleanSupplier hasTime) {
+        // 1. Vanilla global tick (time, weather, chunk I/O) — entity tick skipped by patch
+        overworld.tick(hasTime);
+
+        // 2. Apply boundary redstone signals
         signalQueue.flush();
 
-        // 2. Reassign entities that moved between regions
+        // 3. Reassign entities that moved between regions
         entityTransfer.checkAndReassign();
 
-        // 3. Parallel tick — blocks until all region threads finish
+        // 4. Parallel tick — blocks until all region threads finish
         pool.tickAllRegions();
 
-        // 4. Refresh ghost zones (runs while region threads are paused at barrier)
+        // 5. Refresh ghost zones (runs while region threads are paused at barrier)
         boundaryManager.syncGhostZones();
 
-        // 5. Adaptive split / merge
+        // 6. Adaptive split / merge
         splitManager.onTick();
     }
 

@@ -15,4 +15,10 @@ public class ForgeServerDevLaunchHandler extends CommonDevLaunchHandler {
     public void devService(String[] arguments, ModuleLayer layer) throws Throwable {
         serverService(arguments, layer);
     }
+
+    @Override
+    protected String[] getPackages() {
+        return new String[]{ "net/minecraftforge/", "META-INF/services/", "META-INF/coremods.json", "META-INF/mods.toml",
+                "com/skyblock/", "net/nestworld/" };
+    }
 }

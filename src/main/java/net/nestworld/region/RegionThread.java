@@ -8,18 +8,19 @@ import net.minecraft.world.level.block.entity.BlockEntityTicker;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.util.concurrent.BrokenBarrierException;
-import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.CountDownLatch;
 
 /**
  * One dedicated thread per active WorldRegion.
  *
  * Tick protocol each game tick:
- *   Main thread calls requestTick() on every RegionThread.
+ *   Main thread calls requestTick(latch) on every RegionThread.
  *   Each RegionThread wakes, acquires the region write-lock, ticks its entities
- *   and block-entities, then arrives at the CyclicBarrier.
- *   Main thread also calls barrier.await() — all threads sync before the
- *   main tick continues with networking, chunk I/O, etc.
+ *   and block-entities, then counts down the per-tick latch.
+ *   The main thread waits on the latch while servicing the chunk-source task
+ *   queue (ServerChunkCache.pollTask) so that any synchronous chunk request a
+ *   region thread makes (getChunk().join()) is completed by the main thread
+ *   instead of deadlocking.
  *
  * On crash: emergency-saves owned chunks, marks itself stopped; the
  * RegionThreadPool detects the dead thread and spawns a replacement.
@@ -31,19 +32,16 @@ public class RegionThread extends Thread {
     final WorldRegion region;
     private final ServerLevel level;
 
-    /** Replaced atomically by the pool after every split/merge (barrier resizes). */
-    private volatile CyclicBarrier barrier;
-
     private volatile boolean running = true;
-    private volatile boolean tickPending = false;
+    /** Latch for the tick currently being requested; null when idle. */
+    private volatile CountDownLatch tickLatch = null;
     private final Object tickSignal = new Object();
 
-    public RegionThread(WorldRegion region, ServerLevel level, CyclicBarrier barrier) {
+    public RegionThread(WorldRegion region, ServerLevel level) {
         super("NestWorld-Region-" + region.getId());
         setDaemon(true);
         this.region = region;
         this.level = level;
-        this.barrier = barrier;
         region.owningThread = this;
     }
 
@@ -51,17 +49,15 @@ public class RegionThread extends Thread {
     // Pool-facing control API
     // -----------------------------------------------------------------------
 
-    /** Signals this thread to execute one tick. Non-blocking. */
-    public void requestTick() {
+    /**
+     * Signals this thread to execute one tick. Non-blocking.
+     * The thread counts the latch down when its tick completes (or crashes).
+     */
+    public void requestTick(CountDownLatch latch) {
         synchronized (tickSignal) {
-            tickPending = true;
+            tickLatch = latch;
             tickSignal.notifyAll();
         }
-    }
-
-    /** Called by the pool after a split or merge to swap in a resized barrier. */
-    public void updateBarrier(CyclicBarrier newBarrier) {
-        this.barrier = newBarrier;
     }
 
     public void shutdown() {
@@ -78,15 +74,20 @@ public class RegionThread extends Thread {
     @Override
     public void run() {
         while (running) {
+            CountDownLatch latch;
             // Block until the pool requests a tick
             synchronized (tickSignal) {
-                while (running && !tickPending) {
+                while (running && tickLatch == null) {
                     try { tickSignal.wait(); }
                     catch (InterruptedException e) { Thread.currentThread().interrupt(); }
                 }
-                tickPending = false;
+                latch = tickLatch;
+                tickLatch = null;
             }
-            if (!running) break;
+            if (!running) {
+                if (latch != null) latch.countDown();
+                break;
+            }
 
             long tickStart = System.nanoTime();
             try {
@@ -99,10 +100,10 @@ public class RegionThread extends Thread {
                 }
             } catch (Throwable crash) {
                 handleCrash(crash);
-                // after crash, running == false; we still arrive at the barrier once
+                // after crash, running == false; latch is still counted down below
             } finally {
                 region.recordTickDuration(System.nanoTime() - tickStart);
-                awaitBarrier();
+                latch.countDown();
             }
         }
     }
@@ -117,20 +118,20 @@ public class RegionThread extends Thread {
      *
      * Note: ServerLevel's own entity-tick loop is patched (see
      * patches/minecraft/net/minecraft/server/level/ServerLevel.java.patch)
-     * to skip entities whose UUID is listed in any region's ownedEntityIds —
+     * to skip the vanilla loop entirely while NestWorld manages the overworld —
      * preventing double-ticking.
      */
     private void tickEntities() {
-        for (Entity entity : level.getAllEntities()) {
-            if (entity.isRemoved()) continue;
-            if (!region.ownsEntity(entity.getUUID())) continue;
+        for (java.util.UUID uuid : region.getOwnedEntityIds()) {
+            Entity entity = level.getEntity(uuid);
+            if (entity == null || entity.isRemoved()) continue;
 
             level.getProfiler().push(entity::getEncodeId);
             try {
                 entity.checkDespawn();
                 if (!entity.isRemoved()) entity.tick();
             } catch (Throwable t) {
-                LOGGER.warn("[{}] Entity {} tick error: {}", getName(), entity.getUUID(), t.getMessage());
+                LOGGER.warn("[{}] Entity {} tick error: {}", getName(), uuid, t.getMessage());
             } finally {
                 level.getProfiler().pop();
             }
@@ -139,6 +140,7 @@ public class RegionThread extends Thread {
 
     /**
      * Ticks all block entities in the region's chunk columns.
+     * Uses getChunkNow() — never triggers a synchronous chunk load.
      * Cross-region capability accesses during this phase are served
      * from BoundaryManager's ghost-zone cache (read-only, no lock needed).
      */
@@ -186,15 +188,5 @@ public class RegionThread extends Thread {
         }
         running = false;
         // Pool monitors thread liveness and will spawn a replacement
-    }
-
-    private void awaitBarrier() {
-        try {
-            barrier.await();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        } catch (BrokenBarrierException ignored) {
-            // Barrier was reset during a split/merge — no action needed
-        }
     }
 }
