@@ -1,5 +1,21 @@
 --- a/net/minecraft/server/level/ServerChunkCache.java
 +++ b/net/minecraft/server/level/ServerChunkCache.java
+@@ -110,5 +_,9 @@
+    public ChunkAccess m_7587_(int p_8360_, int p_8361_, ChunkStatus p_8362_, boolean p_8363_) {
+       if (Thread.currentThread() != this.f_8330_) {
++         if (p_8362_ == ChunkStatus.f_62326_ && Thread.currentThread() instanceof net.nestworld.region.RegionThread) {
++            LevelChunk nestworldChunk = this.nestworldGetLoadedChunk(p_8360_, p_8361_);
++            if (nestworldChunk != null) return nestworldChunk;
++         }
+          return CompletableFuture.supplyAsync(() -> {
+             return this.m_7587_(p_8360_, p_8361_, p_8362_, p_8363_);
+          }, this.f_8332_).join();
+@@ -147,4 +_,4 @@
+    public LevelChunk m_7131_(int p_8357_, int p_8358_) {
+       if (Thread.currentThread() != this.f_8330_) {
+-         return null;
++         return Thread.currentThread() instanceof net.nestworld.region.RegionThread ? this.nestworldGetLoadedChunk(p_8357_, p_8358_) : null;
+       } else {
 @@ -162,6 +_,7 @@
           if (chunkholder == null) {
              return null;
@@ -8,6 +24,36 @@
              Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure> either = chunkholder.m_140080_(ChunkStatus.f_62326_).getNow((Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>)null);
              if (either == null) {
                 return null;
+@@ -180,4 +_,29 @@
+       }
+    }
+ 
++   @Nullable
++   private LevelChunk nestworldGetLoadedChunk(int p_x, int p_z) {
++      // NestWorld: lock-free read of an already-FULL chunk from a region thread.
++      // Uses the region thread's own chunk cache because entity ticking does
++      // thousands of block reads per tick (collisions, AI, pathfinding).
++      net.nestworld.region.RegionThread regionThread = (net.nestworld.region.RegionThread) Thread.currentThread();
++      long i = ChunkPos.m_45589_(p_x, p_z);
++      LevelChunk cached = regionThread.getCachedChunk(i);
++      if (cached != null) return cached;
++      ChunkHolder chunkholder = this.m_8364_(i);
++      if (chunkholder == null) return null;
++      LevelChunk result = null;
++      if (chunkholder.currentlyLoading != null) {
++         result = chunkholder.currentlyLoading;
++      } else {
++         Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure> either = chunkholder.m_140080_(ChunkStatus.f_62326_).getNow((Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>)null);
++         if (either != null) {
++            ChunkAccess chunkaccess = either.left().orElse((ChunkAccess)null);
++            if (chunkaccess instanceof LevelChunk) result = (LevelChunk)chunkaccess;
++         }
++      }
++      if (result != null) regionThread.cacheChunk(i, result);
++      return result;
++   }
++
+    private void m_8488_() {
 @@ -351,7 +_,7 @@
           for(ServerChunkCache.ChunkAndHolder serverchunkcache$chunkandholder : list) {
              LevelChunk levelchunk1 = serverchunkcache$chunkandholder.f_184028_;

@@ -123,24 +123,55 @@ public class NestworldRegionSystem {
      *  5. Sync ghost zones for next tick's cross-region reads.
      *  6. Evaluate TPS and apply any pending split / merge operations.
      */
+    // Phase timing accumulators (ns), logged every TIMING_LOG_INTERVAL ticks
+    private static final int TIMING_LOG_INTERVAL = 200;
+    private final long[] phaseNanos = new long[6];
+    private int timedTicks = 0;
+
     public void tickAllRegions(BooleanSupplier hasTime) {
+        long t0 = System.nanoTime();
         // 1. Vanilla global tick (time, weather, chunk I/O) — entity tick skipped by patch
         overworld.tick(hasTime);
+        long t1 = System.nanoTime();
 
         // 2. Apply boundary redstone signals
         signalQueue.flush();
+        long t2 = System.nanoTime();
 
         // 3. Reassign entities that moved between regions
         entityTransfer.checkAndReassign();
+        long t3 = System.nanoTime();
 
         // 4. Parallel tick — blocks until all region threads finish
         pool.tickAllRegions();
+        long t4 = System.nanoTime();
 
         // 5. Refresh ghost zones (runs while region threads are paused at barrier)
         boundaryManager.syncGhostZones();
+        long t5 = System.nanoTime();
 
         // 6. Adaptive split / merge
         splitManager.onTick();
+        long t6 = System.nanoTime();
+
+        phaseNanos[0] += t1 - t0;
+        phaseNanos[1] += t2 - t1;
+        phaseNanos[2] += t3 - t2;
+        phaseNanos[3] += t4 - t3;
+        phaseNanos[4] += t5 - t4;
+        phaseNanos[5] += t6 - t5;
+        if (++timedTicks >= TIMING_LOG_INTERVAL) {
+            LOGGER.info("Tick phases avg ms over {} ticks: vanilla={} signals={} entityXfer={} regionPool={} ghostZones={} splitMerge={}",
+                    timedTicks,
+                    String.format("%.2f", phaseNanos[0] / 1e6 / timedTicks),
+                    String.format("%.2f", phaseNanos[1] / 1e6 / timedTicks),
+                    String.format("%.2f", phaseNanos[2] / 1e6 / timedTicks),
+                    String.format("%.2f", phaseNanos[3] / 1e6 / timedTicks),
+                    String.format("%.2f", phaseNanos[4] / 1e6 / timedTicks),
+                    String.format("%.2f", phaseNanos[5] / 1e6 / timedTicks));
+            java.util.Arrays.fill(phaseNanos, 0L);
+            timedTicks = 0;
+        }
     }
 
     // -----------------------------------------------------------------------

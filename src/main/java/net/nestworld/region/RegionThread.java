@@ -37,12 +37,43 @@ public class RegionThread extends Thread {
     private volatile CountDownLatch tickLatch = null;
     private final Object tickSignal = new Object();
 
+    // Timing diagnostics, logged every 200 ticks
+    private long entNanos = 0, beNanos = 0;
+    private int timedTicks = 0, lastTickedCount = 0;
+
+    // -----------------------------------------------------------------------
+    // Per-thread chunk cache — read by ServerChunkCache.nestworldGetLoadedChunk
+    // (see ServerChunkCache.java.patch). Entity ticking performs thousands of
+    // block reads per tick; without this cache every read pays a chunk-holder
+    // map lookup + future unwrap. Direct-mapped, 16 slots, cleared each tick.
+    // -----------------------------------------------------------------------
+    private final long[] chunkCacheKeys = new long[16];
+    private final net.minecraft.world.level.chunk.LevelChunk[] chunkCacheVals =
+            new net.minecraft.world.level.chunk.LevelChunk[16];
+
+    public net.minecraft.world.level.chunk.LevelChunk getCachedChunk(long key) {
+        int idx = (int) (key ^ (key >>> 32)) & 15;
+        return chunkCacheKeys[idx] == key ? chunkCacheVals[idx] : null;
+    }
+
+    public void cacheChunk(long key, net.minecraft.world.level.chunk.LevelChunk chunk) {
+        int idx = (int) (key ^ (key >>> 32)) & 15;
+        chunkCacheKeys[idx] = key;
+        chunkCacheVals[idx] = chunk;
+    }
+
+    private void clearChunkCache() {
+        java.util.Arrays.fill(chunkCacheKeys, Long.MIN_VALUE);
+        java.util.Arrays.fill(chunkCacheVals, null);
+    }
+
     public RegionThread(WorldRegion region, ServerLevel level) {
         super("NestWorld-Region-" + region.getId());
         setDaemon(true);
         this.region = region;
         this.level = level;
         region.owningThread = this;
+        clearChunkCache();
     }
 
     // -----------------------------------------------------------------------
@@ -93,8 +124,22 @@ public class RegionThread extends Thread {
             try {
                 long stamp = region.getChunkLock().writeLock();
                 try {
+                    clearChunkCache(); // chunks may have unloaded since last tick
+                    long e0 = System.nanoTime();
                     tickEntities();
+                    long e1 = System.nanoTime();
                     tickBlockEntities();
+                    long e2 = System.nanoTime();
+                    entNanos += e1 - e0;
+                    beNanos += e2 - e1;
+                    if (++timedTicks >= 200) {
+                        LOGGER.info("[{}] avg ms over {} ticks: entities={} ({} owned, {} ticked) blockEntities={}",
+                                getName(), timedTicks,
+                                String.format("%.2f", entNanos / 1e6 / timedTicks),
+                                region.getOwnedEntityIds().size(), lastTickedCount,
+                                String.format("%.2f", beNanos / 1e6 / timedTicks));
+                        entNanos = 0; beNanos = 0; timedTicks = 0;
+                    }
                 } finally {
                     region.getChunkLock().unlockWrite(stamp);
                 }
@@ -122,20 +167,24 @@ public class RegionThread extends Thread {
      * preventing double-ticking.
      */
     private void tickEntities() {
+        int ticked = 0;
         for (java.util.UUID uuid : region.getOwnedEntityIds()) {
             Entity entity = level.getEntity(uuid);
-            if (entity == null || entity.isRemoved()) continue;
+            if (entity == null || entity.isRemoved() || entity.isPassenger()) continue;
 
-            level.getProfiler().push(entity::getEncodeId);
             try {
                 entity.checkDespawn();
-                if (!entity.isRemoved()) entity.tick();
+                if (entity.isRemoved()) continue;
+                // Mirror vanilla: only tick entities inside entity-ticking chunks,
+                // otherwise idle mobs at the edge of loaded terrain burn CPU on AI.
+                if (!level.isPositionEntityTicking(entity.blockPosition())) continue;
+                level.tickNonPassenger(entity);
+                ticked++;
             } catch (Throwable t) {
                 LOGGER.warn("[{}] Entity {} tick error: {}", getName(), uuid, t.getMessage());
-            } finally {
-                level.getProfiler().pop();
             }
         }
+        lastTickedCount = ticked;
     }
 
     /**
