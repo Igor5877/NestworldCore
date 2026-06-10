@@ -96,6 +96,11 @@ public class WorldRegion {
         return (maxChunkX - minChunkX) >= (maxChunkZ - minChunkZ) ? SplitAxis.X : SplitAxis.Z;
     }
 
+    public void resetThresholdCounters() {
+        ticksBelowThreshold = 0;
+        ticksAboveThreshold = 0;
+    }
+
     // --- Accessors ---
 
     public int getId() { return id; }

@@ -2,7 +2,9 @@ package net.nestworld.region;
 
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.block.EntityBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.BlockEntityTicker;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -149,9 +151,13 @@ public class RegionThread extends Thread {
                 for (BlockEntity be : chunk.getBlockEntities().values()) {
                     if (be.isRemoved()) continue;
                     try {
-                        var ticker = be.getType().getTicker(level, be.getBlockState());
-                        if (ticker != null) {
-                            ticker.tick(level, be.getBlockPos(), be.getBlockState(), be);
+                        if (be.getBlockState().getBlock() instanceof EntityBlock eb) {
+                            @SuppressWarnings("unchecked")
+                            BlockEntityTicker<BlockEntity> ticker = (BlockEntityTicker<BlockEntity>)
+                                    eb.getTicker(level, be.getBlockState(), be.getType());
+                            if (ticker != null) {
+                                ticker.tick(level, be.getBlockPos(), be.getBlockState(), be);
+                            }
                         }
                     } catch (Throwable t) {
                         LOGGER.warn("[{}] BlockEntity at {} tick error: {}", getName(), be.getBlockPos(), t.getMessage());
@@ -171,7 +177,7 @@ public class RegionThread extends Thread {
             for (int cx = region.getMinChunkX(); cx <= region.getMaxChunkX(); cx++) {
                 for (int cz = region.getMinChunkZ(); cz <= region.getMaxChunkZ(); cz++) {
                     var chunk = level.getChunkSource().getChunkNow(cx, cz);
-                    if (chunk != null) level.getChunkSource().chunkMap.save(chunk);
+                    if (chunk != null) level.getChunkSource().save(false);
                 }
             }
             LOGGER.info("[{}] Emergency save complete for {}", getName(), region);

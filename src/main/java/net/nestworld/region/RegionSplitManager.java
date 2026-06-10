@@ -105,8 +105,8 @@ public class RegionSplitManager {
                 children[0].addEntity(uuid);
             }
 
-            LOGGER.info("Split {} → [{}, {}]  (TPS was {:.1f})",
-                    req.region, children[0], children[1], req.region.getCurrentTps());
+            LOGGER.info("Split {} -> [{}, {}]  (TPS was {})",
+                    req.region, children[0], children[1], String.format("%.1f", req.region.getCurrentTps()));
         }
         pendingSplits.clear();
 
@@ -130,8 +130,8 @@ public class RegionSplitManager {
                 for (java.util.UUID uuid : a.getOwnedEntityIds()) merged.addEntity(uuid);
                 for (java.util.UUID uuid : b.getOwnedEntityIds()) merged.addEntity(uuid);
 
-                LOGGER.info("Merged [{}, {}] → {}  (TPS were {:.1f}, {:.1f})",
-                        a, b, merged, a.getCurrentTps(), b.getCurrentTps());
+                LOGGER.info("Merged [{}, {}] -> {}  (TPS were {}, {})",
+                        a, b, merged, String.format("%.1f", a.getCurrentTps()), String.format("%.1f", b.getCurrentTps()));
 
                 mergeQueue.remove(j);
                 mergeQueue.remove(i);
