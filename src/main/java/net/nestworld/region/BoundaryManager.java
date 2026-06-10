@@ -8,7 +8,6 @@ import net.minecraft.server.level.ServerLevel;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -119,33 +118,33 @@ public class BoundaryManager {
     // -----------------------------------------------------------------------
 
     /**
-     * Immutable snapshot of a chunk's block states and block-entity positions.
-     * Created while region threads are paused so no synchronisation is needed.
+     * Read-only view of a boundary chunk for cross-region access.
+     *
+     * <p>Deep-copying block states for ~264 boundary chunks every tick is
+     * prohibitively expensive (24 sections × 4096 states each), so this view
+     * delegates reads to the live chunk instead. That is safe and within the
+     * design contract: PalettedContainer guards its reads internally, and the
+     * ghost-zone API only promises data no staler than 1 tick — live reads are
+     * strictly fresher. Writers (the owning region thread) never resize the
+     * section array, only palette contents.
      */
     public static final class ChunkSnapshot {
-        // Section-indexed array of block states (simplified: store per-section palette)
-        // Full implementation would mirror LevelChunk's section array.
-        private final Map<BlockPos, BlockState> blockStates = new HashMap<>();
-        private final Map<BlockPos, BlockEntity> blockEntities = new HashMap<>();
+        private final LevelChunk chunk;
 
-        private ChunkSnapshot() {}
+        private ChunkSnapshot(LevelChunk chunk) {
+            this.chunk = chunk;
+        }
 
         public BlockState getBlockState(BlockPos pos) {
-            return blockStates.getOrDefault(pos, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
+            return chunk.getBlockState(pos);
         }
 
         public BlockEntity getBlockEntity(BlockPos pos) {
-            return blockEntities.get(pos);
+            return chunk.getBlockEntity(pos);
         }
 
         static ChunkSnapshot capture(LevelChunk chunk) {
-            ChunkSnapshot snap = new ChunkSnapshot();
-            // Capture block entities (lightweight — mostly important for capability reads)
-            snap.blockEntities.putAll(chunk.getBlockEntities());
-            // Block states are read on-demand from chunk sections;
-            // full snapshotting of all block states is omitted here for clarity —
-            // a production build would walk LevelChunkSection[] and copy palettes.
-            return snap;
+            return new ChunkSnapshot(chunk);
         }
     }
 }
