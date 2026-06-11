@@ -47,3 +47,12 @@ changelog.txt
 *.7z
 /logs/
 
+
+# NestWorld dev-server artifacts
+/server_*.log
+/server_spark_session.log
+/spark_attach.log
+/nohup.out
+/spark.jar
+/spark-standalone-agent.jar
+/run/
