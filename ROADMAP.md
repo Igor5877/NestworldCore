@@ -52,6 +52,19 @@
   смуга 2 чанки + безхазяйні тіки виконуються на main ДО раунду. AC у
   region-потоці обмежений межами регіону: мережа вилазить за межі →
   `NetworkOutOfBounds` → відкат і повтор на main наступного тіку.
+- **Стримування точкових хотспотів** (N ентіті в одному блоці — шардінг таке
+  не паралелить принципово):
+  - колізії вагонеток обмежені 8 сусідами/тік — обидва O(n²)-шляхи: push у
+    `AbstractMinecart.tick` та `getEntityCollisions` у `Entity.move()`
+    (bounded `getEntities` з ABORT; `-Dnestworld.maxMinecartPush`);
+  - guard у спліт-менеджері пропускає спліти, які не розділяють
+    ентіті-навантаження (median-cut дає меншій дитині <10% ентіті);
+  - ентіті-раунд регіону обмежений бюджетом 40 мс
+    (`-Dnestworld.regionEntityBudgetMs`), решта переноситься round-robin на
+    наступний тік — хотспот гальмує локально, не тягнучи lockstep усього
+    сервера (`deferred=` у `/nestworld status`).
+  - Виміряно: 500 TNT-вагонеток в 1 блоці — було 15.8 TPS, стало 20.0;
+    5000 вагонеток — 20.0 TPS (кошт хотспот-регіону обрізаний бюджетом).
 
 ### Інструменти
 - `/nestworld status|split|merge|borders` — серверний MSPT + вартість (мс) і
@@ -59,6 +72,9 @@
 - Фазовий тайминг у лог кожні 200 тіків
   (vanilla / signals / entityXfer / regionPool / ghostZones / splitMerge).
 - Self-test `NESTWORLD_AUTOSPLIT=<tick>`; RCON для дев-сервера (port 25575).
+- `/spark` у грі через standalone-агент (`SparkBridge`, ізольований
+  URLClassLoader; jar шукається через `-Dnestworld.spark.jar` → CWD → корінь
+  репо).
 
 ### Виміряний результат (та сама лаг-машина + ~1750 ентіті, 8 ядер)
 | Конфігурація | Тік | TPS |
