@@ -43,6 +43,14 @@ public class RegionSplitManager {
     private static final int    SPLIT_CHECKS_REQUIRED = 5;  // 100 game ticks
     private static final int    MERGE_CHECKS_REQUIRED = 25; // 500 game ticks
 
+    // --- Point-hotspot split guard ---
+    // A split only helps when each child receives a meaningful share of the
+    // entity load; below this share the cut just peels off a near-idle region.
+    private static final double MIN_SPLIT_SEPARATION_SHARE = 0.10;
+    // Regions with fewer entities than this are exempt from the guard: their
+    // cost comes from block ticks, which a spatial split can still separate.
+    private static final int    GUARD_MIN_ENTITIES = 50;
+
     private final RegionTree tree;
     private final RegionThreadPool pool;
 
@@ -83,7 +91,11 @@ public class RegionSplitManager {
                 region.mergePressureChecks = 0;
                 mergeCandidates.remove(region);
                 if (++region.splitPressureChecks >= SPLIT_CHECKS_REQUIRED && region.canSplit()) {
-                    pendingSplits.add(region);
+                    if (splitWouldSeparateLoad(region)) {
+                        pendingSplits.add(region);
+                    } else {
+                        logSkippedSplit(region);
+                    }
                     region.resetThresholdCounters();
                 }
             } else if (costMs < MERGE_MS_THRESHOLD) {
@@ -175,6 +187,50 @@ public class RegionSplitManager {
         if (coords.isEmpty()) return Integer.MIN_VALUE; // spatial midpoint
         java.util.Collections.sort(coords);
         return coords.get(coords.size() / 2);
+    }
+
+    /**
+     * True when the entity-median cut would hand each child a meaningful share
+     * of the region's entity load. A point hotspot (e.g. hundreds of minecarts
+     * in one block) sorts its median onto the hot chunk and leaves one side
+     * nearly empty — splitting it burns a thread on an idle region whose hot
+     * sibling can never merge back. Such regions are left whole; the region
+     * thread's per-tick entity budget contains the overload instead.
+     */
+    private boolean splitWouldSeparateLoad(WorldRegion region) {
+        net.minecraft.server.level.ServerLevel level = pool.getLevel();
+        SplitAxis axis = region.preferredSplitAxis();
+        java.util.ArrayList<Integer> coords = new java.util.ArrayList<>();
+        for (java.util.UUID id : region.getOwnedEntityIds()) {
+            net.minecraft.world.entity.Entity entity = level.getEntity(id);
+            if (entity == null) continue;
+            net.minecraft.core.BlockPos pos = entity.blockPosition();
+            coords.add((axis == SplitAxis.X ? pos.getX() : pos.getZ()) >> 4);
+        }
+        if (coords.size() < GUARD_MIN_ENTITIES) return true;
+        java.util.Collections.sort(coords);
+
+        // Mirror RegionTree.split: child A takes coordinates <= cut (clamped
+        // so child B is never empty spatially).
+        int min = axis == SplitAxis.X ? region.getMinChunkX() : region.getMinChunkZ();
+        int max = axis == SplitAxis.X ? region.getMaxChunkX() : region.getMaxChunkZ();
+        int cut = Math.max(min, Math.min(coords.get(coords.size() / 2), max - 1));
+        int toA = 0;
+        for (int c : coords) {
+            if (c <= cut) toA++;
+        }
+        int smaller = Math.min(toA, coords.size() - toA);
+        return smaller >= coords.size() * MIN_SPLIT_SEPARATION_SHARE;
+    }
+
+    private long lastGuardLogNanos = 0;
+
+    private void logSkippedSplit(WorldRegion region) {
+        long now = System.nanoTime();
+        if (now - lastGuardLogNanos < 30_000_000_000L) return; // at most every 30 s
+        lastGuardLogNanos = now;
+        LOGGER.info("Split of {} skipped: entity load is a point hotspot the median cut cannot separate ({} entities)",
+                region, region.getOwnedEntityIds().size());
     }
 
     /**

@@ -182,10 +182,11 @@ public class RegionThread extends Thread {
                         tickEntities();
                         entNanos += System.nanoTime() - e0;
                         if (++timedTicks >= 200) {
-                            LOGGER.info("[{}] avg ms over {} ticks: entities={} ({} owned, {} ticked)",
+                            LOGGER.info("[{}] avg ms over {} ticks: entities={} ({} owned, {} ticked{})",
                                     getName(), timedTicks,
                                     String.format("%.2f", entNanos / 1e6 / timedTicks),
-                                    region.getOwnedEntityIds().size(), lastTickedCount);
+                                    region.getOwnedEntityIds().size(), lastTickedCount,
+                                    lastDeferredCount > 0 ? ", " + lastDeferredCount + " deferred by budget" : "");
                             entNanos = 0; timedTicks = 0;
                         }
                     }
@@ -221,8 +222,24 @@ public class RegionThread extends Thread {
     // -----------------------------------------------------------------------
 
     /**
-     * Ticks every entity assigned to this region.
-     * Entity ownership is maintained by BoundaryEntityTransfer each tick.
+     * Round-robin start index into the owned-entity snapshot. Carries across
+     * ticks so that when the budget cuts a round short, the next round resumes
+     * where this one stopped and every entity still ticks eventually.
+     */
+    private int entityCursor = 0;
+    /** Entities deferred to the next tick by the budget in the last round.
+     *  Volatile: read by the main thread for /nestworld status. */
+    private volatile int lastDeferredCount = 0;
+
+    public int getLastDeferredCount() { return lastDeferredCount; }
+
+    /**
+     * Ticks the entities assigned to this region, stopping when the round
+     * exceeds {@link NestworldTuning#REGION_ENTITY_BUDGET_NANOS}. An
+     * unsplittable point hotspot (see RegionSplitManager's split guard) then
+     * runs at reduced speed locally instead of dragging the lockstep tick of
+     * the whole server. Entity ownership is maintained by
+     * BoundaryEntityTransfer each tick.
      *
      * Note: ServerLevel's own entity-tick loop is patched (see
      * patches/minecraft/net/minecraft/server/level/ServerLevel.java.patch)
@@ -230,8 +247,22 @@ public class RegionThread extends Thread {
      * preventing double-ticking.
      */
     private void tickEntities() {
+        java.util.UUID[] ids = region.getOwnedEntityIds().toArray(new java.util.UUID[0]);
+        int n = ids.length;
+        if (n == 0) {
+            lastTickedCount = 0;
+            lastDeferredCount = 0;
+            return;
+        }
+        long deadline = System.nanoTime() + NestworldTuning.REGION_ENTITY_BUDGET_NANOS;
+        int start = entityCursor < n ? entityCursor : 0;
         int ticked = 0;
-        for (java.util.UUID uuid : region.getOwnedEntityIds()) {
+        int processed = 0;
+        while (processed < n) {
+            int idx = start + processed;
+            if (idx >= n) idx -= n;
+            processed++;
+            java.util.UUID uuid = ids[idx];
             Entity entity = level.getEntity(uuid);
             if (entity == null || entity.isRemoved() || entity.isPassenger()) continue;
 
@@ -246,8 +277,11 @@ public class RegionThread extends Thread {
             } catch (Throwable t) {
                 LOGGER.warn("[{}] Entity {} tick error: {}", getName(), uuid, t.getMessage());
             }
+            if ((processed & 15) == 0 && System.nanoTime() > deadline) break;
         }
+        entityCursor = (start + processed) % n;
         lastTickedCount = ticked;
+        lastDeferredCount = n - processed;
     }
 
     // Block entities are ticked by the vanilla path on the main thread

@@ -67,11 +67,14 @@ public final class NestworldCommand {
                 "NestWorld: %d active region(s), server %.1f ms/tick (%.1f TPS)",
                 regions.size(), serverMspt, Math.min(20.0, 1000.0 / Math.max(serverMspt, 0.001)))), false);
         for (WorldRegion r : regions) {
+            RegionThread thread = r.owningThread;
+            int deferred = thread != null ? thread.getLastDeferredCount() : 0;
             src.sendSuccess(() -> Component.literal(String.format(
-                    "  #%d chunks(%d,%d)-(%d,%d) cost=%.1fms entities=%d",
+                    "  #%d chunks(%d,%d)-(%d,%d) cost=%.1fms entities=%d%s",
                     r.getId(), r.getMinChunkX(), r.getMinChunkZ(),
                     r.getMaxChunkX(), r.getMaxChunkZ(),
-                    r.getAvgTickMs(), r.getOwnedEntityIds().size())), false);
+                    r.getAvgTickMs(), r.getOwnedEntityIds().size(),
+                    deferred > 0 ? " deferred=" + deferred : "")), false);
         }
         return regions.size();
     }
