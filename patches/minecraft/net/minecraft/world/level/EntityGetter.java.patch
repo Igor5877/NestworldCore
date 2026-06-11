@@ -1,0 +1,17 @@
+--- a/net/minecraft/world/level/EntityGetter.java
++++ b/net/minecraft/world/level/EntityGetter.java
+@@ -55,7 +_,13 @@
+          return List.of();
+       } else {
+          Predicate<Entity> predicate = p_186451_ == null ? EntitySelector.f_185987_ : EntitySelector.f_20408_.and(p_186451_::m_7337_);
+-         List<Entity> list = this.m_6249_(p_186451_, p_186452_.m_82400_(1.0E-7D), predicate);
++         List<Entity> list;
++         if (this instanceof Level nestworldLevel && p_186451_ instanceof net.minecraft.world.entity.vehicle.AbstractMinecart) {
++            list = new java.util.ArrayList<>();
++            nestworldLevel.m_260826_(net.minecraft.world.level.entity.EntityTypeTest.m_156916_(Entity.class), p_186452_.m_82400_(1.0E-7D), predicate.and((nestworldOther) -> nestworldOther != p_186451_), list, net.nestworld.region.NestworldTuning.MAX_MINECART_PUSH);
++         } else {
++            list = this.m_6249_(p_186451_, p_186452_.m_82400_(1.0E-7D), predicate);
++         }
+          if (list.isEmpty()) {
+             return List.of();
+          } else {

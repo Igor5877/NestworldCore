@@ -61,7 +61,7 @@
                 this.m_6025_(k, i, j, blockstate.m_61143_(PoweredRailBlock.f_55215_));
              }
           } else {
-@@ -330,8 +_,11 @@
+@@ -330,8 +_,12 @@
           }
  
           this.m_19915_(this.m_146908_(), this.m_146909_());
@@ -71,16 +71,19 @@
 +         if (getCollisionHandler() != null) box = getCollisionHandler().getMinecartCollisionBox(this);
 +         else                               box = this.m_20191_().m_82377_(0.2F, 0.0D, 0.2F);
 +         if (canBeRidden() && this.m_20184_().m_165925_() > 0.01D) {
-+            List<Entity> list = this.m_9236_().m_6249_(this, box, EntitySelector.m_20421_(this));
++            List<Entity> list = new java.util.ArrayList<>();
++            this.m_9236_().m_260826_(net.minecraft.world.level.entity.EntityTypeTest.m_156916_(Entity.class), box, EntitySelector.m_20421_(this).and((nestworldOther) -> nestworldOther != this), list, net.nestworld.region.NestworldTuning.MAX_MINECART_PUSH);
              if (!list.isEmpty()) {
                 for(int l = 0; l < list.size(); ++l) {
                    Entity entity1 = list.get(l);
-@@ -343,7 +_,7 @@
+@@ -343,7 +_,9 @@
                 }
              }
           } else {
 -            for(Entity entity : this.m_9236_().m_45933_(this, this.m_20191_().m_82377_((double)0.2F, 0.0D, (double)0.2F))) {
-+            for(Entity entity : this.m_9236_().m_45933_(this, box)) {
++            List<AbstractMinecart> nestworldCarts = new java.util.ArrayList<>();
++            this.m_9236_().m_260826_(net.minecraft.world.level.entity.EntityTypeTest.m_156916_(AbstractMinecart.class), box, (nestworldOther) -> nestworldOther != this && !this.m_20363_(nestworldOther) && nestworldOther.m_6094_(), nestworldCarts, net.nestworld.region.NestworldTuning.MAX_MINECART_PUSH);
++            for(Entity entity : nestworldCarts) {
                 if (!this.m_20363_(entity) && entity.m_6094_() && entity instanceof AbstractMinecart) {
                    entity.m_7334_(this);
                 }
