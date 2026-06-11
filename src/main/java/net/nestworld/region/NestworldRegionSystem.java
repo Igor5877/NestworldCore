@@ -59,7 +59,7 @@ public class NestworldRegionSystem {
     public static boolean isInitialised() { return INSTANCE != null; }
 
     // -----------------------------------------------------------------------
-    // Forge event hooks (registered in SkyBlockMod)
+    // Forge event hooks (registered in NestworldMod)
     // -----------------------------------------------------------------------
 
     @SubscribeEvent

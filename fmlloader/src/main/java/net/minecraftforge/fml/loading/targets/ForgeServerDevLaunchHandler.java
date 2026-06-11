@@ -19,6 +19,6 @@ public class ForgeServerDevLaunchHandler extends CommonDevLaunchHandler {
     @Override
     protected String[] getPackages() {
         return new String[]{ "net/minecraftforge/", "META-INF/services/", "META-INF/coremods.json", "META-INF/mods.toml",
-                "com/skyblock/", "net/nestworld/" };
+                "net/nestworld/" };
     }
 }
