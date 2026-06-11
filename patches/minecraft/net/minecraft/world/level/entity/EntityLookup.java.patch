@@ -1,0 +1,63 @@
+--- a/net/minecraft/world/level/entity/EntityLookup.java
++++ b/net/minecraft/world/level/entity/EntityLookup.java
+@@ -13,32 +_,34 @@
+ 
+ public class EntityLookup<T extends EntityAccess> {
+    private static final Logger f_156806_ = LogUtils.getLogger();
+-   private final Int2ObjectMap<T> f_156807_ = new Int2ObjectLinkedOpenHashMap<>();
+-   private final Map<UUID, T> f_156808_ = Maps.newHashMap();
+-
+-   public <U extends T> void m_260822_(EntityTypeTest<T, U> p_261575_, AbortableIterationConsumer<U> p_261925_) {
+-      for(T t : this.f_156807_.values()) {
+-         U u = (U)((EntityAccess)p_261575_.m_141992_(t));
+-         if (u != null && p_261925_.m_260972_(u).m_261146_()) {
+-            return;
+-         }
+-      }
+-
+-   }
+-
+-   public Iterable<T> m_156811_() {
+-      return Iterables.unmodifiableIterable(this.f_156807_.values());
+-   }
+-
+-   public void m_156814_(T p_156815_) {
+-      UUID uuid = p_156815_.m_20148_();
+-      if (this.f_156808_.containsKey(uuid)) {
+-         f_156806_.warn("Duplicate entity UUID {}: {}", uuid, p_156815_);
+-      } else {
+-         this.f_156808_.put(uuid, p_156815_);
+-         this.f_156807_.put(p_156815_.m_19879_(), p_156815_);
+-      }
+-   }
++   private final Int2ObjectMap<T> f_156807_ = it.unimi.dsi.fastutil.ints.Int2ObjectMaps.synchronize(new Int2ObjectLinkedOpenHashMap<>());
++   private final Map<UUID, T> f_156808_ = new java.util.concurrent.ConcurrentHashMap<>();
++
++   public <U extends T> void m_260822_(EntityTypeTest<T, U> p_261575_, AbortableIterationConsumer<U> p_261925_) {
++      for(Object nestworldO : this.f_156807_.values().toArray()) {
++         T t = (T)nestworldO;
++         U u = (U)((EntityAccess)p_261575_.m_141992_(t));
++         if (u != null && p_261925_.m_260972_(u).m_261146_()) {
++            return;
++         }
++      }
++
++   }
++
++   public Iterable<T> m_156811_() {
++      synchronized (this.f_156807_) {
++         return java.util.List.copyOf(this.f_156807_.values());
++      }
++   }
++
++   public void m_156814_(T p_156815_) {
++      UUID uuid = p_156815_.m_20148_();
++      if (this.f_156808_.putIfAbsent(uuid, p_156815_) != null) {
++         f_156806_.warn("Duplicate entity UUID {}: {}", uuid, p_156815_);
++      } else {
++         this.f_156807_.put(p_156815_.m_19879_(), p_156815_);
++      }
++   }
+ 
+    public void m_156822_(T p_156823_) {
+       this.f_156808_.remove(p_156823_.m_20148_());

@@ -1,0 +1,75 @@
+--- a/net/minecraft/world/level/entity/EntityTickList.java
++++ b/net/minecraft/world/level/entity/EntityTickList.java
+@@ -28,34 +_,42 @@
+ 
+    }
+ 
+-   public void m_156908_(Entity p_156909_) {
+-      this.m_156907_();
+-      this.f_156903_.put(p_156909_.m_19879_(), p_156909_);
+-   }
+-
+-   public void m_156912_(Entity p_156913_) {
+-      this.m_156907_();
+-      this.f_156903_.remove(p_156913_.m_19879_());
+-   }
+-
+-   public boolean m_156914_(Entity p_156915_) {
+-      return this.f_156903_.containsKey(p_156915_.m_19879_());
+-   }
+-
+-   public void m_156910_(Consumer<Entity> p_156911_) {
+-      if (this.f_156905_ != null) {
+-         throw new UnsupportedOperationException("Only one concurrent iteration supported");
+-      } else {
+-         this.f_156905_ = this.f_156903_;
+-
+-         try {
+-            for(Entity entity : this.f_156903_.values()) {
+-               p_156911_.accept(entity);
+-            }
+-         } finally {
+-            this.f_156905_ = null;
+-         }
+-
+-      }
+-   }
++   public void m_156908_(Entity p_156909_) {
++      synchronized (this) {
++         this.m_156907_();
++         this.f_156903_.put(p_156909_.m_19879_(), p_156909_);
++      }
++   }
++
++   public void m_156912_(Entity p_156913_) {
++      synchronized (this) {
++         this.m_156907_();
++         this.f_156903_.remove(p_156913_.m_19879_());
++      }
++   }
++
++   public boolean m_156914_(Entity p_156915_) {
++      synchronized (this) {
++         return this.f_156903_.containsKey(p_156915_.m_19879_());
++      }
++   }
++
++   public void m_156910_(Consumer<Entity> p_156911_) {
++      synchronized (this) {
++         if (this.f_156905_ != null) {
++            throw new UnsupportedOperationException("Only one concurrent iteration supported");
++         } else {
++            this.f_156905_ = this.f_156903_;
++
++            try {
++               for(Entity entity : this.f_156903_.values()) {
++                  p_156911_.accept(entity);
++               }
++            } finally {
++               this.f_156905_ = null;
++            }
++
++         }
++      }
++   }
+ }

@@ -38,6 +38,12 @@
   через `NaturalSpawner`: region-потік ітерував `allInstances` секції, поки
   інший потік робив add/remove. Діагностовано повними стеками, перевірено:
   0 помилок за 10 хв під навантаженням, де раніше було ~12.
+- **Реєстри ентіті** (аудит off-main спавну: яйця курей, breeding, блискавка —
+  усе це `addFreshEntity` з region-потоків): `EntityLookup` (byUuid →
+  `ConcurrentHashMap`, byId → synchronized fastutil, ітерації по снапшоту,
+  атомарний putIfAbsent), `knownUuids` і `navigatingMobs` →
+  `ConcurrentHashMap.newKeySet()`, `EntityTickList` — synchronized (патчі).
+  Перевірено: 10 хв, 2000 вагонеток + 300 курей-несучок — 0 помилок.
 - **`Level.random`** → `RandomSource.createThreadSafe()` (патч).
 - **`LevelTicks`** schedule/add/remove/query — `synchronized` (патч).
 - **`ServerLevel.blockEvent`** add — `synchronized` (патч).
@@ -98,8 +104,8 @@
 ### Найближче (стабільність)
 - [x] ~~Діагностувати `Entity tick error: null`~~ — діагностовано і ВИПРАВЛЕНО
       (патч `ClassInstanceMultiMap`, див. розділ thread-safety фіксів).
-- [ ] **`EntityLookup` (UUID/id мапи)** — аудит на off-main add/remove
-      (спавн з region-потоку: блискавка, breeding, спавнери).
+- [x] ~~`EntityLookup` аудит~~ — зроблено і ВИПРАВЛЕНО разом із `knownUuids`,
+      `EntityTickList`, `navigatingMobs` (див. thread-safety фікси).
 - [ ] Прибрати/загейтити діагностичні логи (10-сек тайминги) перед релізом.
 - [ ] Запушити гілку (9+ локальних комітів).
 

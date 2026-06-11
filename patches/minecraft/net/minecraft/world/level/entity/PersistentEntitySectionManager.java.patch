@@ -1,5 +1,14 @@
 --- a/net/minecraft/world/level/entity/PersistentEntitySectionManager.java
 +++ b/net/minecraft/world/level/entity/PersistentEntitySectionManager.java
+@@ -30,7 +_,7 @@
+ 
+ public class PersistentEntitySectionManager<T extends EntityAccess> implements AutoCloseable {
+    static final Logger f_157490_ = LogUtils.getLogger();
+-   final Set<UUID> f_157491_ = Sets.newHashSet();
++   final Set<UUID> f_157491_ = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    final LevelCallback<T> f_157492_;
+    private final EntityPersistentStorage<T> f_157493_;
+    private final EntityLookup<T> f_157494_;
 @@ -44,7 +_,7 @@
     public PersistentEntitySectionManager(Class<T> p_157503_, LevelCallback<T> p_157504_, EntityPersistentStorage<T> p_157505_) {
        this.f_157494_ = new EntityLookup<>();

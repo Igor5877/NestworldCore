@@ -1,5 +1,14 @@
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
+@@ -179,7 +_,7 @@
+    private final PortalForcer f_8552_;
+    private final LevelTicks<Block> f_8553_ = new LevelTicks<>(this::m_184110_, this.m_46658_());
+    private final LevelTicks<Fluid> f_184047_ = new LevelTicks<>(this::m_184110_, this.m_46658_());
+-   final Set<Mob> f_143246_ = new ObjectOpenHashSet<>();
++   final Set<Mob> f_143246_ = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    volatile boolean f_200893_;
+    protected final Raids f_8565_;
+    private final ObjectLinkedOpenHashSet<BlockEventData> f_8556_ = new ObjectLinkedOpenHashSet<>();
 @@ -188,11 +_,13 @@
     private final List<CustomSpawner> f_8558_;
     @Nullable
