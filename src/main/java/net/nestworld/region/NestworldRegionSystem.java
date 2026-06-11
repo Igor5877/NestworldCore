@@ -144,8 +144,25 @@ public class NestworldRegionSystem {
     private long totalTicks = 0;
     private WorldRegion[] autosplitChildren = null;
 
+    // Self-test driven by env var NESTWORLD_RANDOMTICK_TEST=<speed>: every tick
+    // queues chunk (0,0) for random ticking through the exact production path
+    // (queueRandomTicksFor -> bucket -> region thread). Vanilla only random-
+    // ticks chunks near a player, so headless verification needs this hook.
+    private static final int RANDOMTICK_TEST_SPEED =
+            Integer.parseInt(System.getenv().getOrDefault("NESTWORLD_RANDOMTICK_TEST", "-1"));
+
+    private void runRandomTickTest() {
+        if (RANDOMTICK_TEST_SPEED <= 0) return;
+        net.minecraft.world.level.chunk.LevelChunk chunk =
+                overworld.getChunkSource().getChunkNow(0, 0);
+        if (chunk != null && queueRandomTicksFor(overworld, chunk, RANDOMTICK_TEST_SPEED)) {
+            flushRandomTicksPhase();
+        }
+    }
+
     public void tickAllRegions(BooleanSupplier hasTime) {
         runAutosplitTest();
+        runRandomTickTest();
         long t0 = System.nanoTime();
         // 1. Vanilla global tick (time, weather, chunk I/O) — entity tick skipped by
         // patch; due scheduled block/fluid ticks are parallelized from within it
@@ -266,6 +283,43 @@ public class NestworldRegionSystem {
             }
         }
         pool.runWorkRound(buckets);
+    }
+
+    // -----------------------------------------------------------------------
+    // Random ticks (crops, fire, ice…) — phase 2a. ServerLevel.tickChunk asks
+    // queueRandomTicksFor() per ticking chunk: interior chunks are bucketed
+    // per region and executed in parallel by flushRandomTicksPhase() after the
+    // chunk loop (ServerChunkCache patch); border-band or unowned chunks
+    // return false and tick inline on main, exactly like scheduled ticks.
+    // -----------------------------------------------------------------------
+
+    private final java.util.Map<WorldRegion, java.util.List<Runnable>> randomTickBuckets =
+            new java.util.IdentityHashMap<>();
+
+    /** Called from the patched ServerLevel.tickChunk. True = queued for a region thread. */
+    public static boolean queueRandomTicksFor(ServerLevel level,
+                                              net.minecraft.world.level.chunk.LevelChunk chunk,
+                                              int randomTickSpeed) {
+        if (!isInitialised()) return false;
+        NestworldRegionSystem sys = get();
+        if (level != sys.overworld) return false;
+        net.minecraft.world.level.ChunkPos pos = chunk.getPos();
+        WorldRegion region = sys.grid.getRegionForChunk(pos.x, pos.z);
+        if (region == null
+                || pos.x < region.getMinChunkX() + BORDER_BAND_CHUNKS || pos.x > region.getMaxChunkX() - BORDER_BAND_CHUNKS
+                || pos.z < region.getMinChunkZ() + BORDER_BAND_CHUNKS || pos.z > region.getMaxChunkZ() - BORDER_BAND_CHUNKS) {
+            return false;
+        }
+        sys.randomTickBuckets.computeIfAbsent(region, r -> new java.util.ArrayList<>())
+                .add(() -> level.nestworldRandomTickChunk(chunk, randomTickSpeed));
+        return true;
+    }
+
+    /** Runs the queued per-chunk random ticks on their region threads (parallel). */
+    public void flushRandomTicksPhase() {
+        if (randomTickBuckets.isEmpty()) return;
+        pool.runWorkRound(randomTickBuckets);
+        randomTickBuckets.clear();
     }
 
     private void routeScheduledTick(net.minecraft.core.BlockPos pos, Runnable run,

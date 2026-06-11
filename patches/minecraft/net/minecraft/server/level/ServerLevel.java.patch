@@ -93,6 +93,15 @@
           if (biome.m_47477_(this, blockpos2)) {
              this.m_46597_(blockpos2, Blocks.f_50126_.m_49966_());
           }
+@@ -459,7 +_,7 @@
+       }
+ 
+       profilerfiller.m_6182_("tickBlocks");
+-      if (p_8716_ > 0) {
++      if (p_8716_ > 0 && !net.nestworld.region.NestworldRegionSystem.queueRandomTicksFor(this, p_8715_, p_8716_)) {
+          LevelChunkSection[] alevelchunksection = p_8715_.m_7103_();
+ 
+          for(int l = 0; l < alevelchunksection.length; ++l) {
 @@ -633,15 +_,19 @@
           this.f_8548_.m_6846_().m_11270_(new ClientboundGameEventPacket(ClientboundGameEventPacket.f_132161_, this.f_46440_), this.m_46472_());
        }
@@ -117,7 +126,7 @@
        }
  
     }
-@@ -671,6 +_,14 @@
+@@ -671,6 +_,41 @@
           blockstate.m_222963_(this, p_184113_, this.f_46441_);
        }
  
@@ -129,6 +138,33 @@
 +
 +   public void nestworldRunFluidTick(BlockPos pos, Fluid fluid) {
 +      this.m_184076_(pos, fluid);
++   }
++
++   public void nestworldRandomTickChunk(LevelChunk chunk, int speed) {
++      ChunkPos chunkpos = chunk.m_7697_();
++      int i = chunkpos.m_45604_();
++      int j = chunkpos.m_45605_();
++      LevelChunkSection[] alevelchunksection = chunk.m_7103_();
++
++      for(int l = 0; l < alevelchunksection.length; ++l) {
++         LevelChunkSection levelchunksection = alevelchunksection[l];
++         if (levelchunksection.m_63014_()) {
++            int k1 = SectionPos.m_123223_(chunk.m_151568_(l));
++
++            for(int l1 = 0; l1 < speed; ++l1) {
++               BlockPos blockpos3 = this.m_46496_(i, k1, j, 15);
++               BlockState blockstate2 = levelchunksection.m_62982_(blockpos3.m_123341_() - i, blockpos3.m_123342_() - k1, blockpos3.m_123343_() - j);
++               if (blockstate2.m_60823_()) {
++                  blockstate2.m_222972_(this, blockpos3, this.f_46441_);
++               }
++
++               FluidState fluidstate = blockstate2.m_60819_();
++               if (fluidstate.m_76187_()) {
++                  fluidstate.m_230562_(this, blockpos3, this.f_46441_);
++               }
++            }
++         }
++      }
 +   }
  
     public void m_8647_(Entity p_8648_) {
