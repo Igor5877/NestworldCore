@@ -86,9 +86,12 @@ public class RegionThreadPool {
         // Regions with no owned entities have nothing to do — leave their
         // threads parked. With many regions (deep split trees) the wakeup +
         // latch round-trip for dozens of idle threads costs real milliseconds.
+        // Threads still holding budget-deferred work must wake regardless, or
+        // a one-shot scheduled-tick burst in an entity-less region would
+        // freeze mid-cascade until the next work round happens to reach it.
         java.util.List<RegionThread> workers = new java.util.ArrayList<>();
         for (RegionThread t : threads) {
-            if (!t.region.getOwnedEntityIds().isEmpty()) workers.add(t);
+            if (!t.region.getOwnedEntityIds().isEmpty() || t.getLastWorkDeferred() > 0) workers.add(t);
         }
         if (workers.isEmpty()) return;
 

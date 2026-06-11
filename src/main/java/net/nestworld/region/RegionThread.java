@@ -174,13 +174,7 @@ public class RegionThread extends Thread {
                 try {
                     clearChunkCache(); // chunks may have unloaded since last tick
                     if (work != null) {
-                        for (Runnable r : work) {
-                            try {
-                                r.run();
-                            } catch (Throwable t) {
-                                LOGGER.warn("[{}] scheduled-tick error: {}", getName(), t.toString());
-                            }
-                        }
+                        runWorkBudgeted(work);
                     } else {
                         long e0 = System.nanoTime();
                         tickEntities();
@@ -190,7 +184,8 @@ public class RegionThread extends Thread {
                                     getName(), timedTicks,
                                     String.format("%.2f", entNanos / 1e6 / timedTicks),
                                     region.getOwnedEntityIds().size(), lastTickedCount,
-                                    lastDeferredCount > 0 ? ", " + lastDeferredCount + " deferred by budget" : "");
+                                    (lastDeferredCount > 0 ? ", " + lastDeferredCount + " deferred by budget" : "")
+                                            + (lastWorkDeferred > 0 ? ", " + lastWorkDeferred + " work deferred" : ""));
                             entNanos = 0; timedTicks = 0;
                         }
                     }
@@ -226,6 +221,61 @@ public class RegionThread extends Thread {
     // -----------------------------------------------------------------------
 
     /**
+     * Work runnables (scheduled block/fluid ticks) deferred by the budget.
+     * Run before the next work round — or at the start of the next entity
+     * round if no work round arrives — so a deferred tick is late by at most
+     * one game tick and vanilla relative order within the region is kept.
+     * Only touched by this thread.
+     */
+    private java.util.ArrayList<Runnable> carriedWork = null;
+    /** Work runnables deferred in the last round; main thread reads for status. */
+    private volatile int lastWorkDeferred = 0;
+
+    public int getLastWorkDeferred() { return lastWorkDeferred; }
+
+    /** Minimum entity-round slice even when work rounds ate the whole budget. */
+    private static final long MIN_ENTITY_SLICE_NANOS = 10_000_000L;
+
+    /**
+     * Runs carried-over plus newly assigned work under the per-tick budget;
+     * whatever does not fit is carried to the next tick. An unsplittable
+     * scheduled-tick hotspot (giant redstone machine in one chunk) thus slows
+     * down locally instead of dragging the lockstep tick, mirroring the
+     * entity budget.
+     */
+    private void runWorkBudgeted(java.util.List<Runnable> newWork) {
+        java.util.ArrayList<Runnable> all;
+        if (carriedWork != null) {
+            all = carriedWork;
+            carriedWork = null;
+            if (newWork != null) all.addAll(newWork);
+        } else if (newWork != null) {
+            all = new java.util.ArrayList<>(newWork);
+        } else {
+            return;
+        }
+        long deadline = System.nanoTime() + NestworldTuning.REGION_ENTITY_BUDGET_NANOS;
+        int done = 0;
+        for (; done < all.size(); done++) {
+            try {
+                all.get(done).run();
+            } catch (Throwable t) {
+                LOGGER.warn("[{}] scheduled-tick error: {}", getName(), t.toString());
+            }
+            if ((done & 31) == 31 && System.nanoTime() > deadline) {
+                done++;
+                break;
+            }
+        }
+        if (done < all.size()) {
+            carriedWork = new java.util.ArrayList<>(all.subList(done, all.size()));
+            lastWorkDeferred = all.size() - done;
+        } else {
+            lastWorkDeferred = 0;
+        }
+    }
+
+    /**
      * Round-robin start index into the owned-entity snapshot. Carries across
      * ticks so that when the budget cuts a round short, the next round resumes
      * where this one stopped and every entity still ticks eventually.
@@ -251,6 +301,14 @@ public class RegionThread extends Thread {
      * preventing double-ticking.
      */
     private void tickEntities() {
+        // Work deferred from a budget-cut round runs first if no work round
+        // claimed it this tick (scheduled ticks precede entities in vanilla).
+        long w0 = System.nanoTime();
+        if (carriedWork != null) {
+            runWorkBudgeted(null);
+        }
+        long carriedNanos = System.nanoTime() - w0;
+
         java.util.UUID[] ids = region.getOwnedEntityIds().toArray(new java.util.UUID[0]);
         int n = ids.length;
         if (n == 0) {
@@ -258,7 +316,12 @@ public class RegionThread extends Thread {
             lastDeferredCount = 0;
             return;
         }
-        long deadline = System.nanoTime() + NestworldTuning.REGION_ENTITY_BUDGET_NANOS;
+        // One shared per-tick budget: whatever this tick's work rounds (and
+        // carried work just now) consumed comes out of the entity slice, with
+        // a floor so entities always make progress.
+        long remaining = Math.max(MIN_ENTITY_SLICE_NANOS,
+                NestworldTuning.REGION_ENTITY_BUDGET_NANOS - workRoundNanos - carriedNanos);
+        long deadline = System.nanoTime() + remaining;
         int start = entityCursor < n ? entityCursor : 0;
         int ticked = 0;
         int processed = 0;

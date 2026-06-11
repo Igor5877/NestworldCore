@@ -69,12 +69,14 @@ public final class NestworldCommand {
         for (WorldRegion r : regions) {
             RegionThread thread = r.owningThread;
             int deferred = thread != null ? thread.getLastDeferredCount() : 0;
+            int workDeferred = thread != null ? thread.getLastWorkDeferred() : 0;
             src.sendSuccess(() -> Component.literal(String.format(
-                    "  #%d chunks(%d,%d)-(%d,%d) cost=%.1fms entities=%d%s",
+                    "  #%d chunks(%d,%d)-(%d,%d) cost=%.1fms entities=%d%s%s",
                     r.getId(), r.getMinChunkX(), r.getMinChunkZ(),
                     r.getMaxChunkX(), r.getMaxChunkZ(),
                     r.getAvgTickMs(), r.getOwnedEntityIds().size(),
-                    deferred > 0 ? " deferred=" + deferred : "")), false);
+                    deferred > 0 ? " deferred=" + deferred : "",
+                    workDeferred > 0 ? " workDeferred=" + workDeferred : "")), false);
         }
         return regions.size();
     }
