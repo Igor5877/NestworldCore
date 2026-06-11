@@ -8,3 +8,36 @@
     private static final int f_188031_ = 0;
     private final PaletteResize<T> f_63070_ = (p_238275_, p_238276_) -> {
        return 0;
+
+@@ -31,15 +_,22 @@
+    private final IdMap<T> f_63071_;
+    private volatile PalettedContainer.Data<T> f_188032_;
+    private final PalettedContainer.Strategy f_188033_;
+-   private final ThreadingDetector f_199441_ = new ThreadingDetector("PalettedContainer");
+-
+-   public void m_63084_() {
+-      this.f_199441_.m_199416_();
+-   }
+-
+-   public void m_63120_() {
+-      this.f_199441_.m_199422_();
+-   }
++   // NestWorld: vanilla's ThreadingDetector can only crash on concurrent
++   // access — and its threadThatFailedToAcquire is never reset, so one caught
++   // conflict (region-thread block write vs chunk-save serialisation on main)
++   // poisons the detector and the next writer parks forever (watchdog kill).
++   // All mutation/serialisation paths already bracket with acquire/release in
++   // try/finally, so a real lock makes them safely exclusive. Hot reads stay
++   // lock-free as in vanilla.
++   private final java.util.concurrent.locks.ReentrantLock nestworldContainerLock = new java.util.concurrent.locks.ReentrantLock();
++
++   public void m_63084_() {
++      this.nestworldContainerLock.lock();
++   }
++
++   public void m_63120_() {
++      this.nestworldContainerLock.unlock();
++   }
+ 
+    public static <T> Codec<PalettedContainer<T>> m_238371_(IdMap<T> p_238372_, Codec<T> p_238373_, PalettedContainer.Strategy p_238374_, T p_238375_) {
+       PalettedContainerRO.Unpacker<T, PalettedContainer<T>> unpacker = PalettedContainer::m_188067_;
