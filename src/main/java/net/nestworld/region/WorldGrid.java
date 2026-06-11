@@ -21,6 +21,8 @@ public class WorldGrid {
 
     private final CopyOnWriteArrayList<WorldRegion> regions = new CopyOnWriteArrayList<>();
     private final AtomicInteger idCounter = new AtomicInteger(0);
+    /** Bumped on every register/unregister; lets per-tick scans detect layout changes cheaply. */
+    private final AtomicInteger layoutVersion = new AtomicInteger(0);
 
     // --- Lookup ---
 
@@ -47,11 +49,16 @@ public class WorldGrid {
     // --- Registration ---
 
     public void register(WorldRegion region) {
-        regions.addIfAbsent(region);
+        if (regions.addIfAbsent(region)) layoutVersion.incrementAndGet();
     }
 
     public void unregister(WorldRegion region) {
-        regions.remove(region);
+        if (regions.remove(region)) layoutVersion.incrementAndGet();
+    }
+
+    /** Changes whenever the set of active regions changes (split/merge). */
+    public int getLayoutVersion() {
+        return layoutVersion.get();
     }
 
     public Collection<WorldRegion> getAllRegions() {
