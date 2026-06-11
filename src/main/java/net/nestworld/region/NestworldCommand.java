@@ -34,13 +34,18 @@ public final class NestworldCommand {
                                                 IntegerArgumentType.getInteger(ctx, "a"),
                                                 IntegerArgumentType.getInteger(ctx, "b")))))));
 
-        // /spark — in-game access to the spark standalone agent (see SparkBridge)
-        dispatcher.register(Commands.literal("spark")
-                .requires(src -> src.hasPermission(2))
-                .executes(ctx -> SparkBridge.run(ctx.getSource(), ""))
-                .then(Commands.argument("args", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
-                        .executes(ctx -> SparkBridge.run(ctx.getSource(),
-                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "args")))));
+        // /spark — in-game access to the spark standalone agent (see SparkBridge).
+        // Only when the real spark mod is absent (dev runtime can't load it);
+        // in production the mod registers its own /spark and the bridge would
+        // shadow it.
+        if (!net.minecraftforge.fml.ModList.get().isLoaded("spark")) {
+            dispatcher.register(Commands.literal("spark")
+                    .requires(src -> src.hasPermission(2))
+                    .executes(ctx -> SparkBridge.run(ctx.getSource(), ""))
+                    .then(Commands.argument("args", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                            .executes(ctx -> SparkBridge.run(ctx.getSource(),
+                                    com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "args")))));
+        }
     }
 
     private static int toggleBorders(CommandSourceStack src) {
