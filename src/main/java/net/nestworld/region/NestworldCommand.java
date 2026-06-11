@@ -33,6 +33,14 @@ public final class NestworldCommand {
                                         .executes(ctx -> merge(ctx.getSource(),
                                                 IntegerArgumentType.getInteger(ctx, "a"),
                                                 IntegerArgumentType.getInteger(ctx, "b")))))));
+
+        // /spark — in-game access to the spark standalone agent (see SparkBridge)
+        dispatcher.register(Commands.literal("spark")
+                .requires(src -> src.hasPermission(2))
+                .executes(ctx -> SparkBridge.run(ctx.getSource(), ""))
+                .then(Commands.argument("args", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                        .executes(ctx -> SparkBridge.run(ctx.getSource(),
+                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "args")))));
     }
 
     private static int toggleBorders(CommandSourceStack src) {
