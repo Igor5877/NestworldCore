@@ -529,6 +529,22 @@
           if (itemstack.m_150930_(Items.f_42741_) && ElytraItem.m_41140_(itemstack)) {
              flag = true;
              int i = this.f_20937_ + 1;
+@@ -2623,9 +_,12 @@
+       if (this.m_9236_().m_5776_()) {
+          this.m_9236_().m_142425_(EntityTypeTest.m_156916_(Player.class), this.m_20191_(), EntitySelector.m_20421_(this)).forEach(this::m_7324_);
+       } else {
+-         List<Entity> list = this.m_9236_().m_6249_(this, this.m_20191_(), EntitySelector.m_20421_(this));
+-         if (!list.isEmpty()) {
+-            int i = this.m_9236_().m_46469_().m_46215_(GameRules.f_46149_);
++         int nestworldCramming = this.m_9236_().m_46469_().m_46215_(GameRules.f_46149_);
++         int nestworldCap = nestworldCramming > 0 ? Math.max(net.nestworld.region.NestworldTuning.MAX_ENTITY_PUSH, nestworldCramming) : net.nestworld.region.NestworldTuning.MAX_ENTITY_PUSH;
++         List<Entity> list = new java.util.ArrayList<>();
++         this.m_9236_().m_260826_(net.minecraft.world.level.entity.EntityTypeTest.m_156916_(Entity.class), this.m_20191_(), EntitySelector.m_20421_(this).and((nestworldOther) -> nestworldOther != this), list, nestworldCap);
++         if (!list.isEmpty()) {
++            int i = nestworldCramming;
+             if (i > 0 && list.size() > i - 1 && this.f_19796_.m_188503_(4) == 0) {
+                int j = 0;
+ 
 @@ -2821,8 +_,11 @@
  
     private void m_21329_() {

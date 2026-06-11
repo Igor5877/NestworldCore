@@ -14,6 +14,15 @@ public final class NestworldTuning {
             Integer.getInteger("nestworld.maxMinecartPush", 8);
 
     /**
+     * Max entities a boat or living entity pushes against per tick — the same
+     * O(n^2) cramming cost as minecarts. For living entities the effective cap
+     * is raised to the maxEntityCramming game rule so cramming damage still
+     * triggers at the vanilla threshold.
+     */
+    public static final int MAX_ENTITY_PUSH =
+            Integer.getInteger("nestworld.maxEntityPush", 8);
+
+    /**
      * Per-tick budget in nanoseconds for one region's entity round. When the
      * round exceeds it, the remaining entities are deferred to the next tick
      * (round-robin), so an unsplittable point hotspot slows down locally
