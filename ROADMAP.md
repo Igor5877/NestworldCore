@@ -32,6 +32,12 @@
   `LongAVLTreeSet`/`Long2ObjectOpenHashMap` секцій ентіті. Без нього паралельні
   region-потоки ламали AVL-дерево → нескінченний цикл читачів → watchdog убивав
   сервер (відтворено і виправлено).
+- **`ClassInstanceMultiMap`** (вміст ентіті-секцій) — `ConcurrentHashMap` +
+  `CopyOnWriteArrayList`, мутації під монітором (патч). Це був корінь
+  спорадичного "Entity tick error: null" (CME без message) і крашів зупинки
+  через `NaturalSpawner`: region-потік ітерував `allInstances` секції, поки
+  інший потік робив add/remove. Діагностовано повними стеками, перевірено:
+  0 помилок за 10 хв під навантаженням, де раніше було ~12.
 - **`Level.random`** → `RandomSource.createThreadSafe()` (патч).
 - **`LevelTicks`** schedule/add/remove/query — `synchronized` (патч).
 - **`ServerLevel.blockEvent`** add — `synchronized` (патч).
@@ -90,10 +96,8 @@
 ## 2. Що потрібно зробити
 
 ### Найближче (стабільність)
-- [ ] **Діагностувати `Entity tick error: null`** (~6/хв під навантаженням,
-      існувало до Фази 1): логувати клас винятку + стек перших N випадків.
-      Підозра — гонка вмісту секцій (`ClassInstanceMultiMap`): захищений лише
-      індекс секцій, не їх вміст.
+- [x] ~~Діагностувати `Entity tick error: null`~~ — діагностовано і ВИПРАВЛЕНО
+      (патч `ClassInstanceMultiMap`, див. розділ thread-safety фіксів).
 - [ ] **`EntityLookup` (UUID/id мапи)** — аудит на off-main add/remove
       (спавн з region-потоку: блискавка, breeding, спавнери).
 - [ ] Прибрати/загейтити діагностичні логи (10-сек тайминги) перед релізом.

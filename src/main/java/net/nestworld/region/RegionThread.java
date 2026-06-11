@@ -26,6 +26,10 @@ public class RegionThread extends Thread {
 
     private static final Logger LOGGER = LogManager.getLogger("NestWorld/RegionThread");
 
+    /** Entity tick errors that have logged a full stack (across all regions). */
+    private static final java.util.concurrent.atomic.AtomicInteger TICK_ERROR_STACKS =
+            new java.util.concurrent.atomic.AtomicInteger(0);
+
     final WorldRegion region;
     private final ServerLevel level;
 
@@ -275,7 +279,18 @@ public class RegionThread extends Thread {
                 level.tickNonPassenger(entity);
                 ticked++;
             } catch (Throwable t) {
-                LOGGER.warn("[{}] Entity {} tick error: {}", getName(), uuid, t.getMessage());
+                // Most of these are NPEs with a null message ("tick error: null"),
+                // suspected ClassInstanceMultiMap section-content race. Full
+                // stacks for the first few are the diagnostic; after that just
+                // the class so the log stays readable.
+                if (TICK_ERROR_STACKS.getAndIncrement() < 10) {
+                    LOGGER.warn("[{}] Entity {} ({}) tick error (full stack)",
+                            getName(), uuid, entity.getType().getDescriptionId(), t);
+                } else {
+                    LOGGER.warn("[{}] Entity {} ({}) tick error: {}: {}",
+                            getName(), uuid, entity.getType().getDescriptionId(),
+                            t.getClass().getSimpleName(), t.getMessage());
+                }
             }
             if ((processed & 15) == 0 && System.nanoTime() > deadline) break;
         }
