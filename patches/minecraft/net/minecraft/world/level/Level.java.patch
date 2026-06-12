@@ -107,33 +107,68 @@
     public int m_6924_(Heightmap.Types p_46571_, int p_46572_, int p_46573_) {
        int i;
        if (p_46572_ >= -30000000 && p_46573_ >= -30000000 && p_46572_ < 30000000 && p_46573_ < 30000000) {
-@@ -398,10 +_,26 @@
-       (this.f_151504_ ? this.f_151503_ : this.f_151512_).add(p_151526_);
+@@ -398,26 +_,59 @@
+-      (this.f_151504_ ? this.f_151503_ : this.f_151512_).add(p_151526_);
++      synchronized (this.f_151503_) {
++         (this.f_151504_ ? this.f_151503_ : this.f_151512_).add(p_151526_);
++      }
     }
  
 +   public void addFreshBlockEntities(java.util.Collection<BlockEntity> beList) {
-+      if (this.f_151504_) {
-+         this.pendingFreshBlockEntities.addAll(beList);
-+      } else {
-+         this.freshBlockEntities.addAll(beList);
++      synchronized (this.pendingFreshBlockEntities) {
++         if (this.f_151504_) {
++            this.pendingFreshBlockEntities.addAll(beList);
++         } else {
++            this.freshBlockEntities.addAll(beList);
++         }
 +      }
 +   }
 +
     protected void m_46463_() {
        ProfilerFiller profilerfiller = this.m_46473_();
        profilerfiller.m_6180_("blockEntities");
-+      if (!this.pendingFreshBlockEntities.isEmpty()) {
-+         this.freshBlockEntities.addAll(this.pendingFreshBlockEntities);
-+         this.pendingFreshBlockEntities.clear();
++      synchronized (this.pendingFreshBlockEntities) {
++         if (!this.pendingFreshBlockEntities.isEmpty()) {
++            this.freshBlockEntities.addAll(this.pendingFreshBlockEntities);
++            this.pendingFreshBlockEntities.clear();
++         }
 +      }
        this.f_151504_ = true;
 +      if (!this.freshBlockEntities.isEmpty()) {
 +         this.freshBlockEntities.forEach(BlockEntity::onLoad);
 +         this.freshBlockEntities.clear();
 +      }
++      synchronized (this.f_151503_) {
        if (!this.f_151503_.isEmpty()) {
           this.f_151512_.addAll(this.f_151503_);
           this.f_151503_.clear();
+       }
++      }
+ 
+       Iterator<TickingBlockEntity> iterator = this.f_151512_.iterator();
++      java.util.List<TickingBlockEntity> nestworldDue = net.nestworld.region.NestworldRegionSystem.beginBlockEntityPhase(this);
+ 
+       while(iterator.hasNext()) {
+          TickingBlockEntity tickingblockentity = iterator.next();
+          if (tickingblockentity.m_142220_()) {
+             iterator.remove();
+          } else if (this.m_220393_(tickingblockentity.m_142689_())) {
+-            tickingblockentity.m_142224_();
++            if (nestworldDue != null) {
++               nestworldDue.add(tickingblockentity);
++            } else {
++               tickingblockentity.m_142224_();
++            }
+          }
+       }
++
++      if (nestworldDue != null) {
++         net.nestworld.region.NestworldRegionSystem.get().runBlockEntityPhase((net.minecraft.server.level.ServerLevel)this, nestworldDue);
++      }
+ 
+       this.f_151504_ = false;
+       profilerfiller.m_7238_();
+    }
 @@ -424,12 +_,19 @@
  
     public <T extends Entity> void m_46653_(Consumer<T> p_46654_, T p_46655_) {
@@ -171,6 +206,17 @@
        explosion.m_46061_();
        explosion.m_46075_(p_256377_);
        return explosion;
+@@ -497,7 +_,9 @@
+    public BlockEntity m_7702_(BlockPos p_46716_) {
+       if (this.m_151570_(p_46716_)) {
+          return null;
+       } else {
+-         return !this.f_46443_ && Thread.currentThread() != this.f_46423_ ? null : this.m_46745_(p_46716_).m_5685_(p_46716_, LevelChunk.EntityCreationType.IMMEDIATE);
++         // NestWorld: region threads tick block entities — vanilla's off-main
++         // guard made getBlockEntity return null there (hopper "sees no chest").
++         return !this.f_46443_ && Thread.currentThread() != this.f_46423_ && !(Thread.currentThread() instanceof net.nestworld.region.RegionThread) ? null : this.m_46745_(p_46716_).m_5685_(p_46716_, LevelChunk.EntityCreationType.IMMEDIATE);
+       }
+    }
 @@ -513,6 +_,7 @@
        if (!this.m_151570_(p_46748_)) {
           this.m_46745_(p_46748_).m_8114_(p_46748_);

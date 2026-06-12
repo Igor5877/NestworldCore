@@ -322,6 +322,96 @@ public class NestworldRegionSystem {
         randomTickBuckets.clear();
     }
 
+    // -----------------------------------------------------------------------
+    // Block entities — phase 2c. The patched Level.tickBlockEntities collects
+    // due tickers instead of running them when beginBlockEntityPhase returns
+    // non-null: interior tickers run on their region's thread in parallel;
+    // border-band or unowned tickers run on main BEFORE the round (hoppers
+    // pull from neighbour-chunk inventories, BE ticks write blocks — the same
+    // cascade-reach argument as scheduled ticks). Vanilla list order is
+    // preserved within each bucket.
+    // -----------------------------------------------------------------------
+
+    /** Non-null collector when NestWorld routes block entities for this level. */
+    public static java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity> beginBlockEntityPhase(net.minecraft.world.level.Level level) {
+        if (!isInitialised()) return null;
+        NestworldRegionSystem sys = get();
+        if (level != sys.overworld) return null;
+        return new java.util.ArrayList<>();
+    }
+
+    private int bePhaseLogCountdown = 0;
+
+    /** Debug: -Dnestworld.beTracePos=x,y,z logs that ticker's routing every BE phase. */
+    private static final net.minecraft.core.BlockPos BE_TRACE_POS;
+    static {
+        String s = System.getProperty("nestworld.beTracePos");
+        net.minecraft.core.BlockPos p = null;
+        if (s != null) {
+            String[] parts = s.split(",");
+            p = new net.minecraft.core.BlockPos(Integer.parseInt(parts[0].trim()),
+                    Integer.parseInt(parts[1].trim()), Integer.parseInt(parts[2].trim()));
+        }
+        BE_TRACE_POS = p;
+    }
+    private int beTraceCountdown = 0;
+
+    /** Buckets and runs the tickers collected by the patched tickBlockEntities. */
+    public void runBlockEntityPhase(ServerLevel level,
+                                    java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity> due) {
+        java.util.Map<WorldRegion, java.util.List<Runnable>> buckets = new java.util.IdentityHashMap<>();
+        java.util.List<Runnable> mainBucket = new java.util.ArrayList<>();
+        boolean traced = false;
+        for (net.minecraft.world.level.block.entity.TickingBlockEntity ticker : due) {
+            net.minecraft.core.BlockPos pos = ticker.getPos();
+            Runnable run = ticker::tick;
+            if (BE_TRACE_POS != null && BE_TRACE_POS.equals(pos)) {
+                traced = true;
+                boolean logThis = ++beTraceCountdown >= 40;
+                if (logThis) beTraceCountdown = 0;
+                final boolean log = logThis;
+                run = () -> {
+                    if (log) {
+                        int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
+                        net.minecraft.world.level.chunk.LevelChunk c =
+                                level.getChunkSource().getChunkNow(cx, cz);
+                        LOGGER.info("BE trace exec {} on [{}]: removed={} fullStatus={} entitiesLoaded={}",
+                                pos, Thread.currentThread().getName(), ticker.isRemoved(),
+                                c == null ? "NO_CHUNK" : c.getFullStatus(),
+                                level.areEntitiesLoaded(net.minecraft.world.level.ChunkPos.asLong(cx, cz)));
+                    }
+                    ticker.tick();
+                };
+            }
+            routeScheduledTick(pos, run, buckets, mainBucket);
+        }
+        if (BE_TRACE_POS != null && !traced && ++beTraceCountdown >= 40) {
+            beTraceCountdown = 0;
+            LOGGER.info("BE trace {}: NOT in due list (not collected on main)", BE_TRACE_POS);
+        }
+        boolean logNow = ++bePhaseLogCountdown >= 200;
+        if (logNow) {
+            bePhaseLogCountdown = 0;
+            StringBuilder sb = new StringBuilder();
+            for (java.util.Map.Entry<WorldRegion, java.util.List<Runnable>> e : buckets.entrySet()) {
+                sb.append(" #").append(e.getKey().getId()).append('=').append(e.getValue().size());
+            }
+            LOGGER.info("BE phase: due={} main={} buckets:{}", due.size(), mainBucket.size(), sb);
+        }
+        for (Runnable r : mainBucket) {
+            try {
+                r.run();
+            } catch (Throwable t) {
+                LOGGER.warn("Main-band block entity tick failed: {}", t.toString());
+            }
+        }
+        int before = buckets.size();
+        pool.runWorkRoundDropIfBacklogged(buckets);
+        if (logNow && buckets.size() != before) {
+            LOGGER.info("BE phase: {} region bucket(s) dropped (backlog)", before - buckets.size());
+        }
+    }
+
     private void routeScheduledTick(net.minecraft.core.BlockPos pos, Runnable run,
                                     java.util.Map<WorldRegion, java.util.List<Runnable>> buckets,
                                     java.util.List<Runnable> mainBucket) {

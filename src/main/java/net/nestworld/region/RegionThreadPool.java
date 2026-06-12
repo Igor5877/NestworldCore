@@ -125,6 +125,22 @@ public class RegionThreadPool {
     }
 
     /**
+     * Like runWorkRound, but silently drops a region's list when its thread
+     * still carries unfinished work from a previous round. For work that is
+     * RE-COLLECTED every tick (block entities): queueing it again behind a
+     * saturated region's backlog would grow the carry-over queue without
+     * bound and later burst-run stale duplicate ticks; dropping keeps the
+     * vanilla "tick it if you can this tick" semantics.
+     */
+    public void runWorkRoundDropIfBacklogged(java.util.Map<WorldRegion, java.util.List<Runnable>> assignments) {
+        if (assignments.isEmpty()) return;
+        for (RegionThread t : threads) {
+            if (t.getLastWorkDeferred() > 0) assignments.remove(t.region);
+        }
+        runWorkRound(assignments);
+    }
+
+    /**
      * Waits for a round to finish while servicing the chunk task queue —
      * this is what lets region threads safely call getChunk().join().
      */
