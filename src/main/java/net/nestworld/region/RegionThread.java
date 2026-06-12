@@ -97,6 +97,23 @@ public class RegionThread extends Thread {
      */
     int wireCallDepth = 0;
 
+    /**
+     * Per-thread neighbor-update collector. Level's CollectingNeighborUpdater
+     * is a single shared ArrayDeque+counter with zero thread safety; region
+     * threads mutating blocks (scheduled/random ticks, AC) raced the main
+     * thread on it, corrupting the stack so that ALL world neighbor updates
+     * were silently swallowed (plants stopped popping off, water stopped
+     * flowing, levers went dead). Vanilla default chain limit (1,000,000).
+     */
+    private net.minecraft.world.level.redstone.CollectingNeighborUpdater neighborUpdater;
+
+    public net.minecraft.world.level.redstone.NeighborUpdater neighborUpdater(net.minecraft.world.level.Level lvl) {
+        if (neighborUpdater == null) {
+            neighborUpdater = new net.minecraft.world.level.redstone.CollectingNeighborUpdater(lvl, 1_000_000);
+        }
+        return neighborUpdater;
+    }
+
     public alternate.current.wire.WireHandler acWireHandler() {
         if (acWireHandler == null) {
             acWireHandler = new alternate.current.wire.WireHandler(

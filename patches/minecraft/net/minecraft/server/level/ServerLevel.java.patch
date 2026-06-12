@@ -255,22 +255,35 @@
        this.f_243695_.m_245905_(p_215041_, p_215042_, p_215043_);
     }
  
-@@ -941,10 +_,15 @@
+@@ -941,19 +_,24 @@
     }
  
     public void m_46672_(BlockPos p_215045_, Block p_215046_) {
+-      this.f_220350_.m_214152_(p_215045_, p_215046_, (Direction)null);
 +      net.minecraftforge.event.ForgeEventFactory.onNeighborNotify(this, p_215045_, this.m_8055_(p_215045_), java.util.EnumSet.allOf(Direction.class), false).isCanceled();
-       this.f_220350_.m_214152_(p_215045_, p_215046_, (Direction)null);
++      this.nestworldNeighborUpdater().m_214152_(p_215045_, p_215046_, (Direction)null);
     }
  
     public void m_46590_(BlockPos p_215052_, Block p_215053_, Direction p_215054_) {
+-      this.f_220350_.m_214152_(p_215052_, p_215053_, p_215054_);
 +      java.util.EnumSet<Direction> directions = java.util.EnumSet.allOf(Direction.class);
 +      directions.remove(p_215054_);
 +      if (net.minecraftforge.event.ForgeEventFactory.onNeighborNotify(this, p_215052_, this.m_8055_(p_215052_), directions, false).isCanceled())
 +         return;
-       this.f_220350_.m_214152_(p_215052_, p_215053_, p_215054_);
++      this.nestworldNeighborUpdater().m_214152_(p_215052_, p_215053_, p_215054_);
     }
  
+    public void m_46586_(BlockPos p_215048_, Block p_215049_, BlockPos p_215050_) {
+-      this.f_220350_.m_214026_(p_215048_, p_215049_, p_215050_);
++      this.nestworldNeighborUpdater().m_214026_(p_215048_, p_215049_, p_215050_);
+    }
+ 
+    public void m_213960_(BlockState p_215035_, BlockPos p_215036_, Block p_215037_, BlockPos p_215038_, boolean p_215039_) {
+-      this.f_220350_.m_213858_(p_215035_, p_215036_, p_215037_, p_215038_, p_215039_);
++      this.nestworldNeighborUpdater().m_213858_(p_215035_, p_215036_, p_215037_, p_215038_, p_215039_);
+    }
+ 
+    public void m_7605_(Entity p_8650_, byte p_8651_) {
 @@ -985,6 +_,8 @@
  
     public void m_7696_(BlockPos p_8746_, Block p_8747_, int p_8748_, int p_8749_) {

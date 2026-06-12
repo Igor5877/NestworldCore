@@ -89,6 +89,24 @@
     }
  
     public void m_46590_(BlockPos p_46591_, Block p_46592_, Direction p_46593_) {
+@@ -291,9 +_,14 @@
+    }
+ 
+    public void m_213683_(Direction p_220385_, BlockState p_220386_, BlockPos p_220387_, BlockPos p_220388_, int p_220389_, int p_220390_) {
+-      this.f_220350_.m_213547_(p_220385_, p_220386_, p_220387_, p_220388_, p_220389_, p_220390_);
+-   }
+-
++      this.nestworldNeighborUpdater().m_213547_(p_220385_, p_220386_, p_220387_, p_220388_, p_220389_, p_220390_);
++   }
++
++   public NeighborUpdater nestworldNeighborUpdater() {
++      NeighborUpdater nestworldNu = net.nestworld.region.NestworldRedstone.regionNeighborUpdater(this);
++      return nestworldNu != null ? nestworldNu : this.f_220350_;
++   }
++
+    public int m_6924_(Heightmap.Types p_46571_, int p_46572_, int p_46573_) {
+       int i;
+       if (p_46572_ >= -30000000 && p_46573_ >= -30000000 && p_46572_ < 30000000 && p_46573_ < 30000000) {
 @@ -398,10 +_,26 @@
        (this.f_151504_ ? this.f_151503_ : this.f_151512_).add(p_151526_);
     }

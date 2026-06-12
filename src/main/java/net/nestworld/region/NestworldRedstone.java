@@ -26,6 +26,18 @@ public final class NestworldRedstone {
 
     private NestworldRedstone() {}
 
+    /**
+     * The calling region thread's private neighbor-update collector, or null
+     * on any other thread (callers then use the level's own updater). Called
+     * from the patched Level/ServerLevel neighbor-update entry points.
+     */
+    public static net.minecraft.world.level.redstone.NeighborUpdater regionNeighborUpdater(net.minecraft.world.level.Level level) {
+        if (Thread.currentThread() instanceof RegionThread regionThread) {
+            return regionThread.neighborUpdater(level);
+        }
+        return null;
+    }
+
     /** @return true when the update was (or will be) handled by AC and vanilla must skip. */
     public static boolean wireUpdated(ServerLevel level, BlockPos pos) {
         if (Thread.currentThread() instanceof RegionThread rt) {
