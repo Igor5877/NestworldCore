@@ -151,7 +151,10 @@ public class RegionSplitManager {
      * Returns the children, or null if the region cannot be split.
      */
     public WorldRegion[] doSplit(WorldRegion region) {
-        WorldRegion[] children = tree.split(region, entityMedianCut(region));
+        Integer cut = loadAwareCut(region);
+        // Manual /nestworld split bypasses the hotspot veto: fall back to the
+        // raw median so an operator can still force any cut.
+        WorldRegion[] children = tree.split(region, cut != null ? cut : entityMedianCut(region));
         if (children == null) return null; // at min size or not in tree
 
         pool.remove(region);
@@ -175,31 +178,14 @@ public class RegionSplitManager {
      * Falls back to the spatial midpoint when the region owns no entities.
      */
     private int entityMedianCut(WorldRegion region) {
-        net.minecraft.server.level.ServerLevel level = pool.getLevel();
-        SplitAxis axis = region.preferredSplitAxis();
-        java.util.ArrayList<Integer> coords = new java.util.ArrayList<>();
-        for (java.util.UUID id : region.getOwnedEntityIds()) {
-            net.minecraft.world.entity.Entity entity = level.getEntity(id);
-            if (entity == null) continue;
-            net.minecraft.core.BlockPos pos = entity.blockPosition();
-            coords.add((axis == SplitAxis.X ? pos.getX() : pos.getZ()) >> 4);
-        }
+        java.util.List<Integer> coords = ownedEntityChunkCoords(region, region.preferredSplitAxis());
         if (coords.isEmpty()) return Integer.MIN_VALUE; // spatial midpoint
-        java.util.Collections.sort(coords);
         return coords.get(coords.size() / 2);
     }
 
-    /**
-     * True when the entity-median cut would hand each child a meaningful share
-     * of the region's entity load. A point hotspot (e.g. hundreds of minecarts
-     * in one block) sorts its median onto the hot chunk and leaves one side
-     * nearly empty — splitting it burns a thread on an idle region whose hot
-     * sibling can never merge back. Such regions are left whole; the region
-     * thread's per-tick entity budget contains the overload instead.
-     */
-    private boolean splitWouldSeparateLoad(WorldRegion region) {
+    /** Sorted chunk coordinates (on the split axis) of the region's owned entities. */
+    private java.util.List<Integer> ownedEntityChunkCoords(WorldRegion region, SplitAxis axis) {
         net.minecraft.server.level.ServerLevel level = pool.getLevel();
-        SplitAxis axis = region.preferredSplitAxis();
         java.util.ArrayList<Integer> coords = new java.util.ArrayList<>();
         for (java.util.UUID id : region.getOwnedEntityIds()) {
             net.minecraft.world.entity.Entity entity = level.getEntity(id);
@@ -207,20 +193,89 @@ public class RegionSplitManager {
             net.minecraft.core.BlockPos pos = entity.blockPosition();
             coords.add((axis == SplitAxis.X ? pos.getX() : pos.getZ()) >> 4);
         }
-        if (coords.size() < GUARD_MIN_ENTITIES) return true;
         java.util.Collections.sort(coords);
+        return coords;
+    }
 
-        // Mirror RegionTree.split: child A takes coordinates <= cut (clamped
-        // so child B is never empty spatially).
+    /** Share of region entities tolerated inside the cut line's border band. */
+    private static final double MAX_CUT_BAND_SHARE = 0.25;
+    /** Must mirror NestworldRegionSystem.BORDER_BAND_CHUNKS. */
+    private static final int BORDER_BAND_CHUNKS = 2;
+
+    /**
+     * Picks the split line. A pure median cut lands exactly on the densest
+     * entity cluster — a lag machine IS its region's median — and everything
+     * within the border band of a region edge ticks serially on main, so a
+     * median split drags the very hotspot it targets OUT of parallel
+     * execution (and the next split re-cuts it wherever it is moved).
+     * Instead, candidate cuts across the middle half of the entity
+     * distribution (entity columns and the gaps between them) are scored by
+     * how many entities their 2×band would swallow; the quietest fair line
+     * wins, ties broken toward the median.
+     *
+     * @return cut chunk coordinate; Integer.MIN_VALUE = spatial midpoint
+     *         (region owns no entities); null = no line gives both children
+     *         a fair share without running through a cluster — the region
+     *         must stay whole (the per-tick budget contains it instead).
+     */
+    private Integer loadAwareCut(WorldRegion region) {
+        SplitAxis axis = region.preferredSplitAxis();
+        java.util.List<Integer> coords = ownedEntityChunkCoords(region, axis);
+        if (coords.isEmpty()) return Integer.MIN_VALUE;
+
         int min = axis == SplitAxis.X ? region.getMinChunkX() : region.getMinChunkZ();
         int max = axis == SplitAxis.X ? region.getMaxChunkX() : region.getMaxChunkZ();
-        int cut = Math.max(min, Math.min(coords.get(coords.size() / 2), max - 1));
-        int toA = 0;
-        for (int c : coords) {
-            if (c <= cut) toA++;
+        int n = coords.size();
+        int median = Math.max(min, Math.min(coords.get(n / 2), max - 1));
+        // Too few entities to profile: cost is from block ticks, keep the
+        // median cut (pre-existing behaviour below GUARD_MIN_ENTITIES).
+        if (n < GUARD_MIN_ENTITIES) return median;
+
+        java.util.TreeSet<Integer> candidates = new java.util.TreeSet<>();
+        for (int i = n / 4; i < (3 * n) / 4; i++) {
+            int a = coords.get(i);
+            candidates.add(a);
+            if (i + 1 < n) {
+                int b = coords.get(i + 1);
+                if (b - a > 1) candidates.add(a + (b - a) / 2); // gap midpoint
+            }
         }
-        int smaller = Math.min(toA, coords.size() - toA);
-        return smaller >= coords.size() * MIN_SPLIT_SEPARATION_SHARE;
+
+        Integer best = null;
+        int bestBand = Integer.MAX_VALUE;
+        for (int raw : candidates) {
+            int cut = Math.max(min, Math.min(raw, max - 1));
+            int toA = countAtMost(coords, cut);
+            if (Math.min(toA, n - toA) < n * MIN_SPLIT_SEPARATION_SHARE) continue;
+            // Chunk columns [cut-1, cut+2] land in one of the children's bands.
+            int band = countAtMost(coords, cut + BORDER_BAND_CHUNKS)
+                     - countAtMost(coords, cut - BORDER_BAND_CHUNKS);
+            if (band < bestBand
+                    || (band == bestBand && best != null && Math.abs(cut - median) < Math.abs(best - median))) {
+                bestBand = band;
+                best = cut;
+            }
+        }
+        if (best == null || bestBand > n * MAX_CUT_BAND_SHARE) return null;
+        return best;
+    }
+
+    /** Entities with chunk coordinate <= c (coords sorted ascending). */
+    private static int countAtMost(java.util.List<Integer> coords, int c) {
+        int lo = 0, hi = coords.size();
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (coords.get(mid) <= c) lo = mid + 1; else hi = mid;
+        }
+        return lo;
+    }
+
+    /**
+     * True when some cut line gives each child a meaningful share of the
+     * entity load without slicing through a cluster (see loadAwareCut).
+     */
+    private boolean splitWouldSeparateLoad(WorldRegion region) {
+        return loadAwareCut(region) != null;
     }
 
     private long lastGuardLogNanos = 0;
@@ -229,7 +284,7 @@ public class RegionSplitManager {
         long now = System.nanoTime();
         if (now - lastGuardLogNanos < 30_000_000_000L) return; // at most every 30 s
         lastGuardLogNanos = now;
-        LOGGER.info("Split of {} skipped: entity load is a point hotspot the median cut cannot separate ({} entities)",
+        LOGGER.info("Split of {} skipped: no cut line separates the entity load without slicing a cluster ({} entities)",
                 region, region.getOwnedEntityIds().size());
     }
 
