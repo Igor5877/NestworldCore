@@ -9,7 +9,7 @@
     private final PaletteResize<T> f_63070_ = (p_238275_, p_238276_) -> {
        return 0;
 
-@@ -31,15 +_,22 @@
+@@ -31,15 +_,27 @@
     private final IdMap<T> f_63071_;
     private volatile PalettedContainer.Data<T> f_188032_;
     private final PalettedContainer.Strategy f_188033_;
@@ -28,15 +28,20 @@
 +   // poisons the detector and the next writer parks forever (watchdog kill).
 +   // All mutation/serialisation paths already bracket with acquire/release in
 +   // try/finally, so a real lock makes them safely exclusive. Hot reads stay
-+   // lock-free as in vanilla.
-+   private final java.util.concurrent.locks.ReentrantLock nestworldContainerLock = new java.util.concurrent.locks.ReentrantLock();
++   // lock-free as in vanilla. A Semaphore, NOT a ReentrantLock: worldgen
++   // (NoiseBasedChunkGenerator.fillFromNoise) acquires sections on one worker
++   // thread and releases them in whenComplete on another — an owner-bound
++   // lock throws IllegalMonitorStateException there. Vanilla never acquires
++   // re-entrantly (the detector would have crashed on it), so a binary
++   // semaphore gives the same exclusion without thread affinity.
++   private final java.util.concurrent.Semaphore nestworldContainerLock = new java.util.concurrent.Semaphore(1);
 +
 +   public void m_63084_() {
-+      this.nestworldContainerLock.lock();
++      this.nestworldContainerLock.acquireUninterruptibly();
 +   }
 +
 +   public void m_63120_() {
-+      this.nestworldContainerLock.unlock();
++      this.nestworldContainerLock.release();
 +   }
  
     public static <T> Codec<PalettedContainer<T>> m_238371_(IdMap<T> p_238372_, Codec<T> p_238373_, PalettedContainer.Strategy p_238374_, T p_238375_) {
