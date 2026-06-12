@@ -45,6 +45,15 @@
   `ConcurrentHashMap.newKeySet()`, `EntityTickList` — synchronized (патчі).
   Перевірено: 10 хв, 2000 вагонеток + 300 курей-несучок — 0 помилок.
 - **`Level.random`** → `RandomSource.createThreadSafe()` (патч).
+- **Per-thread `CollectingNeighborUpdater`** — ванільний neighbor-updater
+  рівня це один спільний `ArrayDeque`+лічильник без жодної синхронізації;
+  region-потоки (scheduled/random ticks, AC) гонилися з main, ламали стек,
+  і ВСІ neighbor updates світу мовчки ковталися (вода не текла, рослини не
+  відривалися, важелі мертві). Усі точки входу Level/ServerLevel ідуть через
+  `nestworldNeighborUpdater()`: region-потік отримує приватний лінивий
+  екземпляр (дренується синхронно на зовнішньому виклику), інші потоки —
+  спільний. Перевірено: вода/лампа/важіль + 3 хв soak, 6.5k ентіті,
+  6 регіонів, 0 помилок (коміт 8d476fb95).
 - **`LevelTicks`** schedule/add/remove/query — `synchronized` (патч).
 - **`ServerLevel.blockEvent`** add — `synchronized` (патч).
 - Re-entrancy guard у wire-оновленнях (скидання хендлера тільки на
