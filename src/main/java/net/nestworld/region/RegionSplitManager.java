@@ -45,14 +45,18 @@ public class RegionSplitManager {
 
     // --- Point-hotspot split guard ---
     // A split only helps when each child receives a meaningful share of the
-    // entity load; below this share the cut just peels off a near-idle region.
+    // load; below this share the cut just peels off a near-idle region.
     private static final double MIN_SPLIT_SEPARATION_SHARE = 0.10;
-    // Regions with fewer entities than this are exempt from the guard: their
-    // cost comes from block ticks, which a spatial split can still separate.
-    private static final int    GUARD_MIN_ENTITIES = 50;
+    // Combined load (owned entities at weight 1 + block-tick heat scaled by
+    // CUT_HEAT_WEIGHT) below which a region is too quiet to profile: keep the
+    // weighted-median cut and let the per-tick budget contain whatever cost
+    // there is. Above it, candidate lines are scored and a band-slicing cut is
+    // vetoed.
+    private static final double GUARD_MIN_LOAD = 50.0;
 
     private final RegionTree tree;
     private final RegionThreadPool pool;
+    private final BlockTickHeat blockTickHeat;
 
     // Pending splits applied at the next evaluation
     private final List<WorldRegion> pendingSplits = new ArrayList<>();
@@ -66,9 +70,10 @@ public class RegionSplitManager {
 
     private int checkInterval = 0;
 
-    public RegionSplitManager(RegionTree tree, RegionThreadPool pool) {
+    public RegionSplitManager(RegionTree tree, RegionThreadPool pool, BlockTickHeat blockTickHeat) {
         this.tree = tree;
         this.pool = pool;
+        this.blockTickHeat = blockTickHeat;
     }
 
     // -----------------------------------------------------------------------
@@ -82,6 +87,10 @@ public class RegionSplitManager {
     public void onTick() {
         if (++checkInterval < 20) return;
         checkInterval = 0;
+
+        // Once per second: age the block-tick heat window so the scorer reacts
+        // to where load is now, not where it was minutes ago.
+        blockTickHeat.decay();
 
         List<WorldRegion> active = tree.getActiveRegions();
         for (WorldRegion region : active) {
@@ -167,8 +176,10 @@ public class RegionSplitManager {
             children[0].addEntity(uuid);
         }
 
-        LOGGER.info("Split {} -> [{}, {}]  (cost was {} ms)",
-                region, children[0], children[1], String.format("%.1f", region.getAvgTickMs()));
+        LOGGER.info("Split {} -> [{}, {}]  (cost was {} ms; {} entities, heat {}; hottest {})",
+                region, children[0], children[1], String.format("%.1f", region.getAvgTickMs()),
+                region.getOwnedEntityIds().size(), String.format("%.1f", blockTickHeat.totalInRegion(region)),
+                blockTickHeat.hotspotSummary(region, 3));
         return children;
     }
 
@@ -197,77 +208,130 @@ public class RegionSplitManager {
         return coords;
     }
 
-    /** Share of region entities tolerated inside the cut line's border band. */
+    /** Share of region load tolerated inside the cut line's border band. */
     private static final double MAX_CUT_BAND_SHARE = 0.25;
     /** Must mirror NestworldRegionSystem.BORDER_BAND_CHUNKS. */
     private static final int BORDER_BAND_CHUNKS = 2;
+    /** Sentinel: region has no profileable load, cut at the spatial midpoint. */
+    static final int SPATIAL_MIDPOINT = Integer.MIN_VALUE;
 
     /**
-     * Picks the split line. A pure median cut lands exactly on the densest
-     * entity cluster — a lag machine IS its region's median — and everything
-     * within the border band of a region edge ticks serially on main, so a
-     * median split drags the very hotspot it targets OUT of parallel
-     * execution (and the next split re-cuts it wherever it is moved).
-     * Instead, candidate cuts across the middle half of the entity
-     * distribution (entity columns and the gaps between them) are scored by
-     * how many entities their 2×band would swallow; the quietest fair line
-     * wins, ties broken toward the median.
+     * Builds the region's weighted load histogram on its preferred split axis
+     * and asks {@link #scoreCut} for a line. The histogram combines two load
+     * sources so the scorer sees the whole picture, not just mobs:
+     * <ul>
+     *   <li>each owned entity contributes weight 1 at its chunk column;</li>
+     *   <li>block-tick heat (scheduled/fluid/BE ticks — redstone and fluid
+     *       machines that carry no entities) contributes
+     *       {@link NestworldTuning#CUT_HEAT_WEIGHT} per unit.</li>
+     * </ul>
+     * Without the heat term a redstone machine is invisible and the scorer
+     * leaves its hot column in a border band (serial on main).
      *
-     * @return cut chunk coordinate; Integer.MIN_VALUE = spatial midpoint
-     *         (region owns no entities); null = no line gives both children
-     *         a fair share without running through a cluster — the region
-     *         must stay whole (the per-tick budget contains it instead).
+     * @return cut chunk coordinate; {@link #SPATIAL_MIDPOINT} when the region
+     *         has no profileable load; null when no line gives both children a
+     *         fair share without slicing a cluster or a hot block-tick column
+     *         through a band — the region stays whole (the per-tick budget
+     *         contains it instead).
      */
     private Integer loadAwareCut(WorldRegion region) {
         SplitAxis axis = region.preferredSplitAxis();
-        java.util.List<Integer> coords = ownedEntityChunkCoords(region, axis);
-        if (coords.isEmpty()) return Integer.MIN_VALUE;
-
         int min = axis == SplitAxis.X ? region.getMinChunkX() : region.getMinChunkZ();
         int max = axis == SplitAxis.X ? region.getMaxChunkX() : region.getMaxChunkZ();
-        int n = coords.size();
-        int median = Math.max(min, Math.min(coords.get(n / 2), max - 1));
-        // Too few entities to profile: cost is from block ticks, keep the
-        // median cut (pre-existing behaviour below GUARD_MIN_ENTITIES).
-        if (n < GUARD_MIN_ENTITIES) return median;
+
+        java.util.TreeMap<Integer, Double> hist = new java.util.TreeMap<>();
+        for (int c : ownedEntityChunkCoords(region, axis)) {
+            hist.merge(c, 1.0, Double::sum);
+        }
+        blockTickHeat.addAxisHeat(region, axis, NestworldTuning.CUT_HEAT_WEIGHT, hist);
+
+        return scoreCut(min, max, hist);
+    }
+
+    /**
+     * Pure cut scorer over a coord→weight load histogram on one axis,
+     * bounded to chunk coordinates [{@code min}, {@code max}] (max inclusive).
+     * Extracted from {@link #loadAwareCut} so it can be exercised in isolation
+     * by {@link #selfTest()} without a live world.
+     *
+     * <p>A pure median cut lands on the densest cluster (a lag machine IS its
+     * region's median) and everything within a region edge's border band ticks
+     * serially on main — so a median split drags the very hotspot it targets
+     * out of parallel execution. Instead, candidate lines (populated columns
+     * and the gaps between them) are scored by how much load their 2×band would
+     * swallow; the quietest line that still gives both children at least
+     * {@link #MIN_SPLIT_SEPARATION_SHARE} wins, ties broken toward the weighted
+     * median. If even the best line would slice more than
+     * {@link #MAX_CUT_BAND_SHARE} of the load into a band, the region stays
+     * whole.
+     */
+    static Integer scoreCut(int min, int max, java.util.SortedMap<Integer, Double> hist) {
+        if (hist.isEmpty()) return SPATIAL_MIDPOINT;
+
+        int m = hist.size();
+        int[] coord = new int[m];
+        double[] w = new double[m];
+        double total = 0;
+        int i = 0;
+        for (java.util.Map.Entry<Integer, Double> e : hist.entrySet()) {
+            coord[i] = e.getKey();
+            w[i] = e.getValue();
+            total += w[i];
+            i++;
+        }
+
+        int median = clampCut(weightedMedian(coord, w, total), min, max);
+        // Too little load to profile: keep the weighted-median cut (a low-cost
+        // region is still allowed to split, the budget contains any hotspot).
+        if (total < GUARD_MIN_LOAD) return median;
 
         java.util.TreeSet<Integer> candidates = new java.util.TreeSet<>();
-        for (int i = n / 4; i < (3 * n) / 4; i++) {
-            int a = coords.get(i);
-            candidates.add(a);
-            if (i + 1 < n) {
-                int b = coords.get(i + 1);
-                if (b - a > 1) candidates.add(a + (b - a) / 2); // gap midpoint
+        for (int k = 0; k < m; k++) {
+            candidates.add(coord[k]);
+            if (k + 1 < m) {
+                int gap = coord[k + 1] - coord[k];
+                if (gap > 1) candidates.add(coord[k] + gap / 2); // gap midpoint
             }
         }
 
         Integer best = null;
-        int bestBand = Integer.MAX_VALUE;
+        double bestBand = Double.MAX_VALUE;
         for (int raw : candidates) {
-            int cut = Math.max(min, Math.min(raw, max - 1));
-            int toA = countAtMost(coords, cut);
-            if (Math.min(toA, n - toA) < n * MIN_SPLIT_SEPARATION_SHARE) continue;
-            // Chunk columns [cut-1, cut+2] land in one of the children's bands.
-            int band = countAtMost(coords, cut + BORDER_BAND_CHUNKS)
-                     - countAtMost(coords, cut - BORDER_BAND_CHUNKS);
+            int cut = clampCut(raw, min, max);
+            double toA = weightAtMost(coord, w, cut);
+            if (Math.min(toA, total - toA) < total * MIN_SPLIT_SEPARATION_SHARE) continue;
+            // Columns (cut-band, cut+band] land in one of the children's bands.
+            double band = weightAtMost(coord, w, cut + BORDER_BAND_CHUNKS)
+                        - weightAtMost(coord, w, cut - BORDER_BAND_CHUNKS);
             if (band < bestBand
                     || (band == bestBand && best != null && Math.abs(cut - median) < Math.abs(best - median))) {
                 bestBand = band;
                 best = cut;
             }
         }
-        if (best == null || bestBand > n * MAX_CUT_BAND_SHARE) return null;
+        if (best == null || bestBand > total * MAX_CUT_BAND_SHARE) return null;
         return best;
     }
 
-    /** Entities with chunk coordinate <= c (coords sorted ascending). */
-    private static int countAtMost(java.util.List<Integer> coords, int c) {
-        int lo = 0, hi = coords.size();
-        while (lo < hi) {
-            int mid = (lo + hi) >>> 1;
-            if (coords.get(mid) <= c) lo = mid + 1; else hi = mid;
+    private static int clampCut(int c, int min, int max) {
+        return Math.max(min, Math.min(c, max - 1));
+    }
+
+    /** Smallest column coordinate whose cumulative weight reaches half the total. */
+    private static int weightedMedian(int[] coord, double[] w, double total) {
+        double half = total / 2.0, run = 0;
+        for (int i = 0; i < coord.length; i++) {
+            run += w[i];
+            if (run >= half) return coord[i];
         }
-        return lo;
+        return coord[coord.length - 1];
+    }
+
+    /** Sum of weights at columns with coordinate <= c (coord ascending). */
+    private static double weightAtMost(int[] coord, double[] w, int c) {
+        double sum = 0;
+        for (int i = 0; i < coord.length && coord[i] <= c; i++) sum += w[i];
+        return sum;
     }
 
     /**
@@ -278,14 +342,70 @@ public class RegionSplitManager {
         return loadAwareCut(region) != null;
     }
 
+    // -----------------------------------------------------------------------
+    // Deterministic self-test of the pure cut scorer (NESTWORLD_CUT_TEST=1).
+    // Runs headless at startup with no world; verifies the scoring logic that
+    // is otherwise hard to provoke without live redstone near a player.
+    // -----------------------------------------------------------------------
+
+    /** Builds a column→weight histogram from {coord, weight, coord, weight, ...}. */
+    private static java.util.TreeMap<Integer, Double> hist(double... cw) {
+        java.util.TreeMap<Integer, Double> h = new java.util.TreeMap<>();
+        for (int i = 0; i < cw.length; i += 2) h.merge((int) cw[i], cw[i + 1], Double::sum);
+        return h;
+    }
+
+    public static boolean selfTest() {
+        boolean ok = true;
+
+        // Empty region → spatial midpoint sentinel.
+        ok &= check("empty→midpoint", scoreCut(0, 24, hist()) != null
+                && scoreCut(0, 24, hist()) == SPATIAL_MIDPOINT);
+
+        // Two entity clusters with an empty gap 5..19: cut must land in the gap
+        // (band touches neither cluster) and split the load fairly.
+        java.util.TreeMap<Integer, Double> twoClusters = new java.util.TreeMap<>();
+        for (int c = 0; c <= 4; c++) twoClusters.merge(c, 20.0, Double::sum);
+        for (int c = 20; c <= 24; c++) twoClusters.merge(c, 20.0, Double::sum);
+        Integer gapCut = scoreCut(0, 24, twoClusters);
+        ok &= check("gap: cut found", gapCut != null);
+        ok &= check("gap: cut inside quiet zone", gapCut != null && gapCut >= 7 && gapCut <= 17);
+
+        // Single dense column (point hotspot, no gap): no fair cut exists, the
+        // region must stay whole (budget contains it).
+        ok &= check("point-hotspot→veto", scoreCut(0, 20, hist(10, 200.0)) == null);
+
+        // A block-tick machine (column 15, heat-only weight 100) plus entities
+        // in columns 0..9: the cut must route the machine into a child interior,
+        // never leaving it inside a band. Cut 12 puts col 15 (>12+2) interior.
+        java.util.TreeMap<Integer, Double> machine = new java.util.TreeMap<>();
+        for (int c = 0; c <= 9; c++) machine.merge(c, 5.0, Double::sum);
+        machine.merge(15, 100.0, Double::sum); // heat-projected block-tick column
+        Integer mCut = scoreCut(0, 30, machine);
+        ok &= check("machine: cut found", mCut != null);
+        ok &= check("machine: machine column out of band",
+                mCut != null && Math.abs(15 - mCut) > BORDER_BAND_CHUNKS);
+
+        LOGGER.info("Cut scorer self-test: {}", ok ? "PASS" : "FAIL");
+        return ok;
+    }
+
+    private static boolean check(String name, boolean cond) {
+        if (!cond) LOGGER.error("Cut scorer self-test FAILED: {}", name);
+        return cond;
+    }
+
     private long lastGuardLogNanos = 0;
 
     private void logSkippedSplit(WorldRegion region) {
         long now = System.nanoTime();
         if (now - lastGuardLogNanos < 30_000_000_000L) return; // at most every 30 s
         lastGuardLogNanos = now;
-        LOGGER.info("Split of {} skipped: no cut line separates the entity load without slicing a cluster ({} entities)",
-                region, region.getOwnedEntityIds().size());
+        LOGGER.info("Split of {} skipped: no cut line separates load without slicing a cluster "
+                        + "({} entities, heat {}; hottest {})",
+                region, region.getOwnedEntityIds().size(),
+                String.format("%.1f", blockTickHeat.totalInRegion(region)),
+                blockTickHeat.hotspotSummary(region, 3));
     }
 
     /**

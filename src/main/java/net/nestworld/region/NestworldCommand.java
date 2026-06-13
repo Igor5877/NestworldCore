@@ -71,17 +71,22 @@ public final class NestworldCommand {
         src.sendSuccess(() -> Component.literal(String.format(
                 "NestWorld: %d active region(s), server %.1f ms/tick (%.1f TPS)",
                 regions.size(), serverMspt, Math.min(20.0, 1000.0 / Math.max(serverMspt, 0.001)))), false);
+        BlockTickHeat heat = sys.getBlockTickHeat();
         for (WorldRegion r : regions) {
             RegionThread thread = r.owningThread;
             int deferred = thread != null ? thread.getLastDeferredCount() : 0;
             int workDeferred = thread != null ? thread.getLastWorkDeferred() : 0;
+            double regionHeat = heat.totalInRegion(r);
             src.sendSuccess(() -> Component.literal(String.format(
-                    "  #%d chunks(%d,%d)-(%d,%d) cost=%.1fms entities=%d%s%s",
+                    "  #%d chunks(%d,%d)-(%d,%d) cost=%.1fms entities=%d%s%s%s",
                     r.getId(), r.getMinChunkX(), r.getMinChunkZ(),
                     r.getMaxChunkX(), r.getMaxChunkZ(),
                     r.getAvgTickMs(), r.getOwnedEntityIds().size(),
                     deferred > 0 ? " deferred=" + deferred : "",
-                    workDeferred > 0 ? " workDeferred=" + workDeferred : "")), false);
+                    workDeferred > 0 ? " workDeferred=" + workDeferred : "",
+                    regionHeat >= 1.0
+                            ? String.format(" heat=%.0f[%s]", regionHeat, heat.hotspotSummary(r, 3))
+                            : "")), false);
         }
         return regions.size();
     }

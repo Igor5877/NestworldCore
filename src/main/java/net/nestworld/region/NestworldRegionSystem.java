@@ -47,6 +47,9 @@ public class NestworldRegionSystem {
     private CrossRegionCapabilityBus capabilityBus;
     private RegionChunkView chunkView;
 
+    /** Per-chunk block-tick load signal, feeding the load-aware split scorer. */
+    private final BlockTickHeat blockTickHeat = new BlockTickHeat();
+
     private ServerLevel overworld;
 
     private NestworldRegionSystem() {}
@@ -107,10 +110,15 @@ public class NestworldRegionSystem {
         entityTransfer = new BoundaryEntityTransfer(overworld, grid);
         capabilityBus  = new CrossRegionCapabilityBus(overworld, grid, boundaryManager);
         chunkView      = new RegionChunkView(grid, boundaryManager);
-        splitManager   = new RegionSplitManager(tree, pool);
+        splitManager   = new RegionSplitManager(tree, pool, blockTickHeat);
 
         // Spawn the first region thread
         pool.spawn(initial);
+
+        if (System.getenv("NESTWORLD_CUT_TEST") != null
+                || Boolean.getBoolean("nestworld.cutTest")) {
+            RegionSplitManager.selfTest();
+        }
 
         LOGGER.info("NestWorld started — initial region: {}", initial);
     }
@@ -416,6 +424,10 @@ public class NestworldRegionSystem {
                                     java.util.Map<WorldRegion, java.util.List<Runnable>> buckets,
                                     java.util.List<Runnable> mainBucket) {
         int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
+        // Record block-tick load for the split scorer regardless of which side
+        // of the band it lands on — a hot column currently stuck in the band is
+        // exactly what we want the next split to see and route into an interior.
+        blockTickHeat.record(cx, cz);
         WorldRegion region = grid.getRegionForChunk(cx, cz);
         if (region != null
                 && cx >= region.getMinChunkX() + BORDER_BAND_CHUNKS && cx <= region.getMaxChunkX() - BORDER_BAND_CHUNKS
@@ -517,6 +529,7 @@ public class NestworldRegionSystem {
     public RegionTree getTree()                       { return tree; }
     public RegionThreadPool getPool()                 { return pool; }
     public RegionSplitManager getSplitManager()       { return splitManager; }
+    BlockTickHeat getBlockTickHeat()                  { return blockTickHeat; }
     public BoundarySignalQueue getSignalQueue()       { return signalQueue; }
     public BoundaryEntityTransfer getEntityTransfer() { return entityTransfer; }
     public CrossRegionCapabilityBus getCapabilityBus(){ return capabilityBus; }

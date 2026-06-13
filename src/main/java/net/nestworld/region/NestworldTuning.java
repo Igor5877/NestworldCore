@@ -33,6 +33,19 @@ public final class NestworldTuning {
     public static final long REGION_ENTITY_BUDGET_NANOS =
             Integer.getInteger("nestworld.regionEntityBudgetMs", 40) * 1_000_000L;
 
+    /**
+     * Weight of one unit of block-tick heat relative to one owned entity when
+     * the split scorer scores candidate cut lines (see {@link BlockTickHeat}).
+     * Block-tick heat is a decayed per-second count, so a busy redstone column
+     * accumulates far more units than it has entities; this scales it down so a
+     * single growth tick does not veto a split while a genuine machine still
+     * dominates a cut's band score. Tune from the per-region heat reported by
+     * {@code /nestworld status}. 0 disables block-tick awareness (entity-only,
+     * the pre-8e434bc70 behaviour).
+     */
+    public static final double CUT_HEAT_WEIGHT =
+            Double.parseDouble(System.getProperty("nestworld.cutHeatWeight", "0.15"));
+
     private NestworldTuning() {
     }
 }
