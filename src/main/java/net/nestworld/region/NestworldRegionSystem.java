@@ -180,6 +180,7 @@ public class NestworldRegionSystem {
             File parent = file.getParentFile();
             if (parent != null) parent.mkdirs();
             NbtIo.write(tree.writeNbt(), file);
+            lastSavedLayoutVersion = grid.getLayoutVersion();
             LOGGER.info("Saved region layout ({} region(s))",
                     tree.getActiveRegions().size());
         } catch (Throwable t) {
@@ -215,6 +216,15 @@ public class NestworldRegionSystem {
             Integer.parseInt(System.getenv().getOrDefault("NESTWORLD_AUTOSPLIT", "-1"));
     private long totalTicks = 0;
     private WorldRegion[] autosplitChildren = null;
+
+    // Periodic layout save: shutdown is the primary save point, but a crash
+    // between shutdowns would lose the topology and bring back the cold-start
+    // freeze. Re-save every interval, but only when the layout actually changed
+    // since the last write (a tiny NBT file, so the I/O is negligible).
+    private static final long LAYOUT_SAVE_INTERVAL_TICKS =
+            Long.getLong("nestworld.layoutSaveIntervalTicks", 6000L); // ~5 min
+    private long layoutSaveTickCounter = 0;
+    private int lastSavedLayoutVersion = -1;
 
     // Self-test driven by env var NESTWORLD_RANDOMTICK_TEST=<speed>: every tick
     // queues chunk (0,0) for random ticking through the exact production path
@@ -304,6 +314,12 @@ public class NestworldRegionSystem {
                     String.format("%.2f", phaseNanos[5] / 1e6 / timedTicks));
             java.util.Arrays.fill(phaseNanos, 0L);
             timedTicks = 0;
+        }
+
+        if (++layoutSaveTickCounter >= LAYOUT_SAVE_INTERVAL_TICKS) {
+            layoutSaveTickCounter = 0;
+            int layout = grid.getLayoutVersion();
+            if (layout != lastSavedLayoutVersion) saveLayout();
         }
     }
 
