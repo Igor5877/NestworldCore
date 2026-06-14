@@ -271,18 +271,27 @@ public class RegionSplitManager {
                                    : r.getMaxChunkZ() > r.getMinChunkZ();
     }
 
-    /** Builds {@code region}'s weighted load histogram on {@code axis} and scores it. */
+    /** Builds {@code region}'s weighted load histograms on {@code axis} and scores it. */
     private ScoredCut scoreAxis(WorldRegion region, SplitAxis axis) {
         int min = axis == SplitAxis.X ? region.getMinChunkX() : region.getMinChunkZ();
         int max = axis == SplitAxis.X ? region.getMaxChunkX() : region.getMaxChunkZ();
 
-        java.util.TreeMap<Integer, Double> hist = new java.util.TreeMap<>();
+        // Entity load decides WHERE to cut (balance the crowd); block-tick heat
+        // decides the band VETO — only block/BE/scheduled ticks in a border band
+        // run serially on main, so a hot column in a band is the thing to avoid.
+        // Entities in a band still tick on the region thread, so they must NOT
+        // contribute to the veto (else a uniform crowd, which has ~equal entities
+        // around every line, would never split).
+        java.util.TreeMap<Integer, Double> combined = new java.util.TreeMap<>();
         for (int c : ownedEntityChunkCoords(region, axis)) {
-            hist.merge(c, 1.0, Double::sum);
+            combined.merge(c, 1.0, Double::sum);
         }
-        blockTickHeat.addAxisHeat(region, axis, NestworldTuning.CUT_HEAT_WEIGHT, hist);
-
-        return scoreCut(min, max, hist);
+        java.util.TreeMap<Integer, Double> heat = new java.util.TreeMap<>();
+        blockTickHeat.addAxisHeat(region, axis, NestworldTuning.CUT_HEAT_WEIGHT, heat);
+        for (java.util.Map.Entry<Integer, Double> e : heat.entrySet()) {
+            combined.merge(e.getKey(), e.getValue(), Double::sum);
+        }
+        return scoreCut(min, max, combined, heat);
     }
 
     /** Which axis to cut on, and the last chunk coordinate kept by child A. */
@@ -320,23 +329,41 @@ public class RegionSplitManager {
      * and the gaps between them) are scored by how much load their 2×band would
      * swallow; the quietest line that still gives both children at least
      * {@link #MIN_SPLIT_SEPARATION_SHARE} wins, ties broken toward the weighted
-     * median. If even the best line would slice more than
-     * {@link #MAX_CUT_BAND_SHARE} of the load into a band, the region stays
-     * whole.
+     * median. Only block-tick <em>heat</em> counts toward a band's score and the
+     * stay-whole veto — entities in a band still tick on the region thread, so a
+     * dense entity crowd splits at its median; only a redstone/fluid machine that
+     * no line separates (more than {@link #MAX_CUT_BAND_SHARE} of the heat in the
+     * best line's band) keeps the region whole.
      */
-    static ScoredCut scoreCut(int min, int max, java.util.SortedMap<Integer, Double> hist) {
-        if (hist.isEmpty()) return new ScoredCut(SPATIAL_MIDPOINT, Double.NaN, false);
+    static ScoredCut scoreCut(int min, int max,
+                              java.util.SortedMap<Integer, Double> combined,
+                              java.util.SortedMap<Integer, Double> heat) {
+        if (combined.isEmpty()) return new ScoredCut(SPATIAL_MIDPOINT, Double.NaN, false);
 
-        int m = hist.size();
+        int m = combined.size();
         int[] coord = new int[m];
         double[] w = new double[m];
         double total = 0;
         int i = 0;
-        for (java.util.Map.Entry<Integer, Double> e : hist.entrySet()) {
+        for (java.util.Map.Entry<Integer, Double> e : combined.entrySet()) {
             coord[i] = e.getKey();
             w[i] = e.getValue();
             total += w[i];
             i++;
+        }
+
+        // Heat-only columns: the band veto must consider only block-tick load,
+        // since that is the only work a border band forces onto the main thread.
+        int mh = heat.size();
+        int[] hCoord = new int[mh];
+        double[] hW = new double[mh];
+        double totalHeat = 0;
+        int j = 0;
+        for (java.util.Map.Entry<Integer, Double> e : heat.entrySet()) {
+            hCoord[j] = e.getKey();
+            hW[j] = e.getValue();
+            totalHeat += hW[j];
+            j++;
         }
 
         int median = clampCut(weightedMedian(coord, w, total), min, max);
@@ -353,23 +380,29 @@ public class RegionSplitManager {
             }
         }
 
+        // Pick the line whose 2×band swallows the least block-tick HEAT (the only
+        // serial-on-main load); ties broken toward the weighted median so a pure
+        // entity crowd — heat band 0 on every line — splits right at its median.
         Integer best = null;
-        double bestBand = Double.MAX_VALUE;
+        double bestHeatBand = Double.MAX_VALUE;
         for (int raw : candidates) {
             int cut = clampCut(raw, min, max);
             double toA = weightAtMost(coord, w, cut);
             if (Math.min(toA, total - toA) < total * MIN_SPLIT_SEPARATION_SHARE) continue;
-            // Columns (cut-band, cut+band] land in one of the children's bands.
-            double band = weightAtMost(coord, w, cut + BORDER_BAND_CHUNKS)
-                        - weightAtMost(coord, w, cut - BORDER_BAND_CHUNKS);
-            if (band < bestBand
-                    || (band == bestBand && best != null && Math.abs(cut - median) < Math.abs(best - median))) {
-                bestBand = band;
+            double heatBand = weightAtMost(hCoord, hW, cut + BORDER_BAND_CHUNKS)
+                            - weightAtMost(hCoord, hW, cut - BORDER_BAND_CHUNKS);
+            if (heatBand < bestHeatBand
+                    || (heatBand == bestHeatBand && best != null
+                        && Math.abs(cut - median) < Math.abs(best - median))) {
+                bestHeatBand = heatBand;
                 best = cut;
             }
         }
-        if (best == null || bestBand > total * MAX_CUT_BAND_SHARE) return null;
-        return new ScoredCut(best, bestBand, true);
+        // Stay whole only when a hot block-tick column is unavoidable in a band
+        // (a redstone/fluid machine that no line cleanly separates). A dense
+        // entity crowd has totalHeat 0 → bestHeatBand 0 → never vetoed here.
+        if (best == null || bestHeatBand > totalHeat * MAX_CUT_BAND_SHARE) return null;
+        return new ScoredCut(best, bestHeatBand, true);
     }
 
     private static int clampCut(int c, int min, int max) {
@@ -418,44 +451,55 @@ public class RegionSplitManager {
         boolean ok = true;
 
         // Empty region → spatial midpoint sentinel.
-        ScoredCut empty = scoreCut(0, 24, hist());
+        ScoredCut empty = scoreCut(0, 24, hist(), hist());
         ok &= check("empty→midpoint", empty != null && empty.cut == SPATIAL_MIDPOINT && !empty.profiled);
 
-        // Two entity clusters with an empty gap 5..19: cut must land in the gap
-        // (band touches neither cluster) and split the load fairly.
+        // Two entity clusters (no heat) with a gap: cut separates them; the
+        // heat band is 0 (no block ticks anywhere).
         java.util.TreeMap<Integer, Double> twoClusters = new java.util.TreeMap<>();
         for (int c = 0; c <= 4; c++) twoClusters.merge(c, 20.0, Double::sum);
         for (int c = 20; c <= 24; c++) twoClusters.merge(c, 20.0, Double::sum);
-        ScoredCut gapCut = scoreCut(0, 24, twoClusters);
+        ScoredCut gapCut = scoreCut(0, 24, twoClusters, hist());
         ok &= check("gap: cut found", gapCut != null && gapCut.profiled);
-        ok &= check("gap: cut inside quiet zone", gapCut != null && gapCut.cut >= 7 && gapCut.cut <= 17);
-        ok &= check("gap: band is empty", gapCut != null && gapCut.band == 0.0);
+        // No heat anywhere → cut lands at the weighted median (inner edge of the
+        // first cluster) and separates the two clusters fairly; band heat is 0.
+        ok &= check("gap: separates clusters", gapCut != null && gapCut.cut >= 4 && gapCut.cut <= 20);
+        ok &= check("gap: heat band 0", gapCut != null && gapCut.band == 0.0);
 
-        // Single dense column (point hotspot, no gap): no fair cut exists, the
-        // region must stay whole (budget contains it).
-        ok &= check("point-hotspot→veto", scoreCut(0, 20, hist(10, 200.0)) == null);
+        // THE FIX: a dense uniform entity crowd (no heat) across 0..20 — every
+        // line has ~equal entities in its band, which previously tripped the
+        // band veto and left the region whole. With heat-only veto it now splits
+        // near its median.
+        java.util.TreeMap<Integer, Double> crowd = new java.util.TreeMap<>();
+        for (int c = 0; c <= 20; c++) crowd.merge(c, 20.0, Double::sum);
+        ScoredCut crowdCut = scoreCut(0, 20, crowd, hist());
+        ok &= check("entity crowd: splits (heat-only veto)", crowdCut != null && crowdCut.profiled);
+        ok &= check("entity crowd: cut near median",
+                crowdCut != null && crowdCut.cut >= 7 && crowdCut.cut <= 13);
 
-        // A block-tick machine (column 15, heat-only weight 100) plus entities
-        // in columns 0..9: the cut must route the machine into a child interior,
+        // Single dense entity column: no fair cut exists (separation), the region
+        // stays whole regardless of heat.
+        ok &= check("point-hotspot→veto", scoreCut(0, 20, hist(10, 200.0), hist()) == null);
+
+        // A block-tick machine (heat column 15, weight 100) plus entities in
+        // columns 0..9: the cut must route the machine into a child interior,
         // never leaving it inside a band. Cut 12 puts col 15 (>12+2) interior.
-        java.util.TreeMap<Integer, Double> machine = new java.util.TreeMap<>();
-        for (int c = 0; c <= 9; c++) machine.merge(c, 5.0, Double::sum);
-        machine.merge(15, 100.0, Double::sum); // heat-projected block-tick column
-        ScoredCut mCut = scoreCut(0, 30, machine);
+        java.util.TreeMap<Integer, Double> mCombined = new java.util.TreeMap<>();
+        for (int c = 0; c <= 9; c++) mCombined.merge(c, 5.0, Double::sum);
+        mCombined.merge(15, 100.0, Double::sum);
+        ScoredCut mCut = scoreCut(0, 30, mCombined, hist(15, 100.0));
         ok &= check("machine: cut found", mCut != null);
         ok &= check("machine: machine column out of band",
                 mCut != null && Math.abs(15 - mCut.cut) > BORDER_BAND_CHUNKS);
 
-        // Cross-axis selection: a machine elongated along one axis is a single
-        // inseparable hot column when projected onto that (long) axis — no fair
-        // cut, vetoed — but across its short axis the same machine shows a quiet
-        // gap that splits cleanly. loadAwareCut picks whichever axis yields the
-        // lower-band valid cut, so the perpendicular axis must rescue the split.
-        ok &= check("cross-axis: long axis vetoes", scoreCut(0, 30, hist(15, 200.0)) == null);
+        // A single inseparable hot heat column (a machine projected onto its long
+        // axis): no fair cut, vetoed. Across the short axis the same machine
+        // shows a quiet entity gap that splits cleanly (loadAwareCut picks it).
+        ok &= check("heat hotspot→veto", scoreCut(0, 30, hist(15, 200.0), hist(15, 200.0)) == null);
         java.util.TreeMap<Integer, Double> shortAxis = new java.util.TreeMap<>();
         for (int c = 0; c <= 4; c++) shortAxis.merge(c, 50.0, Double::sum);
         for (int c = 20; c <= 24; c++) shortAxis.merge(c, 50.0, Double::sum);
-        ScoredCut perp = scoreCut(0, 24, shortAxis);
+        ScoredCut perp = scoreCut(0, 24, shortAxis, hist());
         ok &= check("cross-axis: short axis valid", perp != null && perp.profiled);
 
         LOGGER.info("Cut scorer self-test: {}", ok ? "PASS" : "FAIL");
