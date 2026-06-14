@@ -36,8 +36,11 @@ O(n) wire-алгоритм замість ванільного каскаду: 3
 ## 7. Cap колізій (точкові хотспоти)
 N ентіті в 1 блоці = O(n²), шардинг не паралелить. Cap 8 сусідів/тік
 (`maxMinecartPush`/`maxEntityPush`). 500 вагонеток: 57.5→5мс.
-⚠️ Цей патч (`LivingEntity.getOtherPushableEntities`) КОНФЛІКТУЄ з Lithium-родиною
-(Canary/radium/lithium) — вони мікшать той самий метод. Прибрати один із них.
+✅ Сумісність із Lithium-родиною (Canary/radium/lithium): при `cap >= 0` (дефолт)
+працює наша межа, ванільний `getEntities`-виклик збережено в гілці `cap < 0` →
+їхній `@Redirect` знаходить ціль, інʼєкція проходить (сервер стартує без крашу).
+Хочеш віддати колізії моду — `-Dnestworld.maxEntityPush=-1` / `maxMinecartPush=-1`.
+Покрито: LivingEntity, Boat, AbstractMinecart (перевірено з Canary 0.3.3).
 
 ## 8. Thread-safety (умова для решти)
 ConcurrentEntitySectionStorage · ClassInstanceMultiMap→concurrent · EntityLookup→concurrent ·

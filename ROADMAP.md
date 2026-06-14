@@ -321,9 +321,9 @@
 ---
 
 ## Майбутня архітектура / порт на інші версії (план 2026-06-14)
-- **Конфлікт cap-колізій з Lithium-родиною** (Canary/radium/lithium): наш патч
-  `LivingEntity.getOtherPushableEntities` мікшать ці моди → Critical injection failure.
-  ФІКС-кандидат: винести cap у Mixin (як зробили з FFAPI), щоб не чіпати метод напряму.
+- ✅ **DONE: cap-колізій сумісний із Lithium-родиною** (Canary/radium/lithium):
+  cap гейтнуто `>= 0`; при `< 0` зберігається ванільний getEntities-виклик → їхній
+  @Redirect інʼєктиться. Покрито LivingEntity/Boat/AbstractMinecart, перевірено з Canary 0.3.3 (8f81d0ebc).
 - **Порт на інші версії — стратегія:** зараз форк Forge (source-патчі перекомпілюють MC)
   → версіє-специфічно + конфлікти. ПРАВИЛЬНИЙ ШЛЯХ: переписати інтеграцію як **Mixin/coremod**
   (JAR-мод, не форк) → портабельно між версіями + NeoForge, без конфліктів FFAPI/Canary
