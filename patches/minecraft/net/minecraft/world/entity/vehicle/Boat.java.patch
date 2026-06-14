@@ -9,13 +9,18 @@
     private static final EntityDataAccessor<Integer> f_38282_ = SynchedEntityData.m_135353_(Boat.class, EntityDataSerializers.f_135028_);
     private static final EntityDataAccessor<Integer> f_38283_ = SynchedEntityData.m_135353_(Boat.class, EntityDataSerializers.f_135028_);
     private static final EntityDataAccessor<Float> f_38284_ = SynchedEntityData.m_135353_(Boat.class, EntityDataSerializers.f_135029_);
-@@ -317,7 +_,8 @@
+@@ -317,7 +_,13 @@
        }
  
        this.m_20101_();
 -      List<Entity> list = this.m_9236_().m_6249_(this, this.m_20191_().m_82377_((double)0.2F, (double)-0.01F, (double)0.2F), EntitySelector.m_20421_(this));
-+      List<Entity> list = new java.util.ArrayList<>();
-+      this.m_9236_().m_260826_(net.minecraft.world.level.entity.EntityTypeTest.m_156916_(Entity.class), this.m_20191_().m_82377_((double)0.2F, (double)-0.01F, (double)0.2F), EntitySelector.m_20421_(this).and((nestworldOther) -> nestworldOther != this), list, net.nestworld.region.NestworldTuning.MAX_ENTITY_PUSH);
++      List<Entity> list;
++      if (net.nestworld.region.NestworldTuning.MAX_ENTITY_PUSH < 0) {
++         list = this.m_9236_().m_6249_(this, this.m_20191_().m_82377_((double)0.2F, (double)-0.01F, (double)0.2F), EntitySelector.m_20421_(this));
++      } else {
++         list = new java.util.ArrayList<>();
++         this.m_9236_().m_260826_(net.minecraft.world.level.entity.EntityTypeTest.m_156916_(Entity.class), this.m_20191_().m_82377_((double)0.2F, (double)-0.01F, (double)0.2F), EntitySelector.m_20421_(this).and((nestworldOther) -> nestworldOther != this), list, net.nestworld.region.NestworldTuning.MAX_ENTITY_PUSH);
++      }
        if (!list.isEmpty()) {
           boolean flag = !this.m_9236_().f_46443_ && !(this.m_6688_() instanceof Player);
  
