@@ -197,6 +197,13 @@
        }
     }
  
+@@ -802,3 +_,6 @@
+    public boolean m_7967_(Entity p_8837_) {
++      if (net.nestworld.region.NestworldRegionSystem.isInitialised() && this.m_46472_() == net.minecraft.world.level.Level.f_46428_ && Thread.currentThread() instanceof net.nestworld.region.RegionThread) {
++         return net.nestworld.region.NestworldRegionSystem.get().queueEntitySpawn(p_8837_);
++      }
+       return this.m_8872_(p_8837_);
+    }
 @@ -828,6 +_,7 @@
     }
  

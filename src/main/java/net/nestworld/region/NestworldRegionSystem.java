@@ -58,6 +58,11 @@ public class NestworldRegionSystem {
     /** Entity types pinned to main-thread ticking (mod-compat escape hatch). */
     private final NestworldPins pins = new NestworldPins();
 
+    /** Entities spawned by region threads (off-main addFreshEntity), drained on
+     *  main each tick so ChunkMap entity tracking is never mutated concurrently. */
+    private final java.util.Queue<net.minecraft.world.entity.Entity> deferredSpawns =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+
     private ServerLevel overworld;
     private MinecraftServer server;
 
@@ -214,6 +219,25 @@ public class NestworldRegionSystem {
 
     public NestworldPins getPins() { return pins; }
 
+    /** Called from a region thread's addFreshEntity (overworld): queue the spawn
+     *  for main-thread registration instead of mutating ChunkMap off-main. */
+    public boolean queueEntitySpawn(net.minecraft.world.entity.Entity e) {
+        deferredSpawns.add(e);
+        return true;
+    }
+
+    /** Main-thread: register all entities region threads spawned this tick. */
+    private void drainDeferredSpawns() {
+        net.minecraft.world.entity.Entity e;
+        while ((e = deferredSpawns.poll()) != null) {
+            try {
+                overworld.addFreshEntity(e);
+            } catch (Throwable t) {
+                LOGGER.warn("Deferred entity spawn failed: {}", t.toString());
+            }
+        }
+    }
+
     /**
      * Reads the saved layout, or returns null if there is none / it is
      * unreadable (first boot, or a world that predates persistence). A corrupt
@@ -357,6 +381,11 @@ public class NestworldRegionSystem {
 
         // 5. Refresh ghost zones (runs while region threads are paused at barrier)
         boundaryManager.syncGhostZones();
+        // 5b. Register entities that region threads spawned this tick (queued to
+        // avoid corrupting ChunkMap's non-thread-safe entity tracking while the
+        // main thread ran it during overworld.tick). Region threads are idle at
+        // the barrier here, so this is the safe point to add them on main.
+        drainDeferredSpawns();
         long t5 = System.nanoTime();
 
         // 6. Adaptive split / merge
