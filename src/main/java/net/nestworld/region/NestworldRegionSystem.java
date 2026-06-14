@@ -420,6 +420,46 @@ public class NestworldRegionSystem {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Block events — phase 2c. The vanilla blockEvents() (m_8807_) drains the
+    // f_8556_ queue and executes each piston/note-block/chest event on main.
+    // We route the same way as scheduled ticks: interior events run on their
+    // region's thread in parallel; border-band or unowned events run on main
+    // first (events write blocks and can cascade across borders, same reach
+    // argument as scheduled ticks). Events whose chunk is no longer tickable
+    // are rescheduled; successful events broadcast their packet.
+    // -----------------------------------------------------------------------
+
+    /** Drains and runs the level's block-event queue, bucketed per region. */
+    public void runBlockEventsPhase(ServerLevel level) {
+        java.util.List<net.minecraft.world.level.BlockEventData> due =
+                level.nestworldDrainBlockEvents();
+        if (due.isEmpty()) return;
+
+        java.util.Map<WorldRegion, java.util.List<Runnable>> buckets = new java.util.IdentityHashMap<>();
+        java.util.List<Runnable> mainBucket = new java.util.ArrayList<>();
+        for (net.minecraft.world.level.BlockEventData e : due) {
+            Runnable run = () -> {
+                if (level.nestworldShouldTickBlocksAt(e.pos())) {
+                    if (level.nestworldDoBlockEvent(e)) {
+                        level.nestworldBroadcastBlockEvent(e);
+                    }
+                } else {
+                    level.nestworldRescheduleBlockEvent(e);
+                }
+            };
+            routeScheduledTick(e.pos(), run, buckets, mainBucket);
+        }
+        for (Runnable r : mainBucket) {
+            try {
+                r.run();
+            } catch (Throwable t) {
+                LOGGER.warn("Main-band block event failed: {}", t.toString());
+            }
+        }
+        pool.runWorkRound(buckets);
+    }
+
     private void routeScheduledTick(net.minecraft.core.BlockPos pos, Runnable run,
                                     java.util.Map<WorldRegion, java.util.List<Runnable>> buckets,
                                     java.util.List<Runnable> mainBucket) {

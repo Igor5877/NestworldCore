@@ -60,8 +60,13 @@
 +         }
           profilerfiller.m_7238_();
        }
-@@ -305,7 +_,7 @@
-       this.m_8807_();
+@@ -305,7 +_,11 @@
+-      this.m_8807_();
++      if (net.nestworld.region.NestworldRegionSystem.isInitialised() && this.m_46472_() == net.minecraft.world.level.Level.f_46428_) {
++         net.nestworld.region.NestworldRegionSystem.get().runBlockEventsPhase(this);
++      } else {
++         this.m_8807_();
++      }
        this.f_8557_ = false;
        profilerfiller.m_7238_();
 -      boolean flag = !this.f_8546_.isEmpty() || !this.m_8902_().isEmpty();
@@ -284,13 +289,39 @@
     }
  
     public void m_7605_(Entity p_8650_, byte p_8651_) {
-@@ -985,6 +_,8 @@
+@@ -985,6 +_,34 @@
  
     public void m_7696_(BlockPos p_8746_, Block p_8747_, int p_8748_, int p_8749_) {
 -      this.f_8556_.add(new BlockEventData(p_8746_, p_8747_, p_8748_, p_8749_));
 +      synchronized (this.f_8556_) {
 +         this.f_8556_.add(new BlockEventData(p_8746_, p_8747_, p_8748_, p_8749_));
 +      }
++   }
++
++   public java.util.List<BlockEventData> nestworldDrainBlockEvents() {
++      synchronized (this.f_8556_) {
++         java.util.List<BlockEventData> due = new java.util.ArrayList<>(this.f_8556_);
++         this.f_8556_.clear();
++         return due;
++      }
++   }
++
++   public boolean nestworldShouldTickBlocksAt(BlockPos pos) {
++      return this.m_220393_(pos);
++   }
++
++   public boolean nestworldDoBlockEvent(BlockEventData e) {
++      return this.m_8698_(e);
++   }
++
++   public void nestworldRescheduleBlockEvent(BlockEventData e) {
++      synchronized (this.f_8556_) {
++         this.f_8556_.add(e);
++      }
++   }
++
++   public void nestworldBroadcastBlockEvent(BlockEventData e) {
++      this.f_8548_.m_6846_().m_11241_((Player)null, (double)e.f_45529_().m_123341_(), (double)e.f_45529_().m_123342_(), (double)e.f_45529_().m_123343_(), 64.0D, this.m_46472_(), new ClientboundBlockEventPacket(e.f_45529_(), e.f_45530_(), e.f_45531_(), e.f_45532_()));
     }
  
     private void m_8807_() {
