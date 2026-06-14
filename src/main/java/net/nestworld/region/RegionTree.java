@@ -1,5 +1,7 @@
 package net.nestworld.region;
 
+import net.minecraft.nbt.CompoundTag;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -23,6 +25,20 @@ public class RegionTree {
         this.grid = grid;
         this.root = new Leaf(initialRegion);
         grid.register(initialRegion);
+    }
+
+    /**
+     * Rebuilds a tree from a previously-saved layout (see {@link #writeNbt()}).
+     * Every leaf is given a fresh region id and registered in {@code grid};
+     * callers must spawn a RegionThread per active region afterwards. The tree
+     * structure (split axes and nesting) is preserved so the saved topology can
+     * later merge back exactly as it would have if grown from scratch — this is
+     * what lets the server boot straight into a sharded layout instead of
+     * spending the first ~100 ticks as one whole-world region on one thread.
+     */
+    public RegionTree(WorldGrid grid, CompoundTag saved) {
+        this.grid = grid;
+        this.root = readNode(saved.getCompound("root"));
     }
 
     // --- Public API ---
@@ -179,6 +195,57 @@ public class RegionTree {
             replaceNode(b.left, b, target, replacement);
             replaceNode(b.right, b, target, replacement);
         }
+    }
+
+    // --- Persistence ---
+
+    /**
+     * Serialises the whole BSP structure (branch axes + leaf rectangles and
+     * their pinned flag) to NBT. Region ids and live tick/ownership state are
+     * deliberately NOT saved — they are recreated fresh on load.
+     */
+    public CompoundTag writeNbt() {
+        lock.readLock().lock();
+        try {
+            CompoundTag tag = new CompoundTag();
+            tag.put("root", writeNode(root));
+            return tag;
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    private CompoundTag writeNode(Node node) {
+        CompoundTag t = new CompoundTag();
+        if (node instanceof Leaf l) {
+            WorldRegion r = l.region;
+            t.putString("type", "leaf");
+            t.putInt("minX", r.getMinChunkX());
+            t.putInt("minZ", r.getMinChunkZ());
+            t.putInt("maxX", r.getMaxChunkX());
+            t.putInt("maxZ", r.getMaxChunkZ());
+            t.putBoolean("pinned", r.pinned);
+        } else if (node instanceof Branch b) {
+            t.putString("type", "branch");
+            t.putString("axis", b.axis.name());
+            t.put("left", writeNode(b.left));
+            t.put("right", writeNode(b.right));
+        }
+        return t;
+    }
+
+    private Node readNode(CompoundTag t) {
+        if ("branch".equals(t.getString("type"))) {
+            SplitAxis axis = SplitAxis.valueOf(t.getString("axis"));
+            Node left = readNode(t.getCompound("left"));
+            Node right = readNode(t.getCompound("right"));
+            return new Branch(axis, left, right);
+        }
+        WorldRegion r = new WorldRegion(grid.nextId(),
+                t.getInt("minX"), t.getInt("minZ"), t.getInt("maxX"), t.getInt("maxZ"));
+        r.pinned = t.getBoolean("pinned");
+        grid.register(r);
+        return new Leaf(r);
     }
 
     // --- Node types ---

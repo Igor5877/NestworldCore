@@ -1,9 +1,14 @@
 package net.nestworld.region;
 
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.NbtIo;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.storage.LevelResource;
 
+import java.io.File;
+import java.nio.file.Path;
 import java.util.function.BooleanSupplier;
 import net.minecraftforge.event.server.ServerStartingEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
@@ -51,6 +56,7 @@ public class NestworldRegionSystem {
     private final BlockTickHeat blockTickHeat = new BlockTickHeat();
 
     private ServerLevel overworld;
+    private MinecraftServer server;
 
     private NestworldRegionSystem() {}
 
@@ -91,20 +97,30 @@ public class NestworldRegionSystem {
     private void init(MinecraftServer server) {
         LOGGER.info("Initialising NestWorld region sharding system…");
 
+        this.server = server;
         overworld = server.getLevel(Level.OVERWORLD);
         if (overworld == null) {
             LOGGER.error("Overworld not available — region system disabled");
             return;
         }
 
-        // Start with one region covering the whole world; adaptive splits
-        // subdivide it as load appears.
         grid           = new WorldGrid();
-        int r = INITIAL_REGION_HALF_SPAN;
-        WorldRegion initial = new WorldRegion(grid.nextId(), -r, -r, r, r);
-
-        tree           = new RegionTree(grid, initial);
         pool           = new RegionThreadPool(overworld);
+
+        // Boot straight into the saved layout if there is one; otherwise start
+        // with a single whole-world region and let adaptive splits grow it.
+        // The tree only registers regions in the grid here — threads are
+        // spawned below, after every subsystem a RegionThread tick may touch
+        // (boundary/ghost zones, entity transfer) has been constructed.
+        CompoundTag saved = loadSavedLayout();
+        boolean restored = saved != null;
+        if (restored) {
+            tree = new RegionTree(grid, saved);
+        } else {
+            int r = INITIAL_REGION_HALF_SPAN;
+            tree = new RegionTree(grid, new WorldRegion(grid.nextId(), -r, -r, r, r));
+        }
+
         boundaryManager = new BoundaryManager(overworld, grid);
         signalQueue    = new BoundarySignalQueue(overworld);
         entityTransfer = new BoundaryEntityTransfer(overworld, grid);
@@ -112,15 +128,63 @@ public class NestworldRegionSystem {
         chunkView      = new RegionChunkView(grid, boundaryManager);
         splitManager   = new RegionSplitManager(tree, pool, blockTickHeat);
 
-        // Spawn the first region thread
-        pool.spawn(initial);
+        java.util.List<WorldRegion> regions = tree.getActiveRegions();
+        for (WorldRegion region : regions) pool.spawn(region);
 
         if (System.getenv("NESTWORLD_CUT_TEST") != null
                 || Boolean.getBoolean("nestworld.cutTest")) {
             RegionSplitManager.selfTest();
         }
 
-        LOGGER.info("NestWorld started — initial region: {}", initial);
+        if (restored) {
+            LOGGER.info("NestWorld restored saved layout — {} region(s): {}",
+                    regions.size(), regions);
+        } else {
+            LOGGER.info("NestWorld started — initial region: {}", regions.get(0));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Persistent region layout
+    // -----------------------------------------------------------------------
+
+    /** NBT file holding the saved BSP layout, under the world's data folder. */
+    private Path layoutFile() {
+        return server.getWorldPath(LevelResource.ROOT)
+                .resolve("data").resolve("nestworld-regions.dat");
+    }
+
+    /**
+     * Reads the saved layout, or returns null if there is none / it is
+     * unreadable (first boot, or a world that predates persistence). A corrupt
+     * file must never block startup — we just fall back to a single region.
+     */
+    private CompoundTag loadSavedLayout() {
+        File file = layoutFile().toFile();
+        if (!file.isFile()) return null;
+        try {
+            CompoundTag tag = NbtIo.read(file);
+            return (tag != null && tag.contains("root")) ? tag : null;
+        } catch (Throwable t) {
+            LOGGER.warn("Could not read saved region layout ({}) — starting fresh",
+                    t.toString());
+            return null;
+        }
+    }
+
+    /** Writes the current BSP layout so the next boot starts already sharded. */
+    private void saveLayout() {
+        if (tree == null) return;
+        try {
+            File file = layoutFile().toFile();
+            File parent = file.getParentFile();
+            if (parent != null) parent.mkdirs();
+            NbtIo.write(tree.writeNbt(), file);
+            LOGGER.info("Saved region layout ({} region(s))",
+                    tree.getActiveRegions().size());
+        } catch (Throwable t) {
+            LOGGER.warn("Could not save region layout: {}", t.toString());
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -555,6 +619,9 @@ public class NestworldRegionSystem {
 
     private void shutdown() {
         LOGGER.info("Shutting down NestWorld region threads…");
+        // Persist the layout before tearing threads down so the next boot skips
+        // the cold-start freeze (whole world on one thread until splits catch up).
+        saveLayout();
         for (RegionThread t : pool.getThreads()) {
             t.shutdown();
         }
