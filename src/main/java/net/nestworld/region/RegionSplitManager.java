@@ -160,10 +160,12 @@ public class RegionSplitManager {
      * Returns the children, or null if the region cannot be split.
      */
     public WorldRegion[] doSplit(WorldRegion region) {
-        Integer cut = loadAwareCut(region);
+        CutChoice choice = loadAwareCut(region);
         // Manual /nestworld split bypasses the hotspot veto: fall back to the
-        // raw median so an operator can still force any cut.
-        WorldRegion[] children = tree.split(region, cut != null ? cut : entityMedianCut(region));
+        // raw median on the preferred axis so an operator can still force a cut.
+        WorldRegion[] children = (choice != null)
+                ? tree.split(region, choice.axis, choice.cut)
+                : tree.split(region, entityMedianCut(region));
         if (children == null) return null; // at min size or not in tree
 
         pool.remove(region);
@@ -176,9 +178,10 @@ public class RegionSplitManager {
             children[0].addEntity(uuid);
         }
 
-        LOGGER.info("Split {} -> [{}, {}]  (cost was {} ms; {} entities, heat {}; hottest {})",
+        LOGGER.info("Split {} -> [{}, {}]  (cost was {} ms; {} entities, heat {}; cut {} axis; hottest {})",
                 region, children[0], children[1], String.format("%.1f", region.getAvgTickMs()),
                 region.getOwnedEntityIds().size(), String.format("%.1f", blockTickHeat.totalInRegion(region)),
+                choice != null ? choice.axis : region.preferredSplitAxis(),
                 blockTickHeat.hotspotSummary(region, 3));
         return children;
     }
@@ -234,8 +237,42 @@ public class RegionSplitManager {
      *         through a band — the region stays whole (the per-tick budget
      *         contains it instead).
      */
-    private Integer loadAwareCut(WorldRegion region) {
-        SplitAxis axis = region.preferredSplitAxis();
+    private CutChoice loadAwareCut(WorldRegion region) {
+        SplitAxis pref = region.preferredSplitAxis();
+        SplitAxis perp = pref == SplitAxis.X ? SplitAxis.Z : SplitAxis.X;
+
+        ScoredCut sp = scoreAxis(region, pref);
+        // Unprofiled (empty region, or load below GUARD_MIN_LOAD): keep the
+        // weighted-median cut on the preferred axis and let the per-tick budget
+        // contain whatever little cost there is. Total load is axis-independent,
+        // so the perpendicular axis is unprofiled too — no point scoring it.
+        if (sp != null && !sp.profiled) return new CutChoice(pref, sp.cut);
+
+        // Both axes are profiled (or vetoed). Score the perpendicular axis too
+        // when it has room to cut, then take whichever valid line swallows the
+        // least load into its border band. A redstone/fluid machine elongated
+        // along the long axis often has no clean line there but a quiet gap
+        // across its short axis — single-axis scoring left its edge column in a
+        // band (serial on main); cross-axis scoring routes it into an interior.
+        ScoredCut se = axisSplittable(region, perp) ? scoreAxis(region, perp) : null;
+
+        CutChoice best = null;
+        double bestBand = Double.MAX_VALUE;
+        if (sp != null && sp.profiled)            { best = new CutChoice(pref, sp.cut); bestBand = sp.band; }
+        if (se != null && se.profiled && se.band < bestBand) {
+            best = new CutChoice(perp, se.cut);   bestBand = se.band;
+        }
+        return best; // null → no axis separates the load; region stays whole
+    }
+
+    /** True when {@code axis} spans more than one chunk in this region (room to cut). */
+    private static boolean axisSplittable(WorldRegion r, SplitAxis axis) {
+        return axis == SplitAxis.X ? r.getMaxChunkX() > r.getMinChunkX()
+                                   : r.getMaxChunkZ() > r.getMinChunkZ();
+    }
+
+    /** Builds {@code region}'s weighted load histogram on {@code axis} and scores it. */
+    private ScoredCut scoreAxis(WorldRegion region, SplitAxis axis) {
         int min = axis == SplitAxis.X ? region.getMinChunkX() : region.getMinChunkZ();
         int max = axis == SplitAxis.X ? region.getMaxChunkX() : region.getMaxChunkZ();
 
@@ -246,6 +283,28 @@ public class RegionSplitManager {
         blockTickHeat.addAxisHeat(region, axis, NestworldTuning.CUT_HEAT_WEIGHT, hist);
 
         return scoreCut(min, max, hist);
+    }
+
+    /** Which axis to cut on, and the last chunk coordinate kept by child A. */
+    static final class CutChoice {
+        final SplitAxis axis;
+        final int cut;
+        CutChoice(SplitAxis axis, int cut) { this.axis = axis; this.cut = cut; }
+    }
+
+    /**
+     * The outcome of scoring one axis: the chosen cut coordinate and how much
+     * load its 2×band would swallow, so {@link #loadAwareCut} can compare the
+     * two axes. {@code profiled} is false for the empty/below-guard cases where
+     * {@code band} is not meaningful (and is the same on both axes anyway).
+     */
+    static final class ScoredCut {
+        final int cut;          // chunk coord on the scored axis, or SPATIAL_MIDPOINT
+        final double band;      // load inside the cut's 2×band; NaN when unprofiled
+        final boolean profiled;
+        ScoredCut(int cut, double band, boolean profiled) {
+            this.cut = cut; this.band = band; this.profiled = profiled;
+        }
     }
 
     /**
@@ -265,8 +324,8 @@ public class RegionSplitManager {
      * {@link #MAX_CUT_BAND_SHARE} of the load into a band, the region stays
      * whole.
      */
-    static Integer scoreCut(int min, int max, java.util.SortedMap<Integer, Double> hist) {
-        if (hist.isEmpty()) return SPATIAL_MIDPOINT;
+    static ScoredCut scoreCut(int min, int max, java.util.SortedMap<Integer, Double> hist) {
+        if (hist.isEmpty()) return new ScoredCut(SPATIAL_MIDPOINT, Double.NaN, false);
 
         int m = hist.size();
         int[] coord = new int[m];
@@ -283,7 +342,7 @@ public class RegionSplitManager {
         int median = clampCut(weightedMedian(coord, w, total), min, max);
         // Too little load to profile: keep the weighted-median cut (a low-cost
         // region is still allowed to split, the budget contains any hotspot).
-        if (total < GUARD_MIN_LOAD) return median;
+        if (total < GUARD_MIN_LOAD) return new ScoredCut(median, Double.NaN, false);
 
         java.util.TreeSet<Integer> candidates = new java.util.TreeSet<>();
         for (int k = 0; k < m; k++) {
@@ -310,7 +369,7 @@ public class RegionSplitManager {
             }
         }
         if (best == null || bestBand > total * MAX_CUT_BAND_SHARE) return null;
-        return best;
+        return new ScoredCut(best, bestBand, true);
     }
 
     private static int clampCut(int c, int min, int max) {
@@ -359,17 +418,18 @@ public class RegionSplitManager {
         boolean ok = true;
 
         // Empty region → spatial midpoint sentinel.
-        ok &= check("empty→midpoint", scoreCut(0, 24, hist()) != null
-                && scoreCut(0, 24, hist()) == SPATIAL_MIDPOINT);
+        ScoredCut empty = scoreCut(0, 24, hist());
+        ok &= check("empty→midpoint", empty != null && empty.cut == SPATIAL_MIDPOINT && !empty.profiled);
 
         // Two entity clusters with an empty gap 5..19: cut must land in the gap
         // (band touches neither cluster) and split the load fairly.
         java.util.TreeMap<Integer, Double> twoClusters = new java.util.TreeMap<>();
         for (int c = 0; c <= 4; c++) twoClusters.merge(c, 20.0, Double::sum);
         for (int c = 20; c <= 24; c++) twoClusters.merge(c, 20.0, Double::sum);
-        Integer gapCut = scoreCut(0, 24, twoClusters);
-        ok &= check("gap: cut found", gapCut != null);
-        ok &= check("gap: cut inside quiet zone", gapCut != null && gapCut >= 7 && gapCut <= 17);
+        ScoredCut gapCut = scoreCut(0, 24, twoClusters);
+        ok &= check("gap: cut found", gapCut != null && gapCut.profiled);
+        ok &= check("gap: cut inside quiet zone", gapCut != null && gapCut.cut >= 7 && gapCut.cut <= 17);
+        ok &= check("gap: band is empty", gapCut != null && gapCut.band == 0.0);
 
         // Single dense column (point hotspot, no gap): no fair cut exists, the
         // region must stay whole (budget contains it).
@@ -381,10 +441,22 @@ public class RegionSplitManager {
         java.util.TreeMap<Integer, Double> machine = new java.util.TreeMap<>();
         for (int c = 0; c <= 9; c++) machine.merge(c, 5.0, Double::sum);
         machine.merge(15, 100.0, Double::sum); // heat-projected block-tick column
-        Integer mCut = scoreCut(0, 30, machine);
+        ScoredCut mCut = scoreCut(0, 30, machine);
         ok &= check("machine: cut found", mCut != null);
         ok &= check("machine: machine column out of band",
-                mCut != null && Math.abs(15 - mCut) > BORDER_BAND_CHUNKS);
+                mCut != null && Math.abs(15 - mCut.cut) > BORDER_BAND_CHUNKS);
+
+        // Cross-axis selection: a machine elongated along one axis is a single
+        // inseparable hot column when projected onto that (long) axis — no fair
+        // cut, vetoed — but across its short axis the same machine shows a quiet
+        // gap that splits cleanly. loadAwareCut picks whichever axis yields the
+        // lower-band valid cut, so the perpendicular axis must rescue the split.
+        ok &= check("cross-axis: long axis vetoes", scoreCut(0, 30, hist(15, 200.0)) == null);
+        java.util.TreeMap<Integer, Double> shortAxis = new java.util.TreeMap<>();
+        for (int c = 0; c <= 4; c++) shortAxis.merge(c, 50.0, Double::sum);
+        for (int c = 20; c <= 24; c++) shortAxis.merge(c, 50.0, Double::sum);
+        ScoredCut perp = scoreCut(0, 24, shortAxis);
+        ok &= check("cross-axis: short axis valid", perp != null && perp.profiled);
 
         LOGGER.info("Cut scorer self-test: {}", ok ? "PASS" : "FAIL");
         return ok;

@@ -58,14 +58,27 @@ public class RegionTree {
      * they can never merge back.
      */
     public WorldRegion[] split(WorldRegion region, int cut) {
+        return split(region, region.preferredSplitAxis(), cut);
+    }
+
+    /**
+     * Splits {@code region} along an explicit {@code axis} at the given cut.
+     * Identical to {@link #split(WorldRegion, int)} but lets the load-aware
+     * scorer pick the perpendicular (shorter) axis when that yields a cleaner
+     * separation than the preferred one — e.g. a machine elongated along the
+     * long axis is best cut across its short axis. Returns null if that axis
+     * has only one chunk to give (no room to cut).
+     */
+    public WorldRegion[] split(WorldRegion region, SplitAxis axis, int cut) {
         lock.writeLock().lock();
         try {
             Leaf leaf = findLeaf(root, region);
             if (leaf == null || !region.canSplit()) return null;
 
-            SplitAxis axis = region.preferredSplitAxis();
             int minX = region.getMinChunkX(), maxX = region.getMaxChunkX();
             int minZ = region.getMinChunkZ(), maxZ = region.getMaxChunkZ();
+            // The chosen axis must have at least two chunks to divide.
+            if (axis == SplitAxis.X ? maxX == minX : maxZ == minZ) return null;
 
             WorldRegion childA, childB;
             if (axis == SplitAxis.X) {
