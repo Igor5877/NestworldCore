@@ -219,6 +219,10 @@
       після аудиту глибини каскадів.
 
 ### Сумісність із модами (стратегія: працює "з коробки" або пінується)
+> Тріада пінінгу ПОВНА (2026-06-14): тип ентіті + тип BE + modid цілком
+> (`/nestworld pinmod <ns>`, 0d7231315 — пінить усі ентіті й BE неймспейсу;
+> файл `nestworld-pinned-mods.txt`; verified pinmod minecraft → region 114→0,
+> BE 50→main, unpinmod реверс). Плюс opt-in auto-pin за помилками.
 - [x] ~~**Thread-pinning конфіг (ентіті)**~~ — зроблено (2026-06-14):
       `NestworldPins` тримає Set<EntityType> (швидка перевірка) + Set<id>
       (персистенс у `<world>/data/nestworld-pins.txt`, людино-редагований).
