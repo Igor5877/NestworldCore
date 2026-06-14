@@ -27,6 +27,10 @@ public class RegionThread extends Thread {
     private static final Logger LOGGER = LogManager.getLogger("NestWorld/RegionThread");
 
     /** Entity tick errors that have logged a full stack (across all regions). */
+    /** Test-only: region id whose thread crashes every tick (-Dnestworld.crashTestRegion). */
+    private static final int CRASH_TEST_REGION =
+            Integer.getInteger("nestworld.crashTestRegion", -1);
+
     private static final java.util.concurrent.atomic.AtomicInteger TICK_ERROR_STACKS =
             new java.util.concurrent.atomic.AtomicInteger(0);
 
@@ -190,6 +194,12 @@ public class RegionThread extends Thread {
                 long stamp = region.getChunkLock().writeLock();
                 try {
                     clearChunkCache(); // chunks may have unloaded since last tick
+                    // Test hook: force this region's thread to crash every tick,
+                    // exercising the pool's backoff + disable path.
+                    if (CRASH_TEST_REGION == region.getId()) {
+                        throw new RuntimeException("nestworld crash-test injection (region "
+                                + region.getId() + ")");
+                    }
                     if (work != null) {
                         runWorkBudgeted(work);
                     } else {

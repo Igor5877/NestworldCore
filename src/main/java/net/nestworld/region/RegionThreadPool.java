@@ -163,21 +163,60 @@ public class RegionThreadPool {
     // Crash recovery
     // -----------------------------------------------------------------------
 
+    // Crash isolation: a region whose thread keeps dying must not respawn-loop
+    // forever (spamming crashes, never ticking). After MAX_CRASHES within
+    // CRASH_WINDOW_MS we stop respawning it and disable the region — its
+    // entities/blocks freeze, but the rest of the server keeps running instead
+    // of being dragged into an endless crash cycle. Touched only from the main
+    // thread (respawnCrashedThreads runs once per tick), so plain maps are fine.
+    private static final int MAX_CRASHES =
+            Integer.getInteger("nestworld.maxRegionCrashes", 5);
+    private static final long CRASH_WINDOW_MS = 300_000L; // 5 min
+    private final java.util.Map<Integer, java.util.Deque<Long>> crashTimes =
+            new java.util.HashMap<>();
+    private final java.util.Set<Integer> disabledRegions =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** Region ids that crashed too often and are no longer ticked (for status). */
+    public java.util.Set<Integer> getDisabledRegions() { return disabledRegions; }
+
     private void respawnCrashedThreads() {
         for (RegionThread t : threads) {
-            if (!t.isAlive()) {
-                LOGGER.warn("Thread {} is dead — respawning in 5 s", t.getName());
-                WorldRegion region = t.region;
-                threads.remove(t);
+            if (t.isAlive()) continue;
+            WorldRegion region = t.region;
+            int id = region.getId();
+            threads.remove(t);
 
-                Thread respawner = new Thread(() -> {
-                    try { Thread.sleep(5_000); } catch (InterruptedException ignored) {}
-                    spawn(region);
-                    LOGGER.info("Respawned RegionThread for {}", region);
-                }, "NestWorld-Respawner-" + region.getId());
-                respawner.setDaemon(true);
-                respawner.start();
+            long now = System.currentTimeMillis();
+            java.util.Deque<Long> times = crashTimes.computeIfAbsent(id, k -> new java.util.ArrayDeque<>());
+            times.addLast(now);
+            while (!times.isEmpty() && now - times.peekFirst() > CRASH_WINDOW_MS) times.removeFirst();
+            int recent = times.size();
+
+            if (recent > MAX_CRASHES) {
+                if (disabledRegions.add(id)) {
+                    LOGGER.error("Region {} crashed {} times in {} min — DISABLING it. Its "
+                            + "entities/blocks will not tick until a restart or you "
+                            + "/nestworld merge it into a neighbour. The rest of the server keeps "
+                            + "running. (Enable -Dnestworld.autoPin=true to pin the offending "
+                            + "entity type instead.)", id, recent, CRASH_WINDOW_MS / 60_000);
+                }
+                continue;
             }
+
+            // Exponential backoff: 5s, 10s, 20s, 40s, capped at 60s.
+            long delayMs = Math.min(5_000L * (1L << (recent - 1)), 60_000L);
+            LOGGER.warn("Region {} thread died (crash {}/{} in window) — respawning in {} s",
+                    id, recent, MAX_CRASHES, delayMs / 1000);
+            Thread respawner = new Thread(() -> {
+                try { Thread.sleep(delayMs); } catch (InterruptedException ignored) { return; }
+                if (!disabledRegions.contains(id)) {
+                    spawn(region);
+                    LOGGER.info("Respawned RegionThread for region {}", id);
+                }
+            }, "NestWorld-Respawner-" + id);
+            respawner.setDaemon(true);
+            respawner.start();
         }
     }
 
