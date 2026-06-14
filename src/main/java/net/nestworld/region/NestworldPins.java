@@ -61,6 +61,11 @@ public final class NestworldPins {
     private final int autoPinThreshold;
     private final ConcurrentHashMap<EntityType<?>, AtomicInteger> errorCounts =
             new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, AtomicInteger> beErrorCounts =
+            new ConcurrentHashMap<>();
+
+    /** True when auto-pin is enabled (lets the BE phase skip wrapping tickers). */
+    public boolean isAutoPinEnabled() { return autoPin; }
 
     private Path file;
 
@@ -178,6 +183,24 @@ public final class NestworldPins {
         return true;
     }
 
+    /**
+     * Records that a block entity of {@code typeId} (its
+     * {@link net.minecraft.world.level.block.entity.TickingBlockEntity#getType()}
+     * registry-id string) threw on a region thread. Pins the BE type to main at
+     * the threshold. No-op unless auto-pin is enabled. Thread-safe.
+     */
+    public boolean noteBlockEntityTickError(String typeId) {
+        if (!autoPin || typeId == null || pinnedBeIds.contains(typeId)) return false;
+        int count = beErrorCounts.computeIfAbsent(typeId, k -> new AtomicInteger()).incrementAndGet();
+        if (count < autoPinThreshold) return false;
+        if (!pinnedBeIds.add(typeId)) return false; // pinned concurrently
+        saveBe();
+        LOGGER.warn("AUTO-PINNED block entity {} to the main thread after {} region-thread "
+                + "tick errors. Restore parallelism with /nestworld unpin {} once fixed.",
+                typeId, count, typeId);
+        return true;
+    }
+
     /** Unpins an id (entity or block-entity); returns true if it was pinned. */
     public boolean unpin(String idStr) {
         ResourceLocation id = ResourceLocation.tryParse(idStr);
@@ -238,10 +261,21 @@ public final class NestworldPins {
         boolean atThreshold = p.noteEntityTickError(type);                          // 3 -> pin
         boolean isPinnedNow = p.isPinned(type);
         boolean idempotent = !p.noteEntityTickError(type);                          // already pinned
-        boolean ok = !below && atThreshold && isPinnedNow && idempotent;
-        LOGGER.info("[AUTOPIN SELF-TEST] {} (belowThresholdNoPin={}, pinnedAtThreshold={}, "
-                + "isPinned={}, idempotent={})", ok ? "PASS" : "FAIL",
-                !below, atThreshold, isPinnedNow, idempotent);
+
+        // Same threshold path for block-entity types (id strings).
+        NestworldPins pb = new NestworldPins(true, 3);
+        String be = "minecraft:hopper";
+        boolean beBelow = pb.noteBlockEntityTickError(be) | pb.noteBlockEntityTickError(be);
+        boolean beAt = pb.noteBlockEntityTickError(be);
+        boolean beIsPinned = pb.isBePinned(be);
+        boolean beIdem = !pb.noteBlockEntityTickError(be);
+
+        boolean ok = !below && atThreshold && isPinnedNow && idempotent
+                && !beBelow && beAt && beIsPinned && beIdem;
+        LOGGER.info("[AUTOPIN SELF-TEST] {} (entity: below={} at={} pinned={} idem={}; "
+                + "be: below={} at={} pinned={} idem={})", ok ? "PASS" : "FAIL",
+                !below, atThreshold, isPinnedNow, idempotent,
+                !beBelow, beAt, beIsPinned, beIdem);
     }
 
     private void save() {

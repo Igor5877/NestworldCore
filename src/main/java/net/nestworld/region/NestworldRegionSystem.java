@@ -542,6 +542,17 @@ public class NestworldRegionSystem {
                     ticker.tick();
                 };
             }
+            // Feed the auto-pin detector: a BE type that keeps throwing on a
+            // region thread gets pinned to main. Only wrap when enabled, to
+            // avoid an extra lambda per BE per tick in the common case.
+            if (pins.isAutoPinEnabled()) {
+                final Runnable inner = run;
+                final String beType = ticker.getType();
+                run = () -> {
+                    try { inner.run(); }
+                    catch (Throwable err) { pins.noteBlockEntityTickError(beType); throw err; }
+                };
+            }
             // Pinned BE types always tick on main (mod compat), regardless of
             // position. ticker.getType() is the registry id string.
             if (!pins.isBeEmpty() && pins.isBePinned(ticker.getType())) {
