@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Registry of entity types pinned to main-thread ticking.
@@ -40,7 +41,28 @@ public final class NestworldPins {
     /** Source of truth for persistence and listing (includes unresolved ids). */
     private final Set<ResourceLocation> pinnedIds = ConcurrentHashMap.newKeySet();
 
+    // Auto-pin: when an entity type repeatedly throws on a region thread, pin it
+    // to main so one bad mod can't keep crashing a region. OFF by default — a
+    // transient race (e.g. the historical "tick error: null") could otherwise
+    // pin a common type and silently serialise it (a TNT-minecart lag machine
+    // would land back on main). Opt in with -Dnestworld.autoPin=true.
+    private final boolean autoPin;
+    private final int autoPinThreshold;
+    private final ConcurrentHashMap<EntityType<?>, AtomicInteger> errorCounts =
+            new ConcurrentHashMap<>();
+
     private Path file;
+
+    public NestworldPins() {
+        this(Boolean.parseBoolean(System.getProperty("nestworld.autoPin", "false")),
+                Integer.getInteger("nestworld.autoPinThreshold", 20));
+    }
+
+    /** Test constructor: explicit auto-pin settings, no system-property read. */
+    NestworldPins(boolean autoPin, int autoPinThreshold) {
+        this.autoPin = autoPin;
+        this.autoPinThreshold = autoPinThreshold;
+    }
 
     /** True when nothing is pinned — lets callers skip the pinned pass entirely. */
     public boolean isEmpty() {
@@ -72,6 +94,27 @@ public final class NestworldPins {
         pinnedTypes.add(type);
         save();
         return null;
+    }
+
+    /**
+     * Records that an entity of {@code type} threw while ticking on a region
+     * thread. When auto-pin is enabled and a type crosses the error threshold,
+     * it is pinned to the main thread and {@code true} is returned. Thread-safe
+     * (called from region threads). No-op unless {@code -Dnestworld.autoPin=true}.
+     */
+    public boolean noteEntityTickError(EntityType<?> type) {
+        if (!autoPin || type == null || pinnedTypes.contains(type)) return false;
+        int count = errorCounts.computeIfAbsent(type, k -> new AtomicInteger()).incrementAndGet();
+        if (count < autoPinThreshold) return false;
+        ResourceLocation id = BuiltInRegistries.ENTITY_TYPE.getKey(type);
+        if (!pinnedTypes.add(type)) return false; // pinned concurrently
+        pinnedIds.add(id);
+        save();
+        LOGGER.warn("AUTO-PINNED {} to the main thread after {} region-thread tick "
+                + "errors — it now ticks on main (vanilla parity) so a region thread "
+                + "stops crashing on it. Restore parallelism with /nestworld unpin {} "
+                + "once the cause is fixed.", id, count, id);
+        return true;
     }
 
     /** Unpins an id; returns true if it was pinned. */
@@ -115,6 +158,24 @@ public final class NestworldPins {
         } catch (IOException e) {
             LOGGER.warn("Could not read pins file {}: {}", file, e.toString());
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Self-test (NESTWORLD_AUTOPIN_TEST): deterministic check of the threshold
+    // path without injecting real entity crashes into a live server.
+    // -----------------------------------------------------------------------
+
+    public static void selfTest() {
+        NestworldPins p = new NestworldPins(true, 3);
+        EntityType<?> type = EntityType.ARMOR_STAND;
+        boolean below = p.noteEntityTickError(type) | p.noteEntityTickError(type); // 1,2 < 3
+        boolean atThreshold = p.noteEntityTickError(type);                          // 3 -> pin
+        boolean isPinnedNow = p.isPinned(type);
+        boolean idempotent = !p.noteEntityTickError(type);                          // already pinned
+        boolean ok = !below && atThreshold && isPinnedNow && idempotent;
+        LOGGER.info("[AUTOPIN SELF-TEST] {} (belowThresholdNoPin={}, pinnedAtThreshold={}, "
+                + "isPinned={}, idempotent={})", ok ? "PASS" : "FAIL",
+                !below, atThreshold, isPinnedNow, idempotent);
     }
 
     private void save() {

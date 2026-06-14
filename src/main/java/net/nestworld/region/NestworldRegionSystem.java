@@ -140,6 +140,10 @@ public class NestworldRegionSystem {
                 || Boolean.getBoolean("nestworld.cutTest")) {
             RegionSplitManager.selfTest();
         }
+        if (System.getenv("NESTWORLD_AUTOPIN_TEST") != null
+                || Boolean.getBoolean("nestworld.autoPinTest")) {
+            NestworldPins.selfTest();
+        }
 
         if (restored) {
             LOGGER.info("NestWorld restored saved layout — {} region(s): {}",

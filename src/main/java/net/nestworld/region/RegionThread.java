@@ -371,6 +371,11 @@ public class RegionThread extends Thread {
                             getName(), uuid, entity.getType().getDescriptionId(),
                             t.getClass().getSimpleName(), t.getMessage());
                 }
+                // Feed the auto-pin detector: a type that keeps throwing here
+                // gets pinned to main (no-op unless -Dnestworld.autoPin=true).
+                if (NestworldRegionSystem.isInitialised()) {
+                    NestworldRegionSystem.get().getPins().noteEntityTickError(entity.getType());
+                }
             }
             if ((processed & 15) == 0 && System.nanoTime() > deadline) break;
         }
