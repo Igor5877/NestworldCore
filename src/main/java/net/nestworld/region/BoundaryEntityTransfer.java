@@ -31,6 +31,7 @@ public class BoundaryEntityTransfer {
 
     private final ServerLevel level;
     private final WorldGrid grid;
+    private final NestworldPins pins;
 
     /** UUIDs currently mid-transfer (skip ticking until transfer completes). */
     private final ConcurrentHashMap<UUID, Boolean> inTransfer = new ConcurrentHashMap<>();
@@ -47,9 +48,10 @@ public class BoundaryEntityTransfer {
     private int lastLayoutVersion = -1;
     private int pruneInterval = 0;
 
-    public BoundaryEntityTransfer(ServerLevel level, WorldGrid grid) {
+    public BoundaryEntityTransfer(ServerLevel level, WorldGrid grid, NestworldPins pins) {
         this.level = level;
         this.grid = grid;
+        this.pins = pins;
     }
 
     // -----------------------------------------------------------------------
@@ -95,6 +97,16 @@ public class BoundaryEntityTransfer {
             if (entity instanceof net.minecraft.world.entity.player.Player) continue;
 
             UUID uuid = entity.getUUID();
+            // Pinned types tick on the main thread (mod compat): keep them out of
+            // every region's owned set so no region thread touches them. If a type
+            // was pinned while already owned, release it here (one-time).
+            if (!pins.isEmpty() && pins.isPinned(entity.getType())) {
+                WorldRegion owner = findOwner(uuid);
+                if (owner != null) owner.removeEntity(uuid);
+                inTransfer.remove(uuid);
+                lastChunkKey.remove(uuid);
+                continue;
+            }
             if (inTransfer.containsKey(uuid)) {
                 // Transfer was initiated last tick; it is now safe to clear the guard
                 inTransfer.remove(uuid);

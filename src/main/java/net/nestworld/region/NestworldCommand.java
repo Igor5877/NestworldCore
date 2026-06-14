@@ -13,6 +13,9 @@ import net.minecraft.network.chat.Component;
  *   /nestworld status            — list active regions with TPS and entity counts
  *   /nestworld split &lt;id&gt;        — force-split a region (testing / manual tuning)
  *   /nestworld merge &lt;a&gt; &lt;b&gt;     — force-merge two sibling regions
+ *   /nestworld pins              — list entity types pinned to main-thread ticking
+ *   /nestworld pin &lt;type&gt;        — pin an entity type to main (mod compat)
+ *   /nestworld unpin &lt;type&gt;      — resume region-thread ticking for a type
  * </pre>
  */
 public final class NestworldCommand {
@@ -32,7 +35,16 @@ public final class NestworldCommand {
                                 .then(Commands.argument("b", IntegerArgumentType.integer(0))
                                         .executes(ctx -> merge(ctx.getSource(),
                                                 IntegerArgumentType.getInteger(ctx, "a"),
-                                                IntegerArgumentType.getInteger(ctx, "b")))))));
+                                                IntegerArgumentType.getInteger(ctx, "b"))))))
+                .then(Commands.literal("pins").executes(ctx -> listPins(ctx.getSource())))
+                .then(Commands.literal("pin")
+                        .then(Commands.argument("type", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                .executes(ctx -> pin(ctx.getSource(),
+                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "type")))))
+                .then(Commands.literal("unpin")
+                        .then(Commands.argument("type", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                .executes(ctx -> unpin(ctx.getSource(),
+                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "type"))))));
 
         // /spark — in-game access to the spark standalone agent (see SparkBridge).
         // Only when the real spark mod is absent (dev runtime can't load it);
@@ -137,6 +149,53 @@ public final class NestworldCommand {
         }
         src.sendSuccess(() -> Component.literal(
                 "Merged #" + idA + " + #" + idB + " -> #" + merged.getId()), true);
+        return 1;
+    }
+
+    private static int listPins(CommandSourceStack src) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        var pins = NestworldRegionSystem.get().getPins().list();
+        if (pins.isEmpty()) {
+            src.sendSuccess(() -> Component.literal(
+                    "No pinned entity types (all tick on region threads)."), false);
+            return 0;
+        }
+        src.sendSuccess(() -> Component.literal(
+                pins.size() + " pinned entity type(s) — tick on main thread:"), false);
+        for (String id : pins) src.sendSuccess(() -> Component.literal("  " + id), false);
+        return pins.size();
+    }
+
+    private static int pin(CommandSourceStack src, String type) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        String err = NestworldRegionSystem.get().getPins().pin(type.trim());
+        if (err != null) {
+            src.sendFailure(Component.literal(err));
+            return 0;
+        }
+        src.sendSuccess(() -> Component.literal(
+                "Pinned " + type.trim() + " to main-thread ticking (takes effect next tick)."), true);
+        return 1;
+    }
+
+    private static int unpin(CommandSourceStack src, String type) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        boolean removed = NestworldRegionSystem.get().getPins().unpin(type.trim());
+        if (!removed) {
+            src.sendFailure(Component.literal(type.trim() + " was not pinned"));
+            return 0;
+        }
+        src.sendSuccess(() -> Component.literal(
+                "Unpinned " + type.trim() + " (resumes region-thread ticking next boundary scan)."), true);
         return 1;
     }
 

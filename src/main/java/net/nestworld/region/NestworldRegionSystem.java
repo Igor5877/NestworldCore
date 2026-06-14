@@ -55,6 +55,9 @@ public class NestworldRegionSystem {
     /** Per-chunk block-tick load signal, feeding the load-aware split scorer. */
     private final BlockTickHeat blockTickHeat = new BlockTickHeat();
 
+    /** Entity types pinned to main-thread ticking (mod-compat escape hatch). */
+    private final NestworldPins pins = new NestworldPins();
+
     private ServerLevel overworld;
     private MinecraftServer server;
 
@@ -121,9 +124,11 @@ public class NestworldRegionSystem {
             tree = new RegionTree(grid, new WorldRegion(grid.nextId(), -r, -r, r, r));
         }
 
+        pins.load(pinsFile());
+
         boundaryManager = new BoundaryManager(overworld, grid);
         signalQueue    = new BoundarySignalQueue(overworld);
-        entityTransfer = new BoundaryEntityTransfer(overworld, grid);
+        entityTransfer = new BoundaryEntityTransfer(overworld, grid, pins);
         capabilityBus  = new CrossRegionCapabilityBus(overworld, grid, boundaryManager);
         chunkView      = new RegionChunkView(grid, boundaryManager);
         splitManager   = new RegionSplitManager(tree, pool, blockTickHeat);
@@ -144,6 +149,31 @@ public class NestworldRegionSystem {
         }
     }
 
+    /**
+     * Ticks every loaded entity whose type is pinned, on the main thread.
+     * Mirrors the region-thread gate (skip removed/passengers, despawn check,
+     * ticking-chunk gate) so a pinned entity behaves identically to vanilla —
+     * just without the parallelism. Called only when pins are non-empty.
+     */
+    private void tickPinnedEntitiesOnMain() {
+        // Snapshot: ticking can spawn/remove entities, mutating the live view.
+        java.util.List<net.minecraft.world.entity.Entity> snapshot = new java.util.ArrayList<>();
+        for (net.minecraft.world.entity.Entity e : overworld.getAllEntities()) snapshot.add(e);
+        for (net.minecraft.world.entity.Entity entity : snapshot) {
+            if (entity.isRemoved() || entity.isPassenger()) continue;
+            if (!pins.isPinned(entity.getType())) continue;
+            try {
+                entity.checkDespawn();
+                if (entity.isRemoved()) continue;
+                if (!overworld.isPositionEntityTicking(entity.blockPosition())) continue;
+                overworld.tickNonPassenger(entity);
+            } catch (Throwable t) {
+                LOGGER.warn("Pinned entity {} tick error: {}",
+                        entity.getType().getDescriptionId(), t.toString());
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Persistent region layout
     // -----------------------------------------------------------------------
@@ -153,6 +183,14 @@ public class NestworldRegionSystem {
         return server.getWorldPath(LevelResource.ROOT)
                 .resolve("data").resolve("nestworld-regions.dat");
     }
+
+    /** Text file listing entity-type ids pinned to main-thread ticking. */
+    private Path pinsFile() {
+        return server.getWorldPath(LevelResource.ROOT)
+                .resolve("data").resolve("nestworld-pins.txt");
+    }
+
+    public NestworldPins getPins() { return pins; }
 
     /**
      * Reads the saved layout, or returns null if there is none / it is
@@ -280,6 +318,11 @@ public class NestworldRegionSystem {
                 LOGGER.warn("Player {} tick error: {}", player.getGameProfile().getName(), t.getMessage());
             }
         }
+        // 3c. Tick pinned entity types on the main thread (mod-compat escape
+        // hatch). They are never assigned to a region, so no region thread
+        // touches them — the main thread ticks them here exactly as vanilla
+        // would. Zero cost when nothing is pinned.
+        if (!pins.isEmpty()) tickPinnedEntitiesOnMain();
         long t3 = System.nanoTime();
 
         // 4. Parallel tick — blocks until all region threads finish
