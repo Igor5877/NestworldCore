@@ -41,6 +41,12 @@ public final class NestworldPins {
     /** Source of truth for persistence and listing (includes unresolved ids). */
     private final Set<ResourceLocation> pinnedIds = ConcurrentHashMap.newKeySet();
 
+    /** Pinned block-entity type ids (e.g. {@code minecraft:hopper}). The BE
+     *  phase compares against {@code TickingBlockEntity.getType()}, which is the
+     *  registry id string, so these are stored as strings directly. */
+    private final Set<String> pinnedBeIds = ConcurrentHashMap.newKeySet();
+    private Path beFile;
+
     // Auto-pin: when an entity type repeatedly throws on a region thread, pin it
     // to main so one bad mod can't keep crashing a region. OFF by default — a
     // transient race (e.g. the historical "tick error: null") could otherwise
@@ -73,6 +79,21 @@ public final class NestworldPins {
         return !pinnedTypes.isEmpty() && pinnedTypes.contains(type);
     }
 
+    /** True when no block-entity type is pinned — lets the BE phase skip the check. */
+    public boolean isBeEmpty() {
+        return pinnedBeIds.isEmpty();
+    }
+
+    /** {@code typeId} is {@link TickingBlockEntity#getType()} (a registry id string). */
+    public boolean isBePinned(String typeId) {
+        return !pinnedBeIds.isEmpty() && pinnedBeIds.contains(typeId);
+    }
+
+    /** Sorted block-entity pin ids, for {@code /nestworld pins} and the file. */
+    public List<String> beList() {
+        return new ArrayList<>(new TreeSet<>(pinnedBeIds));
+    }
+
     /** Sorted registry ids of all pins, for {@code /nestworld pins} and the file. */
     public List<String> list() {
         Set<String> sorted = new TreeSet<>();
@@ -89,11 +110,18 @@ public final class NestworldPins {
         ResourceLocation id = ResourceLocation.tryParse(idStr);
         if (id == null) return "Not a valid id: " + idStr;
         EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.getOptional(id).orElse(null);
-        if (type == null) return "No such entity type: " + id;
-        pinnedIds.add(id);
-        pinnedTypes.add(type);
-        save();
-        return null;
+        if (type != null) {
+            pinnedIds.add(id);
+            pinnedTypes.add(type);
+            save();
+            return null;
+        }
+        if (BuiltInRegistries.BLOCK_ENTITY_TYPE.getOptional(id).isPresent()) {
+            pinnedBeIds.add(id.toString());
+            saveBe();
+            return null;
+        }
+        return "No such entity or block-entity type: " + id;
     }
 
     /**
@@ -117,14 +145,19 @@ public final class NestworldPins {
         return true;
     }
 
-    /** Unpins an id; returns true if it was pinned. */
+    /** Unpins an id (entity or block-entity); returns true if it was pinned. */
     public boolean unpin(String idStr) {
         ResourceLocation id = ResourceLocation.tryParse(idStr);
         if (id == null) return false;
         boolean removed = pinnedIds.remove(id);
         BuiltInRegistries.ENTITY_TYPE.getOptional(id).ifPresent(pinnedTypes::remove);
-        if (removed) save();
-        return removed;
+        if (removed) {
+            save();
+            return true;
+        }
+        boolean removedBe = pinnedBeIds.remove(id.toString());
+        if (removedBe) saveBe();
+        return removedBe;
     }
 
     // -----------------------------------------------------------------------
@@ -190,6 +223,49 @@ public final class NestworldPins {
             Files.write(file, lines);
         } catch (IOException e) {
             LOGGER.warn("Could not write pins file {}: {}", file, e.toString());
+        }
+    }
+
+    /** Loads block-entity pins (own file; same format as entity pins). */
+    public void loadBe(Path beFile) {
+        this.beFile = beFile;
+        pinnedBeIds.clear();
+        if (!Files.isRegularFile(beFile)) return;
+        try {
+            for (String line : Files.readAllLines(beFile)) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+                ResourceLocation id = ResourceLocation.tryParse(trimmed);
+                if (id == null) {
+                    LOGGER.warn("Ignoring malformed block-entity pin id: {}", trimmed);
+                    continue;
+                }
+                pinnedBeIds.add(id.toString());
+                if (BuiltInRegistries.BLOCK_ENTITY_TYPE.getOptional(id).isEmpty()) {
+                    LOGGER.warn("Pinned block-entity id {} matches no loaded type "
+                            + "(mod absent?) — kept but inactive", id);
+                }
+            }
+            if (!pinnedBeIds.isEmpty()) {
+                LOGGER.info("Loaded {} pinned block-entity type(s): {}", pinnedBeIds.size(), beList());
+            }
+        } catch (IOException e) {
+            LOGGER.warn("Could not read block-entity pins file {}: {}", beFile, e.toString());
+        }
+    }
+
+    private void saveBe() {
+        if (beFile == null) return;
+        try {
+            Path parent = beFile.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            List<String> lines = new ArrayList<>();
+            lines.add("# NestWorld block-entity-type pins — one registry id per line.");
+            lines.add("# These BE types tick on the main thread (vanilla parity) for mod compatibility.");
+            lines.addAll(beList());
+            Files.write(beFile, lines);
+        } catch (IOException e) {
+            LOGGER.warn("Could not write block-entity pins file {}: {}", beFile, e.toString());
         }
     }
 }

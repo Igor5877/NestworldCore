@@ -125,6 +125,7 @@ public class NestworldRegionSystem {
         }
 
         pins.load(pinsFile());
+        pins.loadBe(bePinsFile());
 
         boundaryManager = new BoundaryManager(overworld, grid);
         signalQueue    = new BoundarySignalQueue(overworld);
@@ -192,6 +193,12 @@ public class NestworldRegionSystem {
     private Path pinsFile() {
         return server.getWorldPath(LevelResource.ROOT)
                 .resolve("data").resolve("nestworld-pins.txt");
+    }
+
+    /** Text file listing block-entity-type ids pinned to main-thread ticking. */
+    private Path bePinsFile() {
+        return server.getWorldPath(LevelResource.ROOT)
+                .resolve("data").resolve("nestworld-be-pins.txt");
     }
 
     public NestworldPins getPins() { return pins; }
@@ -524,7 +531,13 @@ public class NestworldRegionSystem {
                     ticker.tick();
                 };
             }
-            routeScheduledTick(pos, run, buckets, mainBucket);
+            // Pinned BE types always tick on main (mod compat), regardless of
+            // position. ticker.getType() is the registry id string.
+            if (!pins.isBeEmpty() && pins.isBePinned(ticker.getType())) {
+                mainBucket.add(run);
+            } else {
+                routeScheduledTick(pos, run, buckets, mainBucket);
+            }
         }
         if (BE_TRACE_POS != null && !traced && ++beTraceCountdown >= 40) {
             beTraceCountdown = 0;

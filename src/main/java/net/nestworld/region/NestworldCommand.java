@@ -157,16 +157,25 @@ public final class NestworldCommand {
             src.sendFailure(Component.literal("NestWorld region system is not active"));
             return 0;
         }
-        var pins = NestworldRegionSystem.get().getPins().list();
-        if (pins.isEmpty()) {
+        NestworldPins p = NestworldRegionSystem.get().getPins();
+        var entityPins = p.list();
+        var bePins = p.beList();
+        if (entityPins.isEmpty() && bePins.isEmpty()) {
             src.sendSuccess(() -> Component.literal(
-                    "No pinned entity types (all tick on region threads)."), false);
+                    "No pins (all entities and block entities tick on region threads)."), false);
             return 0;
         }
-        src.sendSuccess(() -> Component.literal(
-                pins.size() + " pinned entity type(s) — tick on main thread:"), false);
-        for (String id : pins) src.sendSuccess(() -> Component.literal("  " + id), false);
-        return pins.size();
+        if (!entityPins.isEmpty()) {
+            src.sendSuccess(() -> Component.literal(
+                    entityPins.size() + " pinned entity type(s) — tick on main thread:"), false);
+            for (String id : entityPins) src.sendSuccess(() -> Component.literal("  " + id), false);
+        }
+        if (!bePins.isEmpty()) {
+            src.sendSuccess(() -> Component.literal(
+                    bePins.size() + " pinned block-entity type(s) — tick on main thread:"), false);
+            for (String id : bePins) src.sendSuccess(() -> Component.literal("  " + id), false);
+        }
+        return entityPins.size() + bePins.size();
     }
 
     private static int pin(CommandSourceStack src, String type) {
