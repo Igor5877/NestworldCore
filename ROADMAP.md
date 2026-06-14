@@ -219,6 +219,16 @@
       після аудиту глибини каскадів.
 
 ### Сумісність із модами (стратегія: працює "з коробки" або пінується)
+> **Перевірено живими модами 2026-06-14:** Forge-нативні моди працюють і
+> прискорюються — **Create** (block entities тікають ванільно → у region-бакети,
+> 8859 cogwheels: due=8859 main=0, реально паралелиться), **AE2** (сумісний, але
+> тікає себе на main через власний ServerTickEvent → шардинг не прискорює).
+> **🔴 Sinytra Connector (Fabric-на-Forge паки) НЕ підтримуються:** наш білд
+> перекомпільовує/патчить MC (LivingEntity для maxEntityPush) → зсуває synthetic
+> lambda, які мікшить Fabric API (`fabric-entity-events-v1`); на стоку Forge
+> проходить, на нашому — Critical injection failure → жоден Fabric-мод не
+> вантажиться (тест ZombieCraft, 403 моди). TODO: або не патчити класи, які
+> таргетить Fabric API, або задокументувати як офіційне обмеження.
 > Тріада пінінгу ПОВНА (2026-06-14): тип ентіті + тип BE + modid цілком
 > (`/nestworld pinmod <ns>`, 0d7231315 — пінить усі ентіті й BE неймспейсу;
 > файл `nestworld-pinned-mods.txt`; verified pinmod minecraft → region 114→0,
