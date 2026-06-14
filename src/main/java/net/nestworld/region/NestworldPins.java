@@ -47,6 +47,11 @@ public final class NestworldPins {
     private final Set<String> pinnedBeIds = ConcurrentHashMap.newKeySet();
     private Path beFile;
 
+    /** Pinned mod namespaces: every entity AND block-entity from these mods is
+     *  pinned to main. The escape hatch for a whole mod that isn't thread-safe. */
+    private final Set<String> pinnedMods = ConcurrentHashMap.newKeySet();
+    private Path modFile;
+
     // Auto-pin: when an entity type repeatedly throws on a region thread, pin it
     // to main so one bad mod can't keep crashing a region. OFF by default — a
     // transient race (e.g. the historical "tick error: null") could otherwise
@@ -70,23 +75,51 @@ public final class NestworldPins {
         this.autoPinThreshold = autoPinThreshold;
     }
 
-    /** True when nothing is pinned — lets callers skip the pinned pass entirely. */
+    /** True when no entity pin is active — lets callers skip the pinned pass. */
     public boolean isEmpty() {
-        return pinnedIds.isEmpty();
+        return pinnedIds.isEmpty() && pinnedMods.isEmpty();
     }
 
     public boolean isPinned(EntityType<?> type) {
-        return !pinnedTypes.isEmpty() && pinnedTypes.contains(type);
+        if (!pinnedTypes.isEmpty() && pinnedTypes.contains(type)) return true;
+        if (!pinnedMods.isEmpty()) {
+            ResourceLocation k = BuiltInRegistries.ENTITY_TYPE.getKey(type);
+            return k != null && pinnedMods.contains(k.getNamespace());
+        }
+        return false;
     }
 
-    /** True when no block-entity type is pinned — lets the BE phase skip the check. */
+    /** True when no block-entity pin is active — lets the BE phase skip the check. */
     public boolean isBeEmpty() {
-        return pinnedBeIds.isEmpty();
+        return pinnedBeIds.isEmpty() && pinnedMods.isEmpty();
     }
 
     /** {@code typeId} is {@link TickingBlockEntity#getType()} (a registry id string). */
     public boolean isBePinned(String typeId) {
-        return !pinnedBeIds.isEmpty() && pinnedBeIds.contains(typeId);
+        if (!pinnedBeIds.isEmpty() && pinnedBeIds.contains(typeId)) return true;
+        if (!pinnedMods.isEmpty()) {
+            int c = typeId.indexOf(':');
+            String ns = c < 0 ? "minecraft" : typeId.substring(0, c);
+            return pinnedMods.contains(ns);
+        }
+        return false;
+    }
+
+    /** Sorted pinned mod namespaces, for {@code /nestworld pins} and the file. */
+    public List<String> modList() {
+        return new ArrayList<>(new TreeSet<>(pinnedMods));
+    }
+
+    /** Pins every entity and block entity from {@code namespace}. */
+    public void pinMod(String namespace) {
+        if (pinnedMods.add(namespace.trim())) saveMods();
+    }
+
+    /** Unpins a mod namespace; returns true if it was pinned. */
+    public boolean unpinMod(String namespace) {
+        boolean removed = pinnedMods.remove(namespace.trim());
+        if (removed) saveMods();
+        return removed;
     }
 
     /** Sorted block-entity pin ids, for {@code /nestworld pins} and the file. */
@@ -266,6 +299,40 @@ public final class NestworldPins {
             Files.write(beFile, lines);
         } catch (IOException e) {
             LOGGER.warn("Could not write block-entity pins file {}: {}", beFile, e.toString());
+        }
+    }
+
+    /** Loads pinned mod namespaces (one per line). */
+    public void loadMods(Path modFile) {
+        this.modFile = modFile;
+        pinnedMods.clear();
+        if (!Files.isRegularFile(modFile)) return;
+        try {
+            for (String line : Files.readAllLines(modFile)) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+                pinnedMods.add(trimmed);
+            }
+            if (!pinnedMods.isEmpty()) {
+                LOGGER.info("Loaded {} pinned mod namespace(s): {}", pinnedMods.size(), modList());
+            }
+        } catch (IOException e) {
+            LOGGER.warn("Could not read pinned-mods file {}: {}", modFile, e.toString());
+        }
+    }
+
+    private void saveMods() {
+        if (modFile == null) return;
+        try {
+            Path parent = modFile.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            List<String> lines = new ArrayList<>();
+            lines.add("# NestWorld pinned mod namespaces — one per line.");
+            lines.add("# Every entity and block entity from these mods ticks on the main thread.");
+            lines.addAll(modList());
+            Files.write(modFile, lines);
+        } catch (IOException e) {
+            LOGGER.warn("Could not write pinned-mods file {}: {}", modFile, e.toString());
         }
     }
 }

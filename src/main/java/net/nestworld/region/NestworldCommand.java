@@ -14,8 +14,10 @@ import net.minecraft.network.chat.Component;
  *   /nestworld split &lt;id&gt;        — force-split a region (testing / manual tuning)
  *   /nestworld merge &lt;a&gt; &lt;b&gt;     — force-merge two sibling regions
  *   /nestworld pins              — list entity types pinned to main-thread ticking
- *   /nestworld pin &lt;type&gt;        — pin an entity type to main (mod compat)
+ *   /nestworld pin &lt;type&gt;        — pin an entity or block-entity type to main
  *   /nestworld unpin &lt;type&gt;      — resume region-thread ticking for a type
+ *   /nestworld pinmod &lt;ns&gt;       — pin every entity/BE from a mod namespace
+ *   /nestworld unpinmod &lt;ns&gt;     — unpin a mod namespace
  * </pre>
  */
 public final class NestworldCommand {
@@ -44,7 +46,15 @@ public final class NestworldCommand {
                 .then(Commands.literal("unpin")
                         .then(Commands.argument("type", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
                                 .executes(ctx -> unpin(ctx.getSource(),
-                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "type"))))));
+                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "type")))))
+                .then(Commands.literal("pinmod")
+                        .then(Commands.argument("namespace", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                .executes(ctx -> pinMod(ctx.getSource(),
+                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "namespace")))))
+                .then(Commands.literal("unpinmod")
+                        .then(Commands.argument("namespace", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                .executes(ctx -> unpinMod(ctx.getSource(),
+                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "namespace"))))));
 
         // /spark — in-game access to the spark standalone agent (see SparkBridge).
         // Only when the real spark mod is absent (dev runtime can't load it);
@@ -160,7 +170,8 @@ public final class NestworldCommand {
         NestworldPins p = NestworldRegionSystem.get().getPins();
         var entityPins = p.list();
         var bePins = p.beList();
-        if (entityPins.isEmpty() && bePins.isEmpty()) {
+        var modPinsEarly = p.modList();
+        if (entityPins.isEmpty() && bePins.isEmpty() && modPinsEarly.isEmpty()) {
             src.sendSuccess(() -> Component.literal(
                     "No pins (all entities and block entities tick on region threads)."), false);
             return 0;
@@ -175,7 +186,39 @@ public final class NestworldCommand {
                     bePins.size() + " pinned block-entity type(s) — tick on main thread:"), false);
             for (String id : bePins) src.sendSuccess(() -> Component.literal("  " + id), false);
         }
-        return entityPins.size() + bePins.size();
+        if (!modPinsEarly.isEmpty()) {
+            src.sendSuccess(() -> Component.literal(
+                    modPinsEarly.size() + " pinned mod(s) — all their entities/BEs tick on main:"), false);
+            for (String ns : modPinsEarly) src.sendSuccess(() -> Component.literal("  " + ns), false);
+        }
+        return entityPins.size() + bePins.size() + modPinsEarly.size();
+    }
+
+    private static int pinMod(CommandSourceStack src, String ns) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        NestworldRegionSystem.get().getPins().pinMod(ns.trim());
+        src.sendSuccess(() -> Component.literal(
+                "Pinned mod '" + ns.trim() + "' — all its entities and block entities tick "
+                + "on main (takes effect next tick)."), true);
+        return 1;
+    }
+
+    private static int unpinMod(CommandSourceStack src, String ns) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        boolean removed = NestworldRegionSystem.get().getPins().unpinMod(ns.trim());
+        if (!removed) {
+            src.sendFailure(Component.literal("Mod '" + ns.trim() + "' was not pinned"));
+            return 0;
+        }
+        src.sendSuccess(() -> Component.literal(
+                "Unpinned mod '" + ns.trim() + "' (resumes region-thread ticking)."), true);
+        return 1;
     }
 
     private static int pin(CommandSourceStack src, String type) {

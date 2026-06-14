@@ -126,6 +126,7 @@ public class NestworldRegionSystem {
 
         pins.load(pinsFile());
         pins.loadBe(bePinsFile());
+        pins.loadMods(pinnedModsFile());
 
         boundaryManager = new BoundaryManager(overworld, grid);
         signalQueue    = new BoundarySignalQueue(overworld);
@@ -203,6 +204,12 @@ public class NestworldRegionSystem {
     private Path bePinsFile() {
         return server.getWorldPath(LevelResource.ROOT)
                 .resolve("data").resolve("nestworld-be-pins.txt");
+    }
+
+    /** Text file listing mod namespaces whose entities/BEs are pinned to main. */
+    private Path pinnedModsFile() {
+        return server.getWorldPath(LevelResource.ROOT)
+                .resolve("data").resolve("nestworld-pinned-mods.txt");
     }
 
     public NestworldPins getPins() { return pins; }
