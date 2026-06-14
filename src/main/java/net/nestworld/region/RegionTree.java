@@ -248,6 +248,68 @@ public class RegionTree {
         return new Leaf(r);
     }
 
+    // --- Self-test (NESTWORLD_LAYOUT_TEST) ---
+
+    /**
+     * Deterministic round-trip check of {@link #writeNbt()} /
+     * {@link #RegionTree(WorldGrid, CompoundTag)}: a saved layout must reload
+     * to the identical set of leaf rectangles AND preserve the branch nesting
+     * (so reloaded siblings still merge). Guards the persistent-layout feature.
+     */
+    public static void selfTest() {
+        org.apache.logging.log4j.Logger log =
+                org.apache.logging.log4j.LogManager.getLogger("NestWorld/RegionTree");
+
+        // Case 1: single split -> reload -> the two leaves still merge (nesting).
+        WorldGrid g1 = new WorldGrid();
+        WorldRegion root1 = new WorldRegion(g1.nextId(), -100, -100, 100, 100);
+        RegionTree t1 = new RegionTree(g1, root1);
+        t1.split(root1, SplitAxis.X, 0);
+        WorldGrid g1b = new WorldGrid();
+        RegionTree t1b = new RegionTree(g1b, t1.writeNbt());
+        List<WorldRegion> leaves1 = t1b.getActiveRegions();
+        boolean twoLeaves = leaves1.size() == 2;
+        WorldRegion merged = twoLeaves ? t1b.merge(leaves1.get(0), leaves1.get(1)) : null;
+        boolean mergeRestoresRoot = merged != null
+                && merged.getMinChunkX() == -100 && merged.getMaxChunkX() == 100
+                && merged.getMinChunkZ() == -100 && merged.getMaxChunkZ() == 100;
+
+        // Case 2: two-level tree -> reload -> identical leaf rectangle set.
+        WorldGrid g2 = new WorldGrid();
+        WorldRegion root2 = new WorldRegion(g2.nextId(), -100, -100, 100, 100);
+        RegionTree t2 = new RegionTree(g2, root2);
+        WorldRegion[] kids = t2.split(root2, SplitAxis.X, 0);
+        t2.split(kids[0], SplitAxis.Z, 0);
+        java.util.Set<String> before = rectSet(t2.getActiveRegions());
+        WorldGrid g2b = new WorldGrid();
+        RegionTree t2b = new RegionTree(g2b, t2.writeNbt());
+        java.util.Set<String> after = rectSet(t2b.getActiveRegions());
+        boolean rectsMatch = before.size() == 3 && before.equals(after);
+
+        // Case 3: pinned flag survives the round-trip.
+        WorldGrid g3 = new WorldGrid();
+        WorldRegion root3 = new WorldRegion(g3.nextId(), -50, -50, 50, 50);
+        RegionTree t3 = new RegionTree(g3, root3);
+        WorldRegion[] k3 = t3.split(root3, SplitAxis.X, 0);
+        k3[0].pinned = true;
+        RegionTree t3b = new RegionTree(new WorldGrid(), t3.writeNbt());
+        boolean pinnedKept = t3b.getActiveRegions().stream().filter(r -> r.pinned).count() == 1;
+
+        boolean ok = twoLeaves && mergeRestoresRoot && rectsMatch && pinnedKept;
+        log.info("[LAYOUT SELF-TEST] {} (twoLeaves={}, mergeRestoresRoot={}, rectsMatch={}, "
+                + "pinnedKept={})", ok ? "PASS" : "FAIL", twoLeaves, mergeRestoresRoot,
+                rectsMatch, pinnedKept);
+    }
+
+    private static java.util.Set<String> rectSet(List<WorldRegion> regions) {
+        java.util.Set<String> out = new java.util.HashSet<>();
+        for (WorldRegion r : regions) {
+            out.add(r.getMinChunkX() + "," + r.getMinChunkZ() + ","
+                    + r.getMaxChunkX() + "," + r.getMaxChunkZ());
+        }
+        return out;
+    }
+
     // --- Node types ---
 
     private abstract static class Node {}

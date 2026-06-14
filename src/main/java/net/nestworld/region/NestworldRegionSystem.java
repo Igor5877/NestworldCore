@@ -145,6 +145,10 @@ public class NestworldRegionSystem {
                 || Boolean.getBoolean("nestworld.autoPinTest")) {
             NestworldPins.selfTest();
         }
+        if (System.getenv("NESTWORLD_LAYOUT_TEST") != null
+                || Boolean.getBoolean("nestworld.layoutTest")) {
+            RegionTree.selfTest();
+        }
 
         if (restored) {
             LOGGER.info("NestWorld restored saved layout — {} region(s): {}",
