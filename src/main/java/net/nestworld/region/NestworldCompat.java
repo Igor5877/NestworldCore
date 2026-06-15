@@ -33,11 +33,25 @@ public final class NestworldCompat {
 
     private static final Logger LOGGER = LogManager.getLogger("NestWorld/Compat");
 
-    /** Canary/Lithium mixin options that defeat the core's thread-safety. */
+    /**
+     * Canary/Lithium mixin options that defeat the core's thread-safety by
+     * replacing shared per-level structures with single-thread-only ones:
+     * <ul>
+     *   <li>{@code collections.*} / {@code chunk.entity_class_groups} — overwrite
+     *       the thread-safe ClassInstanceMultiMap with a racy fastutil map
+     *       (freeze under a mob crowd targeting a player).</li>
+     *   <li>{@code ai.poi} — its PoiManager rewrite races the shared
+     *       PoiManager DistanceTracker queue under parallel ticking (AIOOBE in
+     *       LongLinkedOpenHashSet.removeFirstLong, "Exception ticking world").</li>
+     * </ul>
+     * Both reproduced and confirmed by stress test: disabling these stops the
+     * crash; without the mod the core handles the same load thread-safely.
+     */
     private static final List<String> CANARY_UNSAFE_MIXINS = List.of(
             "mixin.collections.entity_by_type=false",
             "mixin.collections.entity_filtering=false",
-            "mixin.chunk.entity_class_groups=false");
+            "mixin.chunk.entity_class_groups=false",
+            "mixin.ai.poi=false");
 
     private NestworldCompat() {}
 
