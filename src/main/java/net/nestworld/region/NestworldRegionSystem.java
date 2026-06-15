@@ -66,31 +66,30 @@ public class NestworldRegionSystem {
     private ServerLevel overworld;
     private MinecraftServer server;
 
-    /** Shared void-air chunk for Folia-style non-blocking region reads (lazy). */
-    private volatile net.minecraft.world.level.chunk.EmptyLevelChunk emptyChunk;
+    /** Cached plains biome holder for the per-call empty chunks (lazy). */
+    private volatile net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome> emptyChunkBiome;
 
     private NestworldRegionSystem() {}
 
     /**
-     * Returns a shared empty (void-air) chunk for a region thread reading an
-     * unloaded chunk, so it never synchronously loads + blocks on main. Gated by
-     * {@link NestworldTuning#NONBLOCKING_CHUNK_READS}; called from the patched
-     * ServerChunkCache. {@code EmptyLevelChunk.getBlockState/getFluidState} ignore
-     * the position (always void-air / empty), so one shared instance is correct
-     * for any coordinate.
+     * Returns a FRESH empty (void-air) chunk at (x, z) for a region thread
+     * reading an unloaded chunk, so it never synchronously loads + blocks on
+     * main. Gated by {@link NestworldTuning#NONBLOCKING_CHUNK_READS}; called from
+     * the patched ServerChunkCache. A new instance per call — a single shared one
+     * races on LevelChunk's inherited mutable arrays (heightmaps/sections) when
+     * several region threads read it at once (observed AIOOBE). Only the biome
+     * holder is cached.
      */
-    public net.minecraft.world.level.chunk.LevelChunk nestworldEmptyChunk() {
-        net.minecraft.world.level.chunk.EmptyLevelChunk c = this.emptyChunk;
-        if (c == null) {
-            net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome> biome =
-                    overworld.registryAccess()
-                            .registryOrThrow(net.minecraft.core.registries.Registries.BIOME)
-                            .getHolderOrThrow(net.minecraft.world.level.biome.Biomes.PLAINS);
-            c = new net.minecraft.world.level.chunk.EmptyLevelChunk(
-                    overworld, new net.minecraft.world.level.ChunkPos(0, 0), biome);
-            this.emptyChunk = c;
+    public net.minecraft.world.level.chunk.LevelChunk nestworldEmptyChunk(int x, int z) {
+        net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome> biome = this.emptyChunkBiome;
+        if (biome == null) {
+            biome = overworld.registryAccess()
+                    .registryOrThrow(net.minecraft.core.registries.Registries.BIOME)
+                    .getHolderOrThrow(net.minecraft.world.level.biome.Biomes.PLAINS);
+            this.emptyChunkBiome = biome;
         }
-        return c;
+        return new net.minecraft.world.level.chunk.EmptyLevelChunk(
+                overworld, new net.minecraft.world.level.ChunkPos(x, z), biome);
     }
 
     public static NestworldRegionSystem get() {
