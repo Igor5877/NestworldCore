@@ -1,17 +1,21 @@
 --- a/net/minecraft/server/level/ServerChunkCache.java
 +++ b/net/minecraft/server/level/ServerChunkCache.java
-@@ -110,5 +_,15 @@
+@@ -110,5 +_,19 @@
     public ChunkAccess m_7587_(int p_8360_, int p_8361_, ChunkStatus p_8362_, boolean p_8363_) {
        if (Thread.currentThread() != this.f_8330_) {
 +         if (Thread.currentThread() instanceof net.nestworld.region.RegionThread) {
 +            LevelChunk nestworldChunk = this.nestworldGetLoadedChunk(p_8360_, p_8361_);
 +            if (nestworldChunk != null) return nestworldChunk;
-+            // A region thread must never sync-load/block on getChunk (that is the
-+            // park/unpark herd). load=false: honour vanilla "null if absent" (many
-+            // callers null-check); load=true: per-thread void-air so getBlockState
-+            // callers don't NPE (Paper/Folia behaviour). Never reach the join.
++            // load=false: honour vanilla "null if absent" — callers null-check, so we
++            // never block here (this killed the dominant RemoveBlockGoal herd).
 +            if (!p_8363_) return null;
-+            return ((net.nestworld.region.RegionThread) Thread.currentThread()).nestworldEmptyChunk();
++            // load=true default: block for correct data, because the snapshot can
++            // still miss a chunk that IS loaded and void-air would then corrupt the
++            // read. -Dnestworld.nonBlockingChunkReads=true opts into per-thread
++            // void-air (faster, but entities see AIR at unloaded edges).
++            if (net.nestworld.region.NestworldTuning.NONBLOCKING_CHUNK_READS) {
++               return ((net.nestworld.region.RegionThread) Thread.currentThread()).nestworldEmptyChunk();
++            }
 +         }
           return CompletableFuture.supplyAsync(() -> {
              return this.m_7587_(p_8360_, p_8361_, p_8362_, p_8363_);
