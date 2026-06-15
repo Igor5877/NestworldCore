@@ -1,11 +1,16 @@
 --- a/net/minecraft/server/level/ServerChunkCache.java
 +++ b/net/minecraft/server/level/ServerChunkCache.java
-@@ -110,5 +_,12 @@
+@@ -110,5 +_,17 @@
     public ChunkAccess m_7587_(int p_8360_, int p_8361_, ChunkStatus p_8362_, boolean p_8363_) {
        if (Thread.currentThread() != this.f_8330_) {
-+         if (p_8362_ == ChunkStatus.f_62326_ && Thread.currentThread() instanceof net.nestworld.region.RegionThread) {
++         if (Thread.currentThread() instanceof net.nestworld.region.RegionThread) {
 +            LevelChunk nestworldChunk = this.nestworldGetLoadedChunk(p_8360_, p_8361_);
 +            if (nestworldChunk != null) return nestworldChunk;
++            // A region thread must never sync-load/block on getChunk (that is the
++            // park/unpark herd). load=false: honour vanilla "null if absent" — many
++            // callers (e.g. RemoveBlockGoal) null-check. load=true: opt-in void-air
++            // so getBlockState-style callers don't NPE (Paper/Folia behaviour).
++            if (!p_8363_) return null;
 +            if (net.nestworld.region.NestworldTuning.NONBLOCKING_CHUNK_READS && net.nestworld.region.NestworldRegionSystem.isInitialised()) {
 +               return net.nestworld.region.NestworldRegionSystem.get().nestworldEmptyChunk(p_8360_, p_8361_);
 +            }
