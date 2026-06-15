@@ -117,7 +117,14 @@ public class RegionSplitManager {
         // can split at the lower fill-cores bar and spread onto an idle core.
         // Merge is suppressed while regions <= target so the balance-splits don't
         // immediately merge back (no thrash).
-        boolean spareCores = active.size() < SPLIT_TARGET_PARALLELISM;
+        // Only regions that actually tick (own entities) consume a core, so empty
+        // regions must not count as "using up" parallelism — otherwise a handful
+        // of stale empty regions would block fill-splitting a newly hot one.
+        int busy = 0;
+        for (WorldRegion region : active) {
+            if (!region.getOwnedEntityIds().isEmpty()) busy++;
+        }
+        boolean spareCores = busy < SPLIT_TARGET_PARALLELISM;
         WorldRegion hottest = null;
         double hottestMs = 0.0;
         if (spareCores) {
@@ -142,7 +149,8 @@ public class RegionSplitManager {
                     }
                     region.resetThresholdCounters();
                 }
-            } else if (costMs < MERGE_MS_THRESHOLD && active.size() > SPLIT_TARGET_PARALLELISM) {
+            } else if (costMs < MERGE_MS_THRESHOLD
+                    && (active.size() > SPLIT_TARGET_PARALLELISM || region.getOwnedEntityIds().isEmpty())) {
                 region.splitPressureChecks = 0;
                 if (++region.mergePressureChecks >= MERGE_CHECKS_REQUIRED && !region.pinned) {
                     mergeCandidates.add(region); // persists until merged or cost rises
