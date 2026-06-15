@@ -351,3 +351,9 @@
 ## Стрес-тест join/leave (2026-06-15, docs/STRESS_TEST_CHURN.md)
 - Ядро тримало 20 TPS до 550 churning-ботів (12 регіонів). Межа = vanilla конект/chunk-load на main, НЕ ядро. Конект-DoS → окремий шар (проксі/anti-bot/throttle), не шардинг.
 
+## Стрес-тест concurrency-знахідки (2026-06-15, docs/CONCURRENCY_FINDINGS.md)
+- ✅ #1 ClassInstanceMultiMap-гонка (Canary) — guard NestworldCompat (детект+лог+авто-disable конфіга).
+- ✅ #3 over-split на натовпі — кап MAX_REGIONS_TOTAL=cores*2 (валідовано: 16 не 30, вижив).
+- 🔶 #2 PoiManager DistanceTracker-гонка (vanilla LeveledPriorityQueue) — МІТИГОВАНО капом, ГЛИБОКИЙ фікс TODO: region-потоки не мають мутувати chunk-source POI-чергу під час main getChunkSource().tick() (відкласти chunk-ticket-зміни на main між фазами).
+- Норм-навантаження (550 churn-гравців) = 20 TPS без цих крашів; вони лише під екстремальними мобо-натовпами.
+
