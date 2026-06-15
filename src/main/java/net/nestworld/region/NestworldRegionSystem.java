@@ -62,6 +62,9 @@ public class NestworldRegionSystem {
      *  main each tick so ChunkMap entity tracking is never mutated concurrently. */
     private final java.util.Queue<net.minecraft.world.entity.Entity> deferredSpawns =
             new java.util.concurrent.ConcurrentLinkedQueue<>();
+    /** O(1) size of {@link #deferredSpawns} (its size() is O(n)). */
+    private final java.util.concurrent.atomic.AtomicInteger deferredSpawnCount =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     private ServerLevel overworld;
     private MinecraftServer server;
@@ -251,14 +254,24 @@ public class NestworldRegionSystem {
     /** Called from a region thread's addFreshEntity (overworld): queue the spawn
      *  for main-thread registration instead of mutating ChunkMap off-main. */
     public boolean queueEntitySpawn(net.minecraft.world.entity.Entity e) {
+        // Anti-grief: drop spawns past the queue cap so a flood (mass breeding,
+        // skeleton volleys) cannot exhaust memory.
+        if (deferredSpawnCount.get() >= NestworldTuning.DEFERRED_SPAWN_QUEUE_CAP) {
+            return false;
+        }
         deferredSpawns.add(e);
+        deferredSpawnCount.incrementAndGet();
         return true;
     }
 
-    /** Main-thread: register all entities region threads spawned this tick. */
+    /** Main-thread: register entities region threads spawned, up to a per-tick
+     *  budget so a deliberate flood throttles over several ticks instead of
+     *  freezing the main thread draining the whole queue at once. */
     private void drainDeferredSpawns() {
+        int budget = NestworldTuning.MAX_DEFERRED_SPAWNS_PER_TICK;
         net.minecraft.world.entity.Entity e;
-        while ((e = deferredSpawns.poll()) != null) {
+        while (budget-- > 0 && (e = deferredSpawns.poll()) != null) {
+            deferredSpawnCount.decrementAndGet();
             try {
                 overworld.addFreshEntity(e);
             } catch (Throwable t) {

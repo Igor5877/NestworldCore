@@ -34,6 +34,20 @@ public final class NestworldTuning {
             Integer.getInteger("nestworld.regionEntityBudgetMs", 40) * 1_000_000L;
 
     /**
+     * Anti-grief: cap how many region-thread-spawned entities are registered on
+     * the main thread per tick (the rest carry to following ticks). Off-main
+     * spawns (mob breeding, projectiles, abilities) are queued and drained on
+     * main; without a cap a deliberate flood (mass breeding, skeleton volleys)
+     * would freeze the main thread draining the whole queue in one tick. The
+     * queue is also hard-capped so the flood cannot exhaust memory — spawns past
+     * it are dropped. Generous defaults so normal play never hits them.
+     */
+    public static final int MAX_DEFERRED_SPAWNS_PER_TICK =
+            Integer.getInteger("nestworld.maxDeferredSpawnsPerTick", 1000);
+    public static final int DEFERRED_SPAWN_QUEUE_CAP =
+            Integer.getInteger("nestworld.deferredSpawnQueueCap", 200_000);
+
+    /**
      * Weight of one unit of block-tick heat relative to one owned entity when
      * the split scorer scores candidate cut lines (see {@link BlockTickHeat}).
      * Block-tick heat is a decayed per-second count, so a busy redstone column
