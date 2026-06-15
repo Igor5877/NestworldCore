@@ -289,7 +289,7 @@ public class RegionThread extends Thread {
             } catch (Throwable t) {
                 LOGGER.warn("[{}] scheduled-tick error: {}", getName(), t.toString());
             }
-            if ((done & 31) == 31 && System.nanoTime() > deadline) {
+            if ((done & 7) == 7 && System.nanoTime() > deadline) {
                 done++;
                 break;
             }
@@ -387,7 +387,12 @@ public class RegionThread extends Thread {
                     NestworldRegionSystem.get().getPins().noteEntityTickError(entity.getType());
                 }
             }
-            if ((processed & 15) == 0 && System.nanoTime() > deadline) break;
+            // Check the budget every 4 entities, not every 16: a single dense-pack
+            // entity tick (movement collision among thousands) can cost ~2 ms, so a
+            // 16-wide check window overshoots the budget by tens of ms — enough to
+            // sink TPS under a deliberate mob crush. Tighter granularity keeps each
+            // region near its REGION_ENTITY_BUDGET_NANOS so the lockstep floor holds.
+            if ((processed & 3) == 0 && System.nanoTime() > deadline) break;
         }
         entityCursor = (start + processed) % n;
         lastTickedCount = ticked;
