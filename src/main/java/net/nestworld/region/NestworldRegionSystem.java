@@ -105,6 +105,11 @@ public class NestworldRegionSystem {
     private void init(MinecraftServer server) {
         LOGGER.info("Initialising NestWorld region sharding system…");
 
+        // Guard against mods whose optimizations are thread-unsafe under parallel
+        // region ticking (Canary/radium/lithium overwrite ClassInstanceMultiMap
+        // with single-thread-only structures that race and freeze the server).
+        NestworldCompat.check();
+
         this.server = server;
         overworld = server.getLevel(Level.OVERWORLD);
         if (overworld == null) {
