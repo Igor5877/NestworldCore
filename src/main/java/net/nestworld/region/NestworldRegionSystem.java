@@ -66,32 +66,7 @@ public class NestworldRegionSystem {
     private ServerLevel overworld;
     private MinecraftServer server;
 
-    /** Shared void-air chunk for Folia-style non-blocking region reads (lazy). */
-    private volatile net.minecraft.world.level.chunk.EmptyLevelChunk emptyChunk;
-
     private NestworldRegionSystem() {}
-
-    /**
-     * Returns a shared empty (void-air) chunk for a region thread reading an
-     * unloaded chunk, so it never synchronously loads + blocks on main. Gated by
-     * {@link NestworldTuning#NONBLOCKING_CHUNK_READS}; called from the patched
-     * ServerChunkCache. {@code EmptyLevelChunk.getBlockState/getFluidState} ignore
-     * the position (always void-air / empty), so one shared instance is correct
-     * for any coordinate.
-     */
-    public net.minecraft.world.level.chunk.LevelChunk nestworldEmptyChunk() {
-        net.minecraft.world.level.chunk.EmptyLevelChunk c = this.emptyChunk;
-        if (c == null) {
-            net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome> biome =
-                    overworld.registryAccess()
-                            .registryOrThrow(net.minecraft.core.registries.Registries.BIOME)
-                            .getHolderOrThrow(net.minecraft.world.level.biome.Biomes.PLAINS);
-            c = new net.minecraft.world.level.chunk.EmptyLevelChunk(
-                    overworld, new net.minecraft.world.level.ChunkPos(0, 0), biome);
-            this.emptyChunk = c;
-        }
-        return c;
-    }
 
     public static NestworldRegionSystem get() {
         if (INSTANCE == null) throw new IllegalStateException("NestworldRegionSystem not initialised");
