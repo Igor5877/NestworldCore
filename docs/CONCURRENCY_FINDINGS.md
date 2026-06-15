@@ -51,3 +51,14 @@ chunk-load-запитів від region-потоків, що дренажить�
 - #2 — реальний внутрішній gap (vanilla POI-черга), мітиговано, треба глибокий фікс.
 - Під ЗВИЧАЙНИМ навантаженням (churn-тест 550 гравців) — 20 TPS, без цих крашів;
   вони лише під ЕКСТРЕМАЛЬНИМИ натовпами мобів (точкові хотспоти).
+
+## Спроба Folia-style non-blocking chunk reads (2026-06-15) — ПРОВАЛ, відкочено
+Профіль dense-crowd: ~25% region-потоків стоять на синхронному завантаженні чанків
+(`Entity.isInsideWall`→getBlockState→getChunk(load=true)→CompletableFuture.join на main).
+Спроба (за прапором nonBlockingChunkReads): незавантажене читання region-потоку →
+shared `EmptyLevelChunk` (void-air) замість блоку. Прапор ПРИБРАВ stall (getChunkOffThread=0),
+АЛЕ сервер крашить — AIOOBE «length 65» ×42 + fatal: EmptyLevelChunk ламається в code-path'ах,
+що очікують справжній чанк (+ гонка на спільному екземплярі). Відкочено.
+ВИСНОВОК: shared-empty-chunk хак не працює. Справжня Folia = повна регіоналізація chunk-системи
+(кожен регіон вантажить свої чанки async без блоку на main) — місяці роботи, окремий великий проєкт.
+Dense-crowd залишається обмеженим Mob.tick AI (Canary-AI допомагає) + цією chunk-серіалізацією.
