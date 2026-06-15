@@ -76,6 +76,31 @@ public class RegionThread extends Thread {
         java.util.Arrays.fill(chunkCacheVals, null);
     }
 
+    /**
+     * Per-thread void-air chunk returned for a region thread's getChunk(load=true)
+     * miss, so it never synchronously loads + blocks on the main thread (that is
+     * the park/unpark herd). One instance per region thread: EmptyLevelChunk
+     * inherits LevelChunk's mutable arrays (heightmaps/sections), so a single
+     * shared instance raced across threads (AIOOBE) — a per-thread one is only
+     * touched by this thread. Block reads ignore the position, so a fixed dummy
+     * ChunkPos is fine.
+     */
+    private net.minecraft.world.level.chunk.EmptyLevelChunk nestworldEmptyChunk;
+
+    public net.minecraft.world.level.chunk.LevelChunk nestworldEmptyChunk() {
+        net.minecraft.world.level.chunk.EmptyLevelChunk c = this.nestworldEmptyChunk;
+        if (c == null) {
+            net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome> biome =
+                    level.registryAccess()
+                            .registryOrThrow(net.minecraft.core.registries.Registries.BIOME)
+                            .getHolderOrThrow(net.minecraft.world.level.biome.Biomes.PLAINS);
+            c = new net.minecraft.world.level.chunk.EmptyLevelChunk(
+                    level, new net.minecraft.world.level.ChunkPos(0, 0), biome);
+            this.nestworldEmptyChunk = c;
+        }
+        return c;
+    }
+
     public RegionThread(WorldRegion region, ServerLevel level) {
         super("NestWorld-Region-" + region.getId());
         setDaemon(true);
