@@ -376,6 +376,10 @@ public class NestworldRegionSystem {
         runAutosplitTest();
         runRandomTickTest();
         long t0 = System.nanoTime();
+        // Publish the loaded-FULL chunk snapshot for region threads to read
+        // lock-free this tick (avoids missing already-loaded chunks off-main and
+        // the getChunk park/unpark herd that dominated the main thread under load).
+        overworld.getChunkSource().nestworldRefreshLoadedChunks();
         // 1. Vanilla global tick (time, weather, chunk I/O) — entity tick skipped by
         // patch; due scheduled block/fluid ticks are parallelized from within it
         // via runScheduledTicksPhase (ServerLevel patch calls back into us).

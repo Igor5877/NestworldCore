@@ -27,7 +27,7 @@
              Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure> either = chunkholder.m_140080_(ChunkStatus.f_62326_).getNow((Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>)null);
              if (either == null) {
                 return null;
-@@ -180,4 +_,29 @@
+@@ -180,4 +_,53 @@
        }
     }
  
@@ -40,6 +40,11 @@
 +      long i = ChunkPos.m_45589_(p_x, p_z);
 +      LevelChunk cached = regionThread.getCachedChunk(i);
 +      if (cached != null) return cached;
++      // Reliable read of the main-published loaded-FULL snapshot: avoids missing an
++      // already-loaded chunk (stale visibleChunkMap from off-main) and blocking on
++      // getChunk, which caused a park/unpark herd on the main thread under load.
++      LevelChunk pub = this.nestworldLoadedFull.get(i);
++      if (pub != null) { regionThread.cacheChunk(i, pub); return pub; }
 +      ChunkHolder chunkholder = this.m_8364_(i);
 +      if (chunkholder == null) return null;
 +      LevelChunk result = null;
@@ -54,6 +59,25 @@
 +      }
 +      if (result != null) regionThread.cacheChunk(i, result);
 +      return result;
++   }
++
++   /** Main-published snapshot of loaded FULL chunks; region threads read it
++    *  lock-free to skip blocking getChunk + the resulting park/unpark herd.
++    *  Rebuilt + volatile-published each tick on main (immutable after publish). */
++   public volatile it.unimi.dsi.fastutil.longs.Long2ObjectMap<LevelChunk> nestworldLoadedFull =
++         it.unimi.dsi.fastutil.longs.Long2ObjectMaps.emptyMap();
++
++   public void nestworldRefreshLoadedChunks() {
++      it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<LevelChunk> m = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
++      for (ChunkHolder h : this.f_8325_.m_140416_()) {
++         LevelChunk c = h.currentlyLoading;
++         if (c == null) {
++            Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure> e = h.m_140080_(ChunkStatus.f_62326_).getNow((Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>)null);
++            if (e != null) { ChunkAccess ca = e.left().orElse((ChunkAccess)null); if (ca instanceof LevelChunk) c = (LevelChunk)ca; }
++         }
++         if (c != null) m.put(c.m_7697_().m_45588_(), c);
++      }
++      this.nestworldLoadedFull = m;
 +   }
 +
     private void m_8488_() {
