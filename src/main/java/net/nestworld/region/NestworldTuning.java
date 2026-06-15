@@ -46,6 +46,21 @@ public final class NestworldTuning {
     public static final double CUT_HEAT_WEIGHT =
             Double.parseDouble(System.getProperty("nestworld.cutHeatWeight", "0.15"));
 
+    /**
+     * Folia-style non-blocking chunk reads (EXPERIMENTAL, default off). When a
+     * region thread reads a chunk that is not loaded, the default path queues a
+     * synchronous load on the main thread and blocks on it (profiling under a
+     * dense mob crowd showed ~25 % of region-thread time parked here, e.g. from
+     * {@code Entity.isInsideWall} reading across an unloaded boundary). With this
+     * on, an unloaded read instead returns a shared empty (void-air) chunk — no
+     * sync load, no block, mirroring how Paper/Folia refuse to load chunks during
+     * ticking. Trade-off: entities treat unloaded neighbours as empty space, so
+     * behaviour at the very edge of loaded terrain can differ slightly. Enable
+     * with {@code -Dnestworld.nonBlockingChunkReads=true}.
+     */
+    public static final boolean NONBLOCKING_CHUNK_READS =
+            Boolean.getBoolean("nestworld.nonBlockingChunkReads");
+
     private NestworldTuning() {
     }
 }
