@@ -43,6 +43,23 @@ public class RegionSplitManager {
     private static final int    SPLIT_CHECKS_REQUIRED = 5;  // 100 game ticks
     private static final int    MERGE_CHECKS_REQUIRED = 25; // 500 game ticks
 
+    // --- Fill-idle-cores split (load balancing) ---
+    // Spark profiling (ZombieCraft, 1580 entities) showed the main thread parked
+    // ~110 s on the barrier while CPU sat at ~28 % of 8 cores: work concentrates
+    // in a few regions and most cores idle. When fewer regions are active than we
+    // have cores to run them on, split the single most expensive region at a
+    // lower bar so its load spreads onto an idle core. Bounded by the target so
+    // we never create more region threads than cores (extra threads beyond that
+    // only add context-switch + barrier overhead, not parallelism). Merge is
+    // suppressed while regions <= target so these balance-splits stay put instead
+    // of merging back the next window (no split/merge thrash). Set
+    // nestworld.splitFillCoresMs very high to disable (restores pure 25 ms rule).
+    private static final int SPLIT_TARGET_PARALLELISM =
+            Math.max(1, Integer.getInteger("nestworld.splitTargetParallelism",
+                    Math.max(1, Runtime.getRuntime().availableProcessors() - 1)));
+    private static final double SPLIT_FILL_CORES_MS =
+            Double.parseDouble(System.getProperty("nestworld.splitFillCoresMs", "12.0"));
+
     // --- Point-hotspot split guard ---
     // A split only helps when each child receives a meaningful share of the
     // load; below this share the cut just peels off a near-idle region.
@@ -93,10 +110,28 @@ public class RegionSplitManager {
         blockTickHeat.decay();
 
         List<WorldRegion> active = tree.getActiveRegions();
+
+        // Load balancing: when fewer regions are active than we have cores, the
+        // tick is gated by the most expensive region while cores idle (spark:
+        // ~28 % CPU, main parked on the barrier). Pick the hottest region so it
+        // can split at the lower fill-cores bar and spread onto an idle core.
+        // Merge is suppressed while regions <= target so the balance-splits don't
+        // immediately merge back (no thrash).
+        boolean spareCores = active.size() < SPLIT_TARGET_PARALLELISM;
+        WorldRegion hottest = null;
+        double hottestMs = 0.0;
+        if (spareCores) {
+            for (WorldRegion region : active) {
+                double c = region.getAvgTickMs();
+                if (c > hottestMs) { hottestMs = c; hottest = region; }
+            }
+        }
+
         for (WorldRegion region : active) {
             double costMs = region.getAvgTickMs();
+            boolean fillSplit = spareCores && region == hottest && costMs > SPLIT_FILL_CORES_MS;
 
-            if (costMs > SPLIT_MS_THRESHOLD) {
+            if (costMs > SPLIT_MS_THRESHOLD || fillSplit) {
                 region.mergePressureChecks = 0;
                 mergeCandidates.remove(region);
                 if (++region.splitPressureChecks >= SPLIT_CHECKS_REQUIRED && region.canSplit()) {
@@ -107,7 +142,7 @@ public class RegionSplitManager {
                     }
                     region.resetThresholdCounters();
                 }
-            } else if (costMs < MERGE_MS_THRESHOLD) {
+            } else if (costMs < MERGE_MS_THRESHOLD && active.size() > SPLIT_TARGET_PARALLELISM) {
                 region.splitPressureChecks = 0;
                 if (++region.mergePressureChecks >= MERGE_CHECKS_REQUIRED && !region.pinned) {
                     mergeCandidates.add(region); // persists until merged or cost rises
