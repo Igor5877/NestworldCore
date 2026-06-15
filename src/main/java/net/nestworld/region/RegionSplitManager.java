@@ -60,6 +60,17 @@ public class RegionSplitManager {
     private static final double SPLIT_FILL_CORES_MS =
             Double.parseDouble(System.getProperty("nestworld.splitFillCoresMs", "12.0"));
 
+    // Hard cap on the total number of active regions. Each region is its own
+    // thread; past ~2x cores, extra regions only add context-switch + barrier
+    // overhead (and more chunk-source churn, which stresses the POI/lighting
+    // trackers) without adding parallelism. A dense, barely-separable mob crowd
+    // would otherwise keep clearing the 25 ms threshold and split into dozens of
+    // tiny still-overloaded regions (observed: 30 regions on 8 cores at 2-3 TPS).
+    // At the cap we stop splitting and let the per-region budget absorb the load.
+    private static final int MAX_REGIONS_TOTAL =
+            Math.max(4, Integer.getInteger("nestworld.maxRegions",
+                    Runtime.getRuntime().availableProcessors() * 2));
+
     // --- Point-hotspot split guard ---
     // A split only helps when each child receives a meaningful share of the
     // load; below this share the cut just peels off a near-idle region.
@@ -134,11 +145,16 @@ public class RegionSplitManager {
             }
         }
 
+        // Stop splitting once we hit the region cap (see MAX_REGIONS_TOTAL): more
+        // threads than this only add overhead; the per-region budget absorbs the
+        // overload instead of fragmenting into dozens of tiny busy regions.
+        boolean atRegionCap = active.size() >= MAX_REGIONS_TOTAL;
+
         for (WorldRegion region : active) {
             double costMs = region.getAvgTickMs();
             boolean fillSplit = spareCores && region == hottest && costMs > SPLIT_FILL_CORES_MS;
 
-            if (costMs > SPLIT_MS_THRESHOLD || fillSplit) {
+            if (!atRegionCap && (costMs > SPLIT_MS_THRESHOLD || fillSplit)) {
                 region.mergePressureChecks = 0;
                 mergeCandidates.remove(region);
                 if (++region.splitPressureChecks >= SPLIT_CHECKS_REQUIRED && region.canSplit()) {
