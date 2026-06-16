@@ -47,11 +47,20 @@ Every extreme stress test so far has surfaced a new race of this class (POI → 
 Also shipped: **explosion-ray cache** (`NestworldExplosionCache`, 47.4.105) — per-explosion block/fluid
 memoisation, bit-identical; all explosion block lookups route through it.
 
+### ✅ Investigated — SAFE (not a race)
+| # | Structure | Finding |
+|---|---|---|
+| 4 | **Light engine** (`DynamicGraphMinFixedPoint` queue) | NOT racy. `ThreadedLevelLightEngine` isolates the graph behind a `ProcessorMailbox`: region threads only `addTask`/`tell` (thread-safe enqueue); the graph mutation (`runUpdate`/`super.checkBlock`) runs serially on the single light thread (`tryScheduleUpdate` only `mailbox.tell` + `scheduled.compareAndSet`). Light *reads* (getRawBrightness) are atomic byte-array reads — at worst stale, never corrupt. **Roadmap prediction was wrong** — light differs from POI precisely because it's mailbox-deferred, not directly accessed. |
+
+### Refined heuristic (from #4)
+A structure is crash-class ONLY if region threads touch it **directly**. If it sits behind a
+`ProcessorMailbox` / task queue / is main-only / is already deferred, it is safe. Re-scan the
+suspected list through this lens before assuming a fix is needed — many may be mailbox-isolated.
+
 ### ❌ Open — crash-class, prioritised
 | # | Structure | Trigger | Severity | Recommended fix |
 |---|---|---|---|---|
-| 4 | **Light engine** (`LevelLightEngine` / `LayerLightEngine`, a `DynamicGraphMinFixedPoint` like POI's tracker) | mass block changes queue light updates from region threads | **likely FATAL** (same queue class as POI → same AIOOBE) | A (lock the light engine) or B (defer light updates to main). **HIGH — audit next.** |
-| 5 | **`ServerLevel.sendBlockUpdated`** nav (`isUpdatingNavigations` bool + `navigatingMobs` Set) | concurrent collision-block changes w/ navigating mobs | non-fatal (vanilla only logs) but real | D (ThreadLocal guard) + C (thread-safe `navigatingMobs`) |
+| 5 | **`ServerLevel.sendBlockUpdated`** nav (`isUpdatingNavigations` bool + `navigatingMobs` Set) | concurrent collision-block changes w/ navigating mobs | non-fatal (vanilla only logs) but real CME risk | D (ThreadLocal guard) + C (thread-safe `navigatingMobs`) |
 
 ### 🔍 Suspected — audit (not yet triggered)
 Vanilla single-thread structures on the entity/block tick path. Audit each: does a region thread

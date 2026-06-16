@@ -1,14 +1,22 @@
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -179,7 +_,7 @@
+@@ -179,8 +_,14 @@
     private final PortalForcer f_8552_;
     private final LevelTicks<Block> f_8553_ = new LevelTicks<>(this::m_184110_, this.m_46658_());
     private final LevelTicks<Fluid> f_184047_ = new LevelTicks<>(this::m_184110_, this.m_46658_());
 -   final Set<Mob> f_143246_ = new ObjectOpenHashSet<>();
+-   volatile boolean f_200893_;
 +   final Set<Mob> f_143246_ = java.util.concurrent.ConcurrentHashMap.newKeySet();
-    volatile boolean f_200893_;
++   // NestWorld: per-thread reentrancy guard. The original shared boolean false-positived
++   // across region threads (spam: "recursive call to sendBlockUpdated" / "during navigation
++   // iteration") whenever two threads ran sendBlockUpdated at once. navigatingMobs is already
++   // a concurrent set so cross-thread iteration is CME-safe; this guard only needs to detect
++   // SAME-thread reentry (a recomputePath that re-enters sendBlockUpdated), which a ThreadLocal
++   // does correctly and without the false cross-thread logs.
++   final ThreadLocal<Boolean> f_200893_ = ThreadLocal.withInitial(() -> Boolean.FALSE);
     protected final Raids f_8565_;
     private final ObjectLinkedOpenHashSet<BlockEventData> f_8556_ = new ObjectLinkedOpenHashSet<>();
+    private final List<BlockEventData> f_184048_ = new ArrayList<>(64);
 @@ -188,11 +_,13 @@
     private final List<CustomSpawner> f_8558_;
     @Nullable
@@ -44,7 +52,7 @@
           }
  
           this.m_8804_();
-@@ -291,8 +_,12 @@
+@@ -291,9 +_,13 @@
        if (!this.m_46659_()) {
           long k = this.m_46467_();
           profilerfiller.m_6180_("blockTicks");
@@ -60,7 +68,11 @@
 +         }
           profilerfiller.m_7238_();
        }
-@@ -305,7 +_,11 @@
+ 
+@@ -302,10 +_,14 @@
+       profilerfiller.m_6182_("chunkSource");
+       this.m_7726_().m_201698_(p_8794_, true);
+       profilerfiller.m_6182_("blockEvents");
 -      this.m_8807_();
 +      if (net.nestworld.region.NestworldRegionSystem.isInitialised() && this.m_46472_() == net.minecraft.world.level.Level.f_46428_) {
 +         net.nestworld.region.NestworldRegionSystem.get().runBlockEventsPhase(this);
@@ -74,11 +86,14 @@
        if (flag) {
           this.m_8886_();
        }
-@@ -320,3 +_,4 @@
+@@ -318,6 +_,7 @@
+             profilerfiller.m_7238_();
+          }
  
 +         if (!(net.nestworld.region.NestworldRegionSystem.isInitialised() && this.m_46472_() == net.minecraft.world.level.Level.f_46428_))
           this.f_143243_.m_156910_((p_184065_) -> {
              if (!p_184065_.m_213877_()) {
+                if (this.m_143342_(p_184065_)) {
 @@ -337,7 +_,9 @@
                       }
  
@@ -131,12 +146,10 @@
        }
  
     }
-@@ -671,6 +_,41 @@
-          blockstate.m_222963_(this, p_184113_, this.f_46441_);
-       }
+@@ -673,6 +_,41 @@
  
     }
-+
+ 
 +   public void nestworldRunBlockTick(BlockPos pos, Block block) {
 +      this.m_184112_(pos, block);
 +   }
@@ -171,8 +184,10 @@
 +         }
 +      }
 +   }
- 
++
     public void m_8647_(Entity p_8648_) {
+       p_8648_.m_146867_();
+       ProfilerFiller profilerfiller = this.m_46473_();
 @@ -681,6 +_,7 @@
           return BuiltInRegistries.f_256780_.m_7981_(p_8648_.m_6095_()).toString();
        });
@@ -197,13 +212,16 @@
        }
     }
  
-@@ -802,3 +_,6 @@
+@@ -800,6 +_,9 @@
+    }
+ 
     public boolean m_7967_(Entity p_8837_) {
 +      if (net.nestworld.region.NestworldRegionSystem.isInitialised() && this.m_46472_() == net.minecraft.world.level.Level.f_46428_ && Thread.currentThread() instanceof net.nestworld.region.RegionThread) {
 +         return net.nestworld.region.NestworldRegionSystem.get().queueEntitySpawn(p_8837_);
 +      }
        return this.m_8872_(p_8837_);
     }
+ 
 @@ -828,6 +_,7 @@
     }
  
@@ -259,7 +277,7 @@
        this.f_8548_.m_6846_().m_11241_(p_263545_, p_263544_.m_20185_(), p_263544_.m_20186_(), p_263544_.m_20189_(), (double)p_263491_.m_203334_().m_215668_(p_263530_), this.m_46472_(), new ClientboundSoundEntityPacket(p_263491_, p_263542_, p_263544_, p_263530_, p_263520_, p_263490_));
     }
  
-@@ -905,6 +_,7 @@
+@@ -905,11 +_,12 @@
     }
  
     public void m_214171_(GameEvent p_215041_, Vec3 p_215042_, GameEvent.Context p_215043_) {
@@ -267,7 +285,28 @@
        this.f_243695_.m_245905_(p_215041_, p_215042_, p_215043_);
     }
  
-@@ -941,19 +_,24 @@
+    public void m_7260_(BlockPos p_8755_, BlockState p_8756_, BlockState p_8757_, int p_8758_) {
+-      if (this.f_200893_) {
++      if (this.f_200893_.get()) {
+          String s = "recursive call to sendBlockUpdated";
+          Util.m_200890_("recursive call to sendBlockUpdated", new IllegalStateException("recursive call to sendBlockUpdated"));
+       }
+@@ -928,32 +_,37 @@
+          }
+ 
+          try {
+-            this.f_200893_ = true;
++            this.f_200893_.set(true);
+ 
+             for(PathNavigation pathnavigation1 : list) {
+                pathnavigation1.m_26569_();
+             }
+          } finally {
+-            this.f_200893_ = false;
++            this.f_200893_.set(false);
+          }
+ 
+       }
     }
  
     public void m_46672_(BlockPos p_215045_, Block p_215046_) {
@@ -296,7 +335,8 @@
     }
  
     public void m_7605_(Entity p_8650_, byte p_8651_) {
-@@ -985,6 +_,34 @@
+@@ -984,7 +_,35 @@
+    }
  
     public void m_7696_(BlockPos p_8746_, Block p_8747_, int p_8748_, int p_8749_) {
 -      this.f_8556_.add(new BlockEventData(p_8746_, p_8747_, p_8748_, p_8749_));
@@ -345,6 +385,15 @@
     public LevelEntityGetter<Entity> m_142646_() {
        return this.f_143244_.m_157567_();
     }
+@@ -1467,7 +_,7 @@
+          }
+ 
+          if (p_143371_ instanceof Mob mob) {
+-            if (ServerLevel.this.f_200893_) {
++            if (ServerLevel.this.f_200893_.get()) {
+                String s = "onTrackingStart called during navigation iteration";
+                Util.m_200890_("onTrackingStart called during navigation iteration", new IllegalStateException("onTrackingStart called during navigation iteration"));
+             }
 @@ -1475,8 +_,8 @@
              ServerLevel.this.f_143246_.add(mob);
           }
@@ -356,6 +405,15 @@
                 ServerLevel.this.f_143247_.put(enderdragonpart.m_19879_(), enderdragonpart);
              }
           }
+@@ -1492,7 +_,7 @@
+          }
+ 
+          if (p_143375_ instanceof Mob mob) {
+-            if (ServerLevel.this.f_200893_) {
++            if (ServerLevel.this.f_200893_.get()) {
+                String s = "onTrackingStart called during navigation iteration";
+                Util.m_200890_("onTrackingStart called during navigation iteration", new IllegalStateException("onTrackingStart called during navigation iteration"));
+             }
 @@ -1500,17 +_,25 @@
              ServerLevel.this.f_143246_.remove(mob);
           }
