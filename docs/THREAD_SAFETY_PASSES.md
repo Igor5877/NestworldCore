@@ -42,11 +42,14 @@ Every extreme stress test so far has surfaced a new race of this class (POI → 
 |---|---|---|---|---|
 | 1 | `PoiManager.DistanceTracker` + `SectionStorage` storage/dirty | mob POI queries vs main POI tick | A (lock) + disk-outside-lock | 47.4.102/103 |
 | 2 | `ChunkMap.entityMap` (Int2ObjectOpenHashMap) | mass entity removal (TNT) vs main ChunkMap.tick | B (defer removals to main) | 47.4.104 |
+| 3 | `ChunkHolder.changedBlocksPerSection` (ShortOpenHashSet) | mass block changes (explosions) vs main `broadcastChanges` | A (per-holder lock, snapshot-and-clear; packets off-lock) | 47.4.107 |
+
+Also shipped: **explosion-ray cache** (`NestworldExplosionCache`, 47.4.105) — per-explosion block/fluid
+memoisation, bit-identical; all explosion block lookups route through it.
 
 ### ❌ Open — crash-class, prioritised
 | # | Structure | Trigger | Severity | Recommended fix |
 |---|---|---|---|---|
-| 3 | **`ChunkHolder.changedBlocksPerSection`** (ShortOpenHashSet) | mass block changes (explosions) vs main `broadcastChanges` | **FATAL** (crashes on ~7k TNT blocks) | B: defer block-change recording / broadcast to main, OR C: thread-safe set. **DO FIRST** (actively crashes). |
 | 4 | **Light engine** (`LevelLightEngine` / `LayerLightEngine`, a `DynamicGraphMinFixedPoint` like POI's tracker) | mass block changes queue light updates from region threads | **likely FATAL** (same queue class as POI → same AIOOBE) | A (lock the light engine) or B (defer light updates to main). **HIGH — audit next.** |
 | 5 | **`ServerLevel.sendBlockUpdated`** nav (`isUpdatingNavigations` bool + `navigatingMobs` Set) | concurrent collision-block changes w/ navigating mobs | non-fatal (vanilla only logs) but real | D (ThreadLocal guard) + C (thread-safe `navigatingMobs`) |
 
