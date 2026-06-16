@@ -33,7 +33,7 @@
        }
  
     }
-@@ -71,25 +_,35 @@
+@@ -71,25 +_,53 @@
  
     @Nullable
     protected Optional<R> m_63818_(long p_63819_) {
@@ -47,34 +47,52 @@
     }
  
     protected Optional<R> m_63823_(long p_63824_) {
--      if (this.m_156630_(p_63824_)) {
--         return Optional.empty();
+       if (this.m_156630_(p_63824_)) {
+          return Optional.empty();
 -      } else {
 -         Optional<R> optional = this.m_63818_(p_63824_);
 -         if (optional != null) {
 -            return optional;
++      }
++      // NestWorld fast path: already loaded -> short lock, no disk.
 +      this.nestworldLock.lock();
 +      try {
-+         if (this.m_156630_(p_63824_)) {
-+            return Optional.empty();
++         Optional<R> optional = this.f_63774_.get(p_63824_);
++         if (optional != null) {
++            return optional;
++         }
++      } finally {
++         this.nestworldLock.unlock();
++      }
++      // NestWorld: do the blocking disk read (IOWorker join) WITHOUT holding the lock -- that
++      // join was the dominant POI lock contention under a mob crowd (spark: ~34ms/tick parked in
++      // getOrLoad). Safe because readColumn loads a whole column all-or-nothing under the lock:
++      // if we re-acquire and this section is still absent, NO sibling section of the column is
++      // loaded either (a present sibling would imply the column was loaded -> this section too),
++      // so there is no concurrent in-memory change to clobber. If another thread loaded the
++      // column meanwhile, the double-check below returns its value and we discard our disk read.
++      ChunkPos chunkpos = SectionPos.m_123184_(p_63824_).m_123251_();
++      Optional<CompoundTag> compound = this.m_223532_(chunkpos).join();
++      RegistryOps<Tag> registryops = RegistryOps.m_255058_(NbtOps.f_128958_, this.f_223507_);
++      this.nestworldLock.lock();
++      try {
++         Optional<R> optional = this.f_63774_.get(p_63824_);
++         if (optional != null) {
++            return optional;
++         }
++         this.m_63801_(chunkpos, registryops, compound.orElse((CompoundTag)null));
++         optional = this.f_63774_.get(p_63824_);
++         if (optional == null) {
++            throw (IllegalStateException)Util.m_137570_(new IllegalStateException());
           } else {
 -            this.m_63814_(SectionPos.m_123184_(p_63824_).m_123251_());
 -            optional = this.m_63818_(p_63824_);
 -            if (optional == null) {
 -               throw (IllegalStateException)Util.m_137570_(new IllegalStateException());
 -            } else {
-+            Optional<R> optional = this.m_63818_(p_63824_);
-+            if (optional != null) {
-                return optional;
-+            } else {
-+               this.m_63814_(SectionPos.m_123184_(p_63824_).m_123251_());
-+               optional = this.m_63818_(p_63824_);
-+               if (optional == null) {
-+                  throw (IllegalStateException)Util.m_137570_(new IllegalStateException());
-+               } else {
-+                  return optional;
-+               }
-             }
+-               return optional;
+-            }
++            return optional;
           }
 +      } finally {
 +         this.nestworldLock.unlock();
