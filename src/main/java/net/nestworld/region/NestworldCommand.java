@@ -11,6 +11,7 @@ import net.minecraft.network.chat.Component;
  *
  * <pre>
  *   /nestworld status            — list active regions with TPS and entity counts
+ *   /nestworld lag               — find the slowest region: hottest chunk, top entities, nearest player
  *   /nestworld split &lt;id&gt;        — force-split a region (testing / manual tuning)
  *   /nestworld merge &lt;a&gt; &lt;b&gt;     — force-merge two sibling regions
  *   /nestworld pins              — list entity types pinned to main-thread ticking
@@ -28,6 +29,7 @@ public final class NestworldCommand {
         dispatcher.register(Commands.literal("nestworld")
                 .requires(src -> src.hasPermission(2))
                 .then(Commands.literal("status").executes(ctx -> status(ctx.getSource())))
+                .then(Commands.literal("lag").executes(ctx -> lag(ctx.getSource())))
                 .then(Commands.literal("borders").executes(ctx -> toggleBorders(ctx.getSource())))
                 .then(Commands.literal("split")
                         .then(Commands.argument("id", IntegerArgumentType.integer(0))
@@ -68,6 +70,98 @@ public final class NestworldCommand {
                             .executes(ctx -> SparkBridge.run(ctx.getSource(),
                                     com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "args")))));
         }
+    }
+
+    /**
+     * Lag culprit report: the single slowest region and WHY — its hottest chunk
+     * (by entity count), top entity types, block-tick heat (redstone/farms), and
+     * the nearest player (usual griefer). If the server lags but no region is hot,
+     * the cost is on the main thread (commands / redstone / a mod tick handler) and
+     * region sharding cannot help — we say so explicitly.
+     */
+    private static int lag(CommandSourceStack src) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        NestworldRegionSystem sys = NestworldRegionSystem.get();
+        var regions = sys.getTree().getActiveRegions();
+        double serverMspt = src.getServer().getAverageTickTime();
+        double tps = Math.min(20.0, 1000.0 / Math.max(serverMspt, 0.001));
+        src.sendSuccess(() -> Component.literal(String.format(
+                "NestWorld lag report — server %.1f ms/tick (%.1f TPS)", serverMspt, tps)), false);
+
+        WorldRegion slow = null;
+        for (WorldRegion r : regions) {
+            if (slow == null || r.getAvgTickMs() > slow.getAvgTickMs()) slow = r;
+        }
+        if (slow == null) {
+            src.sendSuccess(() -> Component.literal("  no active regions"), false);
+            return 0;
+        }
+        final WorldRegion hot = slow;
+
+        // Server lagging but the worst region is cheap => the cost is on the main
+        // thread, which the sharding does not touch (commands, redstone, mod ticks).
+        if (serverMspt > 50.0 && hot.getAvgTickMs() < serverMspt * 0.4) {
+            src.sendSuccess(() -> Component.literal(String.format(
+                    "  ⚠ lag is MAIN-THREAD, not a region (worst region only %.1fms). Check "
+                  + "commands (/fill,/clone,/forceload), redstone, or a mod's server-tick handler.",
+                    hot.getAvgTickMs())), false);
+        }
+
+        net.minecraft.server.level.ServerLevel level = src.getServer().overworld();
+        java.util.Map<Long, Integer> chunkCounts = new java.util.HashMap<>();
+        java.util.Map<String, Integer> typeCounts = new java.util.HashMap<>();
+        for (java.util.UUID id : hot.getOwnedEntityIds()) {
+            net.minecraft.world.entity.Entity e = level.getEntity(id);
+            if (e == null) continue;
+            chunkCounts.merge(e.chunkPosition().toLong(), 1, Integer::sum);
+            String t = net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString();
+            typeCounts.merge(t, 1, Integer::sum);
+        }
+
+        src.sendSuccess(() -> Component.literal(String.format(
+                "  slowest: region #%d  cost=%.1fms  entities=%d",
+                hot.getId(), hot.getAvgTickMs(), hot.getOwnedEntityIds().size())), false);
+
+        long hotChunk = 0;
+        int hotCount = 0;
+        for (var en : chunkCounts.entrySet()) {
+            if (en.getValue() > hotCount) { hotCount = en.getValue(); hotChunk = en.getKey(); }
+        }
+        if (hotCount > 0) {
+            net.minecraft.world.level.ChunkPos cp = new net.minecraft.world.level.ChunkPos(hotChunk);
+            final int hc = hotCount;
+            src.sendSuccess(() -> Component.literal(String.format(
+                    "  hottest chunk: (%d,%d) — %d entities (block %d,%d)",
+                    cp.x, cp.z, hc, cp.getMinBlockX(), cp.getMinBlockZ())), false);
+        }
+
+        typeCounts.entrySet().stream()
+                .sorted((a, b) -> b.getValue() - a.getValue()).limit(4)
+                .forEach(en -> src.sendSuccess(() -> Component.literal(
+                        String.format("    %s ×%d", en.getKey(), en.getValue())), false));
+
+        BlockTickHeat heat = sys.getBlockTickHeat();
+        double regionHeat = heat.totalInRegion(hot);
+        if (regionHeat >= 1.0) {
+            src.sendSuccess(() -> Component.literal(String.format(
+                    "  block-tick heat=%.0f [%s] (redstone/farms)", regionHeat, heat.hotspotSummary(hot, 3))), false);
+        }
+
+        double bx = ((hot.getMinChunkX() + hot.getMaxChunkX()) / 2) * 16 + 8;
+        double bz = ((hot.getMinChunkZ() + hot.getMaxChunkZ()) / 2) * 16 + 8;
+        net.minecraft.world.entity.player.Player near = level.getNearestPlayer(bx, 128.0, bz, -1.0, false);
+        if (near != null) {
+            double d = Math.sqrt(near.distanceToSqr(bx, near.getY(), bz));
+            src.sendSuccess(() -> Component.literal(String.format(
+                    "  nearest player: %s (%.0f blocks from region centre)", near.getName().getString(), d)), false);
+        } else {
+            src.sendSuccess(() -> Component.literal(
+                    "  nearest player: none nearby (chunks kept loaded by force-load/spawn?)"), false);
+        }
+        return 1;
     }
 
     private static int toggleBorders(CommandSourceStack src) {
