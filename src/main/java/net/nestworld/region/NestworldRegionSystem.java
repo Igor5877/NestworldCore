@@ -66,6 +66,14 @@ public class NestworldRegionSystem {
     private final java.util.concurrent.atomic.AtomicInteger deferredSpawnCount =
             new java.util.concurrent.atomic.AtomicInteger();
 
+    /** Entity-tracking removals queued by region threads (off-main discard, e.g.
+     *  TNT consumed by an explosion), drained on main each tick so ChunkMap's
+     *  non-thread-safe entityMap is never mutated concurrently with its own tick
+     *  iteration. Symmetric with {@link #deferredSpawns}; bounded by the live
+     *  entity count, so no cap is needed (you cannot remove more than exist). */
+    private final java.util.Queue<net.minecraft.world.entity.Entity> deferredRemovals =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+
     private ServerLevel overworld;
     private MinecraftServer server;
 
@@ -280,6 +288,26 @@ public class NestworldRegionSystem {
         }
     }
 
+    /** Called from a region thread's ServerChunkCache.removeEntity: queue the
+     *  tracking removal for main instead of mutating ChunkMap's entityMap off-main. */
+    public void queueEntityRemoval(net.minecraft.world.entity.Entity e) {
+        deferredRemovals.add(e);
+    }
+
+    /** Main-thread: process the entity-tracking removals region threads queued
+     *  this tick. Drained fully (not budgeted) — removals are bounded by the live
+     *  entity count and must not lag, or a removed entity keeps being tracked. */
+    private void drainDeferredRemovals() {
+        net.minecraft.world.entity.Entity e;
+        while ((e = deferredRemovals.poll()) != null) {
+            try {
+                overworld.getChunkSource().removeEntity(e);
+            } catch (Throwable t) {
+                LOGGER.warn("Deferred entity removal failed: {}", t.toString());
+            }
+        }
+    }
+
     /**
      * Reads the saved layout, or returns null if there is none / it is
      * unreadable (first boot, or a world that predates persistence). A corrupt
@@ -427,10 +455,11 @@ public class NestworldRegionSystem {
 
         // 5. Refresh ghost zones (runs while region threads are paused at barrier)
         boundaryManager.syncGhostZones();
-        // 5b. Register entities that region threads spawned this tick (queued to
-        // avoid corrupting ChunkMap's non-thread-safe entity tracking while the
-        // main thread ran it during overworld.tick). Region threads are idle at
-        // the barrier here, so this is the safe point to add them on main.
+        // 5b. Register/unregister entities that region threads spawned or removed
+        // this tick (queued to avoid corrupting ChunkMap's non-thread-safe entity
+        // tracking while the main thread ran it during overworld.tick). Region
+        // threads are idle at the barrier here, so this is the safe point on main.
+        drainDeferredRemovals();
         drainDeferredSpawns();
         long t5 = System.nanoTime();
 
