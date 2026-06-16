@@ -1,10 +1,14 @@
 --- a/net/minecraft/world/level/Explosion.java
 +++ b/net/minecraft/world/level/Explosion.java
-@@ -56,6 +_,7 @@
+@@ -56,6 +_,11 @@
     private final ExplosionDamageCalculator f_46019_;
     private final ObjectArrayList<BlockPos> f_46020_ = new ObjectArrayList<>();
     private final Map<Player, Vec3> f_46021_ = Maps.newHashMap();
 +   private final Vec3 position;
++   // NestWorld: per-explosion block/fluid cache for the read-only explode() phase.
++   // Lazily created; one Explosion = one detonation = one region thread, so it is
++   // lock-free and bit-identical (blocks are immutable + unchanged during explode()).
++   private net.nestworld.region.NestworldExplosionCache nestworldCache;
  
     public Explosion(Level p_46024_, @Nullable Entity p_46025_, double p_46026_, double p_46027_, double p_46028_, float p_46029_, List<BlockPos> p_46030_) {
        this(p_46024_, p_46025_, p_46026_, p_46027_, p_46028_, p_46029_, false, Explosion.BlockInteraction.DESTROY_WITH_DECAY, p_46030_);
@@ -16,6 +20,68 @@
     }
  
     private ExplosionDamageCalculator m_46062_(@Nullable Entity p_46063_) {
+@@ -120,6 +_,50 @@
+       }
+    }
+ 
++   /** NestWorld: the per-explosion block/fluid cache, created on first use. */
++   private net.nestworld.region.NestworldExplosionCache nestworldCache() {
++      if (this.nestworldCache == null) {
++         this.nestworldCache = new net.nestworld.region.NestworldExplosionCache(this.f_46012_);
++      }
++      return this.nestworldCache;
++   }
++
++   /** NestWorld: a copy of {@link #getSeenPercent} whose exposure raycast reads
++    *  through the per-explosion block cache. Identical maths and result; it just
++    *  avoids re-reading the same central blocks for every nearby entity. */
++   private float nestworldSeenPercent(Vec3 p_46065_, Entity p_46066_) {
++      AABB aabb = p_46066_.m_20191_();
++      double d0 = 1.0D / ((aabb.f_82291_ - aabb.f_82288_) * 2.0D + 1.0D);
++      double d1 = 1.0D / ((aabb.f_82292_ - aabb.f_82289_) * 2.0D + 1.0D);
++      double d2 = 1.0D / ((aabb.f_82293_ - aabb.f_82290_) * 2.0D + 1.0D);
++      double d3 = (1.0D - Math.floor(1.0D / d0) * d0) / 2.0D;
++      double d4 = (1.0D - Math.floor(1.0D / d2) * d2) / 2.0D;
++      if (!(d0 < 0.0D) && !(d1 < 0.0D) && !(d2 < 0.0D)) {
++         int i = 0;
++         int j = 0;
++
++         for(double d5 = 0.0D; d5 <= 1.0D; d5 += d0) {
++            for(double d6 = 0.0D; d6 <= 1.0D; d6 += d1) {
++               for(double d7 = 0.0D; d7 <= 1.0D; d7 += d2) {
++                  double d8 = Mth.m_14139_(d5, aabb.f_82288_, aabb.f_82291_);
++                  double d9 = Mth.m_14139_(d6, aabb.f_82289_, aabb.f_82292_);
++                  double d10 = Mth.m_14139_(d7, aabb.f_82290_, aabb.f_82293_);
++                  Vec3 vec3 = new Vec3(d8 + d3, d9, d10 + d4);
++                  if (this.nestworldCache().m_45547_(new ClipContext(vec3, p_46065_, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, p_46066_)).m_6662_() == HitResult.Type.MISS) {
++                     ++i;
++                  }
++
++                  ++j;
++               }
++            }
++         }
++
++         return (float)i / (float)j;
++      } else {
++         return 0.0F;
++      }
++   }
++
+    public void m_46061_() {
+       this.f_46012_.m_220400_(this.f_46016_, GameEvent.f_157812_, new Vec3(this.f_46013_, this.f_46014_, this.f_46015_));
+       Set<BlockPos> set = Sets.newHashSet();
+@@ -143,8 +_,8 @@
+ 
+                   for(float f1 = 0.3F; f > 0.0F; f -= 0.22500001F) {
+                      BlockPos blockpos = BlockPos.m_274561_(d4, d6, d8);
+-                     BlockState blockstate = this.f_46012_.m_8055_(blockpos);
+-                     FluidState fluidstate = this.f_46012_.m_6425_(blockpos);
++                     BlockState blockstate = this.nestworldCache().m_8055_(blockpos);
++                     FluidState fluidstate = this.nestworldCache().m_6425_(blockpos);
+                      if (!this.f_46012_.m_46739_(blockpos)) {
+                         break;
+                      }
 @@ -176,6 +_,7 @@
        int j2 = Mth.m_14107_(this.f_46015_ - (double)f2 - 1.0D);
        int j1 = Mth.m_14107_(this.f_46015_ + (double)f2 + 1.0D);
@@ -24,6 +90,15 @@
        Vec3 vec3 = new Vec3(this.f_46013_, this.f_46014_, this.f_46015_);
  
        for(int k2 = 0; k2 < list.size(); ++k2) {
+@@ -191,7 +_,7 @@
+                   d5 /= d13;
+                   d7 /= d13;
+                   d9 /= d13;
+-                  double d14 = (double)m_46064_(vec3, entity);
++                  double d14 = (double)this.nestworldSeenPercent(vec3, entity);
+                   double d10 = (1.0D - d12) * d14;
+                   entity.m_6469_(this.m_46077_(), (float)((int)((d10 * d10 + d10) / 2.0D * 7.0D * (double)f2 + 1.0D)));
+                   double d11;
 @@ -245,7 +_,7 @@
              if (!blockstate.m_60795_()) {
                 BlockPos blockpos1 = blockpos.m_7949_();
