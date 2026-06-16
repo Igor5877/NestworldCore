@@ -43,6 +43,7 @@ Every extreme stress test so far has surfaced a new race of this class (POI → 
 | 1 | `PoiManager.DistanceTracker` + `SectionStorage` storage/dirty | mob POI queries vs main POI tick | A (lock) + disk-outside-lock | 47.4.102/103 |
 | 2 | `ChunkMap.entityMap` (Int2ObjectOpenHashMap) | mass entity removal (TNT) vs main ChunkMap.tick | B (defer removals to main) | 47.4.104 |
 | 3 | `ChunkHolder.changedBlocksPerSection` (ShortOpenHashSet) | mass block changes (explosions) vs main `broadcastChanges` | A (per-holder lock, snapshot-and-clear; packets off-lock) | 47.4.107 |
+| 5 | `ServerLevel.sendBlockUpdated` nav guard (`isUpdatingNavigations`) | shared boolean false-positives across region threads (log spam) | D (ThreadLocal guard; navigatingMobs was already concurrent) | 47.4.109 |
 
 Also shipped: **explosion-ray cache** (`NestworldExplosionCache`, 47.4.105) — per-explosion block/fluid
 memoisation, bit-identical; all explosion block lookups route through it.
@@ -57,10 +58,11 @@ A structure is crash-class ONLY if region threads touch it **directly**. If it s
 `ProcessorMailbox` / task queue / is main-only / is already deferred, it is safe. Re-scan the
 suspected list through this lens before assuming a fix is needed — many may be mailbox-isolated.
 
-### ❌ Open — crash-class, prioritised
-| # | Structure | Trigger | Severity | Recommended fix |
-|---|---|---|---|---|
-| 5 | **`ServerLevel.sendBlockUpdated`** nav (`isUpdatingNavigations` bool + `navigatingMobs` Set) | concurrent collision-block changes w/ navigating mobs | non-fatal (vanilla only logs) but real CME risk | D (ThreadLocal guard) + C (thread-safe `navigatingMobs`) |
+### ❌ Open — crash-class
+None known. All five confirmed crash-class races are fixed; #4 was investigated and found safe.
+Residual (deeper, non-crash, deferred): cross-region `recomputePath` in sendBlockUpdated can repath
+a mob owned by another region — caught per-entity, transient path glitch at worst; revisit only if
+a real nav crash ever appears.
 
 ### 🔍 Suspected — audit (not yet triggered)
 Vanilla single-thread structures on the entity/block tick path. Audit each: does a region thread
