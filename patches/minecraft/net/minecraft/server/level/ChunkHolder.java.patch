@@ -1,6 +1,21 @@
 --- a/net/minecraft/server/level/ChunkHolder.java
 +++ b/net/minecraft/server/level/ChunkHolder.java
-@@ -63,6 +_,7 @@
+@@ -55,14 +_,21 @@
+    private int f_140007_;
+    private int f_140008_;
+    final ChunkPos f_140009_;
+-   private boolean f_140010_;
++   private volatile boolean f_140010_;
+    private final ShortSet[] f_140011_;
++   // NestWorld: region threads record block changes (setBlock during a region tick,
++   // incl. cross-region explosions) into changedBlocksPerSection while the main thread
++   // snapshots+iterates it in broadcastChanges -> the single-thread ShortOpenHashSet
++   // corrupts (NPE in SetIterator). This lock makes blockChanged's check-create-add
++   // atomic with broadcastChanges' snapshot-and-clear; packet building stays off-lock.
++   private final java.util.concurrent.locks.ReentrantLock nestworldBlockChangeLock = new java.util.concurrent.locks.ReentrantLock();
+    private final BitSet f_140012_ = new BitSet();
+    private final BitSet f_140013_ = new BitSet();
+    private final LevelLightEngine f_140014_;
     private final ChunkHolder.LevelChangeListener f_140015_;
     private final ChunkHolder.PlayerProvider f_140016_;
     private boolean f_140017_;
@@ -8,3 +23,58 @@
     private CompletableFuture<Void> f_142981_ = CompletableFuture.completedFuture((Void)null);
  
     public ChunkHolder(ChunkPos p_142986_, int p_142987_, LevelHeightAccessor p_142988_, LevelLightEngine p_142989_, ChunkHolder.LevelChangeListener p_142990_, ChunkHolder.PlayerProvider p_142991_) {
+@@ -150,12 +_,17 @@
+       LevelChunk levelchunk = this.m_140085_();
+       if (levelchunk != null) {
+          int i = this.f_142983_.m_151564_(p_140057_.m_123342_());
+-         if (this.f_140011_[i] == null) {
+-            this.f_140010_ = true;
+-            this.f_140011_[i] = new ShortOpenHashSet();
+-         }
++         this.nestworldBlockChangeLock.lock();
++         try {
++            if (this.f_140011_[i] == null) {
++               this.f_140010_ = true;
++               this.f_140011_[i] = new ShortOpenHashSet();
++            }
+ 
+-         this.f_140011_[i].add(SectionPos.m_123218_(p_140057_));
++            this.f_140011_[i].add(SectionPos.m_123218_(p_140057_));
++         } finally {
++            this.nestworldBlockChangeLock.unlock();
++         }
+       }
+    }
+ 
+@@ -200,10 +_,19 @@
+          if (this.f_140010_) {
+             List<ServerPlayer> list1 = this.f_140016_.m_183262_(this.f_140009_, false);
+ 
+-            for(int j = 0; j < this.f_140011_.length; ++j) {
+-               ShortSet shortset = this.f_140011_[j];
++            ShortSet[] nestworldSets;
++            this.nestworldBlockChangeLock.lock();
++            try {
++               nestworldSets = this.f_140011_.clone();
++               java.util.Arrays.fill(this.f_140011_, (ShortSet)null);
++               this.f_140010_ = false;
++            } finally {
++               this.nestworldBlockChangeLock.unlock();
++            }
++
++            for(int j = 0; j < nestworldSets.length; ++j) {
++               ShortSet shortset = nestworldSets[j];
+                if (shortset != null) {
+-                  this.f_140011_[j] = null;
+                   if (!list1.isEmpty()) {
+                      int i = this.f_142983_.m_151568_(j);
+                      SectionPos sectionpos = SectionPos.m_123196_(p_140055_.m_7697_(), i);
+@@ -223,8 +_,6 @@
+                   }
+                }
+             }
+-
+-            this.f_140010_ = false;
+          }
+       }
+    }
