@@ -1,0 +1,141 @@
+--- a/net/minecraft/world/level/chunk/storage/SectionStorage.java
++++ b/net/minecraft/world/level/chunk/storage/SectionStorage.java
+@@ -40,6 +_,14 @@
+    private final IOWorker f_63773_;
+    private final Long2ObjectMap<Optional<R>> f_63774_ = new Long2ObjectOpenHashMap<>();
+    private final LongLinkedOpenHashSet f_63775_ = new LongLinkedOpenHashSet();
++   // NestWorld: vanilla SectionStorage (and PoiManager's DistanceTracker) is single-thread.
++   // Region threads query POI (zombie MoveThroughVillageGoal) while the main thread ticks
++   // the same storage -> the storage map / dirty set / DistanceTracker queues race and crash
++   // (AIOOBE in LongLinkedOpenHashSet.removeFirstLong). One reentrant lock serialises all
++   // storage + tracker mutation. No getChunk is called while holding it (readColumn loads
++   // from the IOWorker, and PoiManager.ensureLoadedAndValid getChunk runs outside getOrLoad),
++   // so there is no region<->main getChunk deadlock.
++   protected final java.util.concurrent.locks.ReentrantLock nestworldLock = new java.util.concurrent.locks.ReentrantLock();
+    private final Function<Runnable, Codec<R>> f_63776_;
+    private final Function<Runnable, R> f_63777_;
+    private final DataFixer f_63778_;
+@@ -58,9 +_,14 @@
+    }
+ 
+    protected void m_6202_(BooleanSupplier p_63812_) {
+-      while(this.m_202164_() && p_63812_.getAsBoolean()) {
+-         ChunkPos chunkpos = SectionPos.m_123184_(this.f_63775_.firstLong()).m_123251_();
+-         this.m_63825_(chunkpos);
++      this.nestworldLock.lock();
++      try {
++         while(this.m_202164_() && p_63812_.getAsBoolean()) {
++            ChunkPos chunkpos = SectionPos.m_123184_(this.f_63775_.firstLong()).m_123251_();
++            this.m_63825_(chunkpos);
++         }
++      } finally {
++         this.nestworldLock.unlock();
+       }
+ 
+    }
+@@ -71,25 +_,35 @@
+ 
+    @Nullable
+    protected Optional<R> m_63818_(long p_63819_) {
+-      return this.f_63774_.get(p_63819_);
++      this.nestworldLock.lock();
++      try {
++         return this.f_63774_.get(p_63819_);
++      } finally {
++         this.nestworldLock.unlock();
++      }
+    }
+ 
+    protected Optional<R> m_63823_(long p_63824_) {
+-      if (this.m_156630_(p_63824_)) {
+-         return Optional.empty();
+-      } else {
+-         Optional<R> optional = this.m_63818_(p_63824_);
+-         if (optional != null) {
+-            return optional;
++      this.nestworldLock.lock();
++      try {
++         if (this.m_156630_(p_63824_)) {
++            return Optional.empty();
+          } else {
+-            this.m_63814_(SectionPos.m_123184_(p_63824_).m_123251_());
+-            optional = this.m_63818_(p_63824_);
+-            if (optional == null) {
+-               throw (IllegalStateException)Util.m_137570_(new IllegalStateException());
+-            } else {
++            Optional<R> optional = this.m_63818_(p_63824_);
++            if (optional != null) {
+                return optional;
++            } else {
++               this.m_63814_(SectionPos.m_123184_(p_63824_).m_123251_());
++               optional = this.m_63818_(p_63824_);
++               if (optional == null) {
++                  throw (IllegalStateException)Util.m_137570_(new IllegalStateException());
++               } else {
++                  return optional;
++               }
+             }
+          }
++      } finally {
++         this.nestworldLock.unlock();
+       }
+    }
+ 
+@@ -99,19 +_,24 @@
+    }
+ 
+    protected R m_63827_(long p_63828_) {
+-      if (this.m_156630_(p_63828_)) {
+-         throw (IllegalArgumentException)Util.m_137570_(new IllegalArgumentException("sectionPos out of bounds"));
+-      } else {
+-         Optional<R> optional = this.m_63823_(p_63828_);
+-         if (optional.isPresent()) {
+-            return optional.get();
++      this.nestworldLock.lock();
++      try {
++         if (this.m_156630_(p_63828_)) {
++            throw (IllegalArgumentException)Util.m_137570_(new IllegalArgumentException("sectionPos out of bounds"));
+          } else {
+-            R r = this.f_63777_.apply(() -> {
+-               this.m_5838_(p_63828_);
+-            });
+-            this.f_63774_.put(p_63828_, Optional.of(r));
+-            return r;
++            Optional<R> optional = this.m_63823_(p_63828_);
++            if (optional.isPresent()) {
++               return optional.get();
++            } else {
++               R r = this.f_63777_.apply(() -> {
++                  this.m_5838_(p_63828_);
++               });
++               this.f_63774_.put(p_63828_, Optional.of(r));
++               return r;
++            }
+          }
++      } finally {
++         this.nestworldLock.unlock();
+       }
+    }
+ 
+@@ -206,11 +_,16 @@
+    }
+ 
+    protected void m_5838_(long p_63788_) {
+-      Optional<R> optional = this.f_63774_.get(p_63788_);
+-      if (optional != null && optional.isPresent()) {
+-         this.f_63775_.add(p_63788_);
+-      } else {
+-         f_63772_.warn("No data for position: {}", (Object)SectionPos.m_123184_(p_63788_));
++      this.nestworldLock.lock();
++      try {
++         Optional<R> optional = this.f_63774_.get(p_63788_);
++         if (optional != null && optional.isPresent()) {
++            this.f_63775_.add(p_63788_);
++         } else {
++            f_63772_.warn("No data for position: {}", (Object)SectionPos.m_123184_(p_63788_));
++         }
++      } finally {
++         this.nestworldLock.unlock();
+       }
+    }
+ 

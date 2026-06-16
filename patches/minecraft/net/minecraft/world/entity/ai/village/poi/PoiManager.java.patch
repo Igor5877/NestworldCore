@@ -1,0 +1,56 @@
+--- a/net/minecraft/world/entity/ai/village/poi/PoiManager.java
++++ b/net/minecraft/world/entity/ai/village/poi/PoiManager.java
+@@ -180,8 +_,13 @@
+    }
+ 
+    public int m_27098_(SectionPos p_27099_) {
+-      this.f_27029_.m_27203_();
+-      return this.f_27029_.m_6172_(p_27099_.m_123252_());
++      this.nestworldLock.lock();
++      try {
++         this.f_27029_.m_27203_();
++         return this.f_27029_.m_6172_(p_27099_.m_123252_());
++      } finally {
++         this.nestworldLock.unlock();
++      }
+    }
+ 
+    boolean m_27197_(long p_27198_) {
+@@ -194,17 +_,32 @@
+    }
+ 
+    public void m_6202_(BooleanSupplier p_27105_) {
+-      super.m_6202_(p_27105_);
+-      this.f_27029_.m_27203_();
++      this.nestworldLock.lock();
++      try {
++         super.m_6202_(p_27105_);
++         this.f_27029_.m_27203_();
++      } finally {
++         this.nestworldLock.unlock();
++      }
+    }
+ 
+    protected void m_5838_(long p_27036_) {
+-      super.m_5838_(p_27036_);
+-      this.f_27029_.m_8288_(p_27036_, this.f_27029_.m_7409_(p_27036_), false);
++      this.nestworldLock.lock();
++      try {
++         super.m_5838_(p_27036_);
++         this.f_27029_.m_8288_(p_27036_, this.f_27029_.m_7409_(p_27036_), false);
++      } finally {
++         this.nestworldLock.unlock();
++      }
+    }
+ 
+    protected void m_5839_(long p_27145_) {
+-      this.f_27029_.m_8288_(p_27145_, this.f_27029_.m_7409_(p_27145_), false);
++      this.nestworldLock.lock();
++      try {
++         this.f_27029_.m_8288_(p_27145_, this.f_27029_.m_7409_(p_27145_), false);
++      } finally {
++         this.nestworldLock.unlock();
++      }
+    }
+ 
+    public void m_280570_(SectionPos p_281731_, LevelChunkSection p_281893_) {
