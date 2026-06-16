@@ -75,6 +75,26 @@ public final class NestworldTuning {
     public static final boolean NONBLOCKING_CHUNK_READS =
             Boolean.getBoolean("nestworld.nonBlockingChunkReads");
 
+    /**
+     * Max chunk-holder future updates (the main-thread FULL/ticking promotions) the
+     * DistanceManager applies per server tick. A burst of requested chunks (mass
+     * {@code /forceload}, fast travel, a player exploring into ungenerated terrain)
+     * otherwise promotes them all in one tick — with heavy custom gen this freezes
+     * the main thread for tens of seconds (measured: 256 fresh chunks ≈ 60 s). With a
+     * budget, the burst streams over many ticks at steady TPS; deferred holders stay
+     * in {@code chunksToUpdateFutures} and are applied next tick (natural redrive),
+     * highest-priority (lowest ticket level — player/forceload) first.
+     *
+     * <p>Deadlock-free: only the FULL/ticking promotion is paced, not generation
+     * (which keeps its neighbour dependencies on the worker pool). Bit-identical
+     * world — only the timing of when chunks appear changes.
+     *
+     * <p>{@code 0} = unlimited (vanilla behaviour, default). Set e.g.
+     * {@code -Dnestworld.chunkGenBudget=8} to cap at 8 promotions/tick.
+     */
+    public static final int CHUNK_GEN_BUDGET =
+            Integer.getInteger("nestworld.chunkGenBudget", 0);
+
     private NestworldTuning() {
     }
 }

@@ -94,6 +94,14 @@
     private void m_8488_() {
        Arrays.fill(this.f_8337_, ChunkPos.f_45577_);
        Arrays.fill(this.f_8338_, (Object)null);
+@@ -303,6 +_,7 @@
+    }
+ 
+    public void m_201698_(BooleanSupplier p_201913_, boolean p_201914_) {
++      this.f_8327_.nestworldResetGenBudget(); // NestWorld: refresh per-tick chunk-promotion budget
+       this.f_8329_.m_46473_().m_6180_("purge");
+       this.f_8327_.m_140776_();
+       this.m_8489_();
 @@ -351,7 +_,7 @@
           for(ServerChunkCache.ChunkAndHolder serverchunkcache$chunkandholder : list) {
              LevelChunk levelchunk1 = serverchunkcache$chunkandholder.f_184028_;

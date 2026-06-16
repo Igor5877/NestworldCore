@@ -1,5 +1,16 @@
 --- a/net/minecraft/server/level/DistanceManager.java
 +++ b/net/minecraft/server/level/DistanceManager.java
+@@ -46,6 +_,10 @@
+    private final TickingTracker f_183901_ = new TickingTracker();
+    private final DistanceManager.PlayerTicketTracker f_140764_ = new DistanceManager.PlayerTicketTracker(32);
+    final Set<ChunkHolder> f_140765_ = Sets.newHashSet();
++   // NestWorld: per-tick budget of chunk-holder future updates (FULL/ticking promotions).
++   // Reset at the start of each server tick; runAllUpdates decrements it and defers the
++   // rest of a burst to the next tick. See NestworldTuning.CHUNK_GEN_BUDGET.
++   private int nestworldFutureBudget = Integer.MAX_VALUE;
+    final ChunkTaskPriorityQueueSorter f_140766_;
+    final ProcessorHandle<ChunkTaskPriorityQueueSorter.Message<Runnable>> f_140767_;
+    final ProcessorHandle<ChunkTaskPriorityQueueSorter.Release> f_140768_;
 @@ -54,6 +_,8 @@
     private long f_140771_;
     private int f_183902_ = 10;
@@ -9,6 +20,53 @@
     protected DistanceManager(Executor p_140774_, Executor p_140775_) {
        ProcessorHandle<Runnable> processorhandle = ProcessorHandle.m_18714_("player ticket throttler", p_140775_::execute);
        ChunkTaskPriorityQueueSorter chunktaskpriorityqueuesorter = new ChunkTaskPriorityQueueSorter(ImmutableList.of(processorhandle), p_140774_, 4);
+@@ -104,6 +_,13 @@
+    @Nullable
+    protected abstract ChunkHolder m_7288_(long p_140780_, int p_140781_, @Nullable ChunkHolder p_140782_, int p_140783_);
+ 
++   /** NestWorld: refresh the per-tick chunk-promotion budget. Called once per server
++    *  tick; {@code CHUNK_GEN_BUDGET <= 0} disables the cap (vanilla: unlimited). */
++   public void nestworldResetGenBudget() {
++      this.nestworldFutureBudget = net.nestworld.region.NestworldTuning.CHUNK_GEN_BUDGET <= 0
++            ? Integer.MAX_VALUE : net.nestworld.region.NestworldTuning.CHUNK_GEN_BUDGET;
++   }
++
+    public boolean m_140805_(ChunkMap p_140806_) {
+       this.f_140763_.m_6410_();
+       this.f_183901_.m_184145_();
+@@ -113,11 +_,27 @@
+       if (flag) {
+       }
+ 
+-      if (!this.f_140765_.isEmpty()) {
+-         this.f_140765_.forEach((p_183908_) -> {
+-            p_183908_.m_143003_(p_140806_, this.f_140770_);
+-         });
+-         this.f_140765_.clear();
++      if (!this.f_140765_.isEmpty() && this.nestworldFutureBudget > 0) {
++         if (net.nestworld.region.NestworldTuning.CHUNK_GEN_BUDGET <= 0) {
++            this.f_140765_.forEach((p_183908_) -> {
++               p_183908_.m_143003_(p_140806_, this.f_140770_);
++            });
++            this.f_140765_.clear();
++         } else {
++            // NestWorld: apply only up to the remaining per-tick budget, highest-priority
++            // (lowest ticket level = player/forceload-critical) first; leave the rest in
++            // the set so next tick's reset re-drives them (deadlock-free — only the FULL/
++            // ticking promotion is paced, generation keeps its neighbour deps on workers).
++            java.util.List<ChunkHolder> nestworldSorted = new java.util.ArrayList<>(this.f_140765_);
++            nestworldSorted.sort(java.util.Comparator.comparingInt(ChunkHolder::m_140093_));
++            int nestworldN = Math.min(this.nestworldFutureBudget, nestworldSorted.size());
++            for (int nestworldK = 0; nestworldK < nestworldN; ++nestworldK) {
++               ChunkHolder nestworldH = nestworldSorted.get(nestworldK);
++               this.f_140765_.remove(nestworldH);
++               nestworldH.m_143003_(p_140806_, this.f_140770_);
++            }
++            this.nestworldFutureBudget -= nestworldN;
++         }
+          return true;
+       } else {
+          if (!this.f_140769_.isEmpty()) {
 @@ -159,6 +_,10 @@
           this.f_140762_.m_140715_(p_140785_, p_140786_.m_9433_(), true);
        }
