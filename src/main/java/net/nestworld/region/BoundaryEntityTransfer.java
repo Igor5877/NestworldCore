@@ -43,7 +43,13 @@ public class BoundaryEntityTransfer {
      * full scan costing ~1.6 ms/tick at 2400 mostly-stationary entities.
      * Main-thread only.
      */
-    private final java.util.HashMap<UUID, Long> lastChunkKey = new java.util.HashMap<>();
+    // Keyed by entity int id (not UUID) — this is looked up for every loaded entity
+    // every tick; an int hash avoids the UUID hashing + Long boxing that dominated the
+    // scan at high entity counts. Sentinel default distinguishes "absent" from chunk 0.
+    private static final long NO_CHUNK = Long.MIN_VALUE;
+    private final it.unimi.dsi.fastutil.ints.Int2LongOpenHashMap lastChunkKey =
+            new it.unimi.dsi.fastutil.ints.Int2LongOpenHashMap();
+    { lastChunkKey.defaultReturnValue(NO_CHUNK); }
     /** Region layout as of the last scan; a change forces one full pass. */
     private int lastLayoutVersion = -1;
     private int pruneInterval = 0;
@@ -83,8 +89,8 @@ public class BoundaryEntityTransfer {
                     return e == null || e.isRemoved();
                 });
             }
-            lastChunkKey.keySet().removeIf(uuid -> {
-                Entity e = level.getEntity(uuid);
+            lastChunkKey.keySet().removeIf((int id) -> {
+                Entity e = level.getEntity(id);
                 return e == null || e.isRemoved();
             });
         }
@@ -104,7 +110,7 @@ public class BoundaryEntityTransfer {
                 WorldRegion owner = findOwner(uuid);
                 if (owner != null) owner.removeEntity(uuid);
                 inTransfer.remove(uuid);
-                lastChunkKey.remove(uuid);
+                lastChunkKey.remove(entity.getId());
                 continue;
             }
             if (inTransfer.containsKey(uuid)) {
@@ -116,10 +122,10 @@ public class BoundaryEntityTransfer {
             ChunkPos currentChunk = entity.chunkPosition();
             long chunkKey = currentChunk.toLong();
             if (!fullPass) {
-                Long prev = lastChunkKey.get(uuid);
-                if (prev != null && prev == chunkKey) continue; // same chunk, same owner
+                // One int-keyed lookup; sentinel default means absent != any real chunk.
+                if (lastChunkKey.get(entity.getId()) == chunkKey) continue; // same chunk, same owner
             }
-            lastChunkKey.put(uuid, chunkKey);
+            lastChunkKey.put(entity.getId(), chunkKey);
 
             WorldRegion currentOwner = findOwner(uuid);
             WorldRegion correctRegion = grid.getRegionFor(currentChunk);
@@ -150,7 +156,7 @@ public class BoundaryEntityTransfer {
     public void unassign(Entity entity) {
         UUID uuid = entity.getUUID();
         inTransfer.remove(uuid);
-        lastChunkKey.remove(uuid);
+        lastChunkKey.remove(entity.getId());
         WorldRegion owner = findOwner(uuid);
         if (owner != null) owner.removeEntity(uuid);
     }
