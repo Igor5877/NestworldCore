@@ -70,3 +70,23 @@ persist across restart + no corruption) — done with review, not blind.
 Use the measured **70 % idle region-thread capacity** to pre-generate ahead of player movement
 (velocity vector → chunks ahead) on a low-priority budget, so the chunk is ready before arrival →
 seamless exploration with no pre-gen. Bigger undertaking; build on A/B first.
+
+## Implemented + measured (47.4.114, flag-gated default-off)
+
+`NestworldTuning.CHUNK_GEN_BUDGET` (`-Dnestworld.chunkGenBudget=N`) caps chunk-holder future-updates
+(FULL/ticking promotions) per tick in `DistanceManager.runAllUpdates`; deferred holders stay in
+`chunksToUpdateFutures`, re-driven next tick (per-tick reset in `ServerChunkCache.tick`), highest
+priority (lowest ticket level) first. Deadlock-free, bit-identical.
+
+Measured (256-chunk `/forceload` burst, heavy modpack gen):
+- baseline (off): **1199 ticks behind (~60 s freeze)**
+- budget=8: 729 · budget=2: **636 (~32 s)** → a **partial ~47 % reduction**, not elimination.
+
+Why partial: the cap paces the terminal promotion, but the heavy cost is generation itself
+(NOISE→FEATURES→FULL, cascading to neighbours via getChunkRangeFuture), scheduled via
+getOrScheduleFuture — NOT the capped path. Full fix needs pacing gen scheduling (cross-chunk
+deadlock risk → careful design, not blind).
+
+No regression on vanilla: clean core, a real bot teleported into fresh terrain → 40–105 ticks behind
+with budget OFF vs 40–99 ON (vanilla gen is cheap, no freeze, budget is a no-op). The win is specific
+to HEAVY custom gen. Chunks still generate, 0 crashes, bot stayed online. Default off.
