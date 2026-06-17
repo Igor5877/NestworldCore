@@ -34,7 +34,7 @@
     public boolean m_140805_(ChunkMap p_140806_) {
        this.f_140763_.m_6410_();
        this.f_183901_.m_184145_();
-@@ -113,11 +_,27 @@
+@@ -113,11 +_,39 @@
        if (flag) {
        }
  
@@ -50,15 +50,27 @@
 +            });
 +            this.f_140765_.clear();
 +         } else {
-+            // NestWorld: apply only up to the remaining per-tick budget, highest-priority
-+            // (lowest ticket level = player/forceload-critical) first; leave the rest in
-+            // the set so next tick's reset re-drives them (deadlock-free — only the FULL/
-+            // ticking promotion is paced, generation keeps its neighbour deps on workers).
-+            java.util.List<ChunkHolder> nestworldSorted = new java.util.ArrayList<>(this.f_140765_);
-+            nestworldSorted.sort(java.util.Comparator.comparingInt(ChunkHolder::m_140093_));
-+            int nestworldN = Math.min(this.nestworldFutureBudget, nestworldSorted.size());
++            // NestWorld: TIERED cap (Gemini-validated). Player-driven chunks are NEVER
++            // throttled — a chunk carrying a PLAYER ticket (the one a player stands in
++            // or within its view distance) promotes immediately, every tick, so live
++            // exploration stays smooth and nobody falls through the world; its neighbour
++            // cascade runs unbounded on the worker pool already (not in this set), so
++            // there is no deadlock. Only BULK gen (mass /forceload, distant/teleport
++            // tickets — no PLAYER ticket) is paced by the per-tick budget, lowest ticket
++            // level first; deferred bulk holders stay in the set and re-drive next tick.
++            java.util.List<ChunkHolder> nestworldBulk = new java.util.ArrayList<>(this.f_140765_.size());
++            for (ChunkHolder nestworldH : this.f_140765_) {
++               if (this.nestworldHasPlayerTicket(nestworldH.m_140092_().m_45588_())) {
++                  nestworldH.m_143003_(p_140806_, this.f_140770_); // Tier 1: never throttled
++               } else {
++                  nestworldBulk.add(nestworldH); // Tier 2: budgeted below
++               }
++            }
++            this.f_140765_.removeIf((p_nw_) -> this.nestworldHasPlayerTicket(p_nw_.m_140092_().m_45588_()));
++            nestworldBulk.sort(java.util.Comparator.comparingInt(ChunkHolder::m_140093_));
++            int nestworldN = Math.min(this.nestworldFutureBudget, nestworldBulk.size());
 +            for (int nestworldK = 0; nestworldK < nestworldN; ++nestworldK) {
-+               ChunkHolder nestworldH = nestworldSorted.get(nestworldK);
++               ChunkHolder nestworldH = nestworldBulk.get(nestworldK);
 +               this.f_140765_.remove(nestworldH);
 +               nestworldH.m_143003_(p_140806_, this.f_140770_);
 +            }
@@ -115,6 +127,32 @@
        long i = p_140851_.m_45588_();
        this.m_140818_(i, ticket);
        this.f_183901_.m_184165_(i, ticket);
+@@ -202,6 +_,25 @@
+       });
+    }
+ 
++   /**
++    * NestWorld: true if the chunk at this position carries a PLAYER ticket, i.e. it is
++    * loaded by a live player (standing in it or within view distance) rather than by a
++    * bulk source (forceload / distant teleport). Read-only — does not allocate a ticket
++    * set for absent chunks (unlike {@link #getTickets}). Used by the tiered chunk-gen
++    * budget to exempt player-driven promotions from throttling.
++    */
++   private boolean nestworldHasPlayerTicket(long p_nw_pos_) {
++      SortedArraySet<Ticket<?>> nestworldSet = this.f_140761_.get(p_nw_pos_);
++      if (nestworldSet != null) {
++         for (Ticket<?> nestworldTicket : nestworldSet) {
++            if (nestworldTicket.m_9428_() == TicketType.f_9444_) {
++               return true;
++            }
++         }
++      }
++      return false;
++   }
++
+    protected void m_140799_(ChunkPos p_140800_, boolean p_140801_) {
+       Ticket<ChunkPos> ticket = new Ticket<>(TicketType.f_9445_, ChunkMap.f_143033_, p_140800_);
+       long i = p_140800_.m_45588_();
 @@ -281,6 +_,11 @@
  
     public String m_140837_() {

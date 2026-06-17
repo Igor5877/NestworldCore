@@ -90,3 +90,34 @@ deadlock risk → careful design, not blind).
 No regression on vanilla: clean core, a real bot teleported into fresh terrain → 40–105 ticks behind
 with budget OFF vs 40–99 ON (vanilla gen is cheap, no freeze, budget is a no-op). The win is specific
 to HEAVY custom gen. Chunks still generate, 0 crashes, bot stayed online. Default off.
+
+## Tiered cap (47.4.115, Gemini-validated 2026-06-17)
+
+Gemini's review (gemini-2.5-flash) confirmed the budget is the *right layer* — it already throttles the
+**initial ticket-driven gen requests** (the `chunksToUpdateFutures` entry), while the neighbour cascade
+(`getChunkRangeFuture` → `getOrScheduleFuture`) runs unbounded on the worker pool, so it is
+deadlock-free by construction. Its one strong recommendation: **never throttle player-driven gen.**
+
+Implemented in `DistanceManager.runAllUpdates`: the budget is now **tiered**. Each holder in
+`chunksToUpdateFutures` is checked for a `TicketType.PLAYER` ticket (`nestworldHasPlayerTicket`, a
+read-only `tickets.get` — no allocation):
+- **Tier 1 — player-driven** (chunk a player stands in or within view distance): promoted **every tick,
+  unthrottled**, so live exploration stays smooth and no player falls through the world. Its neighbour
+  cascade was never in this set, so no deadlock.
+- **Tier 2 — bulk** (mass `/forceload`, distant/teleport tickets, no player ticket): paced by the
+  per-tick budget, lowest ticket level first; deferred holders re-drive next tick.
+
+Validated on the clean core (47.4.115, budget=2, a real bot, `doMobSpawning false`, sparks
+`1a2510D1Nt` + `xwrsmb225A`):
+- **Tier 2** — `/forceload` of 256 fresh chunks far from the bot: server held **5–9 ms/tick @ 20 TPS**,
+  no freeze, terrain generated + persisted (`r.1367.*.mca`).
+- **Tier 1** — bot teleported through three fresh regions: player gen ran **unthrottled** (brief MSPT
+  bumps 32–65 ms, recovered to 20 TPS immediately), **bot stayed online** the whole time, terrain
+  persisted (`r.976/1015/1016.*.mca`).
+- **0 crashes / 0 tick-loop errors**; bit-identical world. The contrast (bulk paced low, player allowed
+  to spike) is the tiering working as designed: on heavy custom gen the same mechanism caps the bulk
+  freeze (the measured ~47 % at budget=2) while keeping interactive play unthrottled.
+
+Still default-off (`-Dnestworld.chunkGenBudget=0`). Remaining work = **predictive frontier** (Layer 3
+below): pre-generate ahead of player movement on idle region-thread capacity, leaving the throttle only
+as a safety valve for mass forceload — Gemini agreed this is the superior end-state for normal play.
