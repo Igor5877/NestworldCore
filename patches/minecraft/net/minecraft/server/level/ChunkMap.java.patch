@@ -47,6 +47,57 @@
           }
  
        }
+@@ -1037,11 +_,45 @@
+    }
+ 
+    public void m_140184_(ServerPlayer p_140185_) {
+-      for(ChunkMap.TrackedEntity chunkmap$trackedentity : this.f_140150_.values()) {
+-         if (chunkmap$trackedentity.f_140472_ == p_140185_) {
+-            chunkmap$trackedentity.m_140487_(this.f_140133_.m_6907_());
+-         } else {
+-            chunkmap$trackedentity.m_140497_(p_140185_);
++      // NestWorld: vanilla rescans EVERY tracked entity here to recompute visibility for
++      // the moved player — O(total entities) per move packet, which stalls the main thread
++      // at extreme entity counts. When enabled, query only entities within tracking range
++      // of the new position (inflated by the move delta so entities leaving range are still
++      // un-tracked), with a full-scan fallback for large jumps (teleport). See NestworldTuning.
++      ChunkMap.TrackedEntity nestworldSelf = this.f_140150_.get(p_140185_.m_19879_());
++      boolean nestworldCulled = false;
++      if (net.nestworld.region.NestworldTuning.TRACKER_SPATIAL_CULL && nestworldSelf != null) {
++         Vec3 nestworldCur = p_140185_.m_20182_();
++         Vec3 nestworldLast = nestworldSelf.nestworldLastMovePos;
++         nestworldSelf.nestworldLastMovePos = nestworldCur;
++         double nestworldMaxRange = (double)(this.f_140126_ * 16);
++         double nestworldDelta = (nestworldLast == null) ? Double.MAX_VALUE
++               : Math.sqrt(nestworldCur.m_82557_(nestworldLast));
++         if (nestworldDelta <= nestworldMaxRange) {
++            // Horizontal tracking range (Y is ignored by updatePlayer) + the move delta:
++            // any entity that was or now is in range lies within this radius of the new pos.
++            double nestworldQ = nestworldMaxRange + nestworldDelta;
++            double nestworldYpad = nestworldQ + 2048.0D; // tracking ignores Y — be generous
++            net.minecraft.world.phys.AABB nestworldBox = new net.minecraft.world.phys.AABB(
++                  nestworldCur.f_82479_ - nestworldQ, nestworldCur.f_82480_ - nestworldYpad, nestworldCur.f_82481_ - nestworldQ,
++                  nestworldCur.f_82479_ + nestworldQ, nestworldCur.f_82480_ + nestworldYpad, nestworldCur.f_82481_ + nestworldQ);
++            for (Entity nestworldE : this.f_140133_.m_6249_(p_140185_, nestworldBox, (e) -> true)) {
++               ChunkMap.TrackedEntity nestworldTe = this.f_140150_.get(nestworldE.m_19879_());
++               if (nestworldTe != null && nestworldTe.f_140472_ != p_140185_) {
++                  nestworldTe.m_140497_(p_140185_);
++               }
++            }
++            nestworldSelf.m_140487_(this.f_140133_.m_6907_());
++            nestworldCulled = true;
++         }
++      }
++      if (!nestworldCulled) {
++         for(ChunkMap.TrackedEntity chunkmap$trackedentity : this.f_140150_.values()) {
++            if (chunkmap$trackedentity.f_140472_ == p_140185_) {
++               chunkmap$trackedentity.m_140487_(this.f_140133_.m_6907_());
++            } else {
++               chunkmap$trackedentity.m_140497_(p_140185_);
++            }
+          }
+       }
+ 
 @@ -1132,7 +_,7 @@
     }
  
@@ -64,3 +115,33 @@
     }
  
     protected PoiManager m_140424_() {
+@@ -1322,6 +_,9 @@
+       private final int f_140473_;
+       SectionPos f_140474_;
+       private final Set<ServerPlayerConnection> f_140475_ = Sets.newIdentityHashSet();
++      // NestWorld: last position this player's move() ran at, to derive the move delta
++      // for the spatial-cull tracker (only set for player TrackedEntities).
++      Vec3 nestworldLastMovePos;
+ 
+       public TrackedEntity(Entity p_140478_, int p_140479_, int p_140480_, boolean p_140481_) {
+          this.f_140471_ = new ServerEntity(ChunkMap.this.f_140133_, p_140478_, p_140480_, p_140481_, this::m_140489_);
+@@ -1396,10 +_,15 @@
+       private int m_140496_() {
+          int i = this.f_140473_;
+ 
+-         for(Entity entity : this.f_140472_.m_146897_()) {
+-            int j = entity.m_6095_().m_20681_() * 16;
+-            if (j > i) {
+-               i = j;
++         // NestWorld: only entities carrying passengers can widen the range; skip the
++         // getIndirectPassengers() stream allocation for the (vast) majority that have
++         // none — it dominated the move() hot path at high entity counts.
++         if (this.f_140472_.m_20160_()) {
++            for(Entity entity : this.f_140472_.m_146897_()) {
++               int j = entity.m_6095_().m_20681_() * 16;
++               if (j > i) {
++                  i = j;
++               }
+             }
+          }
+ 

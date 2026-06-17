@@ -95,6 +95,20 @@ public final class NestworldTuning {
     public static final int CHUNK_GEN_BUDGET =
             Integer.getInteger("nestworld.chunkGenBudget", 0);
 
+    /**
+     * Spatial-cull the entity tracker's per-player-move update (EXPERIMENTAL, default
+     * off). Vanilla {@code ChunkMap.move(player)} rescans <em>every</em> tracked entity
+     * on each player-move packet to recompute visibility — O(total entities) per move.
+     * At extreme entity counts this stalls the main thread (measured: ~86k entities →
+     * ~1.1 s per move packet, TPS 3). With this on, {@code move} instead queries only the
+     * entities within tracking range of the player's new position (plus the move delta,
+     * so entities leaving range are still un-tracked correctly), falling back to the full
+     * scan when the delta is large (teleport). Bit-identical visibility — only the cost of
+     * computing it changes. Enable with {@code -Dnestworld.trackerSpatialCull=true}.
+     */
+    public static final boolean TRACKER_SPATIAL_CULL =
+            Boolean.getBoolean("nestworld.trackerSpatialCull");
+
     private NestworldTuning() {
     }
 }
