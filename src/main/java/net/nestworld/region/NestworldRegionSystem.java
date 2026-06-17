@@ -58,6 +58,9 @@ public class NestworldRegionSystem {
     /** Entity types pinned to main-thread ticking (mod-compat escape hatch). */
     private final NestworldPins pins = new NestworldPins();
 
+    /** Layer 3: pre-generate the frontier ahead of moving players (default off). */
+    private final PredictiveChunkGen predictiveGen = new PredictiveChunkGen();
+
     /** Entities spawned by region threads (off-main addFreshEntity), drained on
      *  main each tick so ChunkMap entity tracking is never mutated concurrently. */
     private final java.util.Queue<net.minecraft.world.entity.Entity> deferredSpawns =
@@ -447,6 +450,11 @@ public class NestworldRegionSystem {
         // touches them — the main thread ticks them here exactly as vanilla
         // would. Zero cost when nothing is pinned.
         if (!pins.isEmpty()) tickPinnedEntitiesOnMain();
+
+        // 3d. Predictive frontier: request generation of chunks ahead of moving
+        // players so terrain is ready before they arrive (no-op unless enabled).
+        // Additive — only adds expiring region tickets; the tiered budget paces them.
+        predictiveGen.tick(overworld);
         long t3 = System.nanoTime();
 
         // 4. Parallel tick — blocks until all region threads finish

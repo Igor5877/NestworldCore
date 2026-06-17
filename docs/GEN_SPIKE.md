@@ -66,10 +66,34 @@ persist across restart + no corruption) — done with review, not blind.
 4. **Flag-gate it** (`-Dnestworld.chunkGenBudget=N`, default off / unlimited) until validated, so
    default behaviour is untouched.
 
-## Layer 3 (later): predictive frontier gen
-Use the measured **70 % idle region-thread capacity** to pre-generate ahead of player movement
-(velocity vector → chunks ahead) on a low-priority budget, so the chunk is ready before arrival →
-seamless exploration with no pre-gen. Bigger undertaking; build on A/B first.
+## Layer 3 (DONE, 47.4.116): predictive frontier gen
+`PredictiveChunkGen` (`-Dnestworld.predictiveGen=true`, default off). Each tick, on the main thread
+(hooked in `NestworldRegionSystem.tickAllRegions` right after the player-tick phase), for every moving
+player it derives a heading from the position delta and projects a short fan of chunks just past view
+distance along it (`LOOKAHEAD=5`, `FAN=1` → 15 chunks/tick), requesting each via the public
+`addRegionTicket(PREDICTIVE, cp, 0, cp)` — a FULL-level, timeout-expiring (100-tick) region ticket.
+
+**Safe + additive:** it only adds tickets through the normal API, so the standard pipeline (worker
+pool, neighbour deps) generates them — no critical-path change, no deadlock. Predictive tickets are
+**not** PLAYER tickets, so the tiered budget treats them as **Tier 2 (bulk)** and paces them: they use
+only spare gen capacity and can't freeze the main thread, while the chunk the player actually steps
+into is a Tier-1 PLAYER ticket (unthrottled) that finds its terrain already built. Stale frontier
+expires on its own (timeout) when the player stops or turns — no manual cleanup, no pinned chunks.
+
+Validated (clean core 47.4.116, budget=2 + predictiveGen, a creative bot flying through fresh terrain,
+`-Dnestworld.predictiveLog=true`):
+```
+[predictive] issued 600 frontier tickets (max lead 16 chunks ahead, view-distance 10)
+```
+**Forward-gen proven:** terrain is generated up to **16 chunks ahead (Manhattan) while view distance is
+only 10** — i.e. 5–6 chunks *beyond* what the player can see, ready before arrival. Server held
+**7–11 ms/tick @ 20 TPS** for the whole flight; idle returns to ~1.3 ms (no leak, no idle overhead;
+predictive is a no-op with zero players). 0 crashes.
+
+> Caveat surfaced during testing: at extreme **entity** counts (a leftover ~86 k primed TNT from an old
+> stress test), player movement itself stalled the main thread ~1.1 s/move in
+> `ChunkMap.TrackedEntity.updatePlayer` (entity tracking is O(loaded entities) per move packet). That is
+> an **entity-tracking** scaling issue, unrelated to gen/predictive — noted for a separate pass.
 
 ## Implemented + measured (47.4.114, flag-gated default-off)
 
