@@ -1,6 +1,20 @@
 --- a/net/minecraft/network/syncher/SynchedEntityData.java
 +++ b/net/minecraft/network/syncher/SynchedEntityData.java
-@@ -36,11 +_,13 @@
+@@ -29,47 +_,72 @@
+    private final Entity f_135344_;
+    private final Int2ObjectMap<SynchedEntityData.DataItem<?>> f_135345_ = new Int2ObjectOpenHashMap<>();
+    private final ReadWriteLock f_135346_ = new ReentrantReadWriteLock();
+-   private boolean f_135348_;
++   // NestWorld: entities tick on region threads but ServerEntity.sendChanges reads this on the
++   // main thread. Without volatile the main thread can miss a dirty flag set by a region thread
++   // (Java Memory Model — no happens-before), so entity metadata (HP, ItemStack, …) set during a
++   // region-thread tick is never packed/sent: client HP freezes, dropped items never receive their
++   // ItemStack and render invisible. The volatile write of this flag in set() (after the value +
++   // per-item dirty writes) also publishes those writes to the reader.
++   private volatile boolean f_135348_;
+ 
+    public SynchedEntityData(Entity p_135351_) {
+       this.f_135344_ = p_135351_;
     }
  
     public static <T> EntityDataAccessor<T> m_135353_(Class<? extends Entity> p_135354_, EntityDataSerializer<T> p_135355_) {
@@ -16,3 +30,80 @@
              }
           } catch (ClassNotFoundException classnotfoundexception) {
           }
+       }
+ 
++      // NestWorld: ENTITY_ID_POOL is a shared static Object2IntOpenHashMap and the
++      // read-modify-write below is not atomic. On stock Forge every defineId runs on the
++      // main thread during class-init, so allocation is deterministic and a dedicated
++      // server hands out the SAME field ids a single-threaded client does. On the
++      // region-threaded core, entity classes are first-initialised lazily on parallel
++      // region threads (first spawn in a region), so concurrent defineId calls race the
++      // non-thread-safe map: a rehash mid-iteration corrupts entries and the unguarded
++      // read-then-put loses updates, producing garbled / divergent ids. The server then
++      // sends a field under an id the client mapped to a different serializer ->
++      // "Invalid entity data item type for field N" and the client stops applying the
++      // entity's data (frozen HP, invisible dropped items). Serialising the whole
++      // allocation fixes it: per-class ordering is already deterministic (a subclass's
++      // base id depends only on its superclass's final counter, and the JVM initialises
++      // the superclass first), so this reproduces the exact single-threaded numbering.
+       int j;
+-      if (f_135343_.containsKey(p_135354_)) {
+-         j = f_135343_.getInt(p_135354_) + 1;
+-      } else {
+-         int i = 0;
+-         Class<?> oclass1 = p_135354_;
++      synchronized (f_135343_) {
++         if (f_135343_.containsKey(p_135354_)) {
++            j = f_135343_.getInt(p_135354_) + 1;
++         } else {
++            int i = 0;
++            Class<?> oclass1 = p_135354_;
+ 
+-         while(oclass1 != Entity.class) {
+-            oclass1 = oclass1.getSuperclass();
+-            if (f_135343_.containsKey(oclass1)) {
+-               i = f_135343_.getInt(oclass1) + 1;
+-               break;
++            while(oclass1 != Entity.class) {
++               oclass1 = oclass1.getSuperclass();
++               if (f_135343_.containsKey(oclass1)) {
++                  i = f_135343_.getInt(oclass1) + 1;
++                  break;
++               }
+             }
+-         }
+-
+-         j = i;
+-      }
+-
+-      if (j > 254) {
+-         throw new IllegalArgumentException("Data value id is too big with " + j + "! (Max is 254)");
+-      } else {
++
++            j = i;
++         }
++
++         if (j > 254) {
++            throw new IllegalArgumentException("Data value id is too big with " + j + "! (Max is 254)");
++         }
++
+          f_135343_.put(p_135354_, j);
+-         return p_135355_.m_135021_(j);
+       }
++
++      return p_135355_.m_135021_(j);
+    }
+ 
+    public <T> void m_135372_(EntityDataAccessor<T> p_135373_, T p_135374_) {
+@@ -212,9 +_,9 @@
+ 
+    public static class DataItem<T> {
+       final EntityDataAccessor<T> f_135390_;
+-      T f_135391_;
++      volatile T f_135391_;
+       private final T f_252454_;
+-      private boolean f_135392_;
++      private volatile boolean f_135392_; // NestWorld: see SynchedEntityData.isDirty — cross-thread visibility
+ 
+       public DataItem(EntityDataAccessor<T> p_135394_, T p_135395_) {
+          this.f_135390_ = p_135394_;

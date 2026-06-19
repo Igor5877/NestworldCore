@@ -107,7 +107,7 @@
           EntityType<?> entitytype = p_140200_.m_6095_();
           int i = entitytype.m_20681_() * 16;
           if (i != 0) {
-@@ -1180,17 +_,33 @@
+@@ -1180,20 +_,44 @@
        List<ServerPlayer> list1 = this.f_140133_.m_6907_();
  
        for(ChunkMap.TrackedEntity chunkmap$trackedentity : this.f_140150_.values()) {
@@ -119,7 +119,6 @@
 -            Entity entity = chunkmap$trackedentity.f_140472_;
 -            if (entity instanceof ServerPlayer) {
 -               list.add((ServerPlayer)entity);
--            }
 +         Entity nestworldEntity = chunkmap$trackedentity.f_140472_;
 +         // NestWorld: SectionPos.of() (block->section floors) runs for every tracked
 +         // entity every tick just to detect section changes — O(N) that dominates the
@@ -144,13 +143,26 @@
 +               if (nestworldEntity instanceof ServerPlayer) {
 +                  list.add((ServerPlayer)nestworldEntity);
 +               }
- 
--            chunkmap$trackedentity.f_140474_ = sectionpos1;
++
 +               chunkmap$trackedentity.f_140474_ = sectionpos1;
-+            }
+             }
+-
+-            chunkmap$trackedentity.f_140474_ = sectionpos1;
           }
  
-          if (flag || this.f_140145_.m_183913_(sectionpos1.m_123251_().m_45588_())) {
+-         if (flag || this.f_140145_.m_183913_(sectionpos1.m_123251_().m_45588_())) {
++         // NestWorld: also push entity update packets (position + dirty metadata — HP,
++         // ItemStack, etc.) whenever a player is already viewing the entity, not only when
++         // its chunk is "entity-ticking". On the region-threaded core the vanilla
++         // inEntityTickingRange signal is computed on the main thread while entities tick on
++         // region threads, so it can read false for a chunk whose entities are genuinely
++         // active — which silently froze client-side entity data (mobs spawned but HP never
++         // updated; dropped items never received their ItemStack metadata so they rendered
++         // invisible). If someone is tracking the entity, they must get its updates.
++         if (flag || !chunkmap$trackedentity.f_140475_.isEmpty() || this.f_140145_.m_183913_(sectionpos1.m_123251_().m_45588_())) {
+             chunkmap$trackedentity.f_140471_.m_8533_();
+          }
+       }
 @@ -1282,6 +_,7 @@
           }
        }
