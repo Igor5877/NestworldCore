@@ -8,8 +8,9 @@ Driven by spark profiles under a synthetic ~150–170k PrimedTNT stress on `/roo
 - **A1 (move throttle) — SHIPPED & VALIDATED (v47.4.126).** Fixes the "flying collapses TPS to
   ~0, one thread at 100%" stall the user reported. Spark confirms `Server thread` is idle with no
   `ChunkMap.move` hotspot even while flying through the pile.
-- **B1 (event-driven ownership) — BUILT, default-OFF (v47.4.127).** Ready; needs supervised
-  enable+test. Not yet deployed.
+- **B1 (event-driven ownership) — VALIDATED (deployed v47.4.128, flag-on).** Measured win and
+  correctness confirmed (see "B1 validation results" below). Still flag-gated default-off in code;
+  recommend flipping to default-on after a glance.
 - **A2 / C1 / C2 — designed, NOT implemented.** They touch entity-visibility tracking or vanilla
   collision/explosion physics; deliberately deferred to a supervised session (see rationale).
 
@@ -53,6 +54,28 @@ behaviour is byte-identical** to before.
 - Expected win: cuts the `entityXfer` phase (~14–19ms on main) when most entities are stationary;
   neutral when everything is moving (so the all-exploding-TNT test will *not* show it well — test
   with a large but mostly-settled entity count).
+
+#### B1 validation results (overnight, 47.4.128, synthetic 35k load)
+Controlled test on `/root/zc-server` (`nomod` world): 35 000 stationary armor stands spawned via a
+datapack function in a forceloaded ±120-block area, then 200 wandering zombies added.
+
+| | `entityXfer` phase | TPS |
+|---|---|---|
+| **B1 off** (baseline) | **7.6 ms** | 15.0 |
+| **B1 on** (35k stationary) | **0.45–0.74 ms** | 17.7 |
+| **B1 on** (+200 wandering zombies) | **0.45 ms** | 17.6 |
+
+- **~10–17× reduction** in the entityXfer phase, and it stays flat at ~0.45ms even with movers
+  (only entities that actually changed section are processed).
+- **Correctness clean:** no `wasn't found in section` / double-tick / ownership errors across the
+  move window; `/nestworld status` showed entities correctly distributed across 27 dynamically
+  split/merged regions; zombies kept ticking/wandering across region borders. The only ERROR lines
+  in the log were spark's own protobuf classloader noise, unrelated.
+- Sparks: baseline `https://spark.lucko.me/Ptj30HC1ZB`, B1-on `https://spark.lucko.me/AjMPomEZZe`.
+- The server is left running 47.4.128 with `nestworld.eventDrivenOwnership=true` in
+  `user_jvm_args.txt` as an overnight soak (synthetic load cleaned up afterwards; world back to idle
+  ~20 TPS). To reproduce the load: `/reload` then `/function nest:spawn` (datapack in
+  `nomod/datapacks/nest`, ±115 armor stands ×5000 per call) after `/forceload add -120 -120 120 120`.
 
 ## Deferred designs (need a supervised session)
 
