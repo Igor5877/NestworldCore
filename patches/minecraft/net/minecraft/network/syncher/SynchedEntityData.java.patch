@@ -95,6 +95,31 @@
     }
  
     public <T> void m_135372_(EntityDataAccessor<T> p_135373_, T p_135374_) {
+@@ -141,6 +_,16 @@
+    public List<SynchedEntityData.DataValue<?>> m_135378_() {
+       List<SynchedEntityData.DataValue<?>> list = null;
+       if (this.f_135348_) {
++         // NestWorld: clear the dirty gate BEFORE scanning. Entities tick (set()) on region
++         // threads while sendChanges packs on the main thread. The original cleared isDirty
++         // unconditionally AFTER the scan, outside the lock, so a region-thread set() whose
++         // isDirty=true write landed between the scan and the reset was clobbered -> the
++         // per-item dirty flag stayed set but the gate was false, and the change was never
++         // sent again until something else re-dirtied the entity. Clearing first means any
++         // concurrent set() re-arms the gate and is caught on the next tick. Per-DataItem
++         // values are still snapshotted via a defensive serializer.copy() under the read lock,
++         // so the packed list is always a consistent, immutable view.
++         this.f_135348_ = false;
+          this.f_135346_.readLock().lock();
+ 
+          for(SynchedEntityData.DataItem<?> dataitem : this.f_135345_.values()) {
+@@ -157,7 +_,6 @@
+          this.f_135346_.readLock().unlock();
+       }
+ 
+-      this.f_135348_ = false;
+       return list;
+    }
+ 
 @@ -212,9 +_,9 @@
  
     public static class DataItem<T> {
