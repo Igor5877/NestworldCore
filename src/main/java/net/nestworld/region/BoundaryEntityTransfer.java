@@ -119,6 +119,19 @@ public class BoundaryEntityTransfer {
                 continue;
             }
 
+            // NestWorld: an entity that did not move this tick cannot have changed chunk, so it
+            // keeps its current owner. Skip the chunkPosition() allocation + toLong + map work for
+            // the (common, at high entity counts) stationary case — but only once it has been
+            // assigned (lastChunkKey set, sentinel default = NO_CHUNK), so a spawned-stationary
+            // entity still gets its initial owner on the pass that first sees it. Same no-movement
+            // shortcut as the tracker (NestworldTuning.TRACKER_SPATIAL_CULL); also cuts the ChunkPos
+            // allocation churn that pressures GC under big entity piles (e.g. 150k TNT).
+            if (!fullPass && net.nestworld.region.NestworldTuning.TRACKER_SPATIAL_CULL
+                    && entity.getX() == entity.xo && entity.getY() == entity.yo && entity.getZ() == entity.zo
+                    && lastChunkKey.get(entity.getId()) != NO_CHUNK) {
+                continue;
+            }
+
             ChunkPos currentChunk = entity.chunkPosition();
             long chunkKey = currentChunk.toLong();
             if (!fullPass) {
