@@ -50,7 +50,14 @@ public class LanguageHook
         allResources.forEach(res -> {
             try {
                 LanguageHook.loadLocaleData(res.open());
-            } catch (IOException ignored) {} // TODO: this should not be ignored -C
+            } catch (IOException ignored) { // TODO: this should not be ignored -C
+            } catch (RuntimeException e) {
+                // NestWorld: a single mod shipping malformed lang JSON (non-strict: trailing commas,
+                // comments, etc.) must not abort server startup. Newer Forge tolerates this; our base
+                // let the JsonSyntaxException propagate out of ServerLifecycleHooks.handleServerStarting,
+                // which stopped the dedicated server immediately after "Done". Skip the bad file and continue.
+                LOGGER.warn("NestWorld: skipping malformed language file from a mod ({})", e.toString());
+            }
         });
     }
 
