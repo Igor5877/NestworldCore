@@ -47,15 +47,13 @@
           }
  
        }
-@@ -1037,11 +_,45 @@
+@@ -1037,11 +_,60 @@
     }
  
     public void m_140184_(ServerPlayer p_140185_) {
 -      for(ChunkMap.TrackedEntity chunkmap$trackedentity : this.f_140150_.values()) {
 -         if (chunkmap$trackedentity.f_140472_ == p_140185_) {
 -            chunkmap$trackedentity.m_140487_(this.f_140133_.m_6907_());
--         } else {
--            chunkmap$trackedentity.m_140497_(p_140185_);
 +      // NestWorld: vanilla rescans EVERY tracked entity here to recompute visibility for
 +      // the moved player — O(total entities) per move packet, which stalls the main thread
 +      // at extreme entity counts. When enabled, query only entities within tracking range
@@ -63,7 +61,23 @@
 +      // un-tracked), with a full-scan fallback for large jumps (teleport). See NestworldTuning.
 +      ChunkMap.TrackedEntity nestworldSelf = this.f_140150_.get(p_140185_.m_19879_());
 +      boolean nestworldCulled = false;
-+      if (net.nestworld.region.NestworldTuning.TRACKER_SPATIAL_CULL && nestworldSelf != null) {
++      // A1: re-evaluate this player's entity tracking at most once per server tick. A fast
++      // flyer emits several move packets per tick; without this each re-scans nearby entities
++      // (O(entities near player)) on the main thread and the tick stalls. The own-chunk
++      // loading below still runs every move (so terrain streams ahead); only the entity
++      // re-evaluation is throttled. nestworldLastMovePos is deliberately left untouched on a
++      // throttled move so the next un-throttled move's delta spans all movement since the last
++      // re-evaluation (entities the player flew past are still picked up).
++      if (net.nestworld.region.NestworldTuning.TRACKER_MOVE_THROTTLE && nestworldSelf != null) {
++         long nestworldNowTick = this.f_140133_.m_7654_().m_129921_();
++         if (nestworldSelf.nestworldLastMoveEvalTick == nestworldNowTick) {
++            nestworldCulled = true; // already re-evaluated this tick — skip both scan paths
+          } else {
+-            chunkmap$trackedentity.m_140497_(p_140185_);
++            nestworldSelf.nestworldLastMoveEvalTick = nestworldNowTick;
++         }
++      }
++      if (!nestworldCulled && net.nestworld.region.NestworldTuning.TRACKER_SPATIAL_CULL && nestworldSelf != null) {
 +         Vec3 nestworldCur = p_140185_.m_20182_();
 +         Vec3 nestworldLast = nestworldSelf.nestworldLastMovePos;
 +         nestworldSelf.nestworldLastMovePos = nestworldCur;
@@ -203,13 +217,20 @@
     }
  
     protected PoiManager m_140424_() {
-@@ -1322,6 +_,9 @@
+@@ -1322,6 +_,16 @@
        private final int f_140473_;
        SectionPos f_140474_;
        private final Set<ServerPlayerConnection> f_140475_ = Sets.newIdentityHashSet();
 +      // NestWorld: last position this player's move() ran at, to derive the move delta
 +      // for the spatial-cull tracker (only set for player TrackedEntities).
 +      Vec3 nestworldLastMovePos;
++      // NestWorld: server tick of the last move()-driven entity re-evaluation for this
++      // player. A fast-moving player emits several move packets per tick; without this
++      // each one re-scans nearby entities (O(entities near player)) on the main thread,
++      // so flying through a dense entity pile multiplies the cost by packets/tick and
++      // stalls the tick. Re-evaluate at most once per tick (the periodic tick() and the
++      // next move both pick up the remainder). -1 = never. See NestworldTuning.
++      long nestworldLastMoveEvalTick = -1L;
  
        public TrackedEntity(Entity p_140478_, int p_140479_, int p_140480_, boolean p_140481_) {
           this.f_140471_ = new ServerEntity(ChunkMap.this.f_140133_, p_140478_, p_140480_, p_140481_, this::m_140489_);

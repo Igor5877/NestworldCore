@@ -110,6 +110,21 @@ public final class NestworldTuning {
             Boolean.getBoolean("nestworld.trackerSpatialCull");
 
     /**
+     * Throttle {@code ChunkMap.move(player)}'s entity-tracking re-evaluation to at most once
+     * per server tick per player (default on). A fast-moving player (flying) emits several
+     * move packets per tick; vanilla re-evaluates visibility for the nearby entities on
+     * <em>each</em> one, serially on the main thread. Near a dense entity pile that is
+     * O(entities-near-player) <em>per packet</em> — measured as a single thread pinned at 100%
+     * with TPS collapsing to ~0 while flying past ~150k PrimedTNT, even with
+     * {@link #TRACKER_SPATIAL_CULL} on (the pile <em>is</em> within tracking range). Capping
+     * the re-evaluation to once per tick removes the per-packet multiplier; the periodic
+     * tracker {@code tick()} (now parallel) and the next tick's move pick up any remainder, so
+     * tracking lags by at most one tick. Disable with {@code -Dnestworld.trackerMoveThrottle=false}.
+     */
+    public static final boolean TRACKER_MOVE_THROTTLE =
+            Boolean.parseBoolean(System.getProperty("nestworld.trackerMoveThrottle", "true"));
+
+    /**
      * Parallelise the periodic entity-tracker broadcast ({@code ChunkMap.tick} →
      * {@code ServerEntity.sendChanges} per tracked entity). Vanilla runs this serially on
      * the main thread: it packs each entity's dirty {@code SynchedEntityData} and sends the
