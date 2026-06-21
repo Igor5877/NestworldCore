@@ -109,6 +109,29 @@ public final class NestworldTuning {
     public static final boolean TRACKER_SPATIAL_CULL =
             Boolean.getBoolean("nestworld.trackerSpatialCull");
 
+    /**
+     * Parallelise the periodic entity-tracker broadcast ({@code ChunkMap.tick} →
+     * {@code ServerEntity.sendChanges} per tracked entity). Vanilla runs this serially on
+     * the main thread: it packs each entity's dirty {@code SynchedEntityData} and sends the
+     * metadata/move packets to every viewer — O(entities × viewers). On the region core this
+     * is the dominant <em>serial</em> ('vanilla'-phase) cost at high entity counts (measured:
+     * ~50k per-tick-dirty PrimedTNT → vanilla phase ~100 ms, regions parked idle at the
+     * barrier). The tracker {@code tick()} runs on main <em>after</em> the region barrier, so
+     * entity state is stable; {@code sendChanges} only reads it, packs dirty data via the
+     * thread-safe (clear-first, read-locked, defensive-copy) {@code packDirty}, and enqueues
+     * packets on netty-thread-safe connections — so it parallelises safely across the common
+     * pool. Section-change detection stays serial (it mutates shared visibility state).
+     * Default on; only kicks in above {@link #TRACKER_PARALLEL_BROADCAST_THRESHOLD} entities
+     * (below that the fork/join overhead outweighs the gain). Disable with
+     * {@code -Dnestworld.trackerParallelBroadcast=false}.
+     */
+    public static final boolean TRACKER_PARALLEL_BROADCAST =
+            Boolean.parseBoolean(System.getProperty("nestworld.trackerParallelBroadcast", "true"));
+
+    /** Min number of entities needing a broadcast before {@link #TRACKER_PARALLEL_BROADCAST} parallelises. */
+    public static final int TRACKER_PARALLEL_BROADCAST_THRESHOLD =
+            Integer.getInteger("nestworld.trackerParallelBroadcastThreshold", 512);
+
     private NestworldTuning() {
     }
 }
