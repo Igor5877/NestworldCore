@@ -11,8 +11,10 @@ Driven by spark profiles under a synthetic ~150–170k PrimedTNT stress on `/roo
 - **B1 (event-driven ownership) — VALIDATED (deployed v47.4.128, flag-on).** Measured win and
   correctness confirmed (see "B1 validation results" below). Still flag-gated default-off in code;
   recommend flipping to default-on after a glance.
-- **A2 / C1 / C2 — designed, NOT implemented.** They touch entity-visibility tracking or vanilla
-  collision/explosion physics; deliberately deferred to a supervised session (see rationale).
+- **A2 — DROPPED after analysis** (the ring test must compute the same range/distance `updatePlayer`
+  does, so it saves ~nothing, and risks the invisible-entity bug; A1 already fixes the stall).
+- **C1 / C2 — designed, NOT implemented.** They touch vanilla collision/explosion physics; deferred
+  to a supervised session (see rationale).
 
 ## The key profiling finding: the bottleneck is now a single point-hotspot region
 Under 173k entities (169k actively-exploding TNT), spark `All` view showed **every entity in ONE
@@ -79,12 +81,16 @@ datapack function in a forceloaded ±120-block area, then 200 wandering zombies 
 
 ## Deferred designs (need a supervised session)
 
-### A2 — boundary-ring move() re-eval
-Only re-evaluate entities in the shell `[effectiveRange−delta, effectiveRange+delta]` of the new
-player position (where tracking status can flip), skipping entities deep inside view. Lower value
-now (move is no longer hot after A1) and it couples to per-entity `effectiveRange` inside
-`TrackedEntity.updatePlayer` — i.e. it touches the **entity-visibility** path, the exact area of the
-invisible-items saga. **Do not ship unsupervised / without a flying tester.**
+### A2 — boundary-ring move() re-eval — DROPPED after analysis
+Idea: only re-evaluate entities in the shell `[effectiveRange−delta, effectiveRange+delta]` of the
+new player position, skipping entities deep inside view. **On inspecting `TrackedEntity.updatePlayer`
+this does not pay off:** its cost is computing `getEffectiveRange()`/`scaledRange()` + the distance —
+and the ring test must compute the *same* `d0`/`d1` to decide membership, so it saves only the
+`seenBy.add/remove` (already a no-op when the status doesn't change). Net win ≈ 0. Worse, skipping
+`updatePlayer` for an entity that is deep-in-range but **not yet tracked** (just spawned / player
+just arrived) would leave it unpaired → invisible — the exact invisible-items failure mode. A1's
+once-per-tick throttle already removes the flying stall, so A2 is not worth the complexity/risk.
+**Decision: do not implement.**
 
 ### C1 — skip the wasted entity-collision broad-phase (the 75ms)
 TNT/items/falling-blocks never hard-collide with entities (`canBeCollidedWith()` is false for all of
