@@ -110,6 +110,27 @@ public final class NestworldTuning {
             Boolean.getBoolean("nestworld.trackerSpatialCull");
 
     /**
+     * Event-driven region-ownership reassignment (EXPERIMENTAL, default off). Vanilla-side
+     * {@link net.nestworld.region.BoundaryEntityTransfer#checkAndReassign} scans <em>every</em>
+     * loaded entity each tick to detect region-border crossings — O(all entities), even though
+     * only entities that actually changed section can have crossed. With this on, the entity
+     * section-move callback ({@code PersistentEntitySectionManager.Callback.onMove}) marks the
+     * moved entity dirty, and {@code checkAndReassign} processes only the drained dirty set,
+     * falling back to a periodic full scan (every {@link #OWNERSHIP_FULL_PASS_TICKS} ticks) and
+     * on any layout change as a safety net — so a missed mark self-heals within that window and
+     * can never double-tick (the {@code inTransfer} guard still holds). Marks are written by
+     * region threads during the tick and drained on the main thread after the barrier, so there
+     * is no concurrent access. Biggest win when most entities are stationary (the common case);
+     * neutral when everything is moving. Enable with {@code -Dnestworld.eventDrivenOwnership=true}.
+     */
+    public static final boolean EVENT_DRIVEN_OWNERSHIP =
+            Boolean.getBoolean("nestworld.eventDrivenOwnership");
+
+    /** Safety-net interval (ticks) for a full ownership scan when {@link #EVENT_DRIVEN_OWNERSHIP} is on. */
+    public static final int OWNERSHIP_FULL_PASS_TICKS =
+            Integer.getInteger("nestworld.ownershipFullPassTicks", 200);
+
+    /**
      * Throttle {@code ChunkMap.move(player)}'s entity-tracking re-evaluation to at most once
      * per server tick per player (default on). A fast-moving player (flying) emits several
      * move packets per tick; vanilla re-evaluates visibility for the nearby entities on

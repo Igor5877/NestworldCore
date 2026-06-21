@@ -54,6 +54,17 @@ public class BoundaryEntityTransfer {
     private int lastLayoutVersion = -1;
     private int pruneInterval = 0;
 
+    /**
+     * Event-driven ownership ({@link NestworldTuning#EVENT_DRIVEN_OWNERSHIP}): entities whose
+     * section changed since the last scan, marked by the section-move callback. Written by
+     * region threads during the tick, drained on the main thread after the barrier — the tick
+     * barrier separates the two, so there is no concurrent access (the concurrent queue is
+     * belt-and-braces). A periodic full scan ({@link #eventFullPassCounter}) is the safety net.
+     */
+    private final java.util.concurrent.ConcurrentLinkedQueue<Entity> dirtyEntities =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private int eventFullPassCounter = 0;
+
     public BoundaryEntityTransfer(ServerLevel level, WorldGrid grid, NestworldPins pins) {
         this.level = level;
         this.grid = grid;
@@ -95,64 +106,100 @@ public class BoundaryEntityTransfer {
             });
         }
 
-        for (Entity entity : level.getAllEntities()) {
-            if (entity.isRemoved()) continue;
-            // Players are ticked on the main thread (their position is mutated
-            // by the network thread; region-thread ticking causes races that
-            // manifest as "moved too quickly" rubber-banding).
-            if (entity instanceof net.minecraft.world.entity.player.Player) continue;
-
-            UUID uuid = entity.getUUID();
-            // Pinned types tick on the main thread (mod compat): keep them out of
-            // every region's owned set so no region thread touches them. If a type
-            // was pinned while already owned, release it here (one-time).
-            if (!pins.isEmpty() && pins.isPinned(entity.getType())) {
-                WorldRegion owner = findOwner(uuid);
-                if (owner != null) owner.removeEntity(uuid);
-                inTransfer.remove(uuid);
-                lastChunkKey.remove(entity.getId());
-                continue;
+        // Event-driven path: process only entities whose section changed since the last scan
+        // (marked via markDirty from the section-move callback). A periodic full scan and any
+        // layout change still force the complete O(all) pass as a safety net, so a missed mark
+        // self-heals within OWNERSHIP_FULL_PASS_TICKS and can never cause a double-tick.
+        boolean doFullScan = fullPass || !net.nestworld.region.NestworldTuning.EVENT_DRIVEN_OWNERSHIP
+                || (++eventFullPassCounter >= net.nestworld.region.NestworldTuning.OWNERSHIP_FULL_PASS_TICKS);
+        if (doFullScan) {
+            eventFullPassCounter = 0;
+            dirtyEntities.clear(); // the full scan supersedes any pending marks
+            for (Entity entity : level.getAllEntities()) {
+                processEntity(entity, fullPass);
             }
-            if (inTransfer.containsKey(uuid)) {
-                // Transfer was initiated last tick; it is now safe to clear the guard
-                inTransfer.remove(uuid);
-                continue;
+        } else {
+            // Drain the dirty set; dedup so an entity that changed section several times this
+            // tick is processed once. processEntity re-checks position, so a mark for an entity
+            // that ended up in the same chunk (settled) is a cheap no-op.
+            Entity e;
+            it.unimi.dsi.fastutil.ints.IntOpenHashSet seen = new it.unimi.dsi.fastutil.ints.IntOpenHashSet();
+            while ((e = dirtyEntities.poll()) != null) {
+                if (seen.add(e.getId())) processEntity(e, false);
             }
+        }
+    }
 
-            // NestWorld: an entity that did not move this tick cannot have changed chunk, so it
-            // keeps its current owner. Skip the chunkPosition() allocation + toLong + map work for
-            // the (common, at high entity counts) stationary case — but only once it has been
-            // assigned (lastChunkKey set, sentinel default = NO_CHUNK), so a spawned-stationary
-            // entity still gets its initial owner on the pass that first sees it. Same no-movement
-            // shortcut as the tracker (NestworldTuning.TRACKER_SPATIAL_CULL); also cuts the ChunkPos
-            // allocation churn that pressures GC under big entity piles (e.g. 150k TNT).
-            if (!fullPass && net.nestworld.region.NestworldTuning.TRACKER_SPATIAL_CULL
-                    && entity.getX() == entity.xo && entity.getY() == entity.yo && entity.getZ() == entity.zo
-                    && lastChunkKey.get(entity.getId()) != NO_CHUNK) {
-                continue;
-            }
+    /** Per-entity ownership check, shared by the full scan and the event-driven drain. */
+    private void processEntity(Entity entity, boolean fullPass) {
+        if (entity.isRemoved()) return;
+        // Players are ticked on the main thread (their position is mutated
+        // by the network thread; region-thread ticking causes races that
+        // manifest as "moved too quickly" rubber-banding).
+        if (entity instanceof net.minecraft.world.entity.player.Player) return;
 
-            ChunkPos currentChunk = entity.chunkPosition();
-            long chunkKey = currentChunk.toLong();
-            if (!fullPass) {
-                // One int-keyed lookup; sentinel default means absent != any real chunk.
-                if (lastChunkKey.get(entity.getId()) == chunkKey) continue; // same chunk, same owner
-            }
-            lastChunkKey.put(entity.getId(), chunkKey);
+        UUID uuid = entity.getUUID();
+        // Pinned types tick on the main thread (mod compat): keep them out of
+        // every region's owned set so no region thread touches them. If a type
+        // was pinned while already owned, release it here (one-time).
+        if (!pins.isEmpty() && pins.isPinned(entity.getType())) {
+            WorldRegion owner = findOwner(uuid);
+            if (owner != null) owner.removeEntity(uuid);
+            inTransfer.remove(uuid);
+            lastChunkKey.remove(entity.getId());
+            return;
+        }
+        if (inTransfer.containsKey(uuid)) {
+            // Transfer was initiated last tick; it is now safe to clear the guard
+            inTransfer.remove(uuid);
+            return;
+        }
 
-            WorldRegion currentOwner = findOwner(uuid);
-            WorldRegion correctRegion = grid.getRegionFor(currentChunk);
+        // NestWorld: an entity that did not move this tick cannot have changed chunk, so it
+        // keeps its current owner. Skip the chunkPosition() allocation + toLong + map work for
+        // the (common, at high entity counts) stationary case — but only once it has been
+        // assigned (lastChunkKey set, sentinel default = NO_CHUNK), so a spawned-stationary
+        // entity still gets its initial owner on the pass that first sees it. Same no-movement
+        // shortcut as the tracker (NestworldTuning.TRACKER_SPATIAL_CULL); also cuts the ChunkPos
+        // allocation churn that pressures GC under big entity piles (e.g. 150k TNT).
+        if (!fullPass && net.nestworld.region.NestworldTuning.TRACKER_SPATIAL_CULL
+                && entity.getX() == entity.xo && entity.getY() == entity.yo && entity.getZ() == entity.zo
+                && lastChunkKey.get(entity.getId()) != NO_CHUNK) {
+            return;
+        }
 
-            if (correctRegion == null || correctRegion == currentOwner) continue;
+        ChunkPos currentChunk = entity.chunkPosition();
+        long chunkKey = currentChunk.toLong();
+        if (!fullPass) {
+            // One int-keyed lookup; sentinel default means absent != any real chunk.
+            if (lastChunkKey.get(entity.getId()) == chunkKey) return; // same chunk, same owner
+        }
+        lastChunkKey.put(entity.getId(), chunkKey);
 
-            // Mark as transferring to skip double-tick for one tick
-            inTransfer.put(uuid, Boolean.TRUE);
+        WorldRegion currentOwner = findOwner(uuid);
+        WorldRegion correctRegion = grid.getRegionFor(currentChunk);
 
-            if (currentOwner != null) currentOwner.removeEntity(uuid);
-            correctRegion.addEntity(uuid);
+        if (correctRegion == null || correctRegion == currentOwner) return;
 
-            LOGGER.debug("Entity {} moved from {} to {}", uuid,
-                    currentOwner != null ? currentOwner.getId() : "none", correctRegion.getId());
+        // Mark as transferring to skip double-tick for one tick
+        inTransfer.put(uuid, Boolean.TRUE);
+
+        if (currentOwner != null) currentOwner.removeEntity(uuid);
+        correctRegion.addEntity(uuid);
+
+        LOGGER.debug("Entity {} moved from {} to {}", uuid,
+                currentOwner != null ? currentOwner.getId() : "none", correctRegion.getId());
+    }
+
+    /**
+     * Marks an entity as having changed section (called from the entity section-move callback)
+     * so the next {@link #checkAndReassign} re-checks its region ownership without scanning all
+     * entities. No-op unless {@link NestworldTuning#EVENT_DRIVEN_OWNERSHIP} is on. Safe to call
+     * from region threads: marks are drained on the main thread after the tick barrier.
+     */
+    public void markDirty(Entity entity) {
+        if (net.nestworld.region.NestworldTuning.EVENT_DRIVEN_OWNERSHIP && entity != null) {
+            dirtyEntities.add(entity);
         }
     }
 

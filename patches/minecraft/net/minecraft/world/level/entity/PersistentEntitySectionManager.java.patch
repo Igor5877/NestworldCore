@@ -9,7 +9,8 @@
     final LevelCallback<T> f_157492_;
     private final EntityPersistentStorage<T> f_157493_;
     private final EntityLookup<T> f_157494_;
-@@ -44,7 +_,7 @@
+@@ -43,7 +_,7 @@
+ 
     public PersistentEntitySectionManager(Class<T> p_157503_, LevelCallback<T> p_157504_, EntityPersistentStorage<T> p_157505_) {
        this.f_157494_ = new EntityLookup<>();
 -      this.f_157495_ = new EntitySectionStorage<>(p_157503_, this.f_157497_);
@@ -17,7 +18,6 @@
        this.f_157497_.defaultReturnValue(Visibility.HIDDEN);
        this.f_157498_.defaultReturnValue(PersistentEntitySectionManager.ChunkLoadStatus.FRESH);
        this.f_157492_ = p_157504_;
-       this.f_157493_ = p_157505_;
 @@ -71,7 +_,16 @@
        return this.m_157538_(p_157534_, false);
     }
@@ -72,7 +72,7 @@
           this.f_157610_ = p_157615_;
           this.f_157611_ = p_157616_;
        }
-@@ -370,9 +_,11 @@
+@@ -370,9 +_,15 @@
              PersistentEntitySectionManager.this.m_157509_(this.f_157610_, this.f_157611_);
              EntitySection<T> entitysection = PersistentEntitySectionManager.this.f_157495_.m_156893_(i);
              entitysection.m_188346_(this.f_157609_);
@@ -81,6 +81,10 @@
              this.f_157610_ = i;
              this.m_157620_(visibility, entitysection.m_156848_());
 +            if (this.realEntity != null) net.minecraftforge.common.ForgeHooks.onEntityEnterSection(this.realEntity, oldSectionKey, i);
++            // NestWorld: the entity changed section, so it may have crossed a region border —
++            // mark it for the next ownership scan instead of re-scanning every entity each tick
++            // (event-driven ownership; no-op unless enabled). Guarded/level-checked in the system.
++            if (this.realEntity != null) net.nestworld.region.NestworldRegionSystem.markOwnershipDirty(this.realEntity);
           }
  
        }
