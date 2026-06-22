@@ -168,6 +168,29 @@ public final class NestworldTuning {
     public static final int TRACKER_PARALLEL_BROADCAST_THRESHOLD =
             Integer.getInteger("nestworld.trackerParallelBroadcastThreshold", 512);
 
+    /**
+     * Parallelise the tracker's per-tick DETECTION loop (EXPERIMENTAL, default off). {@code
+     * ChunkMap.tick} iterates every tracked entity to recompute its section ({@code SectionPos.of}),
+     * detect section changes, and decide who needs a broadcast — O(all tracked) SERIALLY on the main
+     * thread, which is the dominant 'vanilla'-phase cost once {@link #TRACKER_PARALLEL_BROADCAST}
+     * has already offloaded the actual {@code sendChanges} (measured: ~178k per-tick-dirty PrimedTNT
+     * → detection loop ~111 ms while region threads sit parked at the barrier). Unlike the
+     * event-driven shortcuts this also helps when <em>every</em> entity is dirty (TNT fuses), because
+     * it parallelises the scan itself rather than skipping it. The pass is read-only on entity state
+     * (stable — region threads are parked); the one mutation ({@code updatePlayers} when an entity
+     * changed section, which touches the shared {@code seenBy} sets) is deferred to a short SERIAL
+     * post-pass over only the entities that actually moved section — so no shared visibility state is
+     * mutated concurrently. Bit-identical visibility; only the cost of computing it changes. Default
+     * off; only engages above {@link #TRACKER_PARALLEL_DETECTION_THRESHOLD}. Enable with
+     * {@code -Dnestworld.trackerParallelDetection=true}.
+     */
+    public static final boolean TRACKER_PARALLEL_DETECTION =
+            Boolean.getBoolean("nestworld.trackerParallelDetection");
+
+    /** Min number of tracked entities before {@link #TRACKER_PARALLEL_DETECTION} parallelises the scan. */
+    public static final int TRACKER_PARALLEL_DETECTION_THRESHOLD =
+            Integer.getInteger("nestworld.trackerParallelDetectionThreshold", 4096);
+
     private NestworldTuning() {
     }
 }

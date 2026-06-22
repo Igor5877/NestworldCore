@@ -121,10 +121,56 @@
           EntityType<?> entitytype = p_140200_.m_6095_();
           int i = entitytype.m_20681_() * 16;
           if (i != 0) {
-@@ -1178,23 +_,72 @@
+@@ -1178,25 +_,121 @@
     protected void m_140421_() {
        List<ServerPlayer> list = Lists.newArrayList();
        List<ServerPlayer> list1 = this.f_140133_.m_6907_();
++      // NestWorld Phase-1 (TRACKER_PARALLEL_DETECTION): the per-entity detection scan below is the
++      // dominant serial 'vanilla'-phase cost once sendChanges is offloaded. Parallelise it — the pass
++      // is read-only on entity state (region threads parked at the barrier → stable) — and defer the
++      // ONLY mutation (updatePlayers on a section change, which touches shared seenBy) to a short
++      // serial post-pass over just the entities that moved section. Bit-identical visibility.
++      boolean nestworldParDetect = net.nestworld.region.NestworldTuning.TRACKER_PARALLEL_DETECTION
++            && this.f_140150_.size() >= net.nestworld.region.NestworldTuning.TRACKER_PARALLEL_DETECTION_THRESHOLD;
++      if (nestworldParDetect) {
++         java.util.Queue<ChunkMap.TrackedEntity> nestworldBc = new java.util.concurrent.ConcurrentLinkedQueue<>();
++         java.util.Queue<ChunkMap.TrackedEntity> nestworldChanged = new java.util.concurrent.ConcurrentLinkedQueue<>();
++         this.f_140150_.values().parallelStream().forEach(nestworldTe -> {
++            Entity nestworldE = nestworldTe.f_140472_;
++            boolean nestworldStill2 = net.nestworld.region.NestworldTuning.TRACKER_SPATIAL_CULL
++                  && !(nestworldE instanceof ServerPlayer)
++                  && nestworldE.m_20185_() == nestworldE.f_19854_ && nestworldE.m_20186_() == nestworldE.f_19855_ && nestworldE.m_20189_() == nestworldE.f_19856_;
++            SectionPos nestworldSp;
++            boolean nestworldFlag = false;
++            if (nestworldStill2) {
++               nestworldSp = nestworldTe.f_140474_;
++            } else {
++               nestworldSp = SectionPos.m_235861_(nestworldE);
++               nestworldFlag = !Objects.equals(nestworldTe.f_140474_, nestworldSp);
++            }
++            nestworldTe.nestworldTickSection = nestworldSp;
++            if (nestworldFlag) nestworldChanged.add(nestworldTe);
++            if (nestworldFlag || !nestworldTe.f_140475_.isEmpty()
++                  || this.f_140145_.m_183913_(nestworldSp.m_123251_().m_45588_())) {
++               nestworldBc.add(nestworldTe);
++            }
++         });
++         // Serial: apply section changes (mutates shared seenBy) for the few entities that moved section.
++         for (ChunkMap.TrackedEntity nestworldTe : nestworldChanged) {
++            nestworldTe.m_140487_(list1);
++            if (nestworldTe.f_140472_ instanceof ServerPlayer) list.add((ServerPlayer) nestworldTe.f_140472_);
++            nestworldTe.f_140474_ = nestworldTe.nestworldTickSection;
++         }
++         // Parallel: pack dirty data + send (CLQ -> ArrayList so parallelStream splits well).
++         if (!nestworldBc.isEmpty()) {
++            java.util.List<ChunkMap.TrackedEntity> nestworldBcList = new java.util.ArrayList<>(nestworldBc);
++            if (nestworldBcList.size() >= net.nestworld.region.NestworldTuning.TRACKER_PARALLEL_BROADCAST_THRESHOLD) {
++               nestworldBcList.parallelStream().forEach(nestworldTe -> nestworldTe.f_140471_.m_8533_());
++            } else {
++               for (ChunkMap.TrackedEntity nestworldTe : nestworldBcList) nestworldTe.f_140471_.m_8533_();
++            }
++         }
++      } else {
 +      // NestWorld: collect the entities that need a broadcast and run the expensive
 +      // sendChanges() in parallel after the loop (region threads are parked at the barrier
 +      // here, so entity state is stable). See NestworldTuning.TRACKER_PARALLEL_BROADCAST.
@@ -147,6 +193,8 @@
 -
 -         if (flag || this.f_140145_.m_183913_(sectionpos1.m_123251_().m_45588_())) {
 -            chunkmap$trackedentity.f_140471_.m_8533_();
+-         }
+-      }
 +         Entity nestworldEntity = chunkmap$trackedentity.f_140472_;
 +         // NestWorld: SectionPos.of() (block->section floors) runs for every tracked
 +         // entity every tick just to detect section changes — O(N) that dominates the
@@ -206,9 +254,12 @@
 +            for (ChunkMap.TrackedEntity te : nestworldBroadcast) {
 +               te.f_140471_.m_8533_();
 +            }
-          }
-       }
++         }
++      }
++      } // end else: serial detection path (TRACKER_PARALLEL_DETECTION off / below threshold)
  
+       if (!list.isEmpty()) {
+          for(ChunkMap.TrackedEntity chunkmap$trackedentity1 : this.f_140150_.values()) {
 @@ -1282,6 +_,7 @@
           }
        }
@@ -217,9 +268,14 @@
     }
  
     protected PoiManager m_140424_() {
-@@ -1322,6 +_,16 @@
+@@ -1321,7 +_,21 @@
+       final Entity f_140472_;
        private final int f_140473_;
        SectionPos f_140474_;
++      // NestWorld: section computed during the parallel detection pass (TRACKER_PARALLEL_DETECTION),
++      // read back in the serial section-change post-pass. Written by exactly one stream worker per
++      // entity, read after the parallel terminal op completes (happens-before), so no lock needed.
++      SectionPos nestworldTickSection;
        private final Set<ServerPlayerConnection> f_140475_ = Sets.newIdentityHashSet();
 +      // NestWorld: last position this player's move() ran at, to derive the move delta
 +      // for the spatial-cull tracker (only set for player TrackedEntities).
