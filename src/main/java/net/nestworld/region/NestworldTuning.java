@@ -191,6 +191,35 @@ public final class NestworldTuning {
     public static final int TRACKER_PARALLEL_DETECTION_THRESHOLD =
             Integer.getInteger("nestworld.trackerParallelDetectionThreshold", 4096);
 
+    /**
+     * C1 — skip the entity-collision broad-phase when no entity can hard-block movement
+     * (EXPERIMENTAL, default off). {@code Entity.move -> getEntityCollisions} iterates every entity
+     * in the moving entity's swept AABB looking for ones with {@code canBeCollidedWith()} (boats,
+     * minecarts, shulkers, armor stands). In a dense pile of TNT/items — which collide with nothing —
+     * that iterates thousands of neighbours per moving entity only to return empty (measured ~108 ms
+     * on the hot region thread at 100k+ TNT). {@code ServerLevel} keeps a count of loaded
+     * hard-collidable entities (maintained on the add/remove callbacks); when it is zero the result
+     * is provably empty, so the broad-phase is skipped — bit-identical. The count over-approximates
+     * (armor stands always counted, since their collidability toggles with the Marker flag) so it
+     * never under-reports. Note: the count is per-level/global, so this only helps when the <em>whole</em>
+     * dimension has no collidable entity (true for a pure TNT pile; a single boat elsewhere disables
+     * it). Enable with {@code -Dnestworld.skipEmptyEntityCollision=true}.
+     */
+    public static final boolean SKIP_EMPTY_ENTITY_COLLISION =
+            Boolean.getBoolean("nestworld.skipEmptyEntityCollision");
+
+    /**
+     * C2 — cache explosion exposure per block position (EXPERIMENTAL, default off). {@code
+     * Explosion.explode} calls {@code getSeenPercent} for every entity in the blast, casting up to 27
+     * occlusion rays each (measured ~118-154 ms when thousands of entities sit in overlapping blasts).
+     * With this on, the exposure raycast result is memoised per {@code BlockPos} within a single
+     * explosion, so entities sharing a block reuse it. NOT bit-identical (entities at different
+     * sub-block offsets get the same value — the same approximation Paper's optimizeExplosions makes),
+     * so it is opt-in. Enable with {@code -Dnestworld.cacheExplosionExposure=true}.
+     */
+    public static final boolean CACHE_EXPLOSION_EXPOSURE =
+            Boolean.getBoolean("nestworld.cacheExplosionExposure");
+
     private NestworldTuning() {
     }
 }

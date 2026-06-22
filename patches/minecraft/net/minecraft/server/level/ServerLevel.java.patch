@@ -17,7 +17,7 @@
     protected final Raids f_8565_;
     private final ObjectLinkedOpenHashSet<BlockEventData> f_8556_ = new ObjectLinkedOpenHashSet<>();
     private final List<BlockEventData> f_184048_ = new ArrayList<>(64);
-@@ -188,11 +_,13 @@
+@@ -188,11 +_,29 @@
     private final List<CustomSpawner> f_8558_;
     @Nullable
     private EndDragonFight f_8559_;
@@ -29,6 +29,22 @@
     private final RandomSequences f_286969_;
 +   private net.minecraftforge.common.util.LevelCapabilityData capabilityData;
 +   public alternate.current.wire.WireHandler nestworldWireHandler;
++
++   // NestWorld (C1): count of loaded entities that can hard-block another entity's movement
++   // (boats, minecarts, shulkers, armor stands, and any mod entity reporting canBeCollidedWith).
++   // When zero, getEntityCollisions provably returns empty for every query, so the O(neighbours)
++   // broad-phase over dense entity sections can be skipped (the dominant cost of moving a 100k
++   // TNT/item pile, which collides with nothing). Maintained on the entity add/remove callbacks.
++   public final java.util.concurrent.atomic.AtomicInteger nestworldCollidableCount =
++         new java.util.concurrent.atomic.AtomicInteger();
++
++   /** C1: whether an entity might ever hard-block movement (over-approximate so the count never
++    *  under-reports — armor stands toggle collidability via their Marker flag, so always count them). */
++   public static boolean nestworldMayBeCollidable(Entity e) {
++      return e.m_5829_() || e instanceof net.minecraft.world.entity.decoration.ArmorStand;
++   }
++
++   public int nestworldCollidableCount() { return this.nestworldCollidableCount.get(); }
  
     public ServerLevel(MinecraftServer p_214999_, Executor p_215000_, LevelStorageSource.LevelStorageAccess p_215001_, ServerLevelData p_215002_, ResourceKey<Level> p_215003_, LevelStem p_215004_, ChunkProgressListener p_215005_, boolean p_215006_, long p_215007_, List<CustomSpawner> p_215008_, boolean p_215009_, @Nullable RandomSequences p_288977_) {
        super(p_215002_, p_215003_, p_214999_.m_206579_(), p_215004_.f_63975_(), p_214999_::m_129905_, false, p_215006_, p_215007_, p_214999_.m_213994_());
@@ -385,7 +401,17 @@
     public LevelEntityGetter<Entity> m_142646_() {
        return this.f_143244_.m_157567_();
     }
-@@ -1467,7 +_,7 @@
+@@ -1461,13 +_,17 @@
+ 
+       public void m_141985_(Entity p_143371_) {
+          ServerLevel.this.m_7726_().m_8463_(p_143371_);
++         // NestWorld (C1): track how many loaded entities can hard-block movement, so
++         // getEntityCollisions can skip its broad-phase entirely when none exist (the common
++         // case in dense piles of TNT/items, which never collide). See nestworldMayBeCollidable.
++         if (nestworldMayBeCollidable(p_143371_)) ServerLevel.this.nestworldCollidableCount.incrementAndGet();
+          if (p_143371_ instanceof ServerPlayer serverplayer) {
+             ServerLevel.this.f_8546_.add(serverplayer);
+             ServerLevel.this.m_8878_();
           }
  
           if (p_143371_ instanceof Mob mob) {
@@ -405,7 +431,15 @@
                 ServerLevel.this.f_143247_.put(enderdragonpart.m_19879_(), enderdragonpart);
              }
           }
-@@ -1492,7 +_,7 @@
+@@ -1486,13 +_,15 @@
+ 
+       public void m_141981_(Entity p_143375_) {
+          ServerLevel.this.m_7726_().m_8443_(p_143375_);
++         // NestWorld (C1): keep the hard-collidable counter in sync (see onTrackingStart).
++         if (nestworldMayBeCollidable(p_143375_)) ServerLevel.this.nestworldCollidableCount.decrementAndGet();
+          if (p_143375_ instanceof ServerPlayer serverplayer) {
+             ServerLevel.this.f_8546_.remove(serverplayer);
+             ServerLevel.this.m_8878_();
           }
  
           if (p_143375_ instanceof Mob mob) {

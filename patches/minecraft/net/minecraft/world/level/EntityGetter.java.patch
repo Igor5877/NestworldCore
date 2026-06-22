@@ -1,7 +1,17 @@
 --- a/net/minecraft/world/level/EntityGetter.java
 +++ b/net/minecraft/world/level/EntityGetter.java
-@@ -55,7 +_,13 @@
+@@ -53,9 +_,23 @@
+    default List<VoxelShape> m_183134_(@Nullable Entity p_186451_, AABB p_186452_) {
+       if (p_186452_.m_82309_() < 1.0E-7D) {
           return List.of();
++      } else if (net.nestworld.region.NestworldTuning.SKIP_EMPTY_ENTITY_COLLISION
++            && this instanceof net.minecraft.server.level.ServerLevel nestworldSl
++            && nestworldSl.nestworldCollidableCount() == 0) {
++         // NestWorld (C1): no loaded entity can hard-block movement, so the broad-phase below
++         // would iterate the (possibly very dense) overlapping sections only to return an empty
++         // list. Skip it — this is the dominant cost of moving a huge TNT/item pile that collides
++         // with nothing. Bit-identical: the result is provably List.of() when the count is zero.
++         return List.of();
        } else {
           Predicate<Entity> predicate = p_186451_ == null ? EntitySelector.f_185987_ : EntitySelector.f_20408_.and(p_186451_::m_7337_);
 -         List<Entity> list = this.m_6249_(p_186451_, p_186452_.m_82400_(1.0E-7D), predicate);
