@@ -125,3 +125,58 @@ Both change gameplay slightly → opt-in only.
 - spark link while running: `/spark profiler open` (does NOT stop the profiler); `stop` ends it.
   rcon: port 25582, pw `nestworld-dev` (multi-line responses don't come back over rcon — read the URL
   from the boot log).
+
+---
+
+# Tracker parallelization (the serial 'vanilla'-phase ceiling)
+
+Under 178k per-tick-dirty PrimedTNT the dominant cost is the SEQUENTIAL `vanilla` phase
+(~111ms) = `ChunkMap.tick`'s per-entity detection scan, run on the main thread BEFORE the
+parallel region phase. Region work is already well-sharded (regionPool ~71ms ≈ slowest region;
+sum of per-region cost 526ms across 22 regions). So by Amdahl the serial tracker is the ceiling,
+not the explosion physics. Two phases address it.
+
+## Phase 1 — parallelise the detection scan (IMPLEMENTED, v47.4.131, default off)
+`nestworld.trackerParallelDetection=true` (engages above `trackerParallelDetectionThreshold`=4096).
+The `ChunkMap.tick` detection loop becomes a read-only `parallelStream` (entity state is stable —
+region threads are parked at the barrier): each worker computes `SectionPos.of`, the section-change
+flag, the ticking-range / seenBy broadcast decision, and pushes into two concurrent queues
+(broadcast candidates, section-changed). The ONLY mutation — `updatePlayers` on a section change,
+which touches the shared `seenBy` set — is deferred to a short SERIAL post-pass over just the
+entities that moved section (few, since most entities don't cross a 16-block section per tick). The
+existing parallel `sendChanges` runs after. Section-changed entities always broadcast (the `flag`
+short-circuits the broadcast test), so the seenBy-timing difference between parallel/serial is moot
+→ bit-identical visibility. Unlike event-driven shortcuts this also helps when *every* entity is
+dirty (TNT), because it parallelises the scan itself. Expected: ~111ms → ~15-20ms on 10 cores.
+
+Caveats verified safe: the parallel pass only READS entity position, `lastSectionPos`,
+`seenBy.isEmpty()` and `DistanceManager.inEntityTickingRange` — none mutated during the pass (region
+threads parked; the serial post-pass does the writes). `nestworldTickSection` is written by one
+worker per entity and read after the terminal op (happens-before).
+
+## Phase 2 — regionalise the tracker (DESIGN, not implemented — large/invasive)
+Phase 1 keeps the tracker as one (now-parallel) phase gated by the barrier. Phase 2 moves entity
+tracking INTO the region phase, Folia-style, so detection+broadcast overlaps region ticking and
+there is no separate serial phase at all.
+
+Design sketch:
+- **Per-region tracker shard.** Each `WorldRegion` owns the `TrackedEntity` records for the entities
+  it owns (mirrors the existing ownership in `BoundaryEntityTransfer`). A region ticks its own
+  entities AND, in the same region-thread pass, runs detection + `sendChanges` for them.
+- **`seenBy` isolation.** A `TrackedEntity`'s `seenBy` is only mutated by its owning region's thread
+  → no cross-thread mutation, no locks (Gemini/Folia: per-region isolation is the key).
+- **Cross-region viewers.** A player owned by region A can view an entity owned by region B. Sends
+  are fine (the `Connection` is netty-thread-safe — already relied on by the parallel broadcast).
+  The hard part is *visibility transitions* when the player or entity crosses a region border: route
+  these as async messages to the owning region's queue (drained at the start of its tick), exactly
+  like Folia. The existing `BoundaryEntityTransfer` ownership hand-off (and the B1 onMove dirty
+  signal) is the natural carrier.
+- **Player-move tracking** (`ChunkMap.move`) likewise dispatches per-region "re-evaluate your
+  entities for this player" messages instead of scanning the global `entityMap`.
+
+Risks / why staged: this rewrites the visibility path (the invisible-items failure mode) and the
+cross-region message ordering must be exactly right or entities flicker/desync at borders. Must be
+built incrementally behind a flag with a real multi-viewer test (bots at region borders) each step.
+Recommendation: ship + measure Phase 1 first; only build Phase 2 if Phase 1's barrier-bound parallel
+detection proves insufficient (e.g. at very high viewer counts where overlapping tracking with the
+region tick matters). For the 178k-TNT case Phase 1 already removes the serial ceiling.
