@@ -377,6 +377,14 @@ public class RegionThread extends Thread {
         int start = entityCursor < n ? entityCursor : 0;
         int ticked = 0;
         int processed = 0;
+        // Phase 2 (REGIONALIZED_TRACKER): this region tracks its own entities here, in the region
+        // phase, instead of the serial main-thread ChunkMap.tick. Resolve the tracker + player list
+        // + tick stamp once. Only the owning region touches a given entity's tracker state, and this
+        // pass never overlaps main's tick()/move(), so no lock is needed.
+        final boolean nestworldTrack = NestworldTuning.REGIONALIZED_TRACKER;
+        final net.minecraft.server.level.ChunkMap nestworldChunkMap = nestworldTrack ? level.getChunkSource().chunkMap : null;
+        final long nestworldTickNo = nestworldTrack ? level.getServer().getTickCount() : -1L;
+        final java.util.List<net.minecraft.server.level.ServerPlayer> nestworldPlayers = nestworldTrack ? level.players() : null;
         while (processed < n) {
             int idx = start + processed;
             if (idx >= n) idx -= n;
@@ -393,6 +401,10 @@ public class RegionThread extends Thread {
                 if (!level.isPositionEntityTicking(entity.blockPosition())) continue;
                 level.tickNonPassenger(entity);
                 ticked++;
+                // Phase 2: track this owned entity now (region phase). Skip if the tick removed it.
+                if (nestworldTrack && !entity.isRemoved()) {
+                    nestworldChunkMap.nestworldTrackOwned(entity, nestworldTickNo, nestworldPlayers);
+                }
             } catch (Throwable t) {
                 // Most of these are NPEs with a null message ("tick error: null"),
                 // suspected ClassInstanceMultiMap section-content race. Full

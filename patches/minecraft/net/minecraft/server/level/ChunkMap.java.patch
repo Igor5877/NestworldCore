@@ -121,10 +121,15 @@
           EntityType<?> entitytype = p_140200_.m_6095_();
           int i = entitytype.m_20681_() * 16;
           if (i != 0) {
-@@ -1178,25 +_,121 @@
+@@ -1178,25 +_,128 @@
     protected void m_140421_() {
        List<ServerPlayer> list = Lists.newArrayList();
        List<ServerPlayer> list1 = this.f_140133_.m_6907_();
++      // NestWorld (REGIONALIZED_TRACKER): entities whose owning region already tracked them this
++      // tick carry the current tick stamp; skip them here so only players + unowned/deferred entities
++      // are handled on main. -2 never matches the -1 default, so this is inert when the flag is off.
++      long nestworldCurTick = net.nestworld.region.NestworldTuning.REGIONALIZED_TRACKER
++            ? this.f_140133_.m_7654_().m_129921_() : -2L;
 +      // NestWorld Phase-1 (TRACKER_PARALLEL_DETECTION): the per-entity detection scan below is the
 +      // dominant serial 'vanilla'-phase cost once sendChanges is offloaded. Parallelise it — the pass
 +      // is read-only on entity state (region threads parked at the barrier → stable) — and defer the
@@ -136,6 +141,7 @@
 +         java.util.Queue<ChunkMap.TrackedEntity> nestworldBc = new java.util.concurrent.ConcurrentLinkedQueue<>();
 +         java.util.Queue<ChunkMap.TrackedEntity> nestworldChanged = new java.util.concurrent.ConcurrentLinkedQueue<>();
 +         this.f_140150_.values().parallelStream().forEach(nestworldTe -> {
++            if (nestworldTe.nestworldTrackedTick == nestworldCurTick) return; // region already tracked it
 +            Entity nestworldE = nestworldTe.f_140472_;
 +            boolean nestworldStill2 = net.nestworld.region.NestworldTuning.TRACKER_SPATIAL_CULL
 +                  && !(nestworldE instanceof ServerPlayer)
@@ -195,6 +201,7 @@
 -            chunkmap$trackedentity.f_140471_.m_8533_();
 -         }
 -      }
++         if (chunkmap$trackedentity.nestworldTrackedTick == nestworldCurTick) continue; // region already tracked it
 +         Entity nestworldEntity = chunkmap$trackedentity.f_140472_;
 +         // NestWorld: SectionPos.of() (block->section floors) runs for every tracked
 +         // entity every tick just to detect section changes — O(N) that dominates the
@@ -260,6 +267,47 @@
  
        if (!list.isEmpty()) {
           for(ChunkMap.TrackedEntity chunkmap$trackedentity1 : this.f_140150_.values()) {
+@@ -1206,6 +_,40 @@
+ 
+    }
+ 
++   // NestWorld (REGIONALIZED_TRACKER): run the per-entity tracker step (section detection +
++   // updatePlayers + sendChanges) for an entity OWNED by the calling region thread, during the
++   // region phase. Only the owning region ever touches this entity's tracker state (seenBy,
++   // lastSectionPos), and the region (regionPool) and main (tick/move) passes never overlap, so no
++   // lock is needed. The tick stamp lets the main-thread tick() skip entities the regions handled.
++   // entityMap is not structurally mutated during the region phase (main is at the barrier), so the
++   // get() read is safe. Owned entities are never players, so the player special-cases are dropped.
++   public void nestworldTrackOwned(Entity nestworldEntity, long nestworldTickNo, List<ServerPlayer> nestworldPlayers) {
++      ChunkMap.TrackedEntity te = this.f_140150_.get(nestworldEntity.m_19879_());
++      if (te == null) {
++         return;
++      }
++      boolean nestworldStill = net.nestworld.region.NestworldTuning.TRACKER_SPATIAL_CULL
++            && nestworldEntity.m_20185_() == nestworldEntity.f_19854_
++            && nestworldEntity.m_20186_() == nestworldEntity.f_19855_
++            && nestworldEntity.m_20189_() == nestworldEntity.f_19856_;
++      SectionPos sectionpos1;
++      boolean flag = false;
++      if (nestworldStill) {
++         sectionpos1 = te.f_140474_;
++      } else {
++         sectionpos1 = SectionPos.m_235861_(nestworldEntity);
++         flag = !Objects.equals(te.f_140474_, sectionpos1);
++         if (flag) {
++            te.m_140487_(nestworldPlayers);
++            te.f_140474_ = sectionpos1;
++         }
++      }
++      if (flag || !te.f_140475_.isEmpty() || this.f_140145_.m_183913_(sectionpos1.m_123251_().m_45588_())) {
++         te.f_140471_.m_8533_();
++      }
++      te.nestworldTrackedTick = nestworldTickNo;
++   }
++
+    public void m_140201_(Entity p_140202_, Packet<?> p_140203_) {
+       ChunkMap.TrackedEntity chunkmap$trackedentity = this.f_140150_.get(p_140202_.m_19879_());
+       if (chunkmap$trackedentity != null) {
 @@ -1282,6 +_,7 @@
           }
        }
@@ -268,7 +316,7 @@
     }
  
     protected PoiManager m_140424_() {
-@@ -1321,7 +_,21 @@
+@@ -1321,7 +_,25 @@
        final Entity f_140472_;
        private final int f_140473_;
        SectionPos f_140474_;
@@ -276,6 +324,10 @@
 +      // read back in the serial section-change post-pass. Written by exactly one stream worker per
 +      // entity, read after the parallel terminal op completes (happens-before), so no lock needed.
 +      SectionPos nestworldTickSection;
++      // NestWorld (REGIONALIZED_TRACKER): server tick on which this entity's owning region already
++      // ran the tracker step in the region phase, so the main-thread tick() can skip it. Written by
++      // the owning region thread (regionPool), read by main (vanilla) — different phases, no overlap.
++      volatile long nestworldTrackedTick = -1L;
        private final Set<ServerPlayerConnection> f_140475_ = Sets.newIdentityHashSet();
 +      // NestWorld: last position this player's move() ran at, to derive the move delta
 +      // for the spatial-cull tracker (only set for player TrackedEntities).

@@ -220,6 +220,23 @@ public final class NestworldTuning {
     public static final boolean CACHE_EXPLOSION_EXPOSURE =
             Boolean.getBoolean("nestworld.cacheExplosionExposure");
 
+    /**
+     * Phase 2 / Folia step — regionalise the entity tracker (EXPERIMENTAL, default off). Instead of
+     * the serial 'vanilla'-phase {@code ChunkMap.tick} doing detection + broadcast for every entity
+     * on the main thread, each region thread tracks the entities it OWNS during its own tick
+     * (regionPool phase): section-change detection, {@code updatePlayers}, and {@code sendChanges}.
+     * The main-thread {@code ChunkMap.tick} then only handles what the regions did NOT (players,
+     * unowned/just-spawned/pinned entities, and any an over-budget region deferred) — detected via a
+     * per-entity "tracked this tick" stamp, so nothing is ever missed (no invisible entities) and
+     * nothing is processed twice. Safe because an entity's tracker state ({@code seenBy},
+     * {@code lastSectionPos}) is only ever touched by its single owning region thread, and the region
+     * (regionPool) and main ({@code tick}/{@code move}) tracker passes run in different, non-overlapping
+     * phases of the server tick. Removes the serial tracker phase entirely (the dominant cost at high
+     * entity counts). Enable with {@code -Dnestworld.regionalizedTracker=true}.
+     */
+    public static final boolean REGIONALIZED_TRACKER =
+            Boolean.getBoolean("nestworld.regionalizedTracker");
+
     private NestworldTuning() {
     }
 }
