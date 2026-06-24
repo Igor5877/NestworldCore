@@ -94,6 +94,10 @@ public final class SparkBridge {
     // -----------------------------------------------------------------------
 
     private static volatile boolean captureInstalled = false;
+    // For the "can't be stopped" guard: re-assert the profiler if it is cancelled or reverts to the
+    // background one, unless the server is actually shutting down.
+    private static volatile net.minecraft.server.MinecraftServer serverRef;
+    private static volatile boolean shuttingDown = false;
 
     private static boolean sparkPresent(net.minecraft.server.MinecraftServer server) {
         try {
@@ -116,8 +120,25 @@ public final class SparkBridge {
                             org.apache.logging.log4j.core.config.Property.EMPTY_ARRAY) {
                         @Override public void append(org.apache.logging.log4j.core.LogEvent e) {
                             try {
-                                java.util.regex.Matcher m = SPARK_URL.matcher(e.getMessage().getFormattedMessage());
+                                String text = e.getMessage().getFormattedMessage();
+                                java.util.regex.Matcher m = SPARK_URL.matcher(text);
                                 if (m.find()) lastUrl = m.group();
+                                // "Can't be stopped" guard: a manual `cancel` kills the profiler with no
+                                // restart, and a manual `stop` makes spark revert to its (non --thread *)
+                                // background profiler. In both cases re-assert our all-threads profiler —
+                                // unless the server is genuinely shutting down. Our own re-start logs
+                                // neither phrase, so this cannot loop. Dispatched on the main thread
+                                // (never from this log-append thread).
+                                net.minecraft.server.MinecraftServer s = serverRef;
+                                if (!shuttingDown && s != null) {
+                                    String low = text.toLowerCase();
+                                    if (low.contains("profiler has been cancelled")
+                                            || low.contains("restarted the background profiler")) {
+                                        s.execute(() -> {
+                                            if (!shuttingDown) dispatch(s, "spark profiler start --thread *");
+                                        });
+                                    }
+                                }
                             } catch (Throwable ignored) {}
                         }
                     };
@@ -147,15 +168,18 @@ public final class SparkBridge {
             LOGGER.info("auto-spark: /spark not present — disabled");
             return;
         }
+        serverRef = server;
+        shuttingDown = false;
         installCapture();
         dispatch(server, "spark profiler start --thread *");
-        LOGGER.info("auto-spark: profiler running (all threads); link written to spark-history.txt on stop");
+        LOGGER.info("auto-spark: profiler running (all threads); re-asserted if cancelled; link -> spark-history.txt on stop");
     }
 
     /** On server stop/restart: open the running profile and append "{date}  {url}" to
      *  spark-history.txt. Does NOT stop the profiler — only opens it. */
     public static void writeHistoryOnShutdown(net.minecraft.server.MinecraftServer server) {
         if (!NestworldTuning.AUTO_SPARK || !sparkPresent(server)) return;
+        shuttingDown = true; // stop the re-assert guard from fighting the shutdown
         try {
             installCapture();
             String before = lastUrl;
