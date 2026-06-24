@@ -88,63 +88,93 @@ public final class SparkBridge {
     }
 
     // -----------------------------------------------------------------------
-    // Auto-profiler — start at boot (never stop, only open), write link on shutdown
+    // Auto-profiler — drive whatever /spark is present (mod or our agent command) via the server
+    // command dispatcher; capture the upload URL from the log. The spark mod already runs a
+    // background profiler at boot; we never stop it, only `open`, and write the link on shutdown.
     // -----------------------------------------------------------------------
 
-    /** True if the spark standalone agent is present and loaded. */
-    public static boolean isAvailable() {
-        return ensureLoaded();
+    private static volatile boolean captureInstalled = false;
+
+    private static boolean sparkPresent(net.minecraft.server.MinecraftServer server) {
+        try {
+            return server.getCommands().getDispatcher().getRoot().getChild("spark") != null;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
-    /** Start the always-on all-threads profiler at boot. No-op unless enabled + spark present.
-     *  Never stopped — the only interaction afterwards is {@code open} (see {@link #writeHistoryOnShutdown}). */
-    public static void autoStart() {
+    /** Add a log4j appender that records every spark viewer URL the server logs (background profiler,
+     *  manual `/spark`, or our shutdown open) into {@link #lastUrl}. Installed once. */
+    private static synchronized void installCapture() {
+        if (captureInstalled) return;
+        try {
+            org.apache.logging.log4j.core.LoggerContext ctx =
+                    (org.apache.logging.log4j.core.LoggerContext) LogManager.getContext(false);
+            org.apache.logging.log4j.core.appender.AbstractAppender appender =
+                    new org.apache.logging.log4j.core.appender.AbstractAppender(
+                            "NestworldSparkUrl", null, null, true,
+                            org.apache.logging.log4j.core.config.Property.EMPTY_ARRAY) {
+                        @Override public void append(org.apache.logging.log4j.core.LogEvent e) {
+                            try {
+                                java.util.regex.Matcher m = SPARK_URL.matcher(e.getMessage().getFormattedMessage());
+                                if (m.find()) lastUrl = m.group();
+                            } catch (Throwable ignored) {}
+                        }
+                    };
+            appender.start();
+            ctx.getConfiguration().getRootLogger().addAppender(appender, null, null);
+            ctx.updateLoggers();
+            captureInstalled = true;
+        } catch (Throwable t) {
+            LOGGER.warn("auto-spark: could not install URL log capture (will rely on shutdown open output)", t);
+        }
+    }
+
+    private static void dispatch(net.minecraft.server.MinecraftServer server, String cmd) {
+        try {
+            server.getCommands().performPrefixedCommand(
+                    server.createCommandSourceStack().withSuppressedOutput(), cmd);
+        } catch (Throwable t) {
+            LOGGER.warn("auto-spark: command '{}' failed", cmd, t);
+        }
+    }
+
+    /** At boot: ensure an all-threads profiler is running (the spark mod's background profiler usually
+     *  already is; a duplicate `start` is harmless) and start capturing URLs. Never stops anything. */
+    public static void autoStart(net.minecraft.server.MinecraftServer server) {
         if (!NestworldTuning.AUTO_SPARK) return;
-        if (!isAvailable()) {
-            LOGGER.info("auto-spark: spark agent not present — disabled (put {} next to the server to enable)", JAR_NAME);
+        if (!sparkPresent(server)) {
+            LOGGER.info("auto-spark: /spark not present — disabled");
             return;
         }
-        // Capture any URL spark emits (e.g. if someone runs /spark profiler open) so we always have a
-        // recent link ready even before our shutdown open.
-        boolean ok = execute("profiler start --thread *", line -> {
-            var m = SPARK_URL.matcher(line);
-            if (m.find()) lastUrl = m.group();
-        });
-        LOGGER.info("auto-spark: continuous all-threads profiler {} — link will be written to spark-history.txt on stop",
-                ok ? "STARTED" : "FAILED to start");
+        installCapture();
+        dispatch(server, "spark profiler start --thread *");
+        LOGGER.info("auto-spark: profiler running (all threads); link written to spark-history.txt on stop");
     }
 
-    /** Runs {@code profiler open} and waits up to {@code waitMs} for spark's async upload to deliver
-     *  the viewer URL. Returns the URL or null. Does NOT stop the profiler. */
-    private static String openAndCapture(long waitMs) {
-        final String[] got = {null};
-        boolean ok = execute("profiler open", line -> {
-            var m = SPARK_URL.matcher(line);
-            if (m.find()) { got[0] = m.group(); lastUrl = m.group(); }
-        });
-        if (!ok) return null;
-        long deadline = System.currentTimeMillis() + waitMs;
-        while (got[0] == null && System.currentTimeMillis() < deadline) {
-            try { Thread.sleep(100L); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
-        }
-        return got[0] != null ? got[0] : lastUrl;
-    }
-
-    /** On server stop/restart: open the profile and append "{date} {url}" to spark-history.txt. */
-    public static void writeHistoryOnShutdown() {
-        if (!NestworldTuning.AUTO_SPARK || plugin == null) return;
+    /** On server stop/restart: open the running profile and append "{date}  {url}" to
+     *  spark-history.txt. Does NOT stop the profiler — only opens it. */
+    public static void writeHistoryOnShutdown(net.minecraft.server.MinecraftServer server) {
+        if (!NestworldTuning.AUTO_SPARK || !sparkPresent(server)) return;
         try {
-            String url = openAndCapture(10_000L);
-            if (url == null) {
+            installCapture();
+            String before = lastUrl;
+            dispatch(server, "spark profiler open");
+            long deadline = System.currentTimeMillis() + 12_000L;
+            while ((lastUrl == null || java.util.Objects.equals(lastUrl, before))
+                    && System.currentTimeMillis() < deadline) {
+                try { Thread.sleep(150L); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+            }
+            if (lastUrl == null) {
                 LOGGER.warn("auto-spark: no profile link captured on shutdown");
                 return;
             }
             String stamp = java.time.LocalDateTime.now()
                     .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
             Path file = Path.of("spark-history.txt");
-            Files.writeString(file, stamp + "  " + url + System.lineSeparator(),
+            Files.writeString(file, stamp + "  " + lastUrl + System.lineSeparator(),
                     java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
-            LOGGER.info("auto-spark: profile link written to {} -> {}", file.toAbsolutePath(), url);
+            LOGGER.info("auto-spark: profile link written to {} -> {}", file.toAbsolutePath(), lastUrl);
         } catch (Throwable t) {
             LOGGER.error("auto-spark: failed to write spark-history.txt", t);
         }
