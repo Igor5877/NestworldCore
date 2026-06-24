@@ -237,6 +237,17 @@ public final class NestworldTuning {
     public static final boolean REGIONALIZED_TRACKER =
             Boolean.getBoolean("nestworld.regionalizedTracker");
 
+    /**
+     * Auto-spark (default ON, no-op if the spark standalone agent isn't present). The core starts a
+     * continuous all-threads ({@code --thread *}) profiler at server boot and never stops it — the
+     * only interaction is {@code open}. On server stop/restart it opens the profile and appends the
+     * dated viewer link to {@code spark-history.txt} next to the server, so you can look at what the
+     * server was doing at any past session (main thread + all parallel region threads in one link)
+     * without running any command. Disable with {@code -Dnestworld.autoSpark=false}.
+     */
+    public static final boolean AUTO_SPARK =
+            Boolean.parseBoolean(System.getProperty("nestworld.autoSpark", "true"));
+
     private NestworldTuning() {
     }
 }

@@ -135,10 +135,14 @@ public class NestworldRegionSystem {
     public static void onServerStarting(ServerStartingEvent event) {
         INSTANCE = new NestworldRegionSystem();
         INSTANCE.init(event.getServer());
+        // Start the always-on profiler (no-op unless AUTO_SPARK + spark agent present).
+        SparkBridge.autoStart();
     }
 
     @SubscribeEvent
     public static void onServerStopping(ServerStoppingEvent event) {
+        // Capture the session's profile link to spark-history.txt before everything tears down.
+        SparkBridge.writeHistoryOnShutdown();
         if (INSTANCE != null) {
             INSTANCE.shutdown();
             INSTANCE = null;

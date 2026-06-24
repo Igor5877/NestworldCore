@@ -37,6 +37,12 @@ public final class SparkBridge {
     private static Constructor<?> senderCtor;
     private static Class<?> outputInterface; // StandaloneCommandSender.Output
 
+    // Auto-profiler (NestworldTuning.AUTO_SPARK): the core starts a continuous all-threads profiler
+    // at boot and never stops it (only `open`), then writes the resulting viewer link to
+    // spark-history.txt on server stop/restart. URL pattern matches spark's upload line.
+    private static final Pattern SPARK_URL = Pattern.compile("https://spark\\.lucko\\.me/\\S+");
+    private static volatile String lastUrl;
+
     private SparkBridge() {}
 
     public static int run(CommandSourceStack src, String argLine) {
@@ -45,15 +51,27 @@ public final class SparkBridge {
                     "spark не ініціалізувався — поклади " + JAR_NAME + " поряд із сервером (див. лог)"));
             return 0;
         }
+        boolean ok = execute(argLine, msg ->
+                src.getServer().execute(() -> src.sendSystemMessage(Component.literal(msg))));
+        if (!ok) {
+            src.sendFailure(Component.literal("spark помилка (див. лог)"));
+            return 0;
+        }
+        return 1;
+    }
+
+    /** Drives the standalone agent's {@code execute(String[], sender)}, routing each (de-ANSI'd)
+     *  output line to {@code onLine}. The sender/output proxy outlives this call, so spark's async
+     *  upload can still deliver the result URL line to {@code onLine} later. */
+    private static boolean execute(String argLine, java.util.function.Consumer<String> onLine) {
+        if (!ensureLoaded()) return false;
         try {
             String[] args = argLine.isBlank() ? new String[0] : argLine.trim().split("\\s+");
             Object output = Proxy.newProxyInstance(
                     outputInterface.getClassLoader(), new Class<?>[]{outputInterface},
                     (proxy, method, margs) -> switch (method.getName()) {
                         case "sendMessage" -> {
-                            String msg = ANSI.matcher(String.valueOf(margs[0])).replaceAll("");
-                            src.getServer().execute(() ->
-                                    src.sendSystemMessage(Component.literal(msg)));
+                            onLine.accept(ANSI.matcher(String.valueOf(margs[0])).replaceAll(""));
                             yield null;
                         }
                         case "hashCode" -> System.identityHashCode(proxy);
@@ -62,11 +80,73 @@ public final class SparkBridge {
                         default -> null;
                     });
             executeMethod.invoke(plugin, args, senderCtor.newInstance(output));
-            return 1;
+            return true;
         } catch (Throwable t) {
-            LOGGER.error("/spark {} failed", argLine, t);
-            src.sendFailure(Component.literal("spark помилка: " + t));
-            return 0;
+            LOGGER.error("spark execute '{}' failed", argLine, t);
+            return false;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto-profiler — start at boot (never stop, only open), write link on shutdown
+    // -----------------------------------------------------------------------
+
+    /** True if the spark standalone agent is present and loaded. */
+    public static boolean isAvailable() {
+        return ensureLoaded();
+    }
+
+    /** Start the always-on all-threads profiler at boot. No-op unless enabled + spark present.
+     *  Never stopped — the only interaction afterwards is {@code open} (see {@link #writeHistoryOnShutdown}). */
+    public static void autoStart() {
+        if (!NestworldTuning.AUTO_SPARK) return;
+        if (!isAvailable()) {
+            LOGGER.info("auto-spark: spark agent not present — disabled (put {} next to the server to enable)", JAR_NAME);
+            return;
+        }
+        // Capture any URL spark emits (e.g. if someone runs /spark profiler open) so we always have a
+        // recent link ready even before our shutdown open.
+        boolean ok = execute("profiler start --thread *", line -> {
+            var m = SPARK_URL.matcher(line);
+            if (m.find()) lastUrl = m.group();
+        });
+        LOGGER.info("auto-spark: continuous all-threads profiler {} — link will be written to spark-history.txt on stop",
+                ok ? "STARTED" : "FAILED to start");
+    }
+
+    /** Runs {@code profiler open} and waits up to {@code waitMs} for spark's async upload to deliver
+     *  the viewer URL. Returns the URL or null. Does NOT stop the profiler. */
+    private static String openAndCapture(long waitMs) {
+        final String[] got = {null};
+        boolean ok = execute("profiler open", line -> {
+            var m = SPARK_URL.matcher(line);
+            if (m.find()) { got[0] = m.group(); lastUrl = m.group(); }
+        });
+        if (!ok) return null;
+        long deadline = System.currentTimeMillis() + waitMs;
+        while (got[0] == null && System.currentTimeMillis() < deadline) {
+            try { Thread.sleep(100L); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+        }
+        return got[0] != null ? got[0] : lastUrl;
+    }
+
+    /** On server stop/restart: open the profile and append "{date} {url}" to spark-history.txt. */
+    public static void writeHistoryOnShutdown() {
+        if (!NestworldTuning.AUTO_SPARK || plugin == null) return;
+        try {
+            String url = openAndCapture(10_000L);
+            if (url == null) {
+                LOGGER.warn("auto-spark: no profile link captured on shutdown");
+                return;
+            }
+            String stamp = java.time.LocalDateTime.now()
+                    .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            Path file = Path.of("spark-history.txt");
+            Files.writeString(file, stamp + "  " + url + System.lineSeparator(),
+                    java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+            LOGGER.info("auto-spark: profile link written to {} -> {}", file.toAbsolutePath(), url);
+        } catch (Throwable t) {
+            LOGGER.error("auto-spark: failed to write spark-history.txt", t);
         }
     }
 
