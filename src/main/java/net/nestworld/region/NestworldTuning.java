@@ -110,7 +110,7 @@ public final class NestworldTuning {
             Boolean.getBoolean("nestworld.trackerSpatialCull");
 
     /**
-     * Event-driven region-ownership reassignment (EXPERIMENTAL, default off). Vanilla-side
+     * Event-driven region-ownership reassignment (validated, default ON). Vanilla-side
      * {@link net.nestworld.region.BoundaryEntityTransfer#checkAndReassign} scans <em>every</em>
      * loaded entity each tick to detect region-border crossings — O(all entities), even though
      * only entities that actually changed section can have crossed. With this on, the entity
@@ -121,10 +121,10 @@ public final class NestworldTuning {
      * can never double-tick (the {@code inTransfer} guard still holds). Marks are written by
      * region threads during the tick and drained on the main thread after the barrier, so there
      * is no concurrent access. Biggest win when most entities are stationary (the common case);
-     * neutral when everything is moving. Enable with {@code -Dnestworld.eventDrivenOwnership=true}.
+     * neutral when everything is moving. Validated (entityXfer 7.6->0.45ms). Disable with {@code -Dnestworld.eventDrivenOwnership=false}.
      */
     public static final boolean EVENT_DRIVEN_OWNERSHIP =
-            Boolean.getBoolean("nestworld.eventDrivenOwnership");
+            Boolean.parseBoolean(System.getProperty("nestworld.eventDrivenOwnership", "true"));
 
     /** Safety-net interval (ticks) for a full ownership scan when {@link #EVENT_DRIVEN_OWNERSHIP} is on. */
     public static final int OWNERSHIP_FULL_PASS_TICKS =
@@ -169,7 +169,7 @@ public final class NestworldTuning {
             Integer.getInteger("nestworld.trackerParallelBroadcastThreshold", 512);
 
     /**
-     * Parallelise the tracker's per-tick DETECTION loop (EXPERIMENTAL, default off). {@code
+     * Parallelise the tracker's per-tick DETECTION loop (validated, default ON). {@code
      * ChunkMap.tick} iterates every tracked entity to recompute its section ({@code SectionPos.of}),
      * detect section changes, and decide who needs a broadcast — O(all tracked) SERIALLY on the main
      * thread, which is the dominant 'vanilla'-phase cost once {@link #TRACKER_PARALLEL_BROADCAST}
@@ -182,10 +182,10 @@ public final class NestworldTuning {
      * post-pass over only the entities that actually moved section — so no shared visibility state is
      * mutated concurrently. Bit-identical visibility; only the cost of computing it changes. Default
      * off; only engages above {@link #TRACKER_PARALLEL_DETECTION_THRESHOLD}. Enable with
-     * {@code -Dnestworld.trackerParallelDetection=true}.
+     * {@code -Dnestworld.trackerParallelDetection=false} to disable.
      */
     public static final boolean TRACKER_PARALLEL_DETECTION =
-            Boolean.getBoolean("nestworld.trackerParallelDetection");
+            Boolean.parseBoolean(System.getProperty("nestworld.trackerParallelDetection", "true"));
 
     /** Min number of tracked entities before {@link #TRACKER_PARALLEL_DETECTION} parallelises the scan. */
     public static final int TRACKER_PARALLEL_DETECTION_THRESHOLD =
@@ -193,7 +193,7 @@ public final class NestworldTuning {
 
     /**
      * C1 — skip the entity-collision broad-phase when no entity can hard-block movement
-     * (EXPERIMENTAL, default off). {@code Entity.move -> getEntityCollisions} iterates every entity
+     * (validated, default ON). {@code Entity.move -> getEntityCollisions} iterates every entity
      * in the moving entity's swept AABB looking for ones with {@code canBeCollidedWith()} (boats,
      * minecarts, shulkers, armor stands). In a dense pile of TNT/items — which collide with nothing —
      * that iterates thousands of neighbours per moving entity only to return empty (measured ~108 ms
@@ -203,10 +203,10 @@ public final class NestworldTuning {
      * (armor stands always counted, since their collidability toggles with the Marker flag) so it
      * never under-reports. Note: the count is per-level/global, so this only helps when the <em>whole</em>
      * dimension has no collidable entity (true for a pure TNT pile; a single boat elsewhere disables
-     * it). Enable with {@code -Dnestworld.skipEmptyEntityCollision=true}.
+     * it). Validated (collision broad-phase eliminated at 100k TNT). Disable with {@code -Dnestworld.skipEmptyEntityCollision=false}. Note: a heavily-modded entity with dynamic collidability is the only edge case; toggle off if collisions misbehave.
      */
     public static final boolean SKIP_EMPTY_ENTITY_COLLISION =
-            Boolean.getBoolean("nestworld.skipEmptyEntityCollision");
+            Boolean.parseBoolean(System.getProperty("nestworld.skipEmptyEntityCollision", "true"));
 
     /**
      * C2 — cache explosion exposure per block position (EXPERIMENTAL, default off). {@code
