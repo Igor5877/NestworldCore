@@ -79,6 +79,24 @@ every tick and is **not** thread-safe. So region threads never touch it directly
 This keeps the tracker main-only — no locks, no contention, no corruption (this is what made mass-TNT
 entity churn stop crashing).
 
+> **Refinement (Phase 2, `REGIONALIZED_TRACKER`, default off).** The "region threads never touch the
+> tracker" rule is the *strong* form. Phase 2 relaxes it to the *exact* form that is actually
+> required for safety: **region threads may touch the tracker during `regionPool`, but only to READ
+> `entityMap` and to mutate the tracker state (`seenBy`, `lastSectionPos`, `sendChanges`) of the
+> entities THEY OWN.** That is safe because of two facts that already hold:
+> 1. `entityMap` is **structurally frozen during `regionPool`** — every add/remove is deferred to the
+>    phase-5 barrier (above), so no thread is rehashing the map while region threads `get()` from it.
+> 2. A `TrackedEntity`'s mutable state is **only ever touched by its one owning region** (single
+>    ownership), and the region pass (`regionPool`) never overlaps the main passes that also touch it
+>    (`ChunkMap.tick` in the vanilla phase, `ChunkMap.move` during packet handling) — different,
+>    non-overlapping phases.
+>
+> So the precise invariant is: *the tracker may be **read** concurrently while it is structurally
+> frozen, and each entity's tracker state may be **written** only by its owning region.* Phase 2 is
+> the one place that leans on the subtle (rather than the blunt) version of the rule — which is why it
+> is flag-gated and the highest-care change. If you ever make `entityMap` mutable during `regionPool`,
+> or let an entity be tracked by more than one thread, this breaks.
+
 ## The thread-safety layer
 
 Vanilla stores game state in single-thread structures (`Int2ObjectOpenHashMap`, `ShortOpenHashSet`,
@@ -119,6 +137,26 @@ region can't blow the whole tick. Layout is persisted across restarts.
   be pinned to main-thread ticking (vanilla behaviour, just not parallelised) via
   `/nestworld pin`/`pinmod` or `nestworld-pinned-mods.txt` — isolate, don't block.
 
+## Performance optimizations (the tuning flags)
+
+Layered on the architecture above; each is a `-Dnestworld.*` flag so it can be toggled/rolled back
+instantly. Full rationale + measurements in `OPTIMIZATION_PACKAGE.md`.
+
+| Flag (`nestworld.`) | Phase it touches | What it does | Default | Risk |
+|---|---|---|---|---|
+| `trackerMoveThrottle` (A1) | vanilla / `move` | re-evaluate a moving player's entity tracking ≤1×/tick instead of per move-packet (fixes the flying-into-a-pile stall) | **on** | low |
+| `eventDrivenOwnership` (B1) | entityXfer | only re-check ownership for entities that changed section (vs scanning all) + periodic full-pass safety net | off | low |
+| `trackerParallelDetection` (Phase 1) | vanilla | run the serial tracker detection scan as a read-only `parallelStream`, deferring the one mutation (section-change `updatePlayers`) to a short serial post-pass | off | low-med |
+| `regionalizedTracker` (Phase 2) | vanilla → regionPool | each region tracks its OWNED entities during its own tick; main `tick()` only handles the rest, via a "tracked-this-tick" stamp so nothing is missed | off | **high** (bends the tracker invariant above — most care) |
+| `skipEmptyEntityCollision` (C1) | regionPool (`move`) | skip the entity-collision broad-phase when `ServerLevel`'s count of hard-collidable entities is zero (a TNT/item pile collides with nothing) | off | med (collision correctness; counter never under-reports) |
+| `cacheExplosionExposure` (C2) | regionPool (`explode`) | memoise the explosion exposure raycast per block position within one explosion (Paper-style, not bit-identical) | off | med (slight gameplay change) |
+
+Rule of thumb for any new optimization: **decide which phase it runs in, and what data it touches in
+that phase.** If it runs in `regionPool` it may touch only its own region's data (and the tracker
+only under the refined invariant above). If it touches cross-region or shared state, it belongs in a
+serial phase. Flag-gate it, and — if it changes the entity tracker — test it with a real client (the
+`Soaker` mineflayer bot reports `VISIBLE_ENTITIES`; a regression shows up as that number dropping).
+
 ## Known limits
 
 - **Spatial concentration** — region = chunk-granular, so load piled into *one* chunk (e.g. 7000 TNT
@@ -130,5 +168,6 @@ region can't blow the whole tick. Layout is persisted across restarts.
 - **Per-compute floors** — inherent vanilla per-mob/per-explosion cost (AI target search, collision
   broad-phase, explosion raycasts) is real work; the core parallelises it but can't remove it.
 
-See also: `THREAD_SAFETY_PASSES.md` (the race inventory + roadmap), `OPTIMIZATIONS.md`,
+See also: `THREAD_SAFETY_PASSES.md` (the race inventory + roadmap), `OPTIMIZATION_PACKAGE.md` (this
+session's A1/B1/Phase1/Phase2/C1/C2 — rationale, measurements, the Folia roadmap), `OPTIMIZATIONS.md`,
 `CONCURRENCY_FINDINGS.md`.
