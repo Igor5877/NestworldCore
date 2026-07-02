@@ -35,6 +35,22 @@
        if (!this.m_157557_(p_157539_)) {
           return false;
        } else {
+@@ -92,6 +_,15 @@
+             this.m_157564_(p_157539_);
+          }
+ 
++         // NestWorld: a just-added entity (fresh spawn OR loaded from disk) has no region owner
++         // yet, and — being unticked — it never moves, so the section-move mark below can never
++         // fire for it. Mark it dirty here so the next ownership scan assigns its owner within a
++         // tick; without this it stays frozen until the periodic full pass (up to
++         // OWNERSHIP_FULL_PASS_TICKS) when event-driven ownership is on.
++         if (p_157539_ instanceof Entity nestworldEntity) {
++            net.nestworld.region.NestworldRegionSystem.markOwnershipDirty(nestworldEntity);
++         }
++
+          return true;
+       }
+    }
 @@ -103,12 +_,14 @@
     public void m_157552_(Stream<T> p_157553_) {
        p_157553_.forEach((p_157607_) -> {

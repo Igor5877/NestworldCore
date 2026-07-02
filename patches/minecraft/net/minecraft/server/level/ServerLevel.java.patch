@@ -17,7 +17,7 @@
     protected final Raids f_8565_;
     private final ObjectLinkedOpenHashSet<BlockEventData> f_8556_ = new ObjectLinkedOpenHashSet<>();
     private final List<BlockEventData> f_184048_ = new ArrayList<>(64);
-@@ -188,11 +_,29 @@
+@@ -188,11 +_,48 @@
     private final List<CustomSpawner> f_8558_;
     @Nullable
     private EndDragonFight f_8559_;
@@ -31,17 +31,36 @@
 +   public alternate.current.wire.WireHandler nestworldWireHandler;
 +
 +   // NestWorld (C1): count of loaded entities that can hard-block another entity's movement
-+   // (boats, minecarts, shulkers, armor stands, and any mod entity reporting canBeCollidedWith).
-+   // When zero, getEntityCollisions provably returns empty for every query, so the O(neighbours)
++   // (boats, shulkers, and any mod entity reporting canBeCollidedWith). When zero,
++   // getEntityCollisions provably returns empty for every non-vehicle query, so the O(neighbours)
 +   // broad-phase over dense entity sections can be skipped (the dominant cost of moving a 100k
-+   // TNT/item pile, which collides with nothing). Maintained on the entity add/remove callbacks.
++   // TNT/item pile, which collides with nothing). Maintained on the entity add/remove callbacks;
++   // membership is remembered per entity (nestworldCollidableSeen) so an entity whose
++   // canBeCollidedWith changes while loaded (e.g. a shulker dying) can never desync the counter.
 +   public final java.util.concurrent.atomic.AtomicInteger nestworldCollidableCount =
 +         new java.util.concurrent.atomic.AtomicInteger();
++   private final java.util.Set<Entity> nestworldCollidableSeen = java.util.Collections
++         .synchronizedSet(java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
 +
-+   /** C1: whether an entity might ever hard-block movement (over-approximate so the count never
-+    *  under-reports — armor stands toggle collidability via their Marker flag, so always count them). */
++   /** C1: whether an entity can hard-block another entity's movement, i.e. canBeCollidedWith.
++    *  Armor stands are deliberately NOT counted: their only hard-block effect is on boat/minecart
++    *  movers (via Boat.canVehicleCollide's isPushable branch), and those movers never take the C1
++    *  skip (see the EntityGetter patch) precisely because their collision predicate accepts
++    *  pushable entities this counter does not track. */
 +   public static boolean nestworldMayBeCollidable(Entity e) {
-+      return e.m_5829_() || e instanceof net.minecraft.world.entity.decoration.ArmorStand;
++      return e.m_5829_();
++   }
++
++   /** C1 counter maintenance, called from the tracking start/end callbacks. The seen-set makes
++    *  add/remove symmetric even when canBeCollidedWith answers differently at the two times. */
++   void nestworldCollidableTrackingStart(Entity e) {
++      if (nestworldMayBeCollidable(e) && this.nestworldCollidableSeen.add(e))
++         this.nestworldCollidableCount.incrementAndGet();
++   }
++
++   void nestworldCollidableTrackingEnd(Entity e) {
++      if (this.nestworldCollidableSeen.remove(e))
++         this.nestworldCollidableCount.decrementAndGet();
 +   }
 +
 +   public int nestworldCollidableCount() { return this.nestworldCollidableCount.get(); }
@@ -408,7 +427,7 @@
 +         // NestWorld (C1): track how many loaded entities can hard-block movement, so
 +         // getEntityCollisions can skip its broad-phase entirely when none exist (the common
 +         // case in dense piles of TNT/items, which never collide). See nestworldMayBeCollidable.
-+         if (nestworldMayBeCollidable(p_143371_)) ServerLevel.this.nestworldCollidableCount.incrementAndGet();
++         ServerLevel.this.nestworldCollidableTrackingStart(p_143371_);
           if (p_143371_ instanceof ServerPlayer serverplayer) {
              ServerLevel.this.f_8546_.add(serverplayer);
              ServerLevel.this.m_8878_();
@@ -436,7 +455,7 @@
        public void m_141981_(Entity p_143375_) {
           ServerLevel.this.m_7726_().m_8443_(p_143375_);
 +         // NestWorld (C1): keep the hard-collidable counter in sync (see onTrackingStart).
-+         if (nestworldMayBeCollidable(p_143375_)) ServerLevel.this.nestworldCollidableCount.decrementAndGet();
++         ServerLevel.this.nestworldCollidableTrackingEnd(p_143375_);
           if (p_143375_ instanceof ServerPlayer serverplayer) {
              ServerLevel.this.f_8546_.remove(serverplayer);
              ServerLevel.this.m_8878_();

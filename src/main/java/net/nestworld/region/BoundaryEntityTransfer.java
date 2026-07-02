@@ -203,15 +203,6 @@ public class BoundaryEntityTransfer {
         }
     }
 
-    /**
-     * Assigns an entity to the region that covers its current position.
-     * Call this when an entity first loads or teleports across regions.
-     */
-    public void assignInitial(Entity entity) {
-        WorldRegion region = grid.getRegionFor(entity.blockPosition());
-        if (region != null) region.addEntity(entity.getUUID());
-    }
-
     /** Removes an entity from whichever region currently owns it (e.g. on entity removal). */
     public void unassign(Entity entity) {
         UUID uuid = entity.getUUID();

@@ -114,10 +114,11 @@ public class NestworldRegionSystem {
     public static boolean isInitialised() { return INSTANCE != null; }
 
     /**
-     * Routes an entity section-move to the overworld ownership tracker for event-driven
-     * reassignment ({@link NestworldTuning#EVENT_DRIVEN_OWNERSHIP}). No-op unless the system is
-     * initialised and the entity belongs to the sharded overworld. Called from the patched
-     * section-move callback on any thread; fully null/level-guarded and cheap.
+     * Routes an entity section-move (or a just-added entity, which starts with no owner) to the
+     * overworld ownership tracker for event-driven reassignment
+     * ({@link NestworldTuning#EVENT_DRIVEN_OWNERSHIP}). No-op unless the system is initialised
+     * and the entity belongs to the sharded overworld. Called from the patched section-move and
+     * entity-add callbacks on any thread; fully null/level-guarded and cheap.
      */
     public static void markOwnershipDirty(net.minecraft.world.entity.Entity entity) {
         NestworldRegionSystem sys = INSTANCE;

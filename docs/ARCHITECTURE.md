@@ -145,10 +145,10 @@ instantly. Full rationale + measurements in `OPTIMIZATION_PACKAGE.md`.
 | Flag (`nestworld.`) | Phase it touches | What it does | Default | Risk |
 |---|---|---|---|---|
 | `trackerMoveThrottle` (A1) | vanilla / `move` | re-evaluate a moving player's entity tracking ≤1×/tick instead of per move-packet (fixes the flying-into-a-pile stall) | **on** | low |
-| `eventDrivenOwnership` (B1) | entityXfer | only re-check ownership for entities that changed section (vs scanning all) + periodic full-pass safety net | **on** | low |
+| `eventDrivenOwnership` (B1) | entityXfer | only re-check ownership for entities that changed section or were just added (spawn/chunk-load), vs scanning all + periodic full-pass safety net | **on** | low |
 | `trackerParallelDetection` (Phase 1) | vanilla | run the serial tracker detection scan as a read-only `parallelStream`, deferring the one mutation (section-change `updatePlayers`) to a short serial post-pass | **on** | low-med |
 | `regionalizedTracker` (Phase 2) | vanilla → regionPool | each region tracks its OWNED entities during its own tick; main `tick()` only handles the rest, via a "tracked-this-tick" stamp so nothing is missed | off | **high** (bends the tracker invariant above — most care) |
-| `skipEmptyEntityCollision` (C1) | regionPool (`move`) | skip the entity-collision broad-phase when `ServerLevel`'s count of hard-collidable entities is zero (a TNT/item pile collides with nothing) | **on** | med (collision correctness; counter never under-reports) |
+| `skipEmptyEntityCollision` (C1) | regionPool (`move`) | skip the entity-collision broad-phase when `ServerLevel`'s count of `canBeCollidedWith` entities is zero (a TNT/item pile collides with nothing); boat/minecart movers are exempt from the skip because their predicate also accepts merely-pushable entities | **on** | med (collision correctness; counter never under-reports) |
 | `cacheExplosionExposure` (C2) | regionPool (`explode`) | memoise the explosion exposure raycast per block position within one explosion (Paper-style, not bit-identical) | off | med (slight gameplay change) |
 
 Rule of thumb for any new optimization: **decide which phase it runs in, and what data it touches in
