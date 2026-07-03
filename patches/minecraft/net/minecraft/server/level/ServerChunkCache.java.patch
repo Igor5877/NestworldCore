@@ -38,7 +38,7 @@
              Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure> either = chunkholder.m_140080_(ChunkStatus.f_62326_).getNow((Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>)null);
              if (either == null) {
                 return null;
-@@ -180,6 +_,55 @@
+@@ -180,6 +_,66 @@
        }
     }
  
@@ -74,12 +74,23 @@
 +
 +   /** Main-published snapshot of loaded FULL chunks; region threads read it
 +    *  lock-free to skip blocking getChunk + the resulting park/unpark herd.
-+    *  Rebuilt + volatile-published each tick on main (immutable after publish). */
++    *  Refilled + volatile-published each tick on main; never mutated while
++    *  published. The two backing maps ping-pong: the one being refilled was
++    *  published two ticks ago and is unreachable by then (region threads are
++    *  parked when the refresh runs and re-read the volatile field each access),
++    *  so reuse avoids a fresh ~80KB map allocation per tick at 10k chunks. */
 +   public volatile it.unimi.dsi.fastutil.longs.Long2ObjectMap<LevelChunk> nestworldLoadedFull =
 +         it.unimi.dsi.fastutil.longs.Long2ObjectMaps.emptyMap();
++   private final it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<LevelChunk> nestworldFullA =
++         new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
++   private final it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<LevelChunk> nestworldFullB =
++         new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
++   private boolean nestworldFullFlip;
 +
 +   public void nestworldRefreshLoadedChunks() {
-+      it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<LevelChunk> m = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
++      it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<LevelChunk> m =
++            (nestworldFullFlip = !nestworldFullFlip) ? nestworldFullA : nestworldFullB;
++      m.clear();
 +      for (ChunkHolder h : this.f_8325_.m_140416_()) {
 +         LevelChunk c = h.currentlyLoading;
 +         if (c == null) {

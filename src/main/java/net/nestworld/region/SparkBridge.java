@@ -121,6 +121,11 @@ public final class SparkBridge {
                         @Override public void append(org.apache.logging.log4j.core.LogEvent e) {
                             try {
                                 String text = e.getMessage().getFormattedMessage();
+                                // Root-logger appender = this runs for EVERY log event in the JVM,
+                                // forever. Cheap prefilter before any allocation (Matcher,
+                                // toLowerCase): URL lines contain "spark", the cancel/revert guard
+                                // phrases contain "rofiler" (case-insensitive Profiler/profiler).
+                                if (!text.contains("spark") && !text.contains("rofiler")) return;
                                 java.util.regex.Matcher m = SPARK_URL.matcher(text);
                                 if (m.find()) lastUrl = m.group();
                                 // "Can't be stopped" guard: a manual `cancel` kills the profiler with no

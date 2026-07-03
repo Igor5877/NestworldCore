@@ -1,5 +1,19 @@
 --- a/net/minecraft/server/level/ChunkMap.java
 +++ b/net/minecraft/server/level/ChunkMap.java
+@@ -143,6 +_,13 @@
+    private final Long2LongMap f_202981_ = new Long2LongOpenHashMap();
+    private final Queue<Runnable> f_140125_ = Queues.newConcurrentLinkedQueue();
+    int f_140126_;
++   // NestWorld (E1): reused scratch for the Phase-1 parallel detection scan in tick() — see there.
++   // Only touched on the main thread within tick(); workers write disjoint slots claimed via the
++   // atomic cursors.
++   private ChunkMap.TrackedEntity[] nestworldBcArr = new ChunkMap.TrackedEntity[0];
++   private ChunkMap.TrackedEntity[] nestworldChangedArr = new ChunkMap.TrackedEntity[0];
++   private final java.util.concurrent.atomic.AtomicInteger nestworldBcCursor = new java.util.concurrent.atomic.AtomicInteger();
++   private final java.util.concurrent.atomic.AtomicInteger nestworldChangedCursor = new java.util.concurrent.atomic.AtomicInteger();
+ 
+    public ChunkMap(ServerLevel p_214836_, LevelStorageSource.LevelStorageAccess p_214837_, DataFixer p_214838_, StructureTemplateManager p_214839_, Executor p_214840_, BlockableEventLoop<Runnable> p_214841_, LightChunkGetter p_214842_, ChunkGenerator p_214843_, ChunkProgressListener p_214844_, ChunkStatusUpdateListener p_214845_, Supplier<DimensionDataStorage> p_214846_, int p_214847_, boolean p_214848_) {
+       super(p_214837_.m_197394_(p_214836_.m_46472_()).resolve("region"), p_214838_, p_214848_);
 @@ -398,6 +_,7 @@
              this.f_140140_ = true;
           }
@@ -121,7 +135,7 @@
           EntityType<?> entitytype = p_140200_.m_6095_();
           int i = entitytype.m_20681_() * 16;
           if (i != 0) {
-@@ -1178,25 +_,128 @@
+@@ -1178,25 +_,143 @@
     protected void m_140421_() {
        List<ServerPlayer> list = Lists.newArrayList();
        List<ServerPlayer> list1 = this.f_140133_.m_6907_();
@@ -138,8 +152,20 @@
 +      boolean nestworldParDetect = net.nestworld.region.NestworldTuning.TRACKER_PARALLEL_DETECTION
 +            && this.f_140150_.size() >= net.nestworld.region.NestworldTuning.TRACKER_PARALLEL_DETECTION_THRESHOLD;
 +      if (nestworldParDetect) {
-+         java.util.Queue<ChunkMap.TrackedEntity> nestworldBc = new java.util.concurrent.ConcurrentLinkedQueue<>();
-+         java.util.Queue<ChunkMap.TrackedEntity> nestworldChanged = new java.util.concurrent.ConcurrentLinkedQueue<>();
++         // E1: reused scratch arrays + atomic cursors instead of two fresh ConcurrentLinkedQueues
++         // (one linked-node allocation PER ENTITY per tick — ~180k/50ms at 86k entities — plus an
++         // ArrayList copy). Workers claim disjoint slots via getAndIncrement; the stream's terminal
++         // op orders their writes before the serial reads below. Slots are nulled after use so
++         // stale references cannot pin dead entities.
++         int nestworldCap = this.f_140150_.size();
++         if (nestworldBcArr.length < nestworldCap) {
++            nestworldBcArr = new ChunkMap.TrackedEntity[nestworldCap + (nestworldCap >> 2)];
++            nestworldChangedArr = new ChunkMap.TrackedEntity[nestworldCap + (nestworldCap >> 2)];
++         }
++         final ChunkMap.TrackedEntity[] nestworldBc = nestworldBcArr;
++         final ChunkMap.TrackedEntity[] nestworldChanged = nestworldChangedArr;
++         nestworldBcCursor.set(0);
++         nestworldChangedCursor.set(0);
 +         this.f_140150_.values().parallelStream().forEach(nestworldTe -> {
 +            if (nestworldTe.nestworldTrackedTick == nestworldCurTick) return; // region already tracked it
 +            Entity nestworldE = nestworldTe.f_140472_;
@@ -155,27 +181,30 @@
 +               nestworldFlag = !Objects.equals(nestworldTe.f_140474_, nestworldSp);
 +            }
 +            nestworldTe.nestworldTickSection = nestworldSp;
-+            if (nestworldFlag) nestworldChanged.add(nestworldTe);
++            if (nestworldFlag) nestworldChanged[nestworldChangedCursor.getAndIncrement()] = nestworldTe;
 +            if (nestworldFlag || !nestworldTe.f_140475_.isEmpty()
 +                  || this.f_140145_.m_183913_(nestworldSp.m_123251_().m_45588_())) {
-+               nestworldBc.add(nestworldTe);
++               nestworldBc[nestworldBcCursor.getAndIncrement()] = nestworldTe;
 +            }
 +         });
++         int nestworldNChanged = nestworldChangedCursor.get();
++         int nestworldNBc = nestworldBcCursor.get();
 +         // Serial: apply section changes (mutates shared seenBy) for the few entities that moved section.
-+         for (ChunkMap.TrackedEntity nestworldTe : nestworldChanged) {
++         for (int nestworldI = 0; nestworldI < nestworldNChanged; nestworldI++) {
++            ChunkMap.TrackedEntity nestworldTe = nestworldChanged[nestworldI];
++            nestworldChanged[nestworldI] = null;
 +            nestworldTe.m_140487_(list1);
 +            if (nestworldTe.f_140472_ instanceof ServerPlayer) list.add((ServerPlayer) nestworldTe.f_140472_);
 +            nestworldTe.f_140474_ = nestworldTe.nestworldTickSection;
 +         }
-+         // Parallel: pack dirty data + send (CLQ -> ArrayList so parallelStream splits well).
-+         if (!nestworldBc.isEmpty()) {
-+            java.util.List<ChunkMap.TrackedEntity> nestworldBcList = new java.util.ArrayList<>(nestworldBc);
-+            if (nestworldBcList.size() >= net.nestworld.region.NestworldTuning.TRACKER_PARALLEL_BROADCAST_THRESHOLD) {
-+               nestworldBcList.parallelStream().forEach(nestworldTe -> nestworldTe.f_140471_.m_8533_());
-+            } else {
-+               for (ChunkMap.TrackedEntity nestworldTe : nestworldBcList) nestworldTe.f_140471_.m_8533_();
-+            }
++         // Parallel: pack dirty data + send. IntStream over the dense array section splits well.
++         if (nestworldNBc >= net.nestworld.region.NestworldTuning.TRACKER_PARALLEL_BROADCAST_THRESHOLD) {
++            java.util.stream.IntStream.range(0, nestworldNBc).parallel()
++                  .forEach(nestworldI -> nestworldBc[nestworldI].f_140471_.m_8533_());
++         } else {
++            for (int nestworldI = 0; nestworldI < nestworldNBc; nestworldI++) nestworldBc[nestworldI].f_140471_.m_8533_();
 +         }
++         java.util.Arrays.fill(nestworldBc, 0, nestworldNBc, null);
 +      } else {
 +      // NestWorld: collect the entities that need a broadcast and run the expensive
 +      // sendChanges() in parallel after the loop (region threads are parked at the barrier

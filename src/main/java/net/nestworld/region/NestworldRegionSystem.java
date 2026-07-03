@@ -62,12 +62,11 @@ public class NestworldRegionSystem {
     private final PredictiveChunkGen predictiveGen = new PredictiveChunkGen();
 
     /** Entities spawned by region threads (off-main addFreshEntity), drained on
-     *  main each tick so ChunkMap entity tracking is never mutated concurrently. */
-    private final java.util.Queue<net.minecraft.world.entity.Entity> deferredSpawns =
-            new java.util.concurrent.ConcurrentLinkedQueue<>();
-    /** O(1) size of {@link #deferredSpawns} (its size() is O(n)). */
-    private final java.util.concurrent.atomic.AtomicInteger deferredSpawnCount =
-            new java.util.concurrent.atomic.AtomicInteger();
+     *  main each tick so ChunkMap entity tracking is never mutated concurrently.
+     *  Bounded (anti-grief spawn-flood cap) — offer() refuses atomically when full,
+     *  so there is no separate counter to fall out of sync with the queue. */
+    private final java.util.concurrent.LinkedBlockingQueue<net.minecraft.world.entity.Entity> deferredSpawns =
+            new java.util.concurrent.LinkedBlockingQueue<>(NestworldTuning.DEFERRED_SPAWN_QUEUE_CAP);
 
     /** Entity-tracking removals queued by region threads (off-main discard, e.g.
      *  TNT consumed by an explosion), drained on main each tick so ChunkMap's
@@ -292,14 +291,9 @@ public class NestworldRegionSystem {
     /** Called from a region thread's addFreshEntity (overworld): queue the spawn
      *  for main-thread registration instead of mutating ChunkMap off-main. */
     public boolean queueEntitySpawn(net.minecraft.world.entity.Entity e) {
-        // Anti-grief: drop spawns past the queue cap so a flood (mass breeding,
-        // skeleton volleys) cannot exhaust memory.
-        if (deferredSpawnCount.get() >= NestworldTuning.DEFERRED_SPAWN_QUEUE_CAP) {
-            return false;
-        }
-        deferredSpawns.add(e);
-        deferredSpawnCount.incrementAndGet();
-        return true;
+        // Anti-grief: the bounded queue drops spawns past the cap so a flood
+        // (mass breeding, skeleton volleys) cannot exhaust memory.
+        return deferredSpawns.offer(e);
     }
 
     /** Main-thread: register entities region threads spawned, up to a per-tick
@@ -309,7 +303,6 @@ public class NestworldRegionSystem {
         int budget = NestworldTuning.MAX_DEFERRED_SPAWNS_PER_TICK;
         net.minecraft.world.entity.Entity e;
         while (budget-- > 0 && (e = deferredSpawns.poll()) != null) {
-            deferredSpawnCount.decrementAndGet();
             try {
                 overworld.addFreshEntity(e);
             } catch (Throwable t) {
@@ -685,47 +678,27 @@ public class NestworldRegionSystem {
     /** Buckets and runs the tickers collected by the patched tickBlockEntities. */
     public void runBlockEntityPhase(ServerLevel level,
                                     java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity> due) {
-        java.util.Map<WorldRegion, java.util.List<Runnable>> buckets = new java.util.IdentityHashMap<>();
-        java.util.List<Runnable> mainBucket = new java.util.ArrayList<>();
+        // E5: bucket the TickingBlockEntity objects themselves and submit ONE composite Runnable
+        // per region (was: a Runnable per BE — 5k BEs → 200k transient lambdas/s — plus an
+        // auto-pin wrapper lambda each). Per-BE isolation is preserved inside tickBlockEntityList
+        // (per-BE try/catch + auto-pin error note), so one broken BE still cannot kill the round.
+        java.util.Map<WorldRegion, java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity>> beBuckets =
+                new java.util.IdentityHashMap<>();
+        java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity> mainBes = new java.util.ArrayList<>();
         boolean traced = false;
         for (net.minecraft.world.level.block.entity.TickingBlockEntity ticker : due) {
             net.minecraft.core.BlockPos pos = ticker.getPos();
-            Runnable run = ticker::tick;
-            if (BE_TRACE_POS != null && BE_TRACE_POS.equals(pos)) {
-                traced = true;
-                boolean logThis = ++beTraceCountdown >= 40;
-                if (logThis) beTraceCountdown = 0;
-                final boolean log = logThis;
-                run = () -> {
-                    if (log) {
-                        int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
-                        net.minecraft.world.level.chunk.LevelChunk c =
-                                level.getChunkSource().getChunkNow(cx, cz);
-                        LOGGER.info("BE trace exec {} on [{}]: removed={} fullStatus={} entitiesLoaded={}",
-                                pos, Thread.currentThread().getName(), ticker.isRemoved(),
-                                c == null ? "NO_CHUNK" : c.getFullStatus(),
-                                level.areEntitiesLoaded(net.minecraft.world.level.ChunkPos.asLong(cx, cz)));
-                    }
-                    ticker.tick();
-                };
-            }
-            // Feed the auto-pin detector: a BE type that keeps throwing on a
-            // region thread gets pinned to main. Only wrap when enabled, to
-            // avoid an extra lambda per BE per tick in the common case.
-            if (pins.isAutoPinEnabled()) {
-                final Runnable inner = run;
-                final String beType = ticker.getType();
-                run = () -> {
-                    try { inner.run(); }
-                    catch (Throwable err) { pins.noteBlockEntityTickError(beType); throw err; }
-                };
-            }
+            if (BE_TRACE_POS != null && BE_TRACE_POS.equals(pos)) traced = true;
+            int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
+            blockTickHeat.record(cx, cz);
             // Pinned BE types always tick on main (mod compat), regardless of
             // position. ticker.getType() is the registry id string.
-            if (!pins.isBeEmpty() && pins.isBePinned(ticker.getType())) {
-                mainBucket.add(run);
+            WorldRegion region = (!pins.isBeEmpty() && pins.isBePinned(ticker.getType()))
+                    ? null : interiorRegionFor(cx, cz);
+            if (region == null) {
+                mainBes.add(ticker);
             } else {
-                routeScheduledTick(pos, run, buckets, mainBucket);
+                beBuckets.computeIfAbsent(region, r -> new java.util.ArrayList<>()).add(ticker);
             }
         }
         if (BE_TRACE_POS != null && !traced && ++beTraceCountdown >= 40) {
@@ -736,23 +709,69 @@ public class NestworldRegionSystem {
         if (logNow) {
             bePhaseLogCountdown = 0;
             StringBuilder sb = new StringBuilder();
-            for (java.util.Map.Entry<WorldRegion, java.util.List<Runnable>> e : buckets.entrySet()) {
+            for (var e : beBuckets.entrySet()) {
                 sb.append(" #").append(e.getKey().getId()).append('=').append(e.getValue().size());
             }
-            LOGGER.info("BE phase: due={} main={} buckets:{}", due.size(), mainBucket.size(), sb);
+            LOGGER.info("BE phase: due={} main={} buckets:{}", due.size(), mainBes.size(), sb);
         }
-        for (Runnable r : mainBucket) {
-            try {
-                r.run();
-            } catch (Throwable t) {
-                LOGGER.warn("Main-band block entity tick failed: {}", t.toString());
+        tickBlockEntityList(level, mainBes);
+        // Batches of 32 keep the work-round budget granular (runWorkBudgeted checks its deadline
+        // between runnables and defers the remainder) while still cutting the per-BE lambda churn
+        // ~32×. One giant composite per region would run unbudgeted.
+        final int nestworldBeBatch = 32;
+        java.util.Map<WorldRegion, java.util.List<Runnable>> buckets = new java.util.IdentityHashMap<>();
+        for (var e : beBuckets.entrySet()) {
+            final java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity> list = e.getValue();
+            java.util.List<Runnable> runs = new java.util.ArrayList<>((list.size() + nestworldBeBatch - 1) / nestworldBeBatch);
+            for (int i = 0; i < list.size(); i += nestworldBeBatch) {
+                final java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity> slice =
+                        list.subList(i, Math.min(i + nestworldBeBatch, list.size()));
+                runs.add(() -> tickBlockEntityList(level, slice));
             }
+            buckets.put(e.getKey(), runs);
         }
         int before = buckets.size();
         pool.runWorkRoundDropIfBacklogged(buckets);
         if (logNow && buckets.size() != before) {
             LOGGER.info("BE phase: {} region bucket(s) dropped (backlog)", before - buckets.size());
         }
+    }
+
+    /** Ticks a bucket of block entities with per-BE isolation: a throwing BE is logged (and fed
+     *  to the auto-pin detector) and the rest of the bucket still runs — same semantics as the
+     *  former one-Runnable-per-BE dispatch, without the per-BE lambda churn. */
+    private void tickBlockEntityList(ServerLevel level,
+                                     java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity> list) {
+        for (net.minecraft.world.level.block.entity.TickingBlockEntity ticker : list) {
+            if (BE_TRACE_POS != null && BE_TRACE_POS.equals(ticker.getPos())) {
+                net.minecraft.core.BlockPos pos = ticker.getPos();
+                int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
+                net.minecraft.world.level.chunk.LevelChunk c = level.getChunkSource().getChunkNow(cx, cz);
+                LOGGER.info("BE trace exec {} on [{}]: removed={} fullStatus={} entitiesLoaded={}",
+                        pos, Thread.currentThread().getName(), ticker.isRemoved(),
+                        c == null ? "NO_CHUNK" : c.getFullStatus(),
+                        level.areEntitiesLoaded(net.minecraft.world.level.ChunkPos.asLong(cx, cz)));
+            }
+            try {
+                ticker.tick();
+            } catch (Throwable err) {
+                if (pins.isAutoPinEnabled()) pins.noteBlockEntityTickError(ticker.getType());
+                LOGGER.warn("Block entity tick failed at {}: {}", ticker.getPos(), err.toString());
+            }
+        }
+    }
+
+    /** The region owning chunk (cx,cz) if the chunk sits strictly inside its interior (outside
+     *  the border band); null routes the work to the main-thread bucket. Shared routing rule of
+     *  the parallel work rounds (see routeScheduledTick). */
+    private WorldRegion interiorRegionFor(int cx, int cz) {
+        WorldRegion region = grid.getRegionForChunk(cx, cz);
+        if (region != null
+                && cx >= region.getMinChunkX() + BORDER_BAND_CHUNKS && cx <= region.getMaxChunkX() - BORDER_BAND_CHUNKS
+                && cz >= region.getMinChunkZ() + BORDER_BAND_CHUNKS && cz <= region.getMaxChunkZ() - BORDER_BAND_CHUNKS) {
+            return region;
+        }
+        return null;
     }
 
     // -----------------------------------------------------------------------
@@ -803,10 +822,8 @@ public class NestworldRegionSystem {
         // of the band it lands on — a hot column currently stuck in the band is
         // exactly what we want the next split to see and route into an interior.
         blockTickHeat.record(cx, cz);
-        WorldRegion region = grid.getRegionForChunk(cx, cz);
-        if (region != null
-                && cx >= region.getMinChunkX() + BORDER_BAND_CHUNKS && cx <= region.getMaxChunkX() - BORDER_BAND_CHUNKS
-                && cz >= region.getMinChunkZ() + BORDER_BAND_CHUNKS && cz <= region.getMaxChunkZ() - BORDER_BAND_CHUNKS) {
+        WorldRegion region = interiorRegionFor(cx, cz);
+        if (region != null) {
             buckets.computeIfAbsent(region, r -> new java.util.ArrayList<>()).add(run);
         } else {
             mainBucket.add(run);
