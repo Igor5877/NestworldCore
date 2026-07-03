@@ -74,6 +74,12 @@ mutate it while another thread reads/mutates?
 - **Boss events** (`ServerBossEvent` player sets).
 - **Forge capabilities** attach/invalidate on entities/chunks during region tick.
 - **`PersistentEntitySectionManager`** visibility/section transitions (partly handled — re-verify).
+  **CONFIRMED live (2026-07-03, 200-bot test):** enderman random-teleport on a region thread →
+  `setPosRaw` → section-move callback → `updateStatus` → `startTracking` →
+  `ChunkMap.addEntity` OFF-MAIN → `IllegalStateException: Entity is already tracked!` (1×,
+  contained by the per-entity catch). The spawn/remove deferral does NOT cover visibility
+  transitions triggered by section moves during region ticking — defer `startTracking`/
+  `stopTracking` from off-main section moves the same way (pattern B).
 - **Chunk save/unload** racing region ticking the same chunk.
 - **Random-tick / weather** structures touched off-main.
 
