@@ -77,6 +77,14 @@ public class NestworldRegionSystem {
     private final java.util.Queue<net.minecraft.world.entity.Entity> deferredRemovals =
             new java.util.concurrent.ConcurrentLinkedQueue<>();
 
+    /** Entity-tracking ADDS queued by region threads: a section-move visibility transition
+     *  (entity walks/teleports into an entity-ticking section during a region tick) calls
+     *  ServerChunkCache.addEntity off-main, which must not touch ChunkMap's entityMap.
+     *  Drained on main AFTER {@link #deferredRemovals}, so a leave+re-enter within one tick
+     *  resolves to the correct final tracked state. Bounded by the live entity count. */
+    private final java.util.Queue<net.minecraft.world.entity.Entity> deferredTrackingAdds =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+
     private ServerLevel overworld;
     private MinecraftServer server;
 
@@ -330,6 +338,33 @@ public class NestworldRegionSystem {
         }
     }
 
+    /** Called from a region thread's ServerChunkCache.addEntity (a section-move visibility
+     *  transition during the region tick): queue the tracking add for main instead of mutating
+     *  ChunkMap's entityMap off-main. */
+    public void queueEntityTrackingAdd(net.minecraft.world.entity.Entity e) {
+        deferredTrackingAdds.add(e);
+    }
+
+    /** Main-thread: process the entity-tracking adds region threads queued this tick. Runs
+     *  AFTER {@link #drainDeferredRemovals} so a leave+re-enter sequence lands tracked. An
+     *  entity that is already tracked (e.g. its queued removal was superseded) or died since
+     *  queueing is skipped — ChunkMap.addEntity would throw on the former. */
+    private void drainDeferredTrackingAdds() {
+        net.minecraft.world.entity.Entity e;
+        while ((e = deferredTrackingAdds.poll()) != null) {
+            if (e.isRemoved()) continue;
+            try {
+                overworld.getChunkSource().addEntity(e);
+            } catch (IllegalStateException dup) {
+                // "Entity is already tracked!" — the add was superseded (never untracked);
+                // the tracker is already in the desired state, so this is benign.
+                LOGGER.debug("Deferred tracking add skipped (already tracked): {}", e.getUUID());
+            } catch (Throwable t) {
+                LOGGER.warn("Deferred entity tracking add failed: {}", t.toString());
+            }
+        }
+    }
+
     /**
      * Reads the saved layout, or returns null if there is none / it is
      * unreadable (first boot, or a world that predates persistence). A corrupt
@@ -487,6 +522,7 @@ public class NestworldRegionSystem {
         // tracking while the main thread ran it during overworld.tick). Region
         // threads are idle at the barrier here, so this is the safe point on main.
         drainDeferredRemovals();
+        drainDeferredTrackingAdds();
         drainDeferredSpawns();
         long t5 = System.nanoTime();
 

@@ -44,6 +44,7 @@ Every extreme stress test so far has surfaced a new race of this class (POI → 
 | 2 | `ChunkMap.entityMap` (Int2ObjectOpenHashMap) | mass entity removal (TNT) vs main ChunkMap.tick | B (defer removals to main) | 47.4.104 |
 | 3 | `ChunkHolder.changedBlocksPerSection` (ShortOpenHashSet) | mass block changes (explosions) vs main `broadcastChanges` | A (per-holder lock, snapshot-and-clear; packets off-lock) | 47.4.107 |
 | 5 | `ServerLevel.sendBlockUpdated` nav guard (`isUpdatingNavigations`) | shared boolean false-positives across region threads (log spam) | D (ThreadLocal guard; navigatingMobs was already concurrent) | 47.4.109 |
+| 6 | `ChunkMap.entityMap` via PESM visibility transition | entity walks/teleports into an entity-ticking section during a region tick → `startTracking` → `ChunkMap.addEntity` off-main ("Entity is already tracked!", enderman, 200-bot test 2026-07-03) | B (defer tracking ADDS to main, symmetric with removals; drained after removals so leave+re-enter lands tracked) | 47.4.141 |
 
 Also shipped: **explosion-ray cache** (`NestworldExplosionCache`, 47.4.105) — per-explosion block/fluid
 memoisation, bit-identical; all explosion block lookups route through it.
@@ -73,13 +74,11 @@ mutate it while another thread reads/mutates?
 - **Scoreboard** (`Scoreboard` score updates from mob death/criteria).
 - **Boss events** (`ServerBossEvent` player sets).
 - **Forge capabilities** attach/invalidate on entities/chunks during region tick.
-- **`PersistentEntitySectionManager`** visibility/section transitions (partly handled — re-verify).
-  **CONFIRMED live (2026-07-03, 200-bot test):** enderman random-teleport on a region thread →
-  `setPosRaw` → section-move callback → `updateStatus` → `startTracking` →
-  `ChunkMap.addEntity` OFF-MAIN → `IllegalStateException: Entity is already tracked!` (1×,
-  contained by the per-entity catch). The spawn/remove deferral does NOT cover visibility
-  transitions triggered by section moves during region ticking — defer `startTracking`/
-  `stopTracking` from off-main section moves the same way (pattern B).
+- ~~**`PersistentEntitySectionManager`** visibility/section transitions~~ — **FIXED, see #6 above.**
+  Residual (non-crash, exotic): the rest of `onTrackingStart` still runs on the region thread for
+  a section-move transition — `navigatingMobs` (concurrent, #5) and the C1 counter (synchronized)
+  are safe; `dragonParts` (multipart entities only) and `updateDynamicGameEventListener` (sculk)
+  remain off-main there. Revisit only if a dragon/sculk crash ever appears.
 - **Chunk save/unload** racing region ticking the same chunk.
 - **Random-tick / weather** structures touched off-main.
 

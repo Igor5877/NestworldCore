@@ -142,7 +142,7 @@
     }
  
     public void m_6692_(ChunkPos p_8400_, boolean p_8401_) {
-@@ -451,6 +_,16 @@
+@@ -451,10 +_,32 @@
     }
  
     public void m_8443_(Entity p_8444_) {
@@ -157,5 +157,21 @@
 +         return;
 +      }
        this.f_8325_.m_140331_(p_8444_);
+    }
+ 
+    public void m_8463_(Entity p_8464_) {
++      // NestWorld: symmetric with removeEntity above. A region thread can reach this through a
++      // section-move visibility transition (e.g. an enderman teleporting into an entity-ticking
++      // section: setPosRaw -> PESM Callback.onMove -> updateStatus -> startTracking), which must
++      // not mutate ChunkMap's non-thread-safe entityMap off-main. Queue the tracking add for the
++      // main-thread drain at the region barrier (drained after removals, so a leave+re-enter
++      // within one tick resolves to the correct final tracked state).
++      if (net.nestworld.region.NestworldRegionSystem.isInitialised()
++            && this.f_8329_.m_46472_() == net.minecraft.world.level.Level.f_46428_
++            && Thread.currentThread() instanceof net.nestworld.region.RegionThread) {
++         net.nestworld.region.NestworldRegionSystem.get().queueEntityTrackingAdd(p_8464_);
++         return;
++      }
+       this.f_8325_.m_140199_(p_8464_);
     }
  
