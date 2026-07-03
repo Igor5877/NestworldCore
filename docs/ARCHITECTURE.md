@@ -149,7 +149,7 @@ instantly. Full rationale + measurements in `OPTIMIZATION_PACKAGE.md`.
 | `trackerParallelDetection` (Phase 1) | vanilla | run the serial tracker detection scan as a read-only `parallelStream`, deferring the one mutation (section-change `updatePlayers`) to a short serial post-pass | **on** | low-med |
 | `regionalizedTracker` (Phase 2) | vanilla → regionPool | each region tracks its OWNED entities during its own tick; main `tick()` only handles the rest, via a "tracked-this-tick" stamp so nothing is missed | off | **high** (bends the tracker invariant above — most care) |
 | `skipEmptyEntityCollision` (C1) | regionPool (`move`) | skip the entity-collision broad-phase when `ServerLevel`'s count of `canBeCollidedWith` entities is zero (a TNT/item pile collides with nothing); boat/minecart movers are exempt from the skip because their predicate also accepts merely-pushable entities | **on** | med (collision correctness; counter never under-reports) |
-| `cacheExplosionExposure` (C2) | regionPool (`explode`) | memoise the explosion exposure raycast per block position within one explosion (Paper-style, not bit-identical) | off | med (slight gameplay change) |
+| `cacheExplosionExposure` (C2) | regionPool (`explode`) | memoise the explosion exposure raycast within one explosion, keyed by block position + quantized hitbox size (Paper-style, not bit-identical; different-size entities never share an entry) | off | med (slight gameplay change) |
 
 Rule of thumb for any new optimization: **decide which phase it runs in, and what data it touches in
 that phase.** If it runs in `regionPool` it may touch only its own region's data (and the tracker
