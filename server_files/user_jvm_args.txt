@@ -7,3 +7,162 @@
 # A good default for a modded server is 4GB.
 # Uncomment the next line to set it.
 # -Xmx4G
+
+# =============================================================================
+# NestworldCore — усі параметри доступні нижче, ЗАКОМЕНТОВАНІ (значення = дефолт).
+# NestworldCore — every parameter is listed below, COMMENTED OUT (value = default).
+# Розкоментуй і зміни значення, щоб перевизначити. Перезапуск сервера обов'язковий,
+# перезбирати ядро — НЕ треба (це звичайні JVM system properties).
+# Uncomment and edit the value to override. A server restart is required;
+# rebuilding the core is NOT — these are plain JVM system properties.
+# =============================================================================
+
+# ── Шардинг / регіони | Sharding / regions ─────────────────────────────────
+# 0 = авто cores*2 (мін. 4); 1 = форс один регіон/потік (найближче до ваніли)
+# 0 = auto cores*2 (min 4); 1 = force a single region/thread (closest to vanilla)
+# -Dnestworld.maxRegions=0
+
+# Бюджет ентіті-раунду регіону, мс. НЕ ставити нижче 25 (поріг спліту).
+# Per-region entity-round budget, ms. Do NOT set below 25 (the split threshold).
+# -Dnestworld.regionEntityBudgetMs=40
+
+# Цільова к-сть паралельних регіонів для fill-idle-cores балансування. 0 = авто cores-1.
+# Target parallel-region count for fill-idle-cores balancing. 0 = auto cores-1.
+# -Dnestworld.splitTargetParallelism=0
+
+# Нижній поріг (мс) спліту, коли зайнятих регіонів менше за ціль. Дуже високе значення = вимкнути.
+# Lower split threshold (ms) when fewer regions are busy than the target. Set very high to disable.
+# -Dnestworld.splitFillCoresMs=12.0
+
+# Вага block-tick heat (редстоун/ферми) у скорингу ліній розрізу. 0 = лише по ентіті.
+# Weight of block-tick heat (redstone/farms) in the split-line scorer. 0 = entity-only.
+# -Dnestworld.cutHeatWeight=0.15
+
+# К-сть крашів region-потоку до його вимкнення (регіон переходить на деградовану поведінку).
+# Number of region-thread crashes before it is disabled (region falls back to degraded handling).
+# -Dnestworld.maxRegionCrashes=5
+
+# ── Колізії — анти-хотспот кап | Collisions — anti-hotspot cap ─────────────
+# Кап O(n^2) колізій вагонеток у щільній купі. -1 = зняти кап (ванільна поведінка, для сумісності з Lithium-родиною).
+# Cap on O(n^2) minecart collisions in a dense pile. -1 = uncapped (vanilla behavior, for Lithium-family compat).
+# -Dnestworld.maxMinecartPush=8
+
+# Те саме для човнів і живих мобів.
+# Same cap for boats and living entities.
+# -Dnestworld.maxEntityPush=8
+
+# ── Anti-grief деферали спавнів | Anti-grief spawn deferral ────────────────
+# К-сть реєстрацій region-спавнів на main-потоці за один тік (решта — на наступні тіки).
+# Number of region-thread spawns registered on main per tick (rest carries to later ticks).
+# -Dnestworld.maxDeferredSpawnsPerTick=1000
+
+# Твердий кап черги відкладених спавнів — флуд-спавни понад це відкидаються (анти-OOM).
+# Hard cap on the deferred-spawn queue — a flood past this is dropped (anti-OOM).
+# -Dnestworld.deferredSpawnQueueCap=200000
+
+# ── A1 — throttle руху трекера (ВАЛІДОВАНО, default ON) ────────────────────
+# ── A1 — tracker move throttle (VALIDATED, default ON) ─────────────────────
+# Обмежує пере-оцінку видимості гравця до 1×/тік замість щопакета (фікс "стіни" при польоті над натовпом).
+# Caps a player's visibility re-evaluation to 1x/tick instead of per move-packet (fixes the flying-stall).
+# -Dnestworld.trackerMoveThrottle=true
+
+# ── B1 — event-driven ownership (ВАЛІДОВАНО, default ON) ───────────────────
+# ── B1 — event-driven ownership (VALIDATED, default ON) ────────────────────
+# Region-ownership реагує лише на зміну секції ентіті, замість повного скану щотік.
+# Region ownership reacts only to an entity's section change, instead of a full scan every tick.
+# -Dnestworld.eventDrivenOwnership=true
+
+# Safety-net: повний скан кожні N тіків (страховка на випадок пропущеної позначки).
+# Safety net: a full scan every N ticks (in case a mark was ever missed).
+# -Dnestworld.ownershipFullPassTicks=200
+
+# ── Паралельний broadcast трекера (ВАЛІДОВАНО, default ON) ─────────────────
+# ── Tracker parallel broadcast (VALIDATED, default ON) ──────────────────────
+# Паралелить надсилання дельт руху глядачам (sendChanges) понад поріг ентіті.
+# Parallelises sending movement deltas to viewers (sendChanges) above an entity threshold.
+# -Dnestworld.trackerParallelBroadcast=true
+# -Dnestworld.trackerParallelBroadcastThreshold=512
+
+# ── Phase 1 — паралельна детекція трекера (ВАЛІДОВАНО, default ON) ─────────
+# ── Phase 1 — tracker parallel detection (VALIDATED, default ON) ───────────
+# Паралелить сканування "хто змінив секцію" (найдорожча серійна фаза при масовому TNT).
+# Parallelises the "who changed section" scan (the dominant serial cost under mass TNT).
+# -Dnestworld.trackerParallelDetection=true
+# -Dnestworld.trackerParallelDetectionThreshold=4096
+
+# ── C1 — skip empty entity collision (ВАЛІДОВАНО, default ON) ──────────────
+# ── C1 — skip empty entity collision (VALIDATED, default ON) ───────────────
+# Пропускає перевірку колізій ентіті, коли жоден завантажений ентіті не може блокувати рух.
+# Skips the entity-collision check when no loaded entity can hard-block movement.
+# -Dnestworld.skipEmptyEntityCollision=true
+
+# ── Spatial cull для руху трекера (ЕКСПЕРИМЕНТАЛЬНО, default OFF) ──────────
+# ── Tracker move spatial cull (EXPERIMENTAL, default OFF) ──────────────────
+# Обмежує пере-скан трекера на move() лише сусідніми в просторі ентіті.
+# Limits the tracker's move() rescan to spatially-nearby entities only.
+# -Dnestworld.trackerSpatialCull=false
+
+# ── C2 — кеш exposure вибуху (ЕКСПЕРИМЕНТАЛЬНО, змінює геймплей, default OFF) ─
+# ── C2 — explosion exposure cache (EXPERIMENTAL, changes gameplay, default OFF) ─
+# Мемоізує промінь-перевірку exposure в межах одного вибуху (НЕ bit-identical, Paper-стиль).
+# Memoises the exposure raycast within one explosion (NOT bit-identical, Paper-style).
+# -Dnestworld.cacheExplosionExposure=false
+
+# ── Phase 2 — регіоналізований трекер (HIGH-RISK, Folia-крок, default OFF) ─
+# ── Phase 2 — regionalized tracker (HIGH-RISK, Folia step, default OFF) ────
+# Переносить трекінг ентіті всередину region-тіку (прибирає серійну фазу трекера повністю).
+# Moves entity tracking inside the region tick (removes the serial tracker phase entirely).
+# -Dnestworld.regionalizedTracker=false
+
+# ── Non-blocking читання чанків (ПРОВАЛЕНИЙ ЕКСПЕРИМЕНТ — НЕ вмикати) ──────
+# ── Non-blocking chunk reads (FAILED EXPERIMENT — do NOT enable) ───────────
+# Крашив сервер під навантаженням (AIOOBE + гонка на спільному EmptyLevelChunk). Лишено за прапором для довідки.
+# Crashed the server under load (AIOOBE + race on a shared EmptyLevelChunk). Kept flagged for reference only.
+# -Dnestworld.nonBlockingChunkReads=false
+
+# ── Predictive chunk-gen, Layer 3 (готовий, default OFF) ───────────────────
+# ── Predictive chunk-gen, Layer 3 (ready, default OFF) ─────────────────────
+# Гейтить/передбачає завантаження чанків попереду гравця, щоб уникнути фризу live-gen.
+# Budgets/predicts chunk generation ahead of the player to avoid the live-gen freeze.
+# -Dnestworld.chunkGenBudget=0
+# -Dnestworld.predictiveGen=false
+# -Dnestworld.predictiveLookahead=5
+# -Dnestworld.predictiveFan=1
+# -Dnestworld.predictiveLog=false
+
+# ── Мод-сумісність (Pins / Compat) | Mod compat (Pins / Compat) ────────────
+# Авто-пінити тип ентіті/BE, що повторно крашить region-потік, на main-потік.
+# Auto-pin an entity/BE type that repeatedly crashes a region thread onto the main thread.
+# -Dnestworld.autoPin=false
+# -Dnestworld.autoPinThreshold=20
+
+# Hard-stop замість авто-фіксу конфігів при виявленні Lithium-родини (Canary/radium/lithium).
+# Hard-stop instead of auto-fixing configs when the Lithium family (Canary/radium/lithium) is detected.
+# -Dnestworld.strictCompat=false
+
+# ── Auto-spark ──────────────────────────────────────────────────────────────
+# Безперервний профайлер з боту сервера; на стопі пише датований лінк у spark-history.txt.
+# Continuous profiler from server boot; writes a dated link to spark-history.txt on stop.
+# -Dnestworld.autoSpark=true
+# Шлях до spark-standalone-agent.jar (потрібен для /spark та auto-spark).
+# Path to spark-standalone-agent.jar (needed for /spark and auto-spark).
+# -Dnestworld.spark.jar=
+
+# Трасувати конкретний block entity за координатами "x,y,z" (діагностика).
+# Trace a specific block entity by "x,y,z" coordinates (diagnostics).
+# -Dnestworld.beTracePos=
+
+# ── Логування | Logging ─────────────────────────────────────────────────────
+# Фазовий тайминг-лог раз/200 тіків. false глушить у проді.
+# Phase-timing log once every 200 ticks. Set false to quiet it in production.
+# -Dnestworld.timingLog=true
+
+# Період пере-збереження BSP-розкладки регіонів (тіків, ~5хв); пише лише при зміні топології.
+# Region BSP-layout re-save interval (ticks, ~5min); only writes on topology change.
+# -Dnestworld.layoutSaveIntervalTicks=6000
+
+# ── Dev / self-test (НЕ для продакшна) | Dev / self-test (NOT for production) ─
+# -Dnestworld.crashTestRegion=-1
+# -Dnestworld.cutTest=false
+# -Dnestworld.autoPinTest=false
+# -Dnestworld.layoutTest=false
