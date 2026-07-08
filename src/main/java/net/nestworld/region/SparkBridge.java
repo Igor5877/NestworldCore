@@ -219,8 +219,14 @@ public final class SparkBridge {
         } catch (Throwable t) {
             LOGGER.error("auto-spark: failed to write spark-history.txt", t);
         } finally {
-            // Runs regardless of whether the URL capture above succeeded — a failed capture
-            // must not leave spark's threads running and block JVM exit anyway.
+            // Only meaningful when the standalone-agent bridge is actually in use (plugin != null
+            // — i.e. the real spark Forge mod could NOT load, e.g. this dev runtime). When the
+            // real spark mod IS present, dispatch() above went straight through Minecraft's
+            // command dispatcher to ITS OWN command handler — plugin/disableMethod are never
+            // populated (ensureLoaded() is only called by our own /spark fallback command,
+            // which isn't even registered when the real mod is present) — so there is nothing
+            // of ours to disable; any shutdown-hang risk from spark itself is then the real
+            // mod's own responsibility, outside what this bridge can reach into.
             try {
                 if (plugin != null && disableMethod != null) {
                     disableMethod.invoke(plugin);
