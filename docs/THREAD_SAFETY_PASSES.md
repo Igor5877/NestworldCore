@@ -45,6 +45,7 @@ Every extreme stress test so far has surfaced a new race of this class (POI → 
 | 3 | `ChunkHolder.changedBlocksPerSection` (ShortOpenHashSet) | mass block changes (explosions) vs main `broadcastChanges` | A (per-holder lock, snapshot-and-clear; packets off-lock) | 47.4.107 |
 | 5 | `ServerLevel.sendBlockUpdated` nav guard (`isUpdatingNavigations`) | shared boolean false-positives across region threads (log spam) | D (ThreadLocal guard; navigatingMobs was already concurrent) | 47.4.109 |
 | 6 | `ChunkMap.entityMap` via PESM visibility transition | entity walks/teleports into an entity-ticking section during a region tick → `startTracking` → `ChunkMap.addEntity` off-main ("Entity is already tracked!", enderman, 200-bot test 2026-07-03) | B (defer tracking ADDS to main, symmetric with removals; drained after removals so leave+re-enter lands tracked) | 47.4.141 |
+| 7 | `RandomSequences.sequences` (`Object2ObjectOpenHashMap`) | ANY loot roll (entity death or block break) on ANY region thread calls `get()` → `computeIfAbsent` off-main; two region threads racing the first request for a sequence corrupt the map during rehash (AIOOBE "Index -1 out of bounds for length 33" — found 2026-07-08 on a real 188-mod pack overnight soak: enderman death loot + villager block-break loot, 4 hits/8h) | C (concurrent replacement — `ConcurrentHashMap`, atomic `computeIfAbsent`) | 47.4.145 |
 
 Also shipped: **explosion-ray cache** (`NestworldExplosionCache`, 47.4.105) — per-explosion block/fluid
 memoisation, bit-identical; all explosion block lookups route through it.

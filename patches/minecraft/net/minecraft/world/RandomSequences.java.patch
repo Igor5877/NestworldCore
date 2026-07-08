@@ -1,0 +1,33 @@
+--- a/net/minecraft/world/RandomSequences.java
++++ b/net/minecraft/world/RandomSequences.java
+@@ -1,8 +_,8 @@
+ package net.minecraft.world;
+ 
+ import com.mojang.logging.LogUtils;
+-import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
+ import java.util.Map;
++import java.util.concurrent.ConcurrentHashMap;
+ import net.minecraft.nbt.CompoundTag;
+ import net.minecraft.nbt.NbtOps;
+ import net.minecraft.resources.ResourceLocation;
+@@ -14,7 +_,19 @@
+ public class RandomSequences extends SavedData {
+    private static final Logger f_286984_ = LogUtils.getLogger();
+    private final long f_286938_;
+-   private final Map<ResourceLocation, RandomSequence> f_286954_ = new Object2ObjectOpenHashMap<>();
++   // NestWorld: викликач get() — будь-який лут-ролл (смерть ентіті або злам блока), тобто
++   // будь-який region-потік — раніше мутував тут звичайний Object2ObjectOpenHashMap через
++   // computeIfAbsent; два region-потоки, що ОДНОЧАСНО вперше просять послідовність, псували
++   // внутрішню структуру мапи під час rehash (AIOOBE "Index -1", виявлено 2026-07-08 на
++   // реальному 188-модовому паку: ендермен-смерть + злам блока villager-ом). ConcurrentHashMap
++   // дає атомарний computeIfAbsent без цього вікна; save() ітерує його ж (forEach) безпечно.
++   // NestWorld: get()'s caller — any loot roll (entity death or block break), i.e. any region
++   // thread — used to mutate a plain Object2ObjectOpenHashMap here via computeIfAbsent; two
++   // region threads simultaneously requesting a sequence for the first time corrupted the map's
++   // internal structure during rehash (AIOOBE "Index -1", found 2026-07-08 on a real 188-mod
++   // pack: an enderman death + a villager block break). ConcurrentHashMap gives an atomic
++   // computeIfAbsent with no such window; save() iterates the same map (forEach) safely.
++   private final Map<ResourceLocation, RandomSequence> f_286954_ = new ConcurrentHashMap<>();
+ 
+    public RandomSequences(long p_287622_) {
+       this.f_286938_ = p_287622_;
