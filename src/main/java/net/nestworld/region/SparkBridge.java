@@ -34,6 +34,7 @@ public final class SparkBridge {
 
     private static Object plugin;            // StandaloneSparkPlugin
     private static Method executeMethod;     // execute(String[], StandaloneCommandSender)
+    private static Method disableMethod;     // disable() — stops spark's own background threads
     private static Constructor<?> senderCtor;
     private static Class<?> outputInterface; // StandaloneCommandSender.Output
 
@@ -180,8 +181,19 @@ public final class SparkBridge {
         LOGGER.info("auto-spark: profiler running (all threads); re-asserted if cancelled; link -> spark-history.txt on stop");
     }
 
-    /** On server stop/restart: open the running profile and append "{date}  {url}" to
-     *  spark-history.txt. Does NOT stop the profiler — only opens it. */
+    /** On server stop/restart: open the running profile, append "{date}  {url}" to
+     *  spark-history.txt, then STOP spark's own background threads (disable()) so the JVM
+     *  can actually exit — a standalone-loaded plugin has no host platform to do this for us,
+     *  and its sampler/scheduler threads are not guaranteed to be daemon. Previously this only
+     *  opened the profile and left spark running forever, which could hang shutdown until a
+     *  forceful kill (observed on real servers as "stop finishes logging but the JVM lingers").
+     *
+     *  На stop/restart: відкрити активний профіль, дописати "{дата}  {url}" в spark-history.txt,
+     *  тоді ЗУПИНИТИ власні фонові потоки spark (disable()), щоб JVM реально могла вийти —
+     *  standalone-плагін не має хост-платформи, яка зробила б це за нас, і його потоки
+     *  семплера/шедулера не гарантовано daemon. Раніше тут лише відкривався профіль, а spark
+     *  лишався жити назавжди — це могло зависати shutdown до примусового вбивства процесу
+     *  (спостережено на реальних серверах: "stop" дописує лог, але JVM не виходить). */
     public static void writeHistoryOnShutdown(net.minecraft.server.MinecraftServer server) {
         if (!NestworldTuning.AUTO_SPARK || !sparkPresent(server)) return;
         shuttingDown = true; // stop the re-assert guard from fighting the shutdown
@@ -196,16 +208,27 @@ public final class SparkBridge {
             }
             if (lastUrl == null) {
                 LOGGER.warn("auto-spark: no profile link captured on shutdown");
-                return;
+            } else {
+                String stamp = java.time.LocalDateTime.now()
+                        .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+                Path file = Path.of("spark-history.txt");
+                Files.writeString(file, stamp + "  " + lastUrl + System.lineSeparator(),
+                        java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+                LOGGER.info("auto-spark: profile link written to {} -> {}", file.toAbsolutePath(), lastUrl);
             }
-            String stamp = java.time.LocalDateTime.now()
-                    .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-            Path file = Path.of("spark-history.txt");
-            Files.writeString(file, stamp + "  " + lastUrl + System.lineSeparator(),
-                    java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
-            LOGGER.info("auto-spark: profile link written to {} -> {}", file.toAbsolutePath(), lastUrl);
         } catch (Throwable t) {
             LOGGER.error("auto-spark: failed to write spark-history.txt", t);
+        } finally {
+            // Runs regardless of whether the URL capture above succeeded — a failed capture
+            // must not leave spark's threads running and block JVM exit anyway.
+            try {
+                if (plugin != null && disableMethod != null) {
+                    disableMethod.invoke(plugin);
+                    LOGGER.info("auto-spark: profiler disabled, JVM free to exit");
+                }
+            } catch (Throwable t) {
+                LOGGER.error("auto-spark: plugin.disable() failed — JVM may hang on shutdown", t);
+            }
         }
     }
 
@@ -231,6 +254,7 @@ public final class SparkBridge {
                     .getConstructor(java.lang.instrument.Instrumentation.class, Map.class)
                     .newInstance(null, Map.of());
             executeMethod = pluginClass.getMethod("execute", String[].class, senderClass);
+            disableMethod = pluginClass.getMethod("disable");
             senderCtor = senderClass.getConstructor(outputInterface);
             LOGGER.info("spark standalone bridge initialised from {}", jar.toAbsolutePath());
             return true;
