@@ -201,6 +201,7 @@ public class NestworldRegionSystem {
         pins.load(pinsFile());
         pins.loadBe(bePinsFile());
         pins.loadMods(pinnedModsFile());
+        pins.loadCascadeSafeBe(cascadeSafeBeFile());
 
         boundaryManager = new BoundaryManager(overworld, grid);
         signalQueue    = new BoundarySignalQueue(overworld);
@@ -284,6 +285,13 @@ public class NestworldRegionSystem {
     private Path pinnedModsFile() {
         return server.getWorldPath(LevelResource.ROOT)
                 .resolve("data").resolve("nestworld-pinned-mods.txt");
+    }
+
+    /** Text file listing block-entity type ids the operator asserts are cascade-safe
+     *  (see {@link NestworldPins#markCascadeSafe} javadoc for the trust boundary). */
+    private Path cascadeSafeBeFile() {
+        return server.getWorldPath(LevelResource.ROOT)
+                .resolve("data").resolve("nestworld-be-cascade-safe.txt");
     }
 
     public NestworldPins getPins() { return pins; }
@@ -565,8 +573,10 @@ public class NestworldRegionSystem {
      * neighbouring region mid-round and race its thread. Interior cascades
      * can't travel 2 chunks (32 blocks) in a single update, and wires are
      * separately bounds-checked by the per-thread Alternate Current handler.
+     * See {@link NestworldTuning#BORDER_BAND_CHUNKS} (single source of truth,
+     * shared with {@link RegionSplitManager}'s split-veto scoring).
      */
-    private static final int BORDER_BAND_CHUNKS = 2;
+    private static final int BORDER_BAND_CHUNKS = NestworldTuning.BORDER_BAND_CHUNKS;
 
     /** Wire updates whose network left its region; re-run on main next tick. */
     private final java.util.Queue<net.minecraft.core.BlockPos> deferredWireUpdates =
@@ -690,11 +700,24 @@ public class NestworldRegionSystem {
             net.minecraft.core.BlockPos pos = ticker.getPos();
             if (BE_TRACE_POS != null && BE_TRACE_POS.equals(pos)) traced = true;
             int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
-            blockTickHeat.record(cx, cz);
-            // Pinned BE types always tick on main (mod compat), regardless of
-            // position. ticker.getType() is the registry id string.
-            WorldRegion region = (!pins.isBeEmpty() && pins.isBePinned(ticker.getType()))
-                    ? null : interiorRegionFor(cx, cz);
+            String typeId = ticker.getType();
+            // Pinned BE types always tick on main (mod compat), regardless of position —
+            // takes priority over cascade-safe. Cascade-safe types (operator-asserted: never
+            // write a neighbouring block, never trigger redstone/piston) skip the border-band
+            // inset check entirely and go straight to their true owning region, even inside
+            // another region's border band; everything else keeps the conservative check.
+            boolean pinned = !pins.isBeEmpty() && pins.isBePinned(typeId);
+            boolean cascadeSafe = !pinned && !pins.isCascadeSafeBeEmpty() && pins.isCascadeSafeBe(typeId);
+            // Heat is recorded either way (real load, informs cut position); only load that
+            // still needs border-band protection counts toward the split veto.
+            if (pinned || cascadeSafe) {
+                blockTickHeat.record(cx, cz);
+            } else {
+                blockTickHeat.recordVetoable(cx, cz);
+            }
+            WorldRegion region = pinned ? null
+                    : cascadeSafe ? grid.getRegionForChunk(cx, cz)
+                    : interiorRegionFor(cx, cz);
             if (region == null) {
                 mainBes.add(ticker);
             } else {
@@ -821,7 +844,10 @@ public class NestworldRegionSystem {
         // Record block-tick load for the split scorer regardless of which side
         // of the band it lands on — a hot column currently stuck in the band is
         // exactly what we want the next split to see and route into an interior.
-        blockTickHeat.record(cx, cz);
+        // Scheduled ticks/fluid ticks/block events always need border-band
+        // protection (no cascade-safe concept applies here), so this always
+        // counts toward the split veto.
+        blockTickHeat.recordVetoable(cx, cz);
         WorldRegion region = interiorRegionFor(cx, cz);
         if (region != null) {
             buckets.computeIfAbsent(region, r -> new java.util.ArrayList<>()).add(run);

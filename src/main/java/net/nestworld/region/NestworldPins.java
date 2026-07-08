@@ -47,6 +47,25 @@ public final class NestworldPins {
     private final Set<String> pinnedBeIds = ConcurrentHashMap.newKeySet();
     private Path beFile;
 
+    /**
+     * Block-entity type ids the operator has explicitly asserted are
+     * "cascade-safe": their {@code serverTick()} never mutates a block
+     * position other than its own and never triggers a redstone/piston
+     * update or a neighbour-chunk inventory access (the same reach a hopper
+     * or piston has). This is a trust boundary the code cannot verify —
+     * marking an unsafe type reintroduces exactly the cross-region tick
+     * race the region border band exists to prevent.
+     *
+     * <p>Types in this set bypass the border-band inset check in
+     * {@code NestworldRegionSystem#runBlockEntityPhase} (routed to their
+     * true owning region even inside a border band) and their block-tick
+     * heat is excluded from the split-veto calculation in
+     * {@link RegionSplitManager} — letting a dense, otherwise-inseparable
+     * cluster of known-safe machines actually split. Default is empty: zero
+     * behaviour change until an operator opts a type in. */
+    private final Set<String> cascadeSafeBeIds = ConcurrentHashMap.newKeySet();
+    private Path cascadeSafeBeFile;
+
     /** Pinned mod namespaces: every entity AND block-entity from these mods is
      *  pinned to main. The escape hatch for a whole mod that isn't thread-safe. */
     private final Set<String> pinnedMods = ConcurrentHashMap.newKeySet();
@@ -108,6 +127,48 @@ public final class NestworldPins {
             return pinnedMods.contains(ns);
         }
         return false;
+    }
+
+    /** True when no cascade-safe block-entity type is marked — lets callers skip the check. */
+    public boolean isCascadeSafeBeEmpty() {
+        return cascadeSafeBeIds.isEmpty();
+    }
+
+    /** {@code typeId} is {@link net.minecraft.world.level.block.entity.TickingBlockEntity#getType()}
+     *  (a registry id string). True only for types explicitly marked cascade-safe — no mod-level
+     *  bulk variant, deliberately: this is a stronger per-type safety assertion than a pin. */
+    public boolean isCascadeSafeBe(String typeId) {
+        return cascadeSafeBeIds.contains(typeId);
+    }
+
+    /** Sorted cascade-safe block-entity ids, for {@code /nestworld} admin commands and the file. */
+    public List<String> cascadeSafeBeList() {
+        return new ArrayList<>(new TreeSet<>(cascadeSafeBeIds));
+    }
+
+    /**
+     * Marks {@code idStr} as cascade-safe. Returns null on success, or an error message if the id
+     * is malformed or names no registered block-entity type. Does not require the type to be
+     * currently loaded (mirrors {@link #pin}'s tolerance for "kept but inactive" ids).
+     */
+    public String markCascadeSafe(String idStr) {
+        ResourceLocation id = ResourceLocation.tryParse(idStr);
+        if (id == null) return "Not a valid id: " + idStr;
+        if (BuiltInRegistries.BLOCK_ENTITY_TYPE.getOptional(id).isEmpty()) {
+            return "No such block-entity type: " + id;
+        }
+        cascadeSafeBeIds.add(id.toString());
+        saveCascadeSafeBe();
+        return null;
+    }
+
+    /** Unmarks a cascade-safe block-entity id; returns true if it was marked. */
+    public boolean unmarkCascadeSafe(String idStr) {
+        ResourceLocation id = ResourceLocation.tryParse(idStr);
+        if (id == null) return false;
+        boolean removed = cascadeSafeBeIds.remove(id.toString());
+        if (removed) saveCascadeSafeBe();
+        return removed;
     }
 
     /** Sorted pinned mod namespaces, for {@code /nestworld pins} and the file. */
@@ -333,6 +394,53 @@ public final class NestworldPins {
             Files.write(beFile, lines);
         } catch (IOException e) {
             LOGGER.warn("Could not write block-entity pins file {}: {}", beFile, e.toString());
+        }
+    }
+
+    /** Loads cascade-safe block-entity ids (own file; same format as entity/BE pins). */
+    public void loadCascadeSafeBe(Path cascadeSafeBeFile) {
+        this.cascadeSafeBeFile = cascadeSafeBeFile;
+        cascadeSafeBeIds.clear();
+        if (!Files.isRegularFile(cascadeSafeBeFile)) return;
+        try {
+            for (String line : Files.readAllLines(cascadeSafeBeFile)) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+                ResourceLocation id = ResourceLocation.tryParse(trimmed);
+                if (id == null) {
+                    LOGGER.warn("Ignoring malformed cascade-safe block-entity id: {}", trimmed);
+                    continue;
+                }
+                cascadeSafeBeIds.add(id.toString());
+                if (BuiltInRegistries.BLOCK_ENTITY_TYPE.getOptional(id).isEmpty()) {
+                    LOGGER.warn("Cascade-safe block-entity id {} matches no loaded type "
+                            + "(mod absent?) — kept but inactive", id);
+                }
+            }
+            if (!cascadeSafeBeIds.isEmpty()) {
+                LOGGER.info("Loaded {} cascade-safe block-entity type(s): {}",
+                        cascadeSafeBeIds.size(), cascadeSafeBeList());
+            }
+        } catch (IOException e) {
+            LOGGER.warn("Could not read cascade-safe block-entity file {}: {}", cascadeSafeBeFile, e.toString());
+        }
+    }
+
+    private void saveCascadeSafeBe() {
+        if (cascadeSafeBeFile == null) return;
+        try {
+            Path parent = cascadeSafeBeFile.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            List<String> lines = new ArrayList<>();
+            lines.add("# NestWorld cascade-safe block-entity types — one registry id per line.");
+            lines.add("# TRUST BOUNDARY: marking a type here asserts its serverTick() never writes");
+            lines.add("# a block outside its own position and never triggers a redstone/piston");
+            lines.add("# update or neighbour-chunk inventory access. An unsafe type here can cause");
+            lines.add("# cross-region tick races. See NestworldPins.cascadeSafeBeIds javadoc.");
+            lines.addAll(cascadeSafeBeList());
+            Files.write(cascadeSafeBeFile, lines);
+        } catch (IOException e) {
+            LOGGER.warn("Could not write cascade-safe block-entity file {}: {}", cascadeSafeBeFile, e.toString());
         }
     }
 

@@ -34,6 +34,19 @@ public final class NestworldTuning {
             Integer.getInteger("nestworld.regionEntityBudgetMs", 40) * 1_000_000L;
 
     /**
+     * Width (in chunks) of the border band kept on the main thread near every region
+     * edge: scheduled-tick/piston/comparator cascades and hopper neighbour-chunk reads
+     * can reach a few blocks past the origin, and interior cascades can't travel 2
+     * chunks (32 blocks) in a single update. Shared by {@link NestworldRegionSystem}'s
+     * routing ({@code interiorRegionFor}/{@code routeScheduledTick}) and
+     * {@link RegionSplitManager}'s split-veto band scoring — both MUST use the same
+     * value, so this is the single source of truth (previously duplicated in both
+     * classes with a "must mirror" comment, a latent drift risk).
+     */
+    public static final int BORDER_BAND_CHUNKS =
+            Integer.getInteger("nestworld.borderBandChunks", 2);
+
+    /**
      * Anti-grief: cap how many region-thread-spawned entities are registered on
      * the main thread per tick (the rest carry to following ticks). Off-main
      * spawns (mob breeding, projectiles, abilities) are queued and drained on

@@ -272,8 +272,9 @@ public class RegionSplitManager {
 
     /** Share of region load tolerated inside the cut line's border band. */
     private static final double MAX_CUT_BAND_SHARE = 0.25;
-    /** Must mirror NestworldRegionSystem.BORDER_BAND_CHUNKS. */
-    private static final int BORDER_BAND_CHUNKS = 2;
+    /** Single source of truth: {@link NestworldTuning#BORDER_BAND_CHUNKS}, shared with
+     *  NestworldRegionSystem's routing (previously duplicated with a "must mirror" comment). */
+    private static final int BORDER_BAND_CHUNKS = NestworldTuning.BORDER_BAND_CHUNKS;
     /** Sentinel: region has no profileable load, cut at the spatial midpoint. */
     static final int SPATIAL_MIDPOINT = Integer.MIN_VALUE;
 
@@ -345,12 +346,19 @@ public class RegionSplitManager {
         for (int c : ownedEntityChunkCoords(region, axis)) {
             combined.merge(c, 1.0, Double::sum);
         }
+        // Full-picture heat (all sources, including cascade-safe/pinned BEs) still informs
+        // the position-balancing histogram — it is real load and should influence WHERE to
+        // cut. Only the veto-only channel (border-band-relevant sources) feeds scoreCut's
+        // stay-whole veto, so a dense cluster of operator-asserted cascade-safe machines no
+        // longer blocks a split it doesn't actually need to avoid.
         java.util.TreeMap<Integer, Double> heat = new java.util.TreeMap<>();
         blockTickHeat.addAxisHeat(region, axis, NestworldTuning.CUT_HEAT_WEIGHT, heat);
         for (java.util.Map.Entry<Integer, Double> e : heat.entrySet()) {
             combined.merge(e.getKey(), e.getValue(), Double::sum);
         }
-        return scoreCut(min, max, combined, heat);
+        java.util.TreeMap<Integer, Double> vetoHeat = new java.util.TreeMap<>();
+        blockTickHeat.addAxisHeatVetoOnly(region, axis, NestworldTuning.CUT_HEAT_WEIGHT, vetoHeat);
+        return scoreCut(min, max, combined, vetoHeat);
     }
 
     /** Which axis to cut on, and the last chunk coordinate kept by child A. */
@@ -555,6 +563,23 @@ public class RegionSplitManager {
         // axis): no fair cut, vetoed. Across the short axis the same machine
         // shows a quiet entity gap that splits cleanly (loadAwareCut picks it).
         ok &= check("heat hotspot→veto", scoreCut(0, 30, hist(15, 200.0), hist(15, 200.0)) == null);
+
+        // Cascade-safe heat (E7 border-band fix): a dense heat cluster spread over several
+        // adjacent columns (cols 5-9) has no candidate cut whose band avoids most of it — same
+        // "no cut line separates load" shape as a real dense industrial cluster. When that heat
+        // is counted toward the veto (as any ordinary block-tick source is), the split is
+        // correctly refused. When the SAME load is excluded from the veto-only channel (as if
+        // every source were operator-marked cascade-safe) while still informing cut position via
+        // `combined`, a cut must be found instead — proving BlockTickHeat's vetoCounts/addAxisHeatVetoOnly
+        // separation actually changes the outcome, not just the accounting.
+        java.util.TreeMap<Integer, Double> denseHeat = new java.util.TreeMap<>();
+        for (int c = 5; c <= 9; c++) denseHeat.merge(c, 40.0, Double::sum);
+        ScoredCut vetoedByAllHeat = scoreCut(0, 20, denseHeat, denseHeat);
+        ok &= check("cascade-safe: dense cluster vetoed when all heat counts", vetoedByAllHeat == null);
+        ScoredCut notVetoedWhenSafe = scoreCut(0, 20, denseHeat, hist());
+        ok &= check("cascade-safe: cut found when heat excluded from veto",
+                notVetoedWhenSafe != null && notVetoedWhenSafe.profiled);
+
         java.util.TreeMap<Integer, Double> shortAxis = new java.util.TreeMap<>();
         for (int c = 0; c <= 4; c++) shortAxis.merge(c, 50.0, Double::sum);
         for (int c = 20; c <= 24; c++) shortAxis.merge(c, 50.0, Double::sum);
@@ -570,12 +595,16 @@ public class RegionSplitManager {
         return cond;
     }
 
-    private long lastGuardLogNanos = 0;
+    // Per-region rate limit: a single shared timestamp would let one region's log call
+    // suppress every other region's for the next 30s (observed live — a chronically-vetoed
+    // region masked a second one that was ALSO stuck, with no way to tell from the log alone).
+    private final java.util.Map<WorldRegion, Long> lastGuardLogNanos = new java.util.WeakHashMap<>();
 
     private void logSkippedSplit(WorldRegion region) {
         long now = System.nanoTime();
-        if (now - lastGuardLogNanos < 30_000_000_000L) return; // at most every 30 s
-        lastGuardLogNanos = now;
+        Long last = lastGuardLogNanos.get(region);
+        if (last != null && now - last < 30_000_000_000L) return; // at most every 30 s, per region
+        lastGuardLogNanos.put(region, now);
         LOGGER.info("Split of {} skipped: no cut line separates load without slicing a cluster "
                         + "({} entities, heat {}; hottest {})",
                 region, region.getOwnedEntityIds().size(),

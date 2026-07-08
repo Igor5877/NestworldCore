@@ -45,13 +45,39 @@ final class BlockTickHeat {
 
     private final Long2DoubleOpenHashMap counts = new Long2DoubleOpenHashMap();
 
+    /**
+     * Subset of {@link #counts} that still needs border-band protection: scheduled/fluid
+     * ticks, block events, and ordinary (non-cascade-safe, non-pinned) block-entity ticks.
+     * {@link RegionSplitManager}'s split veto is scored against this channel only, so a
+     * cascade-safe machine's real load still influences WHERE to cut (via {@link #counts})
+     * without ever counting toward WHETHER the cut is vetoed. Decayed in lockstep with
+     * {@link #counts}; never contains more weight than {@link #counts} at the same key.
+     */
+    private final Long2DoubleOpenHashMap vetoCounts = new Long2DoubleOpenHashMap();
+
     BlockTickHeat() {
         counts.defaultReturnValue(0.0);
+        vetoCounts.defaultReturnValue(0.0);
     }
 
-    /** Record one unit of block-tick work in the given chunk. Main thread only. */
+    /**
+     * Record one unit of block-tick work in the given chunk that does NOT count toward the
+     * split veto (a cascade-safe or pinned block-entity tick — see {@link NestworldPins}).
+     * Still real load, so it still informs cut position via {@link #counts}. Main thread only.
+     */
     void record(int chunkX, int chunkZ) {
         counts.addTo(ChunkPos.asLong(chunkX, chunkZ), 1.0);
+    }
+
+    /**
+     * Record one unit of block-tick work that DOES count toward the split veto (scheduled/fluid
+     * ticks, block events, ordinary block-entity ticks — anything that still needs border-band
+     * protection). Main thread only.
+     */
+    void recordVetoable(int chunkX, int chunkZ) {
+        long key = ChunkPos.asLong(chunkX, chunkZ);
+        counts.addTo(key, 1.0);
+        vetoCounts.addTo(key, 1.0);
     }
 
     /**
@@ -59,8 +85,13 @@ final class BlockTickHeat {
      * (the split manager's 20-tick evaluation).
      */
     void decay() {
-        if (counts.isEmpty()) return;
-        var it = counts.long2DoubleEntrySet().fastIterator();
+        decayMap(counts);
+        decayMap(vetoCounts);
+    }
+
+    private static void decayMap(Long2DoubleOpenHashMap map) {
+        if (map.isEmpty()) return;
+        var it = map.long2DoubleEntrySet().fastIterator();
         while (it.hasNext()) {
             Long2DoubleMap.Entry e = it.next();
             double v = e.getDoubleValue() * DECAY;
@@ -90,12 +121,29 @@ final class BlockTickHeat {
     /**
      * Add this region's heat, projected onto {@code axis} and scaled by
      * {@code weight}, into a coord→weight histogram the scorer is building.
-     * Only chunks inside the region's bounds contribute.
+     * Only chunks inside the region's bounds contribute. Full picture (all
+     * sources) — used to decide WHERE to cut, never the veto.
      */
     void addAxisHeat(WorldRegion r, SplitAxis axis, double weight,
                      java.util.Map<Integer, Double> into) {
-        if (counts.isEmpty() || weight == 0.0) return;
-        var it = counts.long2DoubleEntrySet().fastIterator();
+        addAxisHeatFrom(counts, r, axis, weight, into);
+    }
+
+    /**
+     * Same as {@link #addAxisHeat}, but only the subset of heat that still needs
+     * border-band protection ({@link #vetoCounts}) — this is what {@link RegionSplitManager}
+     * must pass to {@code scoreCut}'s veto check, so cascade-safe/pinned heat never blocks
+     * a split it wouldn't actually need to avoid.
+     */
+    void addAxisHeatVetoOnly(WorldRegion r, SplitAxis axis, double weight,
+                             java.util.Map<Integer, Double> into) {
+        addAxisHeatFrom(vetoCounts, r, axis, weight, into);
+    }
+
+    private static void addAxisHeatFrom(Long2DoubleOpenHashMap source, WorldRegion r, SplitAxis axis,
+                                        double weight, java.util.Map<Integer, Double> into) {
+        if (source.isEmpty() || weight == 0.0) return;
+        var it = source.long2DoubleEntrySet().fastIterator();
         while (it.hasNext()) {
             Long2DoubleMap.Entry e = it.next();
             long key = e.getLongKey();
