@@ -135,8 +135,24 @@
           EntityType<?> entitytype = p_140200_.m_6095_();
           int i = entitytype.m_20681_() * 16;
           if (i != 0) {
-@@ -1178,25 +_,143 @@
-    protected void m_140421_() {
+@@ -1175,28 +_,160 @@
+ 
+    }
+ 
+-   protected void m_140421_() {
++   // NestWorld: lightweight regression guard for the REGIONALIZED_TRACKER skip-check — a prior
++   // bug (chunkMap.tick() running before region threads set nestworldTrackedTick, see the phase
++   // ordering fix in ServerChunkCache/NestworldRegionSystem) silently kept `skipped` at 0% for
++   // every tick. Cheap (one atomic increment per candidate entity) and only active while
++   // REGIONALIZED_TRACKER is on, so kept permanently rather than ripped out post-verification.
++   static final java.util.concurrent.atomic.AtomicLong nestworldSkipDiagSkipped = new java.util.concurrent.atomic.AtomicLong();
++   static final java.util.concurrent.atomic.AtomicLong nestworldSkipDiagTotal = new java.util.concurrent.atomic.AtomicLong();
++   static int nestworldSkipDiagTickCounter = 0;
++
++   // NestWorld: widened from protected to public so NestworldRegionSystem (different package)
++   // can call this directly, relocated to run AFTER region threads finish their tick instead of
++   // before — see ServerChunkCache.tickChunks() and NestworldRegionSystem.tickAllRegions().
++   public void m_140421_() {
        List<ServerPlayer> list = Lists.newArrayList();
        List<ServerPlayer> list1 = this.f_140133_.m_6907_();
 +      // NestWorld (REGIONALIZED_TRACKER): entities whose owning region already tracked them this
@@ -167,7 +183,8 @@
 +         nestworldBcCursor.set(0);
 +         nestworldChangedCursor.set(0);
 +         this.f_140150_.values().parallelStream().forEach(nestworldTe -> {
-+            if (nestworldTe.nestworldTrackedTick == nestworldCurTick) return; // region already tracked it
++            nestworldSkipDiagTotal.incrementAndGet();
++            if (nestworldTe.nestworldTrackedTick == nestworldCurTick) { nestworldSkipDiagSkipped.incrementAndGet(); return; } // region already tracked it
 +            Entity nestworldE = nestworldTe.f_140472_;
 +            boolean nestworldStill2 = net.nestworld.region.NestworldTuning.TRACKER_SPATIAL_CULL
 +                  && !(nestworldE instanceof ServerPlayer)
@@ -230,7 +247,8 @@
 -            chunkmap$trackedentity.f_140471_.m_8533_();
 -         }
 -      }
-+         if (chunkmap$trackedentity.nestworldTrackedTick == nestworldCurTick) continue; // region already tracked it
++         nestworldSkipDiagTotal.incrementAndGet();
++         if (chunkmap$trackedentity.nestworldTrackedTick == nestworldCurTick) { nestworldSkipDiagSkipped.incrementAndGet(); continue; } // region already tracked it
 +         Entity nestworldEntity = chunkmap$trackedentity.f_140472_;
 +         // NestWorld: SectionPos.of() (block->section floors) runs for every tracked
 +         // entity every tick just to detect section changes — O(N) that dominates the
@@ -296,10 +314,32 @@
  
        if (!list.isEmpty()) {
           for(ChunkMap.TrackedEntity chunkmap$trackedentity1 : this.f_140150_.values()) {
-@@ -1206,6 +_,40 @@
+@@ -1204,6 +_,60 @@
+          }
+       }
  
-    }
- 
++      // NestWorld: regression guard — log the skip ratio every 200 ticks, then reset. A healthy
++      // fixed build sits close to 100% (region threads already tracked their owned entities by
++      // the time this runs); if `skipped` collapses back toward 0% with `total` still nonzero,
++      // the phase-ordering fix (ServerChunkCache/NestworldRegionSystem) has regressed and every
++      // owned entity is being tracked twice again.
++      if (net.nestworld.region.NestworldTuning.REGIONALIZED_TRACKER && ++nestworldSkipDiagTickCounter >= 200) {
++         nestworldSkipDiagTickCounter = 0;
++         long total = nestworldSkipDiagTotal.getAndSet(0);
++         long skipped = nestworldSkipDiagSkipped.getAndSet(0);
++         double pct = total == 0 ? 0.0 : (100.0 * skipped / total);
++         org.apache.logging.log4j.LogManager.getLogger("NestWorld/TrackerDiag").info(
++               "REGIONALIZED_TRACKER skip-check over 200 ticks: total={} skipped={} ({}%)",
++               total, skipped, pct);
++         if (total > 0 && pct < 5.0) {
++            org.apache.logging.log4j.LogManager.getLogger("NestWorld/TrackerDiag").warn(
++                  "REGIONALIZED_TRACKER skip-check is near 0% ({}%) — the phase-ordering fix "
++                  + "(chunkMap.tick() must run after region threads finish) may have regressed; "
++                  + "owned entities are likely being tracked twice per tick again.", pct);
++         }
++      }
++   }
++
 +   // NestWorld (REGIONALIZED_TRACKER): run the per-entity tracker step (section detection +
 +   // updatePlayers + sendChanges) for an entity OWNED by the calling region thread, during the
 +   // region phase. Only the owning region ever touches this entity's tracker state (seenBy,
@@ -332,11 +372,9 @@
 +         te.f_140471_.m_8533_();
 +      }
 +      te.nestworldTrackedTick = nestworldTickNo;
-+   }
-+
+    }
+ 
     public void m_140201_(Entity p_140202_, Packet<?> p_140203_) {
-       ChunkMap.TrackedEntity chunkmap$trackedentity = this.f_140150_.get(p_140202_.m_19879_());
-       if (chunkmap$trackedentity != null) {
 @@ -1282,6 +_,7 @@
           }
        }

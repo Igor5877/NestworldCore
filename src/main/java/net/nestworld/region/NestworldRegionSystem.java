@@ -525,6 +525,16 @@ public class NestworldRegionSystem {
         drainDeferredRemovals();
         drainDeferredTrackingAdds();
         drainDeferredSpawns();
+        // 5c. Vanilla visibility/broadcast tracker (ChunkMap.tick()), deferred from its normal
+        // position (ServerChunkCache.tickChunks(), phase 1 — see the guard there) to HERE,
+        // strictly after region threads finish their tick: REGIONALIZED_TRACKER's skip-check
+        // (nestworldTrackedTick == this tick's number) can only ever succeed if it runs after
+        // regions have set that stamp for owned entities, which happens above in step 4. Also
+        // means players/unowned entities are tracked/broadcast with THIS tick's fresh position
+        // instead of last tick's (one tick less latency) — an intentional, understood side
+        // effect, not a bug. Region threads are fully parked outside the step-4 window, so no
+        // race is possible on the seenBy/lastSectionPos state this call writes.
+        overworld.getChunkSource().chunkMap.tick();
         long t5 = System.nanoTime();
 
         // 6. Adaptive split / merge
