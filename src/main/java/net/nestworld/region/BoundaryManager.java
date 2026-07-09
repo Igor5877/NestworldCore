@@ -47,13 +47,29 @@ public class BoundaryManager {
     }
 
     /**
-     * Returns a read-only view of a chunk owned by {@code ownerRegion},
-     * or null when the chunk is not loaded.
+     * Returns a read-only view of a chunk owned by {@code ownerRegion}, or null when
+     * the chunk is not loaded OR the chunk is deeper than {@link #GHOST_DEPTH} inside
+     * the owner's territory. The depth check matters: without it this always returns
+     * non-null for any loaded foreign chunk, which meant {@link RegionChunkView}'s real
+     * lock tier (for reads that reach further into a foreign region than the documented
+     * ghost contract) was practically unreachable — this "ghost" was a live,
+     * unsynchronized pass-through with no actual staleness bound, not the snapshot the
+     * class javadoc promises.
      * Safe to call from any region thread.
      */
     public ChunkSnapshot getGhostChunk(WorldRegion ownerRegion, int cx, int cz) {
+        if (!withinGhostDepth(ownerRegion, cx, cz)) return null;
         LevelChunk chunk = level.getChunkSource().getChunkNow(cx, cz);
         return chunk == null ? null : new ChunkSnapshot(chunk);
+    }
+
+    /** True when (cx,cz) — assumed inside {@code owner}'s bounds — is within
+     *  {@link #GHOST_DEPTH} chunks of the nearest edge of the owner region. */
+    private static boolean withinGhostDepth(WorldRegion owner, int cx, int cz) {
+        int distToNearestEdge = Math.min(
+                Math.min(cx - owner.getMinChunkX(), owner.getMaxChunkX() - cx),
+                Math.min(cz - owner.getMinChunkZ(), owner.getMaxChunkZ() - cz));
+        return distToNearestEdge <= GHOST_DEPTH;
     }
 
     /**

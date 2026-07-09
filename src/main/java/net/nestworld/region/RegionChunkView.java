@@ -95,15 +95,34 @@ public class RegionChunkView {
             return level.getBlockEntity(pos);
         }
 
-        // Ghost zone: block-entities are captured per-tick by BoundaryManager
+        // Ghost zone: within BoundaryManager.GHOST_DEPTH of a border — live but
+        // bounded-staleness read (see BoundaryManager.getGhostChunk javadoc).
         int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
         BoundaryManager.ChunkSnapshot snap = boundaryManager.getGhostChunk(owner, cx, cz);
         if (snap != null) {
             return snap.getBlockEntity(pos);
         }
 
-        // Live read under read-lock
-        long stamp = owner.getChunkLock().readLock();
+        // Deep foreign read (beyond ghost depth): try the real lock, bounded. A region
+        // thread holds its OWN write-lock for its entire tick (up to
+        // NestworldTuning.REGION_ENTITY_BUDGET_NANOS) — an unbounded readLock() here
+        // risks two regions reading each other at the same moment and deadlocking
+        // forever, which hangs the WHOLE server (RegionThreadPool's barrier waits on
+        // every region, not just these two). On timeout, degrade to a best-effort
+        // unsynchronized read instead of blocking indefinitely — no worse than the
+        // pre-fix behavior, just no longer the default for every foreign read.
+        long stamp;
+        try {
+            stamp = owner.getChunkLock().tryReadLock(
+                    NestworldTuning.CROSS_REGION_READ_LOCK_TIMEOUT_NANOS,
+                    java.util.concurrent.TimeUnit.NANOSECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return level.getBlockEntity(pos);
+        }
+        if (stamp == 0L) {
+            return level.getBlockEntity(pos); // timed out — best-effort stale read
+        }
         try {
             return level.getBlockEntity(pos);
         } finally {

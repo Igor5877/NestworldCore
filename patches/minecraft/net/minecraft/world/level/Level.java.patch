@@ -9,11 +9,15 @@
     public static final Codec<ResourceKey<Level>> f_46427_ = ResourceKey.m_195966_(Registries.f_256858_);
     public static final ResourceKey<Level> f_46428_ = ResourceKey.m_135785_(Registries.f_256858_, new ResourceLocation("overworld"));
     public static final ResourceKey<Level> f_46429_ = ResourceKey.m_135785_(Registries.f_256858_, new ResourceLocation("the_nether"));
-@@ -97,3 +_,3 @@
+@@ -95,7 +_,7 @@
+    public float f_46438_;
+    public float f_46439_;
     public float f_46440_;
 -   public final RandomSource f_46441_ = RandomSource.m_216327_();
 +   public final RandomSource f_46441_ = RandomSource.m_216337_(); // NestWorld: thread-safe random for parallel region entity ticking
     /** @deprecated */
+    @Deprecated
+    private final RandomSource f_220348_ = RandomSource.m_216337_();
 @@ -110,8 +_,14 @@
     private final RegistryAccess f_268710_;
     private final DamageSources f_268497_;
@@ -89,31 +93,30 @@
     }
  
     public void m_46590_(BlockPos p_46591_, Block p_46592_, Direction p_46593_) {
-@@ -291,9 +_,14 @@
+@@ -291,7 +_,12 @@
     }
  
     public void m_213683_(Direction p_220385_, BlockState p_220386_, BlockPos p_220387_, BlockPos p_220388_, int p_220389_, int p_220390_) {
 -      this.f_220350_.m_213547_(p_220385_, p_220386_, p_220387_, p_220388_, p_220389_, p_220390_);
--   }
--
 +      this.nestworldNeighborUpdater().m_213547_(p_220385_, p_220386_, p_220387_, p_220388_, p_220389_, p_220390_);
 +   }
 +
 +   public NeighborUpdater nestworldNeighborUpdater() {
 +      NeighborUpdater nestworldNu = net.nestworld.region.NestworldRedstone.regionNeighborUpdater(this);
 +      return nestworldNu != null ? nestworldNu : this.f_220350_;
-+   }
-+
+    }
+ 
     public int m_6924_(Heightmap.Types p_46571_, int p_46572_, int p_46573_) {
-       int i;
-       if (p_46572_ >= -30000000 && p_46573_ >= -30000000 && p_46572_ < 30000000 && p_46573_ < 30000000) {
-@@ -398,26 +_,59 @@
+@@ -395,27 +_,60 @@
+    }
+ 
+    public void m_151525_(TickingBlockEntity p_151526_) {
 -      (this.f_151504_ ? this.f_151503_ : this.f_151512_).add(p_151526_);
 +      synchronized (this.f_151503_) {
 +         (this.f_151504_ ? this.f_151503_ : this.f_151512_).add(p_151526_);
 +      }
-    }
- 
++   }
++
 +   public void addFreshBlockEntities(java.util.Collection<BlockEntity> beList) {
 +      synchronized (this.pendingFreshBlockEntities) {
 +         if (this.f_151504_) {
@@ -122,8 +125,8 @@
 +            this.freshBlockEntities.addAll(beList);
 +         }
 +      }
-+   }
-+
+    }
+ 
     protected void m_46463_() {
        ProfilerFiller profilerfiller = this.m_46473_();
        profilerfiller.m_6180_("blockEntities");
@@ -160,15 +163,13 @@
 +               tickingblockentity.m_142224_();
 +            }
           }
-       }
++      }
 +
 +      if (nestworldDue != null) {
 +         net.nestworld.region.NestworldRegionSystem.get().runBlockEntityPhase((net.minecraft.server.level.ServerLevel)this, nestworldDue);
-+      }
+       }
  
        this.f_151504_ = false;
-       profilerfiller.m_7238_();
-    }
 @@ -424,12 +_,19 @@
  
     public <T extends Entity> void m_46653_(Consumer<T> p_46654_, T p_46655_) {
@@ -206,17 +207,27 @@
        explosion.m_46061_();
        explosion.m_46075_(p_256377_);
        return explosion;
-@@ -497,7 +_,9 @@
-    public BlockEntity m_7702_(BlockPos p_46716_) {
+@@ -498,7 +_,19 @@
        if (this.m_151570_(p_46716_)) {
           return null;
        } else {
 -         return !this.f_46443_ && Thread.currentThread() != this.f_46423_ ? null : this.m_46745_(p_46716_).m_5685_(p_46716_, LevelChunk.EntityCreationType.IMMEDIATE);
 +         // NestWorld: region threads tick block entities — vanilla's off-main
 +         // guard made getBlockEntity return null there (hopper "sees no chest").
++         // A region thread reading a position may be reading ANOTHER region's
++         // territory (previously zero protection — see RegionChunkView javadoc);
++         // route through the chunk view so cross-region reads get the ghost/
++         // locked-read protection instead of an unguarded live read.
++         if (Thread.currentThread() instanceof net.nestworld.region.RegionThread
++                 && net.nestworld.region.NestworldRegionSystem.isInitialised()
++                 && this == net.nestworld.region.NestworldRegionSystem.get().getOverworld()) {
++            return net.nestworld.region.NestworldRegionSystem.get().getChunkView()
++                    .getBlockEntity((net.minecraft.server.level.ServerLevel) this, p_46716_);
++         }
 +         return !this.f_46443_ && Thread.currentThread() != this.f_46423_ && !(Thread.currentThread() instanceof net.nestworld.region.RegionThread) ? null : this.m_46745_(p_46716_).m_5685_(p_46716_, LevelChunk.EntityCreationType.IMMEDIATE);
        }
     }
+ 
 @@ -513,6 +_,7 @@
        if (!this.m_151570_(p_46748_)) {
           this.m_46745_(p_46748_).m_8114_(p_46748_);

@@ -47,6 +47,19 @@ public final class NestworldTuning {
             Integer.getInteger("nestworld.borderBandChunks", 2);
 
     /**
+     * Cap on how long a region thread will block trying to acquire ANOTHER region's
+     * chunk read-lock for a cross-region block-entity read ({@link RegionChunkView}).
+     * A region thread holds its OWN write-lock for its entire tick (up to
+     * {@link #REGION_ENTITY_BUDGET_NANOS}), so two regions reading each other at the
+     * same time could otherwise deadlock forever — which hangs the WHOLE server
+     * (RegionThreadPool's barrier waits on every region). Short relative to the tick
+     * budget: on timeout, {@link RegionChunkView} falls back to a best-effort stale
+     * read instead of blocking indefinitely.
+     */
+    public static final long CROSS_REGION_READ_LOCK_TIMEOUT_NANOS =
+            Integer.getInteger("nestworld.crossRegionReadLockTimeoutMs", 2) * 1_000_000L;
+
+    /**
      * Anti-grief: cap how many region-thread-spawned entities are registered on
      * the main thread per tick (the rest carry to following ticks). Off-main
      * spawns (mob breeding, projectiles, abilities) are queued and drained on

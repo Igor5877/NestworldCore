@@ -946,6 +946,11 @@ public class NestworldRegionSystem {
     // Subsystem accessors (for admin commands, Spark integration, etc.)
     // -----------------------------------------------------------------------
 
+    /** The sharded level this instance manages — used by patches to guard region-aware
+     *  routing (e.g. cross-region block-entity reads) against other dimensions, where
+     *  chunk coordinates can numerically collide with the overworld's but must never be
+     *  resolved through its region grid. */
+    public ServerLevel getOverworld()                 { return overworld; }
     public WorldGrid getGrid()                        { return grid; }
     public RegionTree getTree()                       { return tree; }
     public RegionThreadPool getPool()                 { return pool; }
