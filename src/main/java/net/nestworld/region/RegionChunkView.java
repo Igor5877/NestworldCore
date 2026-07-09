@@ -89,10 +89,14 @@ public class RegionChunkView {
     @Nullable
     public BlockEntity getBlockEntity(net.minecraft.server.level.ServerLevel level, BlockPos pos) {
         WorldRegion owner = grid.getRegionFor(pos);
-        if (owner == null) return level.getBlockEntity(pos);
+        // NestWorld: these must call the raw/direct accessor, not level.getBlockEntity(pos) —
+        // the vanilla method redirects back into this class for any RegionThread caller, so
+        // calling it here would recurse forever (confirmed live: StackOverflowError on every
+        // block-entity read from a region thread).
+        if (owner == null) return level.nestworldGetBlockEntityRaw(pos);
 
         if (owner.owningThread == Thread.currentThread()) {
-            return level.getBlockEntity(pos);
+            return level.nestworldGetBlockEntityRaw(pos);
         }
 
         // Ghost zone: within BoundaryManager.GHOST_DEPTH of a border — live but
@@ -118,13 +122,13 @@ public class RegionChunkView {
                     java.util.concurrent.TimeUnit.NANOSECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return level.getBlockEntity(pos);
+            return level.nestworldGetBlockEntityRaw(pos);
         }
         if (stamp == 0L) {
-            return level.getBlockEntity(pos); // timed out — best-effort stale read
+            return level.nestworldGetBlockEntityRaw(pos); // timed out — best-effort stale read
         }
         try {
-            return level.getBlockEntity(pos);
+            return level.nestworldGetBlockEntityRaw(pos);
         } finally {
             owner.getChunkLock().unlockRead(stamp);
         }

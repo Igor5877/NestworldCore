@@ -207,7 +207,7 @@
        explosion.m_46061_();
        explosion.m_46075_(p_256377_);
        return explosion;
-@@ -498,7 +_,19 @@
+@@ -498,8 +_,33 @@
        if (this.m_151570_(p_46716_)) {
           return null;
        } else {
@@ -224,10 +224,24 @@
 +            return net.nestworld.region.NestworldRegionSystem.get().getChunkView()
 +                    .getBlockEntity((net.minecraft.server.level.ServerLevel) this, p_46716_);
 +         }
-+         return !this.f_46443_ && Thread.currentThread() != this.f_46423_ && !(Thread.currentThread() instanceof net.nestworld.region.RegionThread) ? null : this.m_46745_(p_46716_).m_5685_(p_46716_, LevelChunk.EntityCreationType.IMMEDIATE);
++         return this.nestworldGetBlockEntityRaw(p_46716_);
        }
++   }
++
++   // NestWorld: the real chunk-based lookup, factored out of getBlockEntity() above so
++   // RegionChunkView's own read branches (same-region direct read, foreign-region locked
++   // read, lock-timeout fallback) can reach the actual data without calling back into
++   // getBlockEntity() — which would just redirect into RegionChunkView again and recurse
++   // forever (every one of those branches used to call level.getBlockEntity(pos), and since
++   // the calling thread is always a RegionThread here, that call would immediately re-enter
++   // the same redirect). Confirmed live: StackOverflowError on every block-entity access
++   // from a region thread under real mod load (e.g. productivebees bee tick), not just
++   // cross-region ones.
++   public BlockEntity nestworldGetBlockEntityRaw(BlockPos p_46716_) {
++      return !this.f_46443_ && Thread.currentThread() != this.f_46423_ && !(Thread.currentThread() instanceof net.nestworld.region.RegionThread) ? null : this.m_46745_(p_46716_).m_5685_(p_46716_, LevelChunk.EntityCreationType.IMMEDIATE);
     }
  
+    public void m_151523_(BlockEntity p_151524_) {
 @@ -513,6 +_,7 @@
        if (!this.m_151570_(p_46748_)) {
           this.m_46745_(p_46748_).m_8114_(p_46748_);
