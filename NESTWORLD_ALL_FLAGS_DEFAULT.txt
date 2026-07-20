@@ -1,0 +1,81 @@
+# NestworldCore — усі -Dnestworld.* прапорці зі значеннями ЗА ЗАМОВЧУВАННЯМ
+# (тобто цей файл еквівалентний "нічого не чіпати" — можна вставити в
+#  user_jvm_args.txt як явну базову лінію, або як шаблон для правок)
+#
+# Категорії: [ON] = default-on валідована оптимізація
+#            [OFF] = default-off (експериментальна/змінює геймплей/потребує тесту)
+#            [TUNE] = завжди активний параметр налаштування (не on/off)
+#            [DEV] = дев/самотест прапорець, не для продакшна
+
+# ── Шардинг / регіони [TUNE] ──────────────────────────────────────────────
+-Dnestworld.maxRegions=0                       # 0 = авто cores*2 (мін.4); 1 = форс один регіон/потік (найближче до ваніли)
+-Dnestworld.regionEntityBudgetMs=40            # бюджет ентіті-раунду регіону, мс; НЕ ставити <25 (поріг спліту)
+-Dnestworld.splitTargetParallelism=0            # 0 = авто cores-1 (fill-idle-cores цільова к-сть паралельних регіонів)
+-Dnestworld.splitFillCoresMs=12.0              # нижній поріг спліту, коли зайнятих регіонів < цілі; дуже високе = вимкнути
+-Dnestworld.cutHeatWeight=0.15                  # вага block-tick heat у скорингу ліній розрізу; 0 = лише по ентіті
+-Dnestworld.maxRegionCrashes=5                  # к-сть крашів region-потоку до його вимкнення
+
+# ── Колізії (анти-хотспот кап) [TUNE] ─────────────────────────────────────
+-Dnestworld.maxMinecartPush=8                   # кап O(n^2) колізій вагонеток; -1 = зняти (ванільна поведінка, для сумісності з Lithium)
+-Dnestworld.maxEntityPush=8                     # те саме для човнів/живих мобів
+
+# ── Anti-grief деферали спавнів [TUNE] ────────────────────────────────────
+-Dnestworld.maxDeferredSpawnsPerTick=1000       # к-сть реєстрацій спавнів на main за тік
+-Dnestworld.deferredSpawnQueueCap=200000        # твердий кап черги (флуд-спавни понад це дропаються)
+
+# ── A1 — throttle руху трекера [ON, валідовано] ───────────────────────────
+-Dnestworld.trackerMoveThrottle=true
+
+# ── B1 — event-driven ownership [ON, валідовано] ─────────────────────────
+-Dnestworld.eventDrivenOwnership=true
+-Dnestworld.ownershipFullPassTicks=200          # safety-net: повний скан кожні N тіків
+
+# ── Tracker parallel broadcast [ON, валідовано] ───────────────────────────
+-Dnestworld.trackerParallelBroadcast=true
+-Dnestworld.trackerParallelBroadcastThreshold=512
+
+# ── Phase 1 — parallel detection [ON, валідовано] ─────────────────────────
+-Dnestworld.trackerParallelDetection=true
+-Dnestworld.trackerParallelDetectionThreshold=4096
+
+# ── C1 — skip empty entity collision [ON, валідовано] ─────────────────────
+-Dnestworld.skipEmptyEntityCollision=true
+
+# ── Tracker spatial cull для move() [OFF, експериментально] ───────────────
+-Dnestworld.trackerSpatialCull=false
+
+# ── C2 — explosion exposure cache [OFF, змінює геймплей] ──────────────────
+-Dnestworld.cacheExplosionExposure=false
+
+# ── Phase 2 — regionalized tracker [OFF, high-risk, Folia-крок] ──────────
+-Dnestworld.regionalizedTracker=false
+
+# ── Non-blocking chunk reads [OFF, ПРОВАЛЕНИЙ експеримент — не вмикати] ──
+-Dnestworld.nonBlockingChunkReads=false
+
+# ── Predictive chunk-gen (Layer 3, GEN_SPIKE) [OFF, готовий, не default-on] ─
+-Dnestworld.chunkGenBudget=0                    # 0 = unlimited (ваніла); напр. 8 = кап 8 промоцій/тік
+-Dnestworld.predictiveGen=false
+-Dnestworld.predictiveLookahead=5
+-Dnestworld.predictiveFan=1
+-Dnestworld.predictiveLog=false
+
+# ── Мод-сумісність (Pins / Compat) [TUNE] ─────────────────────────────────
+-Dnestworld.autoPin=false                       # авто-пінити тип, що повторно крашить region-потік
+-Dnestworld.autoPinThreshold=20                  # к-сть помилок до авто-піну
+-Dnestworld.strictCompat=false                   # hard-stop при виявленні Lithium-родини (замість авто-фіксу конфігів)
+
+# ── Auto-spark [ON за замовчуванням, потребує spark.jar] ──────────────────
+-Dnestworld.autoSpark=true
+-Dnestworld.spark.jar=                          # шлях до spark-standalone-agent.jar (порожньо = вимкнено функціонально)
+-Dnestworld.beTracePos=                          # "x,y,z" — трасувати конкретний block entity (діагностика)
+
+# ── Логування [TUNE] ──────────────────────────────────────────────────────
+-Dnestworld.timingLog=true                       # фазовий тайминг-лог раз/200 тіків; false глушить у проді
+-Dnestworld.layoutSaveIntervalTicks=6000         # період пере-збереження BSP-розкладки (тіків, ~5хв); пише лише при зміні
+
+# ── Self-test / dev-прапорці [DEV, не для продакшна] ──────────────────────
+-Dnestworld.crashTestRegion=-1                    # форс-крашнути вказаний регіон N разів (тест RegionThreadPool recovery)
+-Dnestworld.cutTest=false                        # детермінований тест скорера розрізів
+-Dnestworld.autoPinTest=false                    # тест порогу авто-піну
+-Dnestworld.layoutTest=false                     # round-trip тест серіалізації BSP-дерева

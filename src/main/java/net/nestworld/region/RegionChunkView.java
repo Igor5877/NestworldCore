@@ -36,9 +36,60 @@ import javax.annotation.Nullable;
 public class RegionChunkView {
 
     private static final Logger LOGGER = LogManager.getLogger("NestWorld/ChunkView");
+    private static final Logger DIAG_LOGGER = LogManager.getLogger("NestWorld/ChunkViewDiag");
 
     private final WorldGrid grid;
     private final BoundaryManager boundaryManager;
+
+    // NestWorld: real telemetry for how often cross-region getBlockEntity() reads
+    // actually happen and what path they take, requested after the me_beam_former /
+    // AE2-style "could this be worse than vanilla" discussion — static analysis of mod
+    // bytecode can only say a network COULD span a region border, not whether it DOES
+    // in a live world. These counters answer that empirically. Call-count-triggered
+    // (not tick-triggered, unlike ChunkMap's tracker diagnostic) since this class has
+    // no tick hook of its own — every REPORT_INTERVAL-th cross-region attempt (i.e.
+    // excluding the same-region fast path) flushes and logs a snapshot.
+    private static final int REPORT_INTERVAL = 20_000;
+    private static final java.util.concurrent.atomic.AtomicLong sameRegionReads =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong crossRegionAttempts =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong ghostZoneReads =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong deepLockAcquired =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong deepLockTimedOut =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong deepLockInterrupted =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    private static void reportIfDue() {
+        long n = crossRegionAttempts.incrementAndGet();
+        if (n % REPORT_INTERVAL != 0) return;
+        long same = sameRegionReads.getAndSet(0);
+        long ghost = ghostZoneReads.getAndSet(0);
+        long acquired = deepLockAcquired.getAndSet(0);
+        long timedOut = deepLockTimedOut.getAndSet(0);
+        long interrupted = deepLockInterrupted.getAndSet(0);
+        long cross = ghost + acquired + timedOut + interrupted;
+        long total = same + cross;
+        DIAG_LOGGER.info(
+                "cross-region getBlockEntity() over last {} attempts: same-region={} ({}%) "
+                        + "ghost-zone={} deep-lock-acquired={} deep-lock-STALE-fallback={} "
+                        + "interrupted={} — cross-region share={}%",
+                total, same, total == 0 ? 0.0 : (100.0 * same / total),
+                ghost, acquired, timedOut, interrupted,
+                total == 0 ? 0.0 : (100.0 * cross / total));
+        if (timedOut > 0 && cross > 0 && (100.0 * timedOut / cross) > 10.0) {
+            DIAG_LOGGER.warn(
+                    "{}% of cross-region reads in the last window degraded to a STALE "
+                            + "best-effort fallback (lock timeout after {}ms) — a network/multiblock "
+                            + "mod's live state may be reading briefly-out-of-date data across a region "
+                            + "border under this load.",
+                    String.format("%.1f", 100.0 * timedOut / cross),
+                    NestworldTuning.CROSS_REGION_READ_LOCK_TIMEOUT_NANOS / 1_000_000L);
+        }
+    }
 
     public RegionChunkView(WorldGrid grid, BoundaryManager bm) {
         this.grid = grid;
@@ -96,6 +147,8 @@ public class RegionChunkView {
         if (owner == null) return level.nestworldGetBlockEntityRaw(pos);
 
         if (owner.owningThread == Thread.currentThread()) {
+            sameRegionReads.incrementAndGet();
+            reportIfDue();
             return level.nestworldGetBlockEntityRaw(pos);
         }
 
@@ -104,6 +157,8 @@ public class RegionChunkView {
         int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
         BoundaryManager.ChunkSnapshot snap = boundaryManager.getGhostChunk(owner, cx, cz);
         if (snap != null) {
+            ghostZoneReads.incrementAndGet();
+            reportIfDue();
             return snap.getBlockEntity(pos);
         }
 
@@ -122,12 +177,18 @@ public class RegionChunkView {
                     java.util.concurrent.TimeUnit.NANOSECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            deepLockInterrupted.incrementAndGet();
+            reportIfDue();
             return level.nestworldGetBlockEntityRaw(pos);
         }
         if (stamp == 0L) {
+            deepLockTimedOut.incrementAndGet();
+            reportIfDue();
             return level.nestworldGetBlockEntityRaw(pos); // timed out — best-effort stale read
         }
         try {
+            deepLockAcquired.incrementAndGet();
+            reportIfDue();
             return level.nestworldGetBlockEntityRaw(pos);
         } finally {
             owner.getChunkLock().unlockRead(stamp);
