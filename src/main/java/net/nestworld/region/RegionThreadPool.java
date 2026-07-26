@@ -56,7 +56,7 @@ public class RegionThreadPool {
 
     /**
      * Gracefully shuts down the thread for the given region.
-     * Call this before a merge so the thread no longer ticks the region.
+     * Call this before a split/merge so the thread no longer ticks the region.
      */
     public void remove(WorldRegion region) {
         threads.removeIf(t -> {
@@ -66,6 +66,12 @@ public class RegionThreadPool {
             }
             return false;
         });
+        // A disabled region being split/merged away must drop out of
+        // disabledRegions too — otherwise its (now-stale) WorldRegion object
+        // keeps getting entity-ticked on main by NestworldRegionSystem forever,
+        // even after doSplit/doMerge handed its entity UUIDs to a new region
+        // with its own live thread, double-ticking those entities.
+        disabledRegions.remove(region.getId());
         LOGGER.info("Removed region {} (total active regions: {})", region.getId(), threads.size());
     }
 
@@ -165,20 +171,28 @@ public class RegionThreadPool {
 
     // Crash isolation: a region whose thread keeps dying must not respawn-loop
     // forever (spamming crashes, never ticking). After MAX_CRASHES within
-    // CRASH_WINDOW_MS we stop respawning it and disable the region — its
-    // entities/blocks freeze, but the rest of the server keeps running instead
-    // of being dragged into an endless crash cycle. Touched only from the main
-    // thread (respawnCrashedThreads runs once per tick), so plain maps are fine.
+    // CRASH_WINDOW_MS we stop respawning it and disable the region — it no
+    // longer gets a dedicated RegionThread, but NestworldRegionSystem picks its
+    // entities up on the main thread every tick instead (same fallback as a
+    // pinned entity type), so it degrades to unparallelized-but-alive rather
+    // than fully frozen. Its blocks/scheduled ticks/block-entities still freeze
+    // (their work-round dispatch is keyed off an alive RegionThread — a
+    // separate follow-up). Touched only from the main thread
+    // (respawnCrashedThreads runs once per tick), so a plain map is fine.
     private static final int MAX_CRASHES =
             Integer.getInteger("nestworld.maxRegionCrashes", 5);
     private static final long CRASH_WINDOW_MS = 300_000L; // 5 min
     private final java.util.Map<Integer, java.util.Deque<Long>> crashTimes =
             new java.util.HashMap<>();
-    private final java.util.Set<Integer> disabledRegions =
-            java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final java.util.Map<Integer, WorldRegion> disabledRegions =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
-    /** Region ids that crashed too often and are no longer ticked (for status). */
-    public java.util.Set<Integer> getDisabledRegions() { return disabledRegions; }
+    /** Region ids that crashed too often and no longer have a RegionThread (for status). */
+    public java.util.Set<Integer> getDisabledRegions() { return disabledRegions.keySet(); }
+
+    /** Regions that crashed too often and no longer have a RegionThread — their owned
+     *  entities are ticked on the main thread instead (see NestworldRegionSystem). */
+    public java.util.Collection<WorldRegion> getDisabledRegionObjects() { return disabledRegions.values(); }
 
     private void respawnCrashedThreads() {
         for (RegionThread t : threads) {
@@ -194,12 +208,13 @@ public class RegionThreadPool {
             int recent = times.size();
 
             if (recent > MAX_CRASHES) {
-                if (disabledRegions.add(id)) {
-                    LOGGER.error("Region {} crashed {} times in {} min — DISABLING it. Its "
-                            + "entities/blocks will not tick until a restart or you "
-                            + "/nestworld merge it into a neighbour. The rest of the server keeps "
-                            + "running. (Enable -Dnestworld.autoPin=true to pin the offending "
-                            + "entity type instead.)", id, recent, CRASH_WINDOW_MS / 60_000);
+                if (disabledRegions.put(id, region) == null) {
+                    LOGGER.error("Region {} crashed {} times in {} min — DISABLING its RegionThread. "
+                            + "Its entities now tick on the main thread (unparallelized, like a pinned "
+                            + "type); its blocks/scheduled ticks/block-entities will not tick until a "
+                            + "restart or you /nestworld merge it into a neighbour. The rest of the "
+                            + "server keeps running. (Enable -Dnestworld.autoPin=true to pin the "
+                            + "offending entity type instead.)", id, recent, CRASH_WINDOW_MS / 60_000);
                 }
                 continue;
             }
@@ -210,7 +225,7 @@ public class RegionThreadPool {
                     id, recent, MAX_CRASHES, delayMs / 1000);
             Thread respawner = new Thread(() -> {
                 try { Thread.sleep(delayMs); } catch (InterruptedException ignored) { return; }
-                if (!disabledRegions.contains(id)) {
+                if (!disabledRegions.containsKey(id)) {
                     spawn(region);
                     LOGGER.info("Respawned RegionThread for region {}", id);
                 }

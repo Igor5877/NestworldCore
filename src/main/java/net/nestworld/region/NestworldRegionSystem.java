@@ -259,6 +259,47 @@ public class NestworldRegionSystem {
         }
     }
 
+    /**
+     * Ticks entities owned by regions whose RegionThread was disabled after
+     * repeated crashes (see {@link RegionThreadPool}'s MAX_CRASHES). Mirrors
+     * {@link #tickPinnedEntitiesOnMain}'s vanilla-parity gate, but reads each
+     * disabled region's owned-entity set directly instead of scanning every
+     * loaded entity — disabled regions are rare and this keeps the cost
+     * proportional to their entity count, not the whole world's.
+     *
+     * Race reasoning: a disabled region has no RegionThread at all (removed
+     * from the pool's thread list before being marked disabled), so for the
+     * entire tick nothing else can touch entities in its owned set — this is
+     * a strictly stronger guarantee than the pinned-entity case, which merely
+     * relies on region threads never being assigned that type. The set itself
+     * is only otherwise written by {@code BoundaryEntityTransfer.checkAndReassign()}
+     * (phase 3, main thread, already completed earlier this tick) or by a
+     * manual /nestworld split|merge (main thread only). Called only when at
+     * least one region is disabled.
+     */
+    private void tickDisabledRegionEntitiesOnMain() {
+        for (WorldRegion region : pool.getDisabledRegionObjects()) {
+            // Snapshot: ticking (despawn, death, explosion) can remove an entity
+            // from this region's owned set mid-iteration; mirrors the same
+            // toArray() snapshot RegionThread.tickEntities() takes for the
+            // identical reason.
+            java.util.UUID[] ids = region.getOwnedEntityIds().toArray(new java.util.UUID[0]);
+            for (java.util.UUID uuid : ids) {
+                net.minecraft.world.entity.Entity entity = overworld.getEntity(uuid);
+                if (entity == null || entity.isRemoved() || entity.isPassenger()) continue;
+                try {
+                    entity.checkDespawn();
+                    if (entity.isRemoved()) continue;
+                    if (!overworld.isPositionEntityTicking(entity.blockPosition())) continue;
+                    overworld.tickNonPassenger(entity);
+                } catch (Throwable t) {
+                    LOGGER.warn("Disabled-region {} entity {} tick error: {}",
+                            region.getId(), entity.getType().getDescriptionId(), t.toString());
+                }
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Persistent region layout
     // -----------------------------------------------------------------------
@@ -505,6 +546,12 @@ public class NestworldRegionSystem {
         // touches them — the main thread ticks them here exactly as vanilla
         // would. Zero cost when nothing is pinned.
         if (!pins.isEmpty()) tickPinnedEntitiesOnMain();
+
+        // 3c-2. Tick entities owned by crash-disabled regions on the main thread —
+        // those regions have no RegionThread any more, so without this they would
+        // sit frozen forever instead of degrading to unparallelized-but-alive.
+        // Zero cost when no region is disabled.
+        if (!pool.getDisabledRegions().isEmpty()) tickDisabledRegionEntitiesOnMain();
 
         // 3d. Predictive frontier: request generation of chunks ahead of moving
         // players so terrain is ready before they arrive (no-op unless enabled).
