@@ -173,12 +173,14 @@ public class RegionThreadPool {
     // forever (spamming crashes, never ticking). After MAX_CRASHES within
     // CRASH_WINDOW_MS we stop respawning it and disable the region — it no
     // longer gets a dedicated RegionThread, but NestworldRegionSystem picks its
+    // entities AND its scheduled block/fluid ticks, block events and block
     // entities up on the main thread every tick instead (same fallback as a
-    // pinned entity type), so it degrades to unparallelized-but-alive rather
-    // than fully frozen. Its blocks/scheduled ticks/block-entities still freeze
-    // (their work-round dispatch is keyed off an alive RegionThread — a
-    // separate follow-up). Touched only from the main thread
-    // (respawnCrashedThreads runs once per tick), so a plain map is fine.
+    // pinned entity type; the work-round dispatch for those routes to main
+    // whenever the owning region has no live thread — see
+    // NestworldRegionSystem#aliveRegionOrNull), so it degrades to
+    // unparallelized-but-alive rather than fully frozen. Touched only from the
+    // main thread (respawnCrashedThreads runs once per tick), so a plain map
+    // is fine.
     private static final int MAX_CRASHES =
             Integer.getInteger("nestworld.maxRegionCrashes", 5);
     private static final long CRASH_WINDOW_MS = 300_000L; // 5 min

@@ -205,7 +205,7 @@ public final class NestworldCommand {
                     regionHeat >= 1.0
                             ? String.format(" heat=%.0f[%s]", regionHeat, heat.hotspotSummary(r, 3))
                             : "",
-                    disabled ? " DISABLED(entities on main, blocks frozen)" : "")), false);
+                    disabled ? " DISABLED(entities+blocks on main, unparallelized)" : "")), false);
         }
         return regions.size();
     }
