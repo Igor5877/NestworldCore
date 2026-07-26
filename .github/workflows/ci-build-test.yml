@@ -19,6 +19,9 @@ jobs:
           ref: ${{ github.head_ref || github.ref_name }}
           fetch-depth: 0
 
+      - name: Check out a real local branch (actions/checkout leaves detached HEAD, which gradleutils' git-branch detection can't read)
+        run: git checkout -B "${{ github.head_ref || github.ref_name }}"
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
