@@ -122,6 +122,19 @@ public class RegionSplitManager {
 
         List<WorldRegion> active = tree.getActiveRegions();
 
+        // Crash-disabled regions (RegionThreadPool) have no RegionThread any more, so
+        // nothing ever calls WorldRegion.recordTickDuration for them again — getAvgTickMs()/
+        // getCurrentTps() stay frozen at whatever they were the instant the thread died. They
+        // also no longer occupy a dedicated core (their owned entities/blocks now tick inline
+        // on main, see NestworldRegionSystem#tickDisabledRegionEntitiesOnMain). Feeding that
+        // stale cost into this heuristic would be at best meaningless and at worst harmful: a
+        // region disabled while expensive would look permanently "hot" and get auto-split,
+        // silently reviving it as two new live regions with a fresh crash counter — undoing the
+        // crash isolation disabling it was meant to provide. Recovery for a disabled region
+        // stays operator-driven (/nestworld merge into a neighbour, or a restart), so it's
+        // excluded from every automatic decision below.
+        Set<Integer> disabledIds = pool.getDisabledRegions();
+
         // Load balancing: when fewer regions are active than we have cores, the
         // tick is gated by the most expensive region while cores idle (spark:
         // ~28 % CPU, main parked on the barrier). Pick the hottest region so it
@@ -133,6 +146,7 @@ public class RegionSplitManager {
         // of stale empty regions would block fill-splitting a newly hot one.
         int busy = 0;
         for (WorldRegion region : active) {
+            if (disabledIds.contains(region.getId())) continue;
             if (!region.getOwnedEntityIds().isEmpty()) busy++;
         }
         boolean spareCores = busy < SPLIT_TARGET_PARALLELISM;
@@ -140,6 +154,7 @@ public class RegionSplitManager {
         double hottestMs = 0.0;
         if (spareCores) {
             for (WorldRegion region : active) {
+                if (disabledIds.contains(region.getId())) continue;
                 double c = region.getAvgTickMs();
                 if (c > hottestMs) { hottestMs = c; hottest = region; }
             }
@@ -151,6 +166,7 @@ public class RegionSplitManager {
         boolean atRegionCap = active.size() >= MAX_REGIONS_TOTAL;
 
         for (WorldRegion region : active) {
+            if (disabledIds.contains(region.getId())) continue;
             double costMs = region.getAvgTickMs();
             boolean fillSplit = spareCores && region == hottest && costMs > SPLIT_FILL_CORES_MS;
 
@@ -179,6 +195,10 @@ public class RegionSplitManager {
         }
         // Drop candidates that are no longer active leaves (already merged/split)
         mergeCandidates.retainAll(active);
+        // A region can crash-disable while it's already a queued merge candidate from an
+        // earlier, cheaper tick (disabling only requires repeated crashes, not high cost) —
+        // strip it here too, same reasoning as excluding disabled regions from the scan above.
+        mergeCandidates.removeIf(r -> disabledIds.contains(r.getId()));
 
         applyPending();
     }
