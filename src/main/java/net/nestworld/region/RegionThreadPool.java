@@ -212,11 +212,12 @@ public class RegionThreadPool {
             if (recent > MAX_CRASHES) {
                 if (disabledRegions.put(id, region) == null) {
                     LOGGER.error("Region {} crashed {} times in {} min — DISABLING its RegionThread. "
-                            + "Its entities now tick on the main thread (unparallelized, like a pinned "
-                            + "type); its blocks/scheduled ticks/block-entities will not tick until a "
-                            + "restart or you /nestworld merge it into a neighbour. The rest of the "
-                            + "server keeps running. (Enable -Dnestworld.autoPin=true to pin the "
-                            + "offending entity type instead.)", id, recent, CRASH_WINDOW_MS / 60_000);
+                            + "Its entities, scheduled block/fluid ticks, block events and block "
+                            + "entities now tick on the main thread instead (unparallelized, like a "
+                            + "pinned type) until a restart or you /nestworld merge it into a "
+                            + "neighbour. The rest of the server keeps running. (Enable "
+                            + "-Dnestworld.autoPin=true to pin the offending entity type instead.)",
+                            id, recent, CRASH_WINDOW_MS / 60_000);
                 }
                 continue;
             }
