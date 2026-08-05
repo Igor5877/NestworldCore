@@ -267,3 +267,34 @@ case first (idle startup), not just the stress case it was built for, and the ac
 root-caused with evidence (read the dependency's source, don't guess) before either shipping or
 reverting. Do not add more statuses to `NESTWORLD_GATEABLE_STATUSES` without re-reading their
 `ChunkStatus` registration the same way this session did for all of them.
+
+## Core-count scaling (same session, 2026-08-05): the flags are a low-CPU safety valve, not a universal win
+
+Ran the identical ten-burst-in-5s stress test at 2, 4, 8, and 10 real cores (via `taskset`), both with
+the new flags tuned tight and with them fully OFF, to answer "how many cores until this stops mattering":
+
+| Config | Cores | Bursts survived | Time/burst |
+|---|---|---|---|
+| `chunkGenMaxConcurrent=2` | 2 | 2–3 | 34–38 s |
+| `chunkGenMaxConcurrent=2` | 4 | 3 | 24–27 s |
+| `chunkGenMaxConcurrent=2` | 8 | 3 (**identical to 4 cores**) | 21–28 s |
+| `chunkGenAdmitBudget=4` only | 10 | 4 | 19–26 s |
+| **all flags OFF (baseline)** | **10** | **6** | **11–16 s** |
+
+Two findings:
+1. **`chunkGenMaxConcurrent=2` caps CPU usage at ~120–180%** regardless of cores available — 4 and
+   8 cores gave *identical* survival counts because the flag itself became the ceiling, not the
+   hardware. Confirmed live via `top`: `chunkGenMaxConcurrent=2` held the JVM at ~120% CPU on a 10-core
+   box; disabling it let the same box burst to 500%+ during a wave of concurrent generations.
+2. **On strong-enough hardware, the fully-unthrottled baseline outperforms every throttled
+   configuration on this specific worst-case test** — 10 cores with everything OFF survived twice as
+   many bursts as any throttled combination, because there was no artificial ceiling limiting how much
+   of the real 10-core capacity got used.
+
+**Operational implication:** these flags are a safety valve for *CPU-constrained* boxes (few cores, or
+cores shared with a heavy modpack's other load) — they trade raw throughput for a bounded worst-case
+main-thread starvation. On a box with cores to spare, they can *hurt* peak throughput under extreme
+synthetic load by capping parallelism below what the hardware could actually sustain. There is no
+single correct value: size `chunkGenMaxConcurrent`/`chunkGenAdmitBudget` to the box's real spare core
+count (roughly: total cores minus what's needed for region threads + main thread + other mods), not
+copied from this doc's examples, which were tuned for a deliberately-crippled 2-core test rig.
