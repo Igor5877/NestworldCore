@@ -142,6 +142,24 @@
 # overload the main thread for tens of seconds and trip the 60s watchdog crash.
 # -Dnestworld.chunkGenAdmitBudget=0
 
+# ── Cap на одночасну CPU-важку generate() (2026-08, готовий, default OFF) ──
+# ── Cap on concurrent CPU-heavy generate() calls (2026-08, ready, default OFF) ─
+# chunkGenAdmitBudget вище капає, скільки НОВОГО стартує; ЦЕЙ прапор капає, скільки
+# generate() (реальна NOISE/Aquifer/feature-математика) виконується ОДНОЧАСНО на
+# worker-пулі. На слабких/обмежених ядрах воркери можуть з'їдати весь CPU і голодити
+# головний потік навіть при коректному темпі допуску. Гейтяться ЛИШЕ 4 статуси
+# (NOISE/SURFACE/CARVERS/FEATURES) — це навмисно вузько, не розширювати без
+# перевірки коду net.minecraft.world.level.chunk.ChunkStatus (див. javadoc
+# NestworldTuning.CHUNK_GEN_MAX_CONCURRENT — капання FULL зависає сервер).
+# chunkGenAdmitBudget above caps how much NEW work starts; THIS flag caps how many
+# generate() calls (the real NOISE/Aquifer/feature math) run AT ONCE on the worker
+# pool. On weak/constrained cores, workers can eat all CPU and starve the main thread
+# even with correct admission pacing. Only 4 statuses are gated (NOISE/SURFACE/
+# CARVERS/FEATURES) — deliberately narrow, do not widen without re-reading
+# ChunkStatus's source (see NestworldTuning.CHUNK_GEN_MAX_CONCURRENT javadoc — gating
+# FULL hangs the server).
+# -Dnestworld.chunkGenMaxConcurrent=0
+
 # ── Мод-сумісність (Pins / Compat) | Mod compat (Pins / Compat) ────────────
 # Авто-пінити тип ентіті/BE, що повторно крашить region-потік, на main-потік.
 # Auto-pin an entity/BE type that repeatedly crashes a region thread onto the main thread.

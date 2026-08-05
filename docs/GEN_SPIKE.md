@@ -211,7 +211,7 @@ Still default-off (`-Dnestworld.chunkGenAdmitBudget=0`). Recommended pairing for
 `chunkGenBudget=2` + `chunkGenAdmitBudget=4`\-ish (both layers address different parts of the same
 pipeline — see the "why chunkGenBudget didn't save it" note above for why neither alone is sufficient).
 
-## Attempted and REVERTED (same session, 2026-08-05): concurrent-generation semaphore
+## Layer 5 (DONE, 47.4.158, 2026-08-05): concurrent-generation cap — narrowly scoped after a real deadlock
 
 After Layer 4 shipped, an artificially extreme stress test (ten 256-chunk `/forceload` bursts fired
 within ~5 s, no player) still eventually crossed the 60 s watchdog even with both budgets tuned tight —
@@ -223,21 +223,47 @@ CPU-heavy work) run concurrently, gated only at the point dependencies are alrea
 partial state another queued task could be waiting on ("independent leaf tasks on a bounded pool", not
 "a dependency chain sharing a bound").
 
-**That reasoning was wrong, or at least incomplete — implemented, tested, found to hang the single
-simplest possible case: a fresh server's normal spawn-area startup, zero load, zero bursts.** jstack
-showed every worker thread `TIMED_WAITING`, zero `RUNNABLE` generation activity, 70+ seconds of zero
-progress. The exact mechanism wasn't root-caused before reverting — a plausible suspect is `LIGHT`
-status's separate ticket-based dependency path (`DistanceManager.addTicket(TicketType.LIGHT, ...)` /
-`releaseLightTicket`), which doesn't route through the `getChunkRangeFuture` contract the safety argument
-relied on, but this is unconfirmed. **Reverted in full** (`ChunkMap`'s gate + `NestworldTuning
-.CHUNK_GEN_MAX_CONCURRENT` + the `generate()` call site) rather than shipped flag-gated-off, specifically
-because leaving structurally-broken code sitting in the tree — even inert behind a flag — is a trap for
-a future session that enables it without rediscovering this.
+**First attempt: gated every status. Reasoning was wrong — hung the single simplest possible case,**
+a fresh server's normal spawn-area startup, zero load, zero bursts. jstack showed every worker thread
+`TIMED_WAITING`, zero `RUNNABLE` generation activity, 70+ seconds of zero progress. Root-caused (not
+left as a guess) by reading `ChunkMap.protoChunkToFullChunk` and every `ChunkStatus` registration:
+`ChunkStatus.FULL`'s generation task is a bare `callback.apply(chunk)` — it literally just invokes
+`protoChunkToFullChunk`, which reads **this same chunk's own prior-status future** via
+`getFutureIfPresentUnchecked(FULL.getParent())` — a dependency edge that bypasses the
+`getChunkRangeFuture` contract the safety argument relied on entirely. A queued FULL can hold a
+concurrency slot while waiting on its own parent status's future, and that parent can itself be stuck
+behind FULL's own slot in the queue — a genuine self-referential deadlock, confirmed by testing (not
+just reasoned about) once the mechanism was understood.
 
-**Takeaway, worth remembering before anyone tries this again:** the original design note's caution about
-gen-executor bounds risking deadlock was right, and "I reasoned through why my specific gate avoids it"
-was not sufficient verification — it needs to survive testing the *simplest* case first (idle startup),
-not just the stress case it was built for. The residual extreme-synthetic-load gap this was meant to
-close remains open; closing it safely needs either a much deeper understanding of the full chunk-gen
-dependency graph (including the LIGHT-ticket side channel) than this session had, or a fundamentally
-different lever that doesn't touch the generation executor at all.
+Checked every other `ChunkStatus`'s generation task body the same way (`STRUCTURE_STARTS`, `BIOMES`,
+`NOISE`, `INITIALIZE_LIGHT`, `LIGHT` — all have *access* to the same callback parameter FULL uses, since
+they're registered with the same extended `register(...)` overload, but **none of them actually invoke
+it** — they all do direct computation over the already-fetched neighbour list instead). Only FULL uses
+the callback, and FULL does zero CPU-heavy work itself (it's a pure conversion, not generation) — so
+excluding it from gating costs nothing against the throttling goal while removing the entire deadlock
+class.
+
+**Shipped: `-Dnestworld.chunkGenMaxConcurrent=N`** (`NestworldTuning.CHUNK_GEN_MAX_CONCURRENT`, default
+`0` = unlimited) gates ONLY `NOISE`/`SURFACE`/`CARVERS`/`FEATURES` — an explicit allowlist, not a
+FULL-only blocklist, so a future status with a similar hidden self-reference doesn't silently slip in
+ungated. A queued generation runs once another gated generation's real future resolves and releases its
+slot (`whenComplete`-chained, no thread ever blocks waiting on a permit).
+
+**Validated** (2026-08-05, clean core, 2-core-constrained taskset, `chunkGenBudget=2` +
+`chunkGenAdmitBudget=4` + `chunkGenMaxConcurrent=2` together):
+- Normal server startup — previously hung indefinitely under the first (unscoped) attempt — completes
+  normally.
+- A single realistic 256-chunk `/forceload` burst (matching the actual real-world trigger) — the server
+  is fully healthy immediately after: 28.8 ms/tick, 20.0 TPS, no watchdog trip.
+- The artificially extreme ten-burst-in-5s stress test still eventually crosses 60 s (survived 2–3
+  bursts before failing, consistent with pre-Layer-5 results within measurement noise) — this residual
+  is the same genuine CPU-throughput ceiling identified above, and this layer doesn't claim to close it;
+  it closes the *deadlock risk* of trying to, cleanly, so the remaining gap is now a pure hardware/
+  scheduling question rather than an open safety question.
+
+**Takeaway, worth remembering before extending this further:** "I reasoned through why my specific gate
+avoids the deadlock" is not sufficient verification on its own — it must survive testing the *simplest*
+case first (idle startup), not just the stress case it was built for, and the actual mechanism should be
+root-caused with evidence (read the dependency's source, don't guess) before either shipping or
+reverting. Do not add more statuses to `NESTWORLD_GATEABLE_STATUSES` without re-reading their
+`ChunkStatus` registration the same way this session did for all of them.

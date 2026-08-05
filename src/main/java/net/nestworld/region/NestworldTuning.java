@@ -160,6 +160,45 @@ public final class NestworldTuning {
             Integer.getInteger("nestworld.chunkGenAdmitBudget", 0);
 
     /**
+     * Cap on how many chunk-status GENERATION calls (the actual CPU-bound
+     * {@code NoiseBasedChunkGenerator}/{@code Aquifer}/feature-placement work — the
+     * final {@code ChunkStatus.generate()} call, not scheduling) run CONCURRENTLY
+     * across the worker pool for a dimension at any one time. {@link #CHUNK_GEN_ADMIT_BUDGET}
+     * bounds how fast NEW work enters the pipeline; this bounds how much of it can be
+     * actively burning CPU at once — closing the residual gap where admission is paced
+     * correctly but the resulting worker-pool contention still starves the main thread
+     * of CPU time on a constrained box (measured: main thread genuinely CPU-starved,
+     * not blocked on anything, while a worker thread churned inside
+     * {@code NoiseBasedAquifer} — confirmed via jstack during an extreme stacked-burst
+     * test that survived admission gating but still crossed the 60 s watchdog).
+     *
+     * <p><b>Only {@code NOISE}/{@code SURFACE}/{@code CARVERS}/{@code FEATURES} are
+     * gated</b> — this narrowing is safety-critical, not a tuning choice. An earlier
+     * attempt gated every status and hung a completely idle fresh-server startup
+     * indefinitely: {@code ChunkStatus.FULL}'s generation task is a bare pass-through
+     * to {@code ChunkMap.protoChunkToFullChunk}, which reads THIS SAME chunk's own
+     * prior-status future via {@code getFutureIfPresentUnchecked} — a queued FULL can
+     * hold a slot while waiting on its own parent status, which can itself be stuck
+     * behind that very slot. The four gated statuses were verified by reading every
+     * {@code ChunkStatus} registration: none of them invoke the callback that creates
+     * this self-reference — they're pure leaf computations over the already-fetched
+     * neighbour list (see {@code ChunkMap.getChunkRangeFuture}'s cascade-exemption),
+     * matching the "independent leaf tasks on a bounded pool" shape the deadlock-
+     * freedom argument requires. Do not extend this set to other statuses (especially
+     * {@code FULL} or {@code LIGHT}) without re-verifying their generation task bodies
+     * the same way.
+     *
+     * <p>{@code 0} = unlimited (vanilla behaviour, default). Set e.g.
+     * {@code -Dnestworld.chunkGenMaxConcurrent=2} to allow at most 2 gated-status
+     * generations running at once. Pick a value that leaves real CPU headroom for the
+     * main thread given your core count — this is a coarser, blunter lever than the
+     * two above; prefer leaving it off unless the admit-budget pair alone still isn't
+     * enough for your hardware under worst-case load.
+     */
+    public static final int CHUNK_GEN_MAX_CONCURRENT =
+            Integer.getInteger("nestworld.chunkGenMaxConcurrent", 0);
+
+    /**
      * Spatial-cull the entity tracker's per-player-move update (EXPERIMENTAL, default
      * off). Vanilla {@code ChunkMap.move(player)} rescans <em>every</em> tracked entity
      * on each player-move packet to recompute visibility — O(total entities) per move.
