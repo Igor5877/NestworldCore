@@ -105,6 +105,18 @@
     private void m_8488_() {
        Arrays.fill(this.f_8337_, ChunkPos.f_45577_);
        Arrays.fill(this.f_8338_, (Object)null);
+@@ -203,7 +_,10 @@
+       return completablefuture;
+    }
+ 
+-   private CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> m_8456_(int p_8457_, int p_8458_, ChunkStatus p_8459_, boolean p_8460_) {
++   // NestWorld: was private. Exposed non-blocking so ForceLoadCommand can fire a
++   // whole burst of chunk futures up front and wait on them together, instead of
++   // vanilla's serial getChunk()-per-chunk (see ServerLevel.addForcedChunkAsync).
++   public CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> m_8456_(int p_8457_, int p_8458_, ChunkStatus p_8459_, boolean p_8460_) {
+       ChunkPos chunkpos = new ChunkPos(p_8457_, p_8458_);
+       long i = chunkpos.m_45588_();
+       int j = ChunkLevel.m_287141_(p_8459_);
 @@ -265,6 +_,17 @@
     }
  

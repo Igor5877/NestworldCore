@@ -407,6 +407,43 @@
     }
  
     private void m_8807_() {
+@@ -1161,6 +_,36 @@
+       return flag;
+    }
+ 
++   /**
++    * Same bookkeeping as {@link #setChunkForced} for the add case, but returns the
++    * chunk's load future instead of blocking on it here. Vanilla's {@code
++    * ForceLoadCommand} calls {@code setChunkForced} once per chunk in a plain loop,
++    * so a 256-chunk burst pays for 256 chunks' worth of generation SERIALLY — one
++    * full managedBlock wait per chunk before the next one is even requested — even
++    * though the underlying worker pool could run many of them in parallel. Calling
++    * this for every position first and blocking ONCE on the combined future (see
++    * ForceLoadCommand.changeForceLoad) turns that into "wait for the slowest of N
++    * parallel chunks" instead of "wait for the sum of N chunks". Still goes through
++    * the normal getOrScheduleFuture path, so chunkGenAdmitBudget/chunkGenMaxConcurrent
++    * still apply — this removes vanilla's artificial extra seriality, not our gating.
++    * Returns {@code null} if the chunk was already forced (nothing new to await).
++    */
++   @Nullable
++   public java.util.concurrent.CompletableFuture<?> addForcedChunkAsync(int p_x, int p_z) {
++      ForcedChunksSavedData forcedchunkssaveddata = this.m_8895_().m_164861_(ForcedChunksSavedData::m_151483_, ForcedChunksSavedData::new, "chunks");
++      ChunkPos chunkpos = new ChunkPos(p_x, p_z);
++      long i = chunkpos.m_45588_();
++      boolean flag = forcedchunkssaveddata.m_46116_().add(i);
++      forcedchunkssaveddata.m_77760_(flag);
++      if (!flag) {
++         return null;
++      }
++
++      java.util.concurrent.CompletableFuture<?> future = this.m_7726_().m_8456_(p_x, p_z, net.minecraft.world.level.chunk.ChunkStatus.f_62326_, true);
++      this.m_7726_().m_6692_(chunkpos, true);
++      return future;
++   }
++
+    public List<ServerPlayer> m_6907_() {
+       return this.f_8546_;
+    }
 @@ -1380,6 +_,12 @@
        });
     }

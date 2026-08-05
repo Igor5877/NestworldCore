@@ -298,3 +298,80 @@ synthetic load by capping parallelism below what the hardware could actually sus
 single correct value: size `chunkGenMaxConcurrent`/`chunkGenAdmitBudget` to the box's real spare core
 count (roughly: total cores minus what's needed for region threads + main thread + other mods), not
 copied from this doc's examples, which were tuned for a deliberately-crippled 2-core test rig.
+
+## Real-pack validation (ATM9, 419 mods, 2026-08-05): the flags alone don't cover a real heavy pack
+
+Deployed `chunkGenAdmitBudget` to a real ATM9 server (GTCEU + Terralith + BiomesOPlenty + TerraBlender +
+8 YUNG's structure mods) and reproduced the original watchdog crash byte-for-byte on a mod-free clean
+core first, then tested the fix against the real pack directly via RCON `/forceload` bursts (256 chunks,
+the command's own max) into genuinely virgin territory.
+
+**Clean A/B on identical terrain** (same coordinates reused across runs — a crashed burst never writes
+its region files, so the target chunks stay virgin and can be re-tested with a different flag value
+without manual cleanup):
+
+| `chunkGenAdmitBudget` | Result |
+|---|---|
+| 2 | hard crash (JVM killed instantly, no graceful save) |
+| 4 | 3 consecutive bursts: 17.9 s / 33.1 s / **crash on #3** |
+| 8 | 61.8 s (over the 60 s threshold!) — watchdog fired, but the main thread finished the tick moments later and the server survived via a graceful shutdown path |
+
+**Lower budget was not safer** — the opposite of the synthetic core-scaling test above. On this pack's
+much higher per-chunk cost (confirmed via crash-report thread dumps: the one RUNNABLE worker was
+consistently inside `net.minecraft.util.CubicSpline`/`DensityFunctions$Spline` — the noise-router
+evaluation that Terralith/BiomesOPlenty/TerraBlender blow up with hundreds of spline control points per
+biome, vs. vanilla's ~10), throttling admission hard enough starves total throughput more than it saves
+from thrash reduction — a real burst takes *longer* wall-clock at a lower budget, not shorter.
+
+Adding `chunkGenMaxConcurrent=4` alongside `chunkGenAdmitBudget=4` closed the specific 3-burst-in-a-row
+failure (48.0 s / 32.6 s / 28.2 s, all survived) — but this was still just moving the ceiling, not
+removing the actual bottleneck. See below.
+
+## Layer 6 (DONE, 47.4.160, 2026-08-05): parallel-dispatch fix — the actual root cause
+
+The 60 s stall was never really about CPU cost. It was about **vanilla's `/forceload` being serial by
+design**: `ServerLevel.setChunkForced` (`ServerLevel.java:1305`) calls `this.getChunk(x, z)` — a
+*blocking* call — and `ForceLoadCommand.changeForceLoad` calls `setChunkForced` in a plain loop over
+every chunk in the requested area (up to 256). Each iteration fully blocks on `managedBlock` before the
+next one even starts. A 256-chunk burst therefore pays for the **sum** of all 256 chunks' generation
+time on the main thread, one at a time — never the max of however many the worker pool could run in
+parallel, even though each individual chunk's generation already fans out across the whole
+`ForkJoinPool`.
+
+**Fix** (patch-tracked: `ServerChunkCache.java`, `ServerLevel.java`, `ForceLoadCommand.java`):
+
+1. `ServerChunkCache.getChunkFutureMainThread` — visibility only, `private` → `public`. Already existed
+   as the non-blocking primitive underneath the blocking `getChunk`/`getChunkFuture` wrappers.
+2. `ServerLevel.addForcedChunkAsync(x, z)` — new method, same SavedData/ticket bookkeeping as
+   `setChunkForced`'s add branch, but returns the chunk's load future instead of blocking on it.
+3. `ForceLoadCommand.changeForceLoad` — the "add" branch now calls `addForcedChunkAsync` for every
+   position first (collecting futures, never blocking mid-loop), then does **one**
+   `p_137686_.getServer().managedBlock(CompletableFuture.allOf(futures)::isDone)` after the loop. The
+   "remove" branch is untouched (never blocked in the first place).
+
+This still routes through `ChunkHolder.getOrScheduleFuture` → `nestworldTryScheduleNow`, so
+`chunkGenAdmitBudget`/`chunkGenMaxConcurrent` still gate it exactly as before if enabled — the fix only
+removes vanilla's *extra*, unnecessary seriality sitting on top of that gating, it doesn't bypass it.
+
+**Real-pack result** — the same 3-burst-in-a-row test that crashed at every tested `chunkGenAdmitBudget`
+value alone:
+
+| Config | Burst 1 | Burst 2 | Burst 3 |
+|---|---|---|---|
+| `chunkGenAdmitBudget` alone (any value 2–8) | varies | varies | **crash** |
+| fix + `admitBudget=4` + `maxConcurrent=4` | 48.0 s | 32.6 s | 28.2 s (survived) |
+| **fix alone, both throttle flags OFF** | **40.2 s** | **20.0 s** | **21.4 s** (survived) |
+
+The fix alone — with *no* throttling — was faster and more consistent than the fix combined with both
+throttle flags. One run with the fix + throttle flags together on fresh untouched coordinates (build
+47.4.160, `admitBudget=4` + `maxConcurrent=4`) still crashed at 60.00 s despite the fix being active; the
+crash-report thread dump showed **every** `Worker-Main` thread `WAITING` (zero active generation work)
+at the moment of the freeze — live `top` during the burst showed only ~2 threads pegged at 100%, well
+under the hardware's 10 cores. This suggests the throttle flags can starve the parallelism the fix just
+unlocked, rather than complementing it — not fully root-caused.
+
+**Current recommendation for heavy packs:** ship the parallel-dispatch fix, leave
+`chunkGenAdmitBudget`/`chunkGenMaxConcurrent` **off** (`0`, the default) and let the fix's own
+parallel-future-then-wait-once shape use the box's real spare capacity directly. Only reach for the
+throttle flags on a genuinely CPU-constrained box, and re-verify they don't fight the parallel dispatch
+before trusting the combination.

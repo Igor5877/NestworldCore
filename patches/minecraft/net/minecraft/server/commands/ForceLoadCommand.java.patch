@@ -1,0 +1,54 @@
+--- a/net/minecraft/server/commands/ForceLoadCommand.java
++++ b/net/minecraft/server/commands/ForceLoadCommand.java
+@@ -119,13 +_,44 @@
+             ChunkPos chunkpos = null;
+             int j2 = 0;
+ 
+-            for(int k2 = i1; k2 <= k1; ++k2) {
+-               for(int l2 = j1; l2 <= l1; ++l2) {
+-                  boolean flag = serverlevel.m_8602_(k2, l2, p_137689_);
+-                  if (flag) {
+-                     ++j2;
+-                     if (chunkpos == null) {
+-                        chunkpos = new ChunkPos(k2, l2);
++            if (p_137689_) {
++               // NestWorld: fire every chunk's load future up front instead of
++               // blocking per-chunk. Vanilla's serial setChunkForced() loop turns
++               // an N-chunk burst into N sequential managedBlock waits (pays for
++               // the SUM of all N generation costs on the main thread); this pays
++               // for the MAX of N costs running in parallel across the worker
++               // pool instead, one wait at the end. Still routes through
++               // ChunkHolder.getOrScheduleFuture, so chunkGenAdmitBudget /
++               // chunkGenMaxConcurrent still gate it exactly as before — this
++               // only removes vanilla's extra artificial seriality on top of
++               // that gating. See docs/GEN_SPIKE.md.
++               java.util.List<java.util.concurrent.CompletableFuture<?>> nestworldFutures = new java.util.ArrayList<>();
++               for(int k2 = i1; k2 <= k1; ++k2) {
++                  for(int l2 = j1; l2 <= l1; ++l2) {
++                     java.util.concurrent.CompletableFuture<?> future = serverlevel.addForcedChunkAsync(k2, l2);
++                     if (future != null) {
++                        ++j2;
++                        if (chunkpos == null) {
++                           chunkpos = new ChunkPos(k2, l2);
++                        }
++                        nestworldFutures.add(future);
++                     }
++                  }
++               }
++               if (!nestworldFutures.isEmpty()) {
++                  java.util.concurrent.CompletableFuture<Void> nestworldAll =
++                        java.util.concurrent.CompletableFuture.allOf(nestworldFutures.toArray(new java.util.concurrent.CompletableFuture[0]));
++                  p_137686_.m_81377_().m_18701_(nestworldAll::isDone);
++               }
++            } else {
++               for(int k2 = i1; k2 <= k1; ++k2) {
++                  for(int l2 = j1; l2 <= l1; ++l2) {
++                     boolean flag = serverlevel.m_8602_(k2, l2, false);
++                     if (flag) {
++                        ++j2;
++                        if (chunkpos == null) {
++                           chunkpos = new ChunkPos(k2, l2);
++                        }
+                      }
+                   }
+                }
