@@ -122,6 +122,44 @@ public final class NestworldTuning {
             Integer.getInteger("nestworld.chunkGenBudget", 0);
 
     /**
+     * Cap on how many BRAND-NEW top-level chunk-generation units (a {@code (ChunkHolder,
+     * ChunkStatus)} pair that has never been scheduled before) are admitted into the
+     * generation pipeline per server tick, for non-player-driven (bulk) requests.
+     *
+     * <p>Complements {@link #CHUNK_GEN_BUDGET}: that caps how many already-scheduled
+     * chunk-holder futures get their FULL/ticking promotion <em>applied</em> per tick — a
+     * narrow tail of the pipeline reached only via {@code DistanceManager.runAllUpdates}.
+     * It does NOT cover a single caller (mass {@code /forceload}, a mod's synchronous
+     * {@code getChunk(load=true)} check, e.g. a teleport-safety check) synchronously
+     * triggering the recursive status-dependency + neighbour-cascade SCHEDULING walk
+     * ({@code ChunkHolder.getOrScheduleFuture -> ChunkMap.schedule -> getChunkRangeFuture})
+     * for thousands of chunks in one call — pure CPU-bound bookkeeping on the calling
+     * thread. Measured (2026-08-05, clean core, no mods): a single 256-chunk
+     * {@code /forceload} burst on a resource-constrained core can alone trip the 60 s
+     * {@code ServerHangWatchdog}; a stacked run of ten such bursts reproduced the exact
+     * watchdog crash (identical {@code ServerChunkCache.getChunk} stack) seen on a real
+     * pack from a player flying with {@code predictiveGen} + an FTBChunks map teleport.
+     *
+     * <p>Deadlock-free by construction: the cap applies ONLY when NOT already inside a
+     * scheduling cascade on the calling thread (tracked via a thread-local re-entrancy
+     * marker set for the duration of {@code ChunkMap.schedule}) — so once a top-level
+     * request is admitted, its entire recursive dependency graph (parent statuses,
+     * neighbour range) resolves normally and uncapped; a gated request never orphans a
+     * neighbour another chunk is depending on. A gated request gets a fresh, not-yet-done
+     * future stored in the holder's normal slot (so repeat callers just keep waiting on
+     * it, same as any in-progress schedule) and is queued to actually start once budget
+     * frees up on a later tick — bit-identical result, only the timing changes. Player-
+     * driven (interactive) requests are never gated — same tiering rule as
+     * {@link #CHUNK_GEN_BUDGET}.
+     *
+     * <p>{@code 0} = unlimited (vanilla behaviour, default). Set e.g.
+     * {@code -Dnestworld.chunkGenAdmitBudget=32} to admit at most 32 new bulk
+     * (holder,status) scheduling units per tick.
+     */
+    public static final int CHUNK_GEN_ADMIT_BUDGET =
+            Integer.getInteger("nestworld.chunkGenAdmitBudget", 0);
+
+    /**
      * Spatial-cull the entity tracker's per-player-move update (EXPERIMENTAL, default
      * off). Vanilla {@code ChunkMap.move(player)} rescans <em>every</em> tracked entity
      * on each player-move packet to recompute visibility — O(total entities) per move.

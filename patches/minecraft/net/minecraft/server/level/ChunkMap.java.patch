@@ -1,6 +1,6 @@
 --- a/net/minecraft/server/level/ChunkMap.java
 +++ b/net/minecraft/server/level/ChunkMap.java
-@@ -143,6 +_,13 @@
+@@ -143,6 +_,122 @@
     private final Long2LongMap f_202981_ = new Long2LongOpenHashMap();
     private final Queue<Runnable> f_140125_ = Queues.newConcurrentLinkedQueue();
     int f_140126_;
@@ -11,9 +11,147 @@
 +   private ChunkMap.TrackedEntity[] nestworldChangedArr = new ChunkMap.TrackedEntity[0];
 +   private final java.util.concurrent.atomic.AtomicInteger nestworldBcCursor = new java.util.concurrent.atomic.AtomicInteger();
 +   private final java.util.concurrent.atomic.AtomicInteger nestworldChangedCursor = new java.util.concurrent.atomic.AtomicInteger();
++
++   // NestWorld: caps how many BRAND-NEW (holder,status) chunk-scheduling units are
++   // admitted into generation per ~tick-length WALL-CLOCK window, for bulk (non-player)
++   // top-level requests. See NestworldTuning.CHUNK_GEN_ADMIT_BUDGET for the rationale.
++   //
++   // CRITICAL DESIGN NOTE: the budget window is WALL-CLOCK, not "once per server tick".
++   // Deferred admissions are drained from ServerChunkCache's OWN pollTask() (both the
++   // outer wrapper and the MainThreadExecutor inner override) — that's the one point
++   // reached by EVERY synchronous wait in the game: MinecraftServer's startup/tick
++   // waitUntilNextTick loop, AND mainThreadProcessor's managedBlock loop for a
++   // synchronous getChunk(load=true) — plus once/tick from ChunkMap#tick as a
++   // steady-state fallback for non-blocking callers. A tick()-only drain is UNSOUND:
++   // the very call that gets deferred can be the one a synchronous caller is
++   // managedBlock-waiting on, and managedBlock blocks the current tick from ever
++   // finishing — so a drain that only runs at the top of the NEXT tick never runs at
++   // all (confirmed by testing: hung forever, 0% CPU, even a fresh server's normal
++   // spawn-chunk prep, which never calls ChunkMap#tick at all). Draining from pollTask()
++   // sidesteps this: it makes progress on every poll regardless of which wait loop or
++   // tick boundary called it. All access is main-thread-only (see nestworldTryScheduleNow).
++   private long nestworldAdmitWindowStartNanos = 0L;
++   private int nestworldAdmitWindowRemaining = Integer.MAX_VALUE;
++   private static final long NESTWORLD_ADMIT_WINDOW_NANOS = 50_000_000L; // ~1 tick at 20 TPS
++   private final ThreadLocal<Boolean> nestworldInCascade = ThreadLocal.withInitial(() -> Boolean.FALSE);
++   private final java.util.ArrayDeque<Runnable> nestworldDeferredAdmissions = new java.util.ArrayDeque<>();
++   // NestWorld: a per-window admit RATE alone isn't enough — successive bursts each
++   // pass their own rate check independently, so backlog can still pile up across
++   // bursts (measured: 3 stacked 256-chunk bursts survived, the 4th still crossed 60s,
++   // because admission was outpacing chunkGenBudget's separate promotion-apply rate).
++   // This tracks how many bulk (holder,status) units are currently admitted but not
++   // yet resolved (FULL or failed) and refuses new admissions once that count is at
++   // the same budget — a standing concurrency cap that holds regardless of how many
++   // separate bursts arrive, not just a per-window rate.
++   private int nestworldInFlight = 0;
++
++   private void nestworldRefreshAdmitWindow() {
++      long nestworldNow = System.nanoTime();
++      if (nestworldNow - this.nestworldAdmitWindowStartNanos >= NESTWORLD_ADMIT_WINDOW_NANOS) {
++         this.nestworldAdmitWindowStartNanos = nestworldNow;
++         this.nestworldAdmitWindowRemaining = net.nestworld.region.NestworldTuning.CHUNK_GEN_ADMIT_BUDGET <= 0
++               ? Integer.MAX_VALUE : net.nestworld.region.NestworldTuning.CHUNK_GEN_ADMIT_BUDGET;
++      }
++   }
++
++   /**
++    * NestWorld: run {@code p_nw_real} (the actual schedule() call) right now and
++    * return its future, UNLESS bulk (holder,status) admission capacity is exhausted —
++    * in which case this does nothing and returns null (caller must defer). Player-
++    * driven tickets, cascade-internal (dependency/neighbour) calls, and the cap being
++    * disabled all bypass the check entirely (no bookkeeping needed — nothing to leak).
++    * A genuine capacity-gated admission atomically consumes rate + in-flight budget and
++    * releases the in-flight slot when the resulting future resolves — admit and release
++    * live in the same method so they can never drift out of sync.
++    */
++   @Nullable
++   CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> nestworldTryScheduleNow(
++         ChunkHolder p_nw_holder, java.util.function.Supplier<CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>>> p_nw_real) {
++      if (net.nestworld.region.NestworldTuning.CHUNK_GEN_ADMIT_BUDGET <= 0
++            || Boolean.TRUE.equals(this.nestworldInCascade.get())
++            || this.f_140145_.nestworldHasPlayerTicket(p_nw_holder.m_140092_().m_45588_())) {
++         return p_nw_real.get();
++      }
++      if (!this.nestworldHasAdmitCapacity()) return null;
++      this.nestworldOnAdmitted();
++      CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> nestworldF = p_nw_real.get();
++      nestworldF.whenComplete((nestworldR, nestworldE) -> this.nestworldOnResolved());
++      return nestworldF;
++   }
++
++   /** NestWorld: true if both the per-window rate AND the standing in-flight
++    *  concurrency cap have room for one more bulk admission right now. */
++   private boolean nestworldHasAdmitCapacity() {
++      this.nestworldRefreshAdmitWindow();
++      return this.nestworldAdmitWindowRemaining > 0
++            && this.nestworldInFlight < net.nestworld.region.NestworldTuning.CHUNK_GEN_ADMIT_BUDGET;
++   }
++
++   /** NestWorld: record one bulk admission — consumes rate-window budget and occupies
++    *  one in-flight slot until the caller reports completion via nestworldOnResolved. */
++   private void nestworldOnAdmitted() {
++      this.nestworldAdmitWindowRemaining--;
++      this.nestworldInFlight++;
++   }
++
++   /** NestWorld: release the in-flight slot once an admitted unit's real future
++    *  resolves (success or failure) — called via whenComplete on that future. */
++   void nestworldOnResolved() {
++      this.nestworldInFlight--;
++   }
++
++   /** NestWorld: queue a gated (holder,status) scheduling unit to retry once budget frees up. */
++   void nestworldDeferAdmission(Runnable p_nw_retry) {
++      this.nestworldDeferredAdmissions.add(p_nw_retry);
++   }
++
++   /**
++    * NestWorld: drain deferred (holder,status) scheduling units under both the
++    * wall-clock admit window AND the in-flight concurrency cap. Safe (and required) to
++    * call repeatedly from within an active managedBlock wait — see the field-group
++    * comment above for why a tick-only drain cannot work. Also called once per tick
++    * from ChunkMap#tick as the steady-state driver for deferrals whose original caller
++    * wasn't itself blocking (e.g. an off-main-thread getChunkFuture request).
++    */
++   void nestworldDrainDeferredAdmissions() {
++      if (this.nestworldDeferredAdmissions.isEmpty()) return;
++      while (this.nestworldHasAdmitCapacity() && !this.nestworldDeferredAdmissions.isEmpty()) {
++         this.nestworldOnAdmitted();
++         this.nestworldDeferredAdmissions.poll().run();
++      }
++   }
  
     public ChunkMap(ServerLevel p_214836_, LevelStorageSource.LevelStorageAccess p_214837_, DataFixer p_214838_, StructureTemplateManager p_214839_, Executor p_214840_, BlockableEventLoop<Runnable> p_214841_, LightChunkGetter p_214842_, ChunkGenerator p_214843_, ChunkProgressListener p_214844_, ChunkStatusUpdateListener p_214845_, Supplier<DimensionDataStorage> p_214846_, int p_214847_, boolean p_214848_) {
        super(p_214837_.m_197394_(p_214836_.m_46472_()).resolve("region"), p_214838_, p_214848_);
+@@ -268,6 +_,28 @@
+    }
+ 
+    private CompletableFuture<Either<List<ChunkAccess>, ChunkHolder.ChunkLoadingFailure>> m_280541_(ChunkHolder p_281446_, int p_282030_, IntFunction<ChunkStatus> p_282923_) {
++      // NestWorld: mark cascade for the WHOLE range-neighbour walk, not just schedule()'s
++      // own recursion — this method is also called directly from prepareAccessibleChunk/
++      // prepareTickingChunk/prepareEntityTickingChunk (via ChunkHolder#updateFutures),
++      // completely outside any schedule() call. Those neighbour fetches are dependencies
++      // of an ALREADY-admitted holder (admitted earlier by chunkGenBudget's own gate in
++      // DistanceManager), so re-gating them here at the admit-budget layer is not just
++      // redundant, it's actively unsafe: with the admit-budget's concurrency cap small
++      // and these calls NOT exempted, several already-in-flight holders can end up
++      // mutually stuck waiting on each other's un-admitted neighbours with no forward
++      // progress — confirmed by testing: every worker thread idle, 0% progress, for as
++      // long as budget stayed on (this is exactly the deadlock class GEN_SPIKE.md's
++      // original design note warned a badly-scoped cap could cause).
++      boolean nestworldOuter = !Boolean.TRUE.equals(this.nestworldInCascade.get());
++      if (nestworldOuter) this.nestworldInCascade.set(Boolean.TRUE);
++      try {
++      return this.nestworldGetChunkRangeFutureInner(p_281446_, p_282030_, p_282923_);
++      } finally {
++         if (nestworldOuter) this.nestworldInCascade.set(Boolean.FALSE);
++      }
++   }
++
++   private CompletableFuture<Either<List<ChunkAccess>, ChunkHolder.ChunkLoadingFailure>> nestworldGetChunkRangeFutureInner(ChunkHolder p_281446_, int p_282030_, IntFunction<ChunkStatus> p_282923_) {
+       if (p_282030_ == 0) {
+          ChunkStatus chunkstatus1 = p_282923_.apply(0);
+          return p_281446_.m_140049_(chunkstatus1, this).thenApply((p_214893_) -> {
 @@ -398,6 +_,7 @@
              this.f_140140_ = true;
           }
@@ -22,6 +160,14 @@
           return p_140179_;
        }
     }
+@@ -445,6 +_,7 @@
+    }
+ 
+    protected void m_140280_(BooleanSupplier p_140281_) {
++      this.nestworldDrainDeferredAdmissions(); // NestWorld: steady-state drain (see field-group comment above)
+       ProfilerFiller profilerfiller = this.f_140133_.m_46473_();
+       profilerfiller.m_6180_("poi");
+       this.f_140138_.m_6202_(p_140281_);
 @@ -503,6 +_,7 @@
              if (this.f_140131_.remove(p_140182_, p_140183_) && p_203002_ != null) {
                 if (p_203002_ instanceof LevelChunk) {
@@ -30,6 +176,63 @@
                 }
  
                 this.m_140258_(p_203002_);
+@@ -537,26 +_,36 @@
+    }
+ 
+    public CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> m_140292_(ChunkHolder p_140293_, ChunkStatus p_140294_) {
+-      ChunkPos chunkpos = p_140293_.m_140092_();
+-      if (p_140294_ == ChunkStatus.f_62314_) {
+-         return this.m_140417_(chunkpos);
+-      } else {
+-         if (p_140294_ == ChunkStatus.f_62323_) {
+-            this.f_140145_.m_140792_(TicketType.f_9446_, chunkpos, ChunkLevel.m_287141_(ChunkStatus.f_62323_), chunkpos);
+-         }
+-
+-         if (!p_140294_.m_280148_()) {
+-            Optional<ChunkAccess> optional = p_140293_.m_140049_(p_140294_.m_62482_(), this).getNow(ChunkHolder.f_139995_).left();
+-            if (optional.isPresent() && optional.get().m_6415_().m_62427_(p_140294_)) {
+-               CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> completablefuture = p_140294_.m_223244_(this.f_140133_, this.f_214833_, this.f_140134_, (p_203081_) -> {
+-                  return this.m_140383_(p_140293_);
+-               }, optional.get());
+-               this.f_140144_.m_5511_(chunkpos, p_140294_);
+-               return completablefuture;
+-            }
+-         }
+-
+-         return this.m_140360_(p_140293_, p_140294_);
++      // NestWorld: mark the extent of this scheduling cascade so any recursive
++      // getOrScheduleFuture calls it makes (parent status, neighbour range) are never
++      // gated by nestworldTryAdmitNewSchedule — only the outermost (top-level) call is
++      // subject to the admit budget. See NestworldTuning.CHUNK_GEN_ADMIT_BUDGET.
++      boolean nestworldOuter = !Boolean.TRUE.equals(this.nestworldInCascade.get());
++      if (nestworldOuter) this.nestworldInCascade.set(Boolean.TRUE);
++      try {
++         ChunkPos chunkpos = p_140293_.m_140092_();
++         if (p_140294_ == ChunkStatus.f_62314_) {
++            return this.m_140417_(chunkpos);
++         } else {
++            if (p_140294_ == ChunkStatus.f_62323_) {
++               this.f_140145_.m_140792_(TicketType.f_9446_, chunkpos, ChunkLevel.m_287141_(ChunkStatus.f_62323_), chunkpos);
++            }
++
++            if (!p_140294_.m_280148_()) {
++               Optional<ChunkAccess> optional = p_140293_.m_140049_(p_140294_.m_62482_(), this).getNow(ChunkHolder.f_139995_).left();
++               if (optional.isPresent() && optional.get().m_6415_().m_62427_(p_140294_)) {
++                  CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> completablefuture = p_140294_.m_223244_(this.f_140133_, this.f_214833_, this.f_140134_, (p_203081_) -> {
++                     return this.m_140383_(p_140293_);
++                  }, optional.get());
++                  this.f_140144_.m_5511_(chunkpos, p_140294_);
++                  return completablefuture;
++               }
++            }
++
++            return this.m_140360_(p_140293_, p_140294_);
++         }
++      } finally {
++         if (nestworldOuter) this.nestworldInCascade.set(Boolean.FALSE);
+       }
+    }
+ 
 @@ -713,8 +_,14 @@
              levelchunk.m_62952_();
              if (this.f_140132_.add(chunkpos.m_45588_())) {

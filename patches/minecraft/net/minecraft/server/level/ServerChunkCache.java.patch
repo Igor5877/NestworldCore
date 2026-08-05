@@ -105,6 +105,24 @@
     private void m_8488_() {
        Arrays.fill(this.f_8337_, ChunkPos.f_45577_);
        Arrays.fill(this.f_8338_, (Object)null);
+@@ -265,6 +_,17 @@
+    }
+ 
+    public boolean m_8466_() {
++      // NestWorld: the one truly universal pump point — reached from every
++      // managedBlock loop (MinecraftServer's own, e.g. during prepareLevels startup,
++      // AND mainThreadProcessor's, e.g. a synchronous getChunk(load=true) wait) as well
++      // as the regular per-tick task drain. A chunkGenAdmitBudget-deferred admission
++      // MUST be drained from here, not from ChunkMap#tick alone: the startup spawn-area
++      // wait (MinecraftServer.prepareLevels -> waitUntilNextTick) never calls
++      // ChunkMap#tick at all, so a tick-only drain left every deferred admission
++      // stranded forever during server startup (confirmed by testing: a fresh server
++      // with the cap on hung indefinitely preparing the spawn area, 0% CPU, nothing
++      // in flight anywhere).
++      this.f_8325_.nestworldDrainDeferredAdmissions();
+       return this.f_8332_.m_7245_();
+    }
+ 
 @@ -303,6 +_,7 @@
     }
  
@@ -213,3 +231,15 @@
        this.f_8325_.m_140199_(p_8464_);
     }
  
+@@ -535,6 +_,11 @@
+       }
+ 
+       public boolean m_7245_() {
++         // NestWorld: managedBlock() (called both here and from MinecraftServer's own
++         // startup/tick wait loops) dispatches to THIS override directly, bypassing
++         // ServerChunkCache's own pollTask() wrapper entirely — so the admit-budget
++         // drain has to live here too, not just there, to cover every synchronous wait.
++         ServerChunkCache.this.f_8325_.nestworldDrainDeferredAdmissions();
+          if (ServerChunkCache.this.m_8489_()) {
+             return true;
+          } else {

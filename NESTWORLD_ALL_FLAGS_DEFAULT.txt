@@ -59,6 +59,7 @@
 -Dnestworld.predictiveLookahead=5
 -Dnestworld.predictiveFan=1
 -Dnestworld.predictiveLog=false
+-Dnestworld.chunkGenAdmitBudget=0               # 0 = unlimited; кап НОВИХ scheduling-задач/тік (не готових промоцій)
 
 # ── Мод-сумісність (Pins / Compat) [TUNE] ─────────────────────────────────
 -Dnestworld.autoPin=false                       # авто-пінити тип, що повторно крашить region-потік

@@ -130,6 +130,18 @@
 # -Dnestworld.predictiveFan=1
 # -Dnestworld.predictiveLog=false
 
+# ── Cap на нові chunk-gen задачі за тік (2026-08, готовий, default OFF) ────
+# ── Cap on new chunk-gen scheduling units per tick (2026-08, ready, default OFF) ─
+# chunkGenBudget вище капає лише ГОТОВІ промоції; ЦЕЙ прапор капає, скільки НОВИХ
+# (chunk,status)-задач стартує за тік — закриває шлях, яким масовий /forceload або
+# синхронний getChunk() мода (напр. телепорт-перевірка FTBChunks) може сам собою
+# перевантажити головний потік на десятки секунд і зловити 60с watchdog-краш.
+# chunkGenBudget above caps only READY promotions; THIS flag caps how many NEW
+# (chunk,status) units start per tick — closes the path where a mass /forceload or a
+# mod's synchronous getChunk() (e.g. an FTBChunks teleport safety-check) can alone
+# overload the main thread for tens of seconds and trip the 60s watchdog crash.
+# -Dnestworld.chunkGenAdmitBudget=0
+
 # ── Мод-сумісність (Pins / Compat) | Mod compat (Pins / Compat) ────────────
 # Авто-пінити тип ентіті/BE, що повторно крашить region-потік, на main-потік.
 # Auto-pin an entity/BE type that repeatedly crashes a region thread onto the main thread.

@@ -78,3 +78,41 @@
           }
        }
     }
+@@ -269,10 +_,33 @@
+       }
+ 
+       if (ChunkLevel.m_287158_(this.f_140007_).m_62427_(p_140050_)) {
+-         CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> completablefuture1 = p_140051_.m_140292_(this, p_140050_);
+-         this.m_143017_(completablefuture1, "schedule " + p_140050_);
+-         this.f_140001_.set(i, completablefuture1);
+-         return completablefuture1;
++         // NestWorld: gate brand-new top-level scheduling admissions (see
++         // NestworldTuning.CHUNK_GEN_ADMIT_BUDGET). No-op when disabled (default), when
++         // called mid-cascade, or when player-driven — nestworldTryScheduleNow bypasses
++         // the check entirely in those cases. Bounded by BOTH a per-window admit rate
++         // AND a standing in-flight concurrency cap, so backlog can't accumulate across
++         // successive bursts even though each individual burst's own rate check passes.
++         final ChunkStatus nestworldStatus = p_140050_;
++         final ChunkMap nestworldMap = p_140051_;
++         CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> nestworldNow =
++               nestworldMap.nestworldTryScheduleNow(this, () -> nestworldMap.m_140292_(this, nestworldStatus));
++         if (nestworldNow != null) {
++            this.m_143017_(nestworldNow, "schedule " + nestworldStatus);
++            this.f_140001_.set(i, nestworldNow);
++            return nestworldNow;
++         }
++         CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> nestworldPending = new CompletableFuture<>();
++         this.f_140001_.set(i, nestworldPending);
++         nestworldMap.nestworldDeferAdmission(() -> {
++            CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> nestworldReal = nestworldMap.m_140292_(this, nestworldStatus);
++            this.m_143017_(nestworldReal, "schedule(deferred) " + nestworldStatus);
++            nestworldReal.whenComplete((nestworldResult, nestworldErr) -> {
++               nestworldMap.nestworldOnResolved(); // NestWorld: release the in-flight slot
++               if (nestworldErr != null) nestworldPending.completeExceptionally(nestworldErr);
++               else nestworldPending.complete(nestworldResult);
++            });
++         });
++         return nestworldPending;
+       } else {
+          return completablefuture == null ? f_139996_ : completablefuture;
+       }

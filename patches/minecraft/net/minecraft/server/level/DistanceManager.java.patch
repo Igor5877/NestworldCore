@@ -138,7 +138,7 @@
 +    * set for absent chunks (unlike {@link #getTickets}). Used by the tiered chunk-gen
 +    * budget to exempt player-driven promotions from throttling.
 +    */
-+   private boolean nestworldHasPlayerTicket(long p_nw_pos_) {
++   boolean nestworldHasPlayerTicket(long p_nw_pos_) {
 +      SortedArraySet<Ticket<?>> nestworldSet = this.f_140761_.get(p_nw_pos_);
 +      if (nestworldSet != null) {
 +         for (Ticket<?> nestworldTicket : nestworldSet) {
