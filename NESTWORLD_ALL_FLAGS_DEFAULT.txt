@@ -61,6 +61,11 @@
 -Dnestworld.predictiveLog=false
 -Dnestworld.chunkGenAdmitBudget=0               # 0 = unlimited; кап НОВИХ scheduling-задач/тік (не готових промоцій)
 -Dnestworld.chunkGenMaxConcurrent=0             # 0 = unlimited; кап скільки generate() (лише NOISE/SURFACE/CARVERS/FEATURES) виконується одночасно
+# /forceload паралельний диспетч (ЗАВЖДИ увімкнено, не прапор): на реальному важкому паку
+# найкращий результат дали всі три прапорці вище ВИМКНЕНІ — throttle разом із фіксом іноді
+# голодує саме той паралелізм, який фікс розблокував. Справжня стеля на важких паках — G1
+# GC-тиск (виміряно: 80-99.9% CPU на GC-потоках 62% часу сплеску), не chunk-gen прапорці.
+# Деталі: docs/GEN_SPIKE.md, Layer 6-7.
 
 # ── Мод-сумісність (Pins / Compat) [TUNE] ─────────────────────────────────
 -Dnestworld.autoPin=false                       # авто-пінити тип, що повторно крашить region-потік

@@ -160,6 +160,44 @@
 # FULL hangs the server).
 # -Dnestworld.chunkGenMaxConcurrent=0
 
+# ── /forceload паралельний диспетч (2026-08, ЗАВЖДИ увімкнено, не прапор) ──
+# ── /forceload parallel dispatch (2026-08, ALWAYS ON, not a flag) ──────────
+# Патч ядра: ванільна /forceload раніше блокувалась по ОДНОМУ чанку за раз (N
+# чанків = N послідовних очікувань, сума всіх часів генерації). Тепер запускає
+# всі до 256 futures одразу й чекає раз. Реальний ATM9-пак (важкий worldgen):
+# той самий 3-сплесковий тест, що завжди валив вотчдог при БУДЬ-ЯКОМУ значенні
+# прапорців вище окремо, вижив НАЙКРАЩЕ з усіма трьома прапорцями вимкненими
+# (40.2/20.0/21.4с) — throttle-прапорці разом із цим фіксом іноді голодували
+# власне той паралелізм, який фікс щойно розблокував (один прогін з admitBudget
+# +maxConcurrent разом усе одно впав; дамп потоків показав усі worker'и WAITING
+# у момент краху). РЕКОМЕНДАЦІЯ для важких паків: лишати всі три прапорці
+# ВИМКНЕНИМИ, покладатись на сам фікс.
+#
+# Core patch: vanilla /forceload used to block ONE chunk at a time (N chunks =
+# N sequential waits, sum of all generation costs). Now fires up to 256
+# futures at once and waits once. Real ATM9 pack (heavy worldgen): the same
+# 3-burst test that always tripped the watchdog at ANY of the flags above
+# alone survived BEST with all three flags OFF (40.2/20.0/21.4s) — the
+# throttle flags together with this fix sometimes starved the very
+# parallelism the fix just unlocked (one run with admitBudget+maxConcurrent
+# together still crashed; the thread dump showed every worker WAITING at the
+# moment of the freeze). RECOMMENDATION for heavy packs: leave all three flags
+# OFF, let the fix alone do the work.
+#
+# Ще глибше: живий per-thread CPU-моніторинг під час сплеску (навіть з усіма
+# трьома прапорцями вимкненими) показав G1 Concurrent GC-потоки на 80-99.9%
+# CPU 62% часу сплеску — GC-тиск від масового виділення пам'яті (chunk/biome/
+# structure дані важких модів), а не тред-планування, є справжньою стелею.
+# Подальша оптимізація важких паків — це територія JVM/GC-тюнінгу (heap,
+# G1NewSizePercent, ConcGCThreads), не додаткові chunk-gen прапорці.
+#
+# Deeper still: live per-thread CPU monitoring during a burst (even with all
+# three flags OFF) showed G1 Concurrent GC threads at 80-99.9% CPU for 62% of
+# the burst's duration — GC pressure from bulk allocation (chunk/biome/
+# structure data from heavy mods), not thread scheduling, is the real ceiling.
+# Further optimization on heavy packs is JVM/GC-tuning territory (heap size,
+# G1NewSizePercent, ConcGCThreads), not more chunk-gen flags.
+
 # ── Мод-сумісність (Pins / Compat) | Mod compat (Pins / Compat) ────────────
 # Авто-пінити тип ентіті/BE, що повторно крашить region-потік, на main-потік.
 # Auto-pin an entity/BE type that repeatedly crashes a region thread onto the main thread.

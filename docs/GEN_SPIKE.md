@@ -375,3 +375,37 @@ unlocked, rather than complementing it — not fully root-caused.
 parallel-future-then-wait-once shape use the box's real spare capacity directly. Only reach for the
 throttle flags on a genuinely CPU-constrained box, and re-verify they don't fight the parallel dispatch
 before trusting the combination.
+
+## Layer 7 (measured, 2026-08-05): live per-thread monitoring — GC pressure, not scheduling, is the real ceiling
+
+Two follow-ups after shipping Layer 6, both found by watching `top -bH` (per-thread CPU%, 0.5 s
+sampling) live during a burst instead of only reading before/after timing numbers.
+
+**A forgotten flag was still gating every "no throttle" test above.** `chunkGenBudget` (Layer 3/4, an
+older flag from a *previous* session — caps the DistanceManager's FULL/ticking-promotion rate,
+independent of `chunkGenAdmitBudget`/`chunkGenMaxConcurrent`) had been left at `2` on the real ATM9
+deployment the whole time, including during every "both throttle flags OFF" run in the table above.
+Disabling it too dropped the first-burst-into-virgin-territory time from 40.2 s to **28.7 s**. Lesson:
+when re-testing "unthrottled" behavior on a long-lived deployment, grep the actual live
+`user_jvm_args.txt` for every `chunkGen*` flag, not just the ones being actively iterated on — an older
+flag from a different layer of this same doc is an easy thing to forget is still active.
+
+**With every chunk-gen flag off, real concurrent Worker-Main utilization is still sparse — because GC,
+not thread scheduling, is eating the CPU.** Sampling `top -bH -p <pid> -n 1` every 0.5 s through a full
+28.7 s burst (fix active, all three `chunkGen*` flags off) found `Worker-Main`/`ForkJoinPool` threads
+above 50% CPU concurrently in only a fraction of samples — usually 0–2 active, with brief spikes to 5–9
+— never a sustained wide wavefront using most of the box's 10 cores. In the *same* samples, **G1
+Concurrent GC threads sat at 80–99.9% CPU in 53 of ~85 samples (62% of the burst's wall-clock time)**,
+directly competing with generation workers for the same cores. Heavy worldgen mods (GTCEU ore-vein data,
+Terralith/BiomesOPlenty biome resolvers, structure piece lists) allocate a lot of short-lived garbage per
+chunk; G1 can't keep the young generation clear fast enough without eating a large, sustained share of
+CPU right alongside the ForkJoinPool.
+
+This reframes the whole investigation: none of the chunk-gen flags in this doc — admit budget,
+concurrency cap, or the Layer 6 parallel-dispatch fix — can produce anything close to linear scaling
+with core count on a heavy pack, because the actual bottleneck for a big chunk burst is memory-allocation
+pressure on the collector, not how many chunks get dispatched to workers at once. **Not investigated
+further this session** — the natural next lever is JVM/GC tuning (larger young generation via
+`-XX:G1NewSizePercent`, more/fewer `-XX:ConcGCThreads`, possibly evaluating ZGC/Shenandoah for lower
+concurrent-collection overhead under this allocation pattern), not another chunk-gen-specific flag in
+NestworldCore itself.
