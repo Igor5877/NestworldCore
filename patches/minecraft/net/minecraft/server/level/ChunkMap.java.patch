@@ -11,7 +11,7 @@
     private final ProcessorHandle<ChunkTaskPriorityQueueSorter.Message<Runnable>> f_140143_;
     private final ChunkProgressListener f_140144_;
     private final ChunkStatusUpdateListener f_143031_;
-@@ -143,6 +_,288 @@
+@@ -143,6 +_,301 @@
     private final Long2LongMap f_202981_ = new Long2LongOpenHashMap();
     private final Queue<Runnable> f_140125_ = Queues.newConcurrentLinkedQueue();
     int f_140126_;
@@ -261,7 +261,20 @@
 +            // acquirer could steal the slot ahead of an already-queued task
 +            if (next == null) this.slotsFree++;
 +         }
-+         if (next != null) next.run();
++         // NestWorld: MUST dispatch off-thread, not next.run() inline. For
++         // registerSimple-registered statuses (SURFACE/CARVERS/FEATURES), real.get()
++         // in `task` frequently returns an ALREADY-COMPLETED future, so
++         // realFuture.whenComplete(...) in gate() fires synchronously on THIS thread —
++         // which calls release() again, which can hand off to yet another queued task,
++         // and so on. Under a deep backlog (e.g. several stacked chunk-load bursts) this
++         // unwound into an unbounded same-thread release->run->release->run chain that
++         // pinned the calling thread in real, synchronous FEATURES generation for a
++         // whole 60s tick until ServerWatchdog force-killed the server (CONFIRMED via
++         // live jstack + crash-report stack trace, repeating
++         // NestworldGenPool.release/lambda$gate$0/whenComplete/lambda$gate$1 frames).
++         // Handing the continuation to the shared background pool breaks the chain: each
++         // release() returns immediately and the next task starts on a fresh stack.
++         if (next != null) Util.m_183991_().execute(next);
 +      }
 +   }
 +
