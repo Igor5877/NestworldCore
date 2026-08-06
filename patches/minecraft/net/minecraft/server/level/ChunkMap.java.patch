@@ -11,7 +11,7 @@
     private final ProcessorHandle<ChunkTaskPriorityQueueSorter.Message<Runnable>> f_140143_;
     private final ChunkProgressListener f_140144_;
     private final ChunkStatusUpdateListener f_143031_;
-@@ -143,6 +_,240 @@
+@@ -143,6 +_,283 @@
     private final Long2LongMap f_202981_ = new Long2LongOpenHashMap();
     private final Queue<Runnable> f_140125_ = Queues.newConcurrentLinkedQueue();
     int f_140126_;
@@ -85,7 +85,24 @@
 +      }
 +      if (!this.nestworldHasAdmitCapacity()) return null;
 +      this.nestworldOnAdmitted();
-+      CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> nestworldF = p_nw_real.get();
++      // NestWorld: p_nw_real.get() can throw SYNCHRONOUSLY — it runs arbitrary vanilla/mod
++      // (holder,status) scheduling code, not just return an already-built future. If it
++      // throws before returning anything, there is no future to attach whenComplete to,
++      // so nestworldOnResolved() would never run and this in-flight slot would leak
++      // forever (CONFIRMED as a real bug class: reproduced an analogous leak in
++      // NestworldGenPool.gate() — see its comment — on a real 188-mod pack; a single
++      // mod's synchronous throw during a gated generate() call froze that pool permanently
++      // since nothing ever released the slot). Must release + fail our own returned future
++      // here too, not just on the async path.
++      CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> nestworldF;
++      try {
++         nestworldF = p_nw_real.get();
++      } catch (Throwable nestworldT) {
++         this.nestworldOnResolved();
++         CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> nestworldFailed = new CompletableFuture<>();
++         nestworldFailed.completeExceptionally(nestworldT);
++         return nestworldFailed;
++      }
 +      nestworldF.whenComplete((nestworldR, nestworldE) -> this.nestworldOnResolved());
 +      return nestworldF;
 +   }
@@ -178,6 +195,22 @@
 +    * guarantee "never two callers concurrently, no matter which thread" needs
 +    * capacity exactly 1 — the slot-count itself is what enforces exclusion then, not
 +    * which thread happens to run the release-triggered task.
++    *
++    * <p>CONFIRMED BY A REAL CRASH (real 188-mod pack, not a synthetic test): {@code
++    * real.get()} runs arbitrary vanilla/mod (holder,status) generation code — for
++    * registerSimple-registered statuses (SURFACE/CARVERS/FEATURES) this runs
++    * SYNCHRONOUSLY inline, including third-party Feature-placement code (GregTech,
++    * Mekanism, Lost Cities all touch chunk data directly here). If {@code real.get()}
++    * throws — a plain Exception OR an Error (NoClassDefFoundError, StackOverflowError
++    * etc. are all real possibilities from arbitrary mod code) — BEFORE returning
++    * anything, there is no future to attach {@code whenComplete} to, so this slot is
++    * never released and the caller's returned future never completes: with FEATURES'
++    * pool hard-capped at 1, a SINGLE such throw anywhere in a 188-mod pack permanently
++    * freezes ALL subsequent FEATURES generation forever (matches an observed 60s
++    * ServerHangWatchdog kill with 8/9 worker threads idle and nothing queued — a
++    * "lost admission", not lock contention). Every path that can run {@code real.get()}
++    * — immediate admission AND the deferred release-triggered path, which reuses the
++    * SAME Runnable — must be exception-safe.
 +    */
 +   private static final class NestworldGenPool {
 +      private int slotsFree;
@@ -188,11 +221,21 @@
 +      CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> gate(
 +            java.util.function.Supplier<CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>>> real) {
 +         CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> pendingFuture = new CompletableFuture<>();
-+         Runnable task = () -> real.get().whenComplete((r, e) -> {
-+            this.release();
-+            if (e != null) pendingFuture.completeExceptionally(e);
-+            else pendingFuture.complete(r);
-+         });
++         Runnable task = () -> {
++            CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> realFuture;
++            try {
++               realFuture = real.get();
++            } catch (Throwable t) {
++               this.release();
++               pendingFuture.completeExceptionally(t);
++               return;
++            }
++            realFuture.whenComplete((r, e) -> {
++               this.release();
++               if (e != null) pendingFuture.completeExceptionally(e);
++               else pendingFuture.complete(r);
++            });
++         };
 +         boolean runNow;
 +         synchronized (this.pending) {
 +            if (this.slotsFree > 0) {
