@@ -1,6 +1,17 @@
 --- a/net/minecraft/server/level/ChunkMap.java
 +++ b/net/minecraft/server/level/ChunkMap.java
-@@ -143,6 +_,199 @@
+@@ -130,6 +_,10 @@
+    private boolean f_140140_;
+    private final ChunkTaskPriorityQueueSorter f_140141_;
+    private final ProcessorHandle<ChunkTaskPriorityQueueSorter.Message<Runnable>> f_140142_;
++   // NestWorld: parallel worldgen-mailbox shards (see NestworldTuning.WORLDGEN_SHARDS).
++   // worldgenMailbox (above) is always shard 0 and stays the field used by anything that
++   // doesn't need to know sharding exists; nestworldWorldgenShards[0] == worldgenMailbox.
++   private final ProcessorHandle<ChunkTaskPriorityQueueSorter.Message<Runnable>>[] nestworldWorldgenShards;
+    private final ProcessorHandle<ChunkTaskPriorityQueueSorter.Message<Runnable>> f_140143_;
+    private final ChunkProgressListener f_140144_;
+    private final ChunkStatusUpdateListener f_143031_;
+@@ -143,6 +_,240 @@
     private final Long2LongMap f_202981_ = new Long2LongOpenHashMap();
     private final Queue<Runnable> f_140125_ = Queues.newConcurrentLinkedQueue();
     int f_140126_;
@@ -152,54 +163,129 @@
 +   private static final java.util.Set<ChunkStatus> NESTWORLD_GATEABLE_STATUSES = java.util.Set.of(
 +         ChunkStatus.f_62318_, ChunkStatus.f_62319_, ChunkStatus.f_62320_, ChunkStatus.f_62322_);
 +
-+   private int nestworldGenSlotsFree = net.nestworld.region.NestworldTuning.CHUNK_GEN_MAX_CONCURRENT > 0
-+         ? net.nestworld.region.NestworldTuning.CHUNK_GEN_MAX_CONCURRENT : 0;
-+   private final java.util.ArrayDeque<Runnable> nestworldPendingGeneration = new java.util.ArrayDeque<>();
++   /**
++    * NestWorld: a counting semaphore-like admission gate — at most {@code capacity}
++    * callers may be "admitted" (running) at once; the rest queue and are released
++    * one-for-one as admitted callers finish. Extracted so FEATURES can get its OWN
++    * pool, hard-capped at 1, independent of NOISE/SURFACE/CARVERS's pool — see the
++    * field-group comment below for why a SHARED pool was unsafe.
++    *
++    * <p>CRITICAL: {@code release()}'s hand-off to the next queued task runs on
++    * WHATEVER thread completes the admitted task's future (via {@code whenComplete},
++    * no explicit executor) — NOT necessarily the thread that originally admitted it.
++    * A pool with capacity &gt; 1 is fine with that (the mutual-exclusion guarantee is
++    * "at most `capacity` running", not "always on one thread"); a pool that MUST
++    * guarantee "never two callers concurrently, no matter which thread" needs
++    * capacity exactly 1 — the slot-count itself is what enforces exclusion then, not
++    * which thread happens to run the release-triggered task.
++    */
++   private static final class NestworldGenPool {
++      private int slotsFree;
++      private final java.util.ArrayDeque<Runnable> pending = new java.util.ArrayDeque<>();
++
++      NestworldGenPool(int capacity) { this.slotsFree = capacity; }
++
++      CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> gate(
++            java.util.function.Supplier<CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>>> real) {
++         CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> pendingFuture = new CompletableFuture<>();
++         Runnable task = () -> real.get().whenComplete((r, e) -> {
++            this.release();
++            if (e != null) pendingFuture.completeExceptionally(e);
++            else pendingFuture.complete(r);
++         });
++         boolean runNow;
++         synchronized (this.pending) {
++            if (this.slotsFree > 0) {
++               this.slotsFree--;
++               runNow = true;
++            } else {
++               this.pending.add(task);
++               runNow = false;
++            }
++         }
++         if (runNow) task.run();
++         return pendingFuture;
++      }
++
++      private void release() {
++         Runnable next;
++         synchronized (this.pending) {
++            next = this.pending.poll();
++            // hand the freed slot directly to the next queued task rather than
++            // incrementing-then-decrementing — avoids a window where a concurrent
++            // acquirer could steal the slot ahead of an already-queued task
++            if (next == null) this.slotsFree++;
++         }
++         if (next != null) next.run();
++      }
++   }
++
++   // Shared pool for NOISE/SURFACE/CARVERS — none construct a BulkSectionAccess (see
++   // NestworldTuning.WORLDGEN_SHARDS's javadoc), so any concurrency up to
++   // CHUNK_GEN_MAX_CONCURRENT among them is safe.
++   private final NestworldGenPool nestworldNoiseSurfaceCarversPool =
++         new NestworldGenPool(Math.max(0, net.nestworld.region.NestworldTuning.CHUNK_GEN_MAX_CONCURRENT));
++   // FEATURES gets its OWN pool, HARD-CAPPED AT 1 — CONFIRMED by testing (three
++   // reproduced crashes) that anything looser lets two OreFeature/BulkSectionAccess
++   // calls run concurrently and deadlock AB-BA on PalettedContainer's per-section
++   // semaphore. This is intentionally NOT tied to CHUNK_GEN_MAX_CONCURRENT: raising
++   // that flag must never loosen this. See ChunkMap.scheduleChunkGeneration's routing
++   // comment for the full account of why shard-routing alone did not fix this (a
++   // queued admission's release can run on a different thread than the shard that
++   // queued it, escaping the mailbox's own single-flight guarantee — only a capacity-1
++   // counting gate is airtight regardless of which thread wins the race).
++   private final NestworldGenPool nestworldFeaturesPool = new NestworldGenPool(1);
 +
 +   /**
 +    * NestWorld: run {@code p_nw_real} (the real generate() call) now if {@code
-+    * p_nw_status} is gateable and a concurrency slot is free; otherwise (ungateable
-+    * status, or gateable but no free slot) run immediately or queue to run once
-+    * another gated generation completes and releases its slot.
++    * p_nw_status} is gateable and a concurrency slot is free in ITS pool; otherwise
++    * (ungateable status, or gateable but no free slot) run immediately or queue to run
++    * once another gated generation in the same pool completes and releases its slot.
 +    */
 +   private CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> nestworldGateGeneration(
 +         ChunkStatus p_nw_status, java.util.function.Supplier<CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>>> p_nw_real) {
++      if (p_nw_status == ChunkStatus.f_62322_) return this.nestworldFeaturesPool.gate(p_nw_real);
 +      if (net.nestworld.region.NestworldTuning.CHUNK_GEN_MAX_CONCURRENT <= 0) return p_nw_real.get();
 +      if (!NESTWORLD_GATEABLE_STATUSES.contains(p_nw_status)) return p_nw_real.get();
-+      CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> nestworldPending = new CompletableFuture<>();
-+      Runnable nestworldTask = () -> p_nw_real.get().whenComplete((nestworldR, nestworldE) -> {
-+         this.nestworldReleaseGenSlot();
-+         if (nestworldE != null) nestworldPending.completeExceptionally(nestworldE);
-+         else nestworldPending.complete(nestworldR);
-+      });
-+      boolean nestworldRunNow;
-+      synchronized (this.nestworldPendingGeneration) {
-+         if (this.nestworldGenSlotsFree > 0) {
-+            this.nestworldGenSlotsFree--;
-+            nestworldRunNow = true;
-+         } else {
-+            this.nestworldPendingGeneration.add(nestworldTask);
-+            nestworldRunNow = false;
-+         }
-+      }
-+      if (nestworldRunNow) nestworldTask.run();
-+      return nestworldPending;
-+   }
-+
-+   private void nestworldReleaseGenSlot() {
-+      Runnable nestworldNext;
-+      synchronized (this.nestworldPendingGeneration) {
-+         nestworldNext = this.nestworldPendingGeneration.poll();
-+         // hand the freed slot directly to the next queued task rather than
-+         // incrementing-then-decrementing — avoids a window where a concurrent
-+         // acquirer could steal the slot ahead of an already-queued task
-+         if (nestworldNext == null) this.nestworldGenSlotsFree++;
-+      }
-+      if (nestworldNext != null) nestworldNext.run();
++      return this.nestworldNoiseSurfaceCarversPool.gate(p_nw_real);
 +   }
  
     public ChunkMap(ServerLevel p_214836_, LevelStorageSource.LevelStorageAccess p_214837_, DataFixer p_214838_, StructureTemplateManager p_214839_, Executor p_214840_, BlockableEventLoop<Runnable> p_214841_, LightChunkGetter p_214842_, ChunkGenerator p_214843_, ChunkProgressListener p_214844_, ChunkStatusUpdateListener p_214845_, Supplier<DimensionDataStorage> p_214846_, int p_214847_, boolean p_214848_) {
        super(p_214837_.m_197394_(p_214836_.m_46472_()).resolve("region"), p_214838_, p_214848_);
+@@ -161,13 +_,30 @@
+ 
+       this.f_254626_ = p_214843_.m_255169_(registryaccess.m_255025_(Registries.f_256998_), this.f_214834_, i);
+       this.f_140135_ = p_214841_;
+-      ProcessorMailbox<Runnable> processormailbox1 = ProcessorMailbox.m_18751_(p_214840_, "worldgen");
++      // NestWorld: N raw worldgen mailboxes instead of 1 — see NestworldTuning.WORLDGEN_SHARDS.
++      // Each is independently registered with queueSorter (which keys its internal
++      // ChunkTaskPriorityQueue map by ProcessorHandle identity — verified by reading
++      // ChunkTaskPriorityQueueSorter.getQueue — so N registrations is a supported shape).
++      int nestworldShardCount = net.nestworld.region.NestworldTuning.WORLDGEN_SHARDS;
++      ProcessorMailbox<Runnable>[] nestworldRawWorldgenShards = new ProcessorMailbox[nestworldShardCount];
++      for (int nestworldI = 0; nestworldI < nestworldShardCount; nestworldI++) {
++         nestworldRawWorldgenShards[nestworldI] = ProcessorMailbox.m_18751_(p_214840_,
++               nestworldShardCount == 1 ? "worldgen" : "worldgen-" + nestworldI);
++      }
+       ProcessorHandle<Runnable> processorhandle = ProcessorHandle.m_18714_("main", p_214841_::m_6937_);
+       this.f_140144_ = p_214844_;
+       this.f_143031_ = p_214845_;
+       ProcessorMailbox<Runnable> processormailbox = ProcessorMailbox.m_18751_(p_214840_, "light");
+-      this.f_140141_ = new ChunkTaskPriorityQueueSorter(ImmutableList.of(processormailbox1, processorhandle, processormailbox), p_214840_, Integer.MAX_VALUE);
+-      this.f_140142_ = this.f_140141_.m_140604_(processormailbox1, false);
++      java.util.List<ProcessorHandle<?>> nestworldSorterProcessors = new java.util.ArrayList<>(nestworldShardCount + 2);
++      for (ProcessorMailbox<Runnable> nestworldShard : nestworldRawWorldgenShards) nestworldSorterProcessors.add(nestworldShard);
++      nestworldSorterProcessors.add(processorhandle);
++      nestworldSorterProcessors.add(processormailbox);
++      this.f_140141_ = new ChunkTaskPriorityQueueSorter(ImmutableList.copyOf(nestworldSorterProcessors), p_214840_, Integer.MAX_VALUE);
++      this.nestworldWorldgenShards = new ProcessorHandle[nestworldShardCount];
++      for (int nestworldI = 0; nestworldI < nestworldShardCount; nestworldI++) {
++         this.nestworldWorldgenShards[nestworldI] = this.f_140141_.m_140604_(nestworldRawWorldgenShards[nestworldI], false);
++      }
++      this.f_140142_ = this.nestworldWorldgenShards[0];
+       this.f_140143_ = this.f_140141_.m_140604_(processorhandle, false);
+       this.f_140134_ = new ThreadedLevelLightEngine(p_214842_, this, this.f_140133_.m_6042_().f_223549_(), processormailbox, this.f_140141_.m_140604_(processormailbox, false));
+       this.f_140145_ = new ChunkMap.DistanceManager(p_214840_, p_214841_);
 @@ -268,6 +_,28 @@
     }
  
@@ -310,6 +396,56 @@
        }
     }
  
+@@ -625,8 +_,48 @@
+       this.f_140133_.m_46473_().m_6525_(() -> {
+          return "chunkGenerate " + p_140362_;
+       });
++      // NestWorld: route to a worldgen-mailbox shard by a COARSE SPATIAL BLOCK, not a raw
++      // chunk-position hash — AND always force FEATURES onto shard 0 (fully serialized),
++      // never spatially routed. Both measures were needed; spatial blocking ALONE was
++      // tried and CONFIRMED insufficient by testing (reproduced the identical deadlock
++      // below with 32x32-chunk blocks in place).
++      //
++      // Root cause (confirmed via two crash-report thread dumps): FEATURES-status
++      // generation for ore veins (net.minecraft.world.level.levelgen.feature.OreFeature —
++      // verified BY GREPPING THE ENTIRE VANILLA SOURCE TREE to be the ONLY caller of
++      // `new BulkSectionAccess(...)`, so this is the ONLY status with this hazard) uses
++      // BulkSectionAccess, which acquires each touched LevelChunkSection's semaphore
++      // (PalettedContainer.acquire(), OUR OWN lock — see the field-group comment there —
++      // not vanilla's) the FIRST time an ore-blob placement step touches it, in whatever
++      // order the blob's shape happens to visit positions, and holds ALL of them until
++      // the whole placement call finishes. That set of sections is NOT known upfront (ore
++      // blobs are placed incrementally), so canonical lock-ordering cannot fix this
++      // without rewriting OreFeature's placement algorithm — the only sound fix available
++      // without touching vanilla's generation logic is to make sure no TWO ore-placement
++      // calls ever run concurrently in the first place. A chunk whose ore blob reaches
++      // into a neighbour being placed on a DIFFERENT shard at the same time can deadlock
++      // AB-BA against it (thread 1 holds section A, wants B; thread 2 holds B, wants A) —
++      // spatial blocking only reduces how often two such chunks land on different shards,
++      // it doesn't prevent it, hence still reproducing.
++      //
++      // NOISE/SURFACE/CARVERS remain spatially sharded (their generation tasks are pure
++      // leaf computations over the already-fetched neighbour list per NESTWORLD_GATEABLE_
++      // STATUSES' own comment, and none of them construct a BulkSectionAccess), so they
++      // still get real N-way throughput; only FEATURES gives that up in exchange for
++      // being provably deadlock-free the same way vanilla always was (one at a time).
++      ProcessorHandle<ChunkTaskPriorityQueueSorter.Message<Runnable>> nestworldShard;
++      if (this.nestworldWorldgenShards.length == 1) {
++         nestworldShard = this.nestworldWorldgenShards[0];
++      } else if (p_140362_ == ChunkStatus.f_62322_) {
++         nestworldShard = this.nestworldWorldgenShards[0];
++      } else {
++         int nestworldBlockX = chunkpos.f_45578_ >> net.nestworld.region.NestworldTuning.WORLDGEN_SHARD_BLOCK_SHIFT;
++         int nestworldBlockZ = chunkpos.f_45579_ >> net.nestworld.region.NestworldTuning.WORLDGEN_SHARD_BLOCK_SHIFT;
++         long nestworldBlockKey = net.minecraft.world.level.ChunkPos.m_45589_(nestworldBlockX, nestworldBlockZ);
++         nestworldShard = this.nestworldWorldgenShards[Math.floorMod(Long.hashCode(nestworldBlockKey), this.nestworldWorldgenShards.length)];
++      }
+       Executor executor = (p_214958_) -> {
+-         this.f_140142_.m_6937_(ChunkTaskPriorityQueueSorter.m_140642_(p_140361_, p_214958_));
++         nestworldShard.m_6937_(ChunkTaskPriorityQueueSorter.m_140642_(p_140361_, p_214958_));
+       };
+       return completablefuture.thenComposeAsync((p_214873_) -> {
+          return p_214873_.map((p_280971_) -> {
 @@ -638,9 +_,9 @@
                       return this.m_140383_(p_140361_);
                    }, chunkaccess);

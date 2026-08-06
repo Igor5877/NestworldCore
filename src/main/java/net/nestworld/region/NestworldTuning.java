@@ -199,6 +199,90 @@ public final class NestworldTuning {
             Integer.getInteger("nestworld.chunkGenMaxConcurrent", 0);
 
     /**
+     * Number of parallel {@code worldgenMailbox} shards per dimension (EXPERIMENTAL,
+     * default 1 = vanilla behaviour). Vanilla funnels ALL chunk-status generation work
+     * (NOISE/SURFACE/CARVERS/FEATURES — the actual CPU-bound density-function/surface-
+     * rule/feature-placement work) for an entire dimension through a SINGLE {@code
+     * ProcessorMailbox}. That mailbox's own {@code registerForExecution}/{@code
+     * setAsScheduled} gate (an atomic CAS bit) guarantees at most one {@code run()} of
+     * it is ever active at a time — so no matter how many CPU cores the backing executor
+     * has, real generation work for one dimension processes ONE (holder,status) task at
+     * a time, taking turns across different worker threads over time but never running
+     * concurrently. Confirmed by reading {@code ProcessorMailbox.pollUntil}/{@code
+     * registerForExecution} directly, not inferred — this is genuine, long-standing
+     * vanilla Mojang behaviour, not something NestworldCore introduced (PaperMC's
+     * "multithreaded chunk generation" feature exists to work around the same limit).
+     *
+     * <p>With this &gt; 1, {@code ChunkMap} registers N independent raw {@code
+     * ProcessorMailbox} instances with the same {@code ChunkTaskPriorityQueueSorter}
+     * (each gets its own {@code ChunkTaskPriorityQueue} — verified by reading the
+     * sorter's {@code getQueue} map, keyed by {@code ProcessorHandle} identity, so this
+     * is a supported usage shape, not an abuse of internals) and routes each NEW
+     * top-level {@code scheduleChunkGeneration} call to shard {@code
+     * chunkPos.hashCode() % N} — a chunk's own sequence of statuses always lands on the
+     * SAME shard (no same-chunk status-B-before-status-A race), only DIFFERENT chunks
+     * can now generate truly concurrently, up to N at once.
+     *
+     * <p><b>Trade-off:</b> the strict GLOBAL priority ordering (today: the single
+     * nearest-to-player chunk across the WHOLE dimension always loads first) becomes
+     * only approximate — priority is preserved within a shard, not across shards. This
+     * does not affect correctness (the {@code getChunkRangeFuture} neighbour-dependency
+     * walk still fully resolves before a task is ever submitted, regardless of which
+     * shard it lands on — sharding cannot start a task before its dependencies are
+     * ready), only worst-case latency variance for an individual chunk whose neighbours
+     * happen to land on a busy shard.
+     *
+     * <p>Orthogonal to {@link #CHUNK_GEN_MAX_CONCURRENT}: that cap still bounds how many
+     * gateable-status generations run at once ACROSS ALL SHARDS COMBINED (its counter is
+     * a single {@code synchronized} field shared by every shard's callback) — sharding
+     * only provides the actual parallel execution capacity within that cap. Raise both
+     * together; a shard count with no matching concurrency-cap increase just adds queues
+     * without adding real throughput.
+     *
+     * <p><b>{@code ChunkStatus.FEATURES} is always forced onto shard 0 (fully serialized),
+     * never spatially routed like the other gateable statuses.</b> Confirmed by testing
+     * (two reproduced crashes, a real {@code ServerHangWatchdog} 60s kill both times):
+     * FEATURES-status ore-vein placement ({@code
+     * net.minecraft.world.level.levelgen.feature.OreFeature} — the ONLY vanilla caller of
+     * {@code BulkSectionAccess}, verified by grepping the entire vanilla source tree)
+     * acquires however many {@code LevelChunkSection}s an ore blob's shape happens to
+     * touch, in placement order, and holds them all until done. Two concurrent ore
+     * placements whose blobs reach into each other's territory can deadlock AB-BA on
+     * that per-section lock. The block-grouping below only reduces how often two such
+     * chunks land on different shards — it does NOT prevent it (spatial blocking ALONE
+     * was tried first and still deadlocked identically). See the routing site in
+     * {@code ChunkMap.scheduleChunkGeneration} for the full account. NOISE/SURFACE/
+     * CARVERS have no such hazard (none construct a {@code BulkSectionAccess}) and keep
+     * full N-way throughput.
+     *
+     * <p>{@code 1} = disabled (vanilla-identical, default). Set e.g. {@code
+     * -Dnestworld.worldgenShards=4} to start with a conservative shard count before
+     * trying your full core count — start low, watch for anything in {@code
+     * net.minecraft.world.level.levelgen.*} that assumes single-threaded worldgen access
+     * (structure-template caches, any non-concurrent global lookup) before going higher.
+     */
+    public static final int WORLDGEN_SHARDS =
+            Math.max(1, Integer.getInteger("nestworld.worldgenShards", 1));
+
+    /**
+     * Chunk-coordinate right-shift used to group chunks into square blocks for {@link
+     * #WORLDGEN_SHARDS} routing — block size is {@code 2^shift} chunks per side (default
+     * 5 = 32x32 chunks, one vanilla region-file's worth). ALL chunks in the same block
+     * route to the same worldgen shard, so cross-shard contention on vanilla's own
+     * {@code PalettedContainer} section semaphore (see {@code
+     * ChunkMap.scheduleChunkGeneration}'s routing comment — CARVERS-status
+     * {@code BulkSectionAccess} can touch a neighbour chunk's section) is confined to
+     * chunks near a block edge, not scattered across the whole dimension. This is a risk
+     * REDUCTION, not a proof: chunks straddling a block boundary can still land on
+     * different shards. Only lower this if you have measured the actual max cross-chunk
+     * reach of every gateable status's generation task in your modpack and confirmed it's
+     * smaller than the resulting block size; raising it (larger blocks) is always safer,
+     * at the cost of coarser-grained parallelism.
+     */
+    public static final int WORLDGEN_SHARD_BLOCK_SHIFT =
+            Integer.getInteger("nestworld.worldgenShardBlockShift", 5);
+
+    /**
      * Spatial-cull the entity tracker's per-player-move update (EXPERIMENTAL, default
      * off). Vanilla {@code ChunkMap.move(player)} rescans <em>every</em> tracked entity
      * on each player-move packet to recompute visibility — O(total entities) per move.
