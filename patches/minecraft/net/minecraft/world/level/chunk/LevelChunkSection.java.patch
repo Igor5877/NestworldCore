@@ -1,0 +1,15 @@
+--- a/net/minecraft/world/level/chunk/LevelChunkSection.java
++++ b/net/minecraft/world/level/chunk/LevelChunkSection.java
+@@ -47,6 +_,12 @@
+       this.f_62972_.m_63084_();
+    }
+ 
++   // NestWorld: non-blocking counterpart to acquire() — see PalettedContainer.tryAcquire()
++   // and BulkSectionAccess's deadlock-free multi-section acquisition algorithm.
++   public boolean tryAcquire() {
++      return this.f_62972_.tryAcquire();
++   }
++
+    public void m_63006_() {
+       this.f_62972_.m_63120_();
+    }

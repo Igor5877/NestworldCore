@@ -199,6 +199,39 @@ public final class NestworldTuning {
             Integer.getInteger("nestworld.chunkGenMaxConcurrent", 0);
 
     /**
+     * Same idea as {@link #CHUNK_GEN_MAX_CONCURRENT}, but a SEPARATE cap applying only to
+     * {@code ChunkStatus.FEATURES} (ore veins, trees, structures' non-start pieces, etc.).
+     *
+     * <p>Kept independent rather than folded into the shared pool above for two reasons:
+     * (1) real modpacks can make FEATURES far more expensive per-chunk than NOISE/SURFACE/
+     * CARVERS (GregTech alone registers many ore vein types), so operators may want to cap
+     * it lower than the others independently; (2) FEATURES was, until this fix, the ONLY
+     * gated status whose concurrent execution could deadlock — see {@code
+     * BulkSectionAccess}'s class-level comment for the full history: {@code OreFeature}
+     * (vanilla) and, confirmed by reading real decompiled bytecode from a live 188-mod
+     * pack, GregTech's {@code OrePlacer}, Mekanism's {@code ResizableOreFeature}, and Lost
+     * Cities' {@code ChunkDriver} all construct {@code BulkSectionAccess} directly, which
+     * used to acquire touched {@code LevelChunkSection}s lazily in visit order and hold
+     * them until done — two concurrent placements reaching into each other's territory
+     * could deadlock AB-BA. {@code BulkSectionAccess} now uses a deadlock-free release-and-
+     * reacquire-in-total-order algorithm instead (see its source), so real FEATURES
+     * concurrency &gt; 1 is safe again — this cap is now a pure throughput/resource-tuning
+     * knob, the same as the shared pool, not a safety mechanism. (An earlier version of
+     * this cap was hard-coded to exactly 1 regardless of configuration, before that fix
+     * landed — CONFIRMED insufficient under real load by testing: rapid repeated player
+     * teleports to unloaded terrain can arrive faster than a single global FEATURES slot
+     * drains, growing an unbounded queue until some chunk's wait time alone crosses the
+     * 60s {@code ServerHangWatchdog} threshold, with no deadlock or leak involved at all —
+     * pure overload. A hard cap of 1 is no longer needed OR sufficient; real throughput is.)
+     *
+     * <p>{@code 0} = unlimited (vanilla behaviour, default). Tune independently of {@link
+     * #CHUNK_GEN_MAX_CONCURRENT}, e.g. lower if FEATURES turns out to dominate wall-clock
+     * time under your modpack.
+     */
+    public static final int CHUNK_GEN_FEATURES_MAX_CONCURRENT =
+            Integer.getInteger("nestworld.chunkGenFeaturesMaxConcurrent", 0);
+
+    /**
      * Number of parallel {@code worldgenMailbox} shards per dimension (EXPERIMENTAL,
      * default 1 = vanilla behaviour). Vanilla funnels ALL chunk-status generation work
      * (NOISE/SURFACE/CARVERS/FEATURES — the actual CPU-bound density-function/surface-
@@ -239,21 +272,20 @@ public final class NestworldTuning {
      * together; a shard count with no matching concurrency-cap increase just adds queues
      * without adding real throughput.
      *
-     * <p><b>{@code ChunkStatus.FEATURES} is always forced onto shard 0 (fully serialized),
-     * never spatially routed like the other gateable statuses.</b> Confirmed by testing
-     * (two reproduced crashes, a real {@code ServerHangWatchdog} 60s kill both times):
-     * FEATURES-status ore-vein placement ({@code
-     * net.minecraft.world.level.levelgen.feature.OreFeature} — the ONLY vanilla caller of
-     * {@code BulkSectionAccess}, verified by grepping the entire vanilla source tree)
-     * acquires however many {@code LevelChunkSection}s an ore blob's shape happens to
-     * touch, in placement order, and holds them all until done. Two concurrent ore
-     * placements whose blobs reach into each other's territory can deadlock AB-BA on
-     * that per-section lock. The block-grouping below only reduces how often two such
-     * chunks land on different shards — it does NOT prevent it (spatial blocking ALONE
-     * was tried first and still deadlocked identically). See the routing site in
-     * {@code ChunkMap.scheduleChunkGeneration} for the full account. NOISE/SURFACE/
-     * CARVERS have no such hazard (none construct a {@code BulkSectionAccess}) and keep
-     * full N-way throughput.
+     * <p><b>{@code ChunkStatus.FEATURES} used to be forced onto shard 0 (fully
+     * serialized) — no longer.</b> That was a workaround for a CONFIRMED AB-BA deadlock in
+     * {@code BulkSectionAccess} (used not just by vanilla {@code OreFeature} but, verified
+     * by reading real decompiled bytecode from a live 188-mod pack, by GregTech's {@code
+     * OrePlacer}, Mekanism's {@code ResizableOreFeature}, and Lost Cities' {@code
+     * ChunkDriver} too): it used to acquire touched {@code LevelChunkSection}s lazily in
+     * visit order and hold them all until done, so two concurrent placements reaching into
+     * each other's territory could deadlock. Spatial routing alone (this shift-based
+     * grouping) was tried first and did NOT prevent it (only reduced how often two such
+     * chunks landed on different shards). {@code BulkSectionAccess} now uses a deadlock-
+     * free release-and-reacquire-in-total-order algorithm internally (see its source) —
+     * the hazard is fixed at its root, so FEATURES is spatially routed like every other
+     * gateable status again, and {@link #CHUNK_GEN_FEATURES_MAX_CONCURRENT} is a normal
+     * throughput knob rather than a hard safety cap.
      *
      * <p>{@code 1} = disabled (vanilla-identical, default). Set e.g. {@code
      * -Dnestworld.worldgenShards=4} to start with a conservative shard count before

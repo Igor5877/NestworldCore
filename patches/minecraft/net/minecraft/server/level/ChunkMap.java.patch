@@ -11,7 +11,7 @@
     private final ProcessorHandle<ChunkTaskPriorityQueueSorter.Message<Runnable>> f_140143_;
     private final ChunkProgressListener f_140144_;
     private final ChunkStatusUpdateListener f_143031_;
-@@ -143,6 +_,283 @@
+@@ -143,6 +_,288 @@
     private final Long2LongMap f_202981_ = new Long2LongOpenHashMap();
     private final Queue<Runnable> f_140125_ = Queues.newConcurrentLinkedQueue();
     int f_140126_;
@@ -184,8 +184,10 @@
 +    * NestWorld: a counting semaphore-like admission gate — at most {@code capacity}
 +    * callers may be "admitted" (running) at once; the rest queue and are released
 +    * one-for-one as admitted callers finish. Extracted so FEATURES can get its OWN
-+    * pool, hard-capped at 1, independent of NOISE/SURFACE/CARVERS's pool — see the
-+    * field-group comment below for why a SHARED pool was unsafe.
++    * independently-configured pool (historically hard-capped at 1 to work around a
++    * since-fixed BulkSectionAccess deadlock; now just a normal throughput knob — see
++    * CHUNK_GEN_FEATURES_MAX_CONCURRENT's javadoc), separate from NOISE/SURFACE/CARVERS's
++    * pool.
 +    *
 +    * <p>CRITICAL: {@code release()}'s hand-off to the next queued task runs on
 +    * WHATEVER thread completes the admitted task's future (via {@code whenComplete},
@@ -268,16 +270,16 @@
 +   // CHUNK_GEN_MAX_CONCURRENT among them is safe.
 +   private final NestworldGenPool nestworldNoiseSurfaceCarversPool =
 +         new NestworldGenPool(Math.max(0, net.nestworld.region.NestworldTuning.CHUNK_GEN_MAX_CONCURRENT));
-+   // FEATURES gets its OWN pool, HARD-CAPPED AT 1 — CONFIRMED by testing (three
-+   // reproduced crashes) that anything looser lets two OreFeature/BulkSectionAccess
-+   // calls run concurrently and deadlock AB-BA on PalettedContainer's per-section
-+   // semaphore. This is intentionally NOT tied to CHUNK_GEN_MAX_CONCURRENT: raising
-+   // that flag must never loosen this. See ChunkMap.scheduleChunkGeneration's routing
-+   // comment for the full account of why shard-routing alone did not fix this (a
-+   // queued admission's release can run on a different thread than the shard that
-+   // queued it, escaping the mailbox's own single-flight guarantee — only a capacity-1
-+   // counting gate is airtight regardless of which thread wins the race).
-+   private final NestworldGenPool nestworldFeaturesPool = new NestworldGenPool(1);
++   // FEATURES gets its OWN pool, independently tunable via CHUNK_GEN_FEATURES_MAX_CONCURRENT
++   // (NOT tied to CHUNK_GEN_MAX_CONCURRENT — real modpacks can make FEATURES far more
++   // expensive per-chunk than NOISE/SURFACE/CARVERS). Used to be hard-capped at exactly 1
++   // regardless of configuration, working around a since-fixed AB-BA deadlock in
++   // BulkSectionAccess (see that class's own comment, and NestworldTuning.
++   // CHUNK_GEN_FEATURES_MAX_CONCURRENT's javadoc for the full history) — that hazard is now
++   // fixed at its root, so this is a normal throughput knob like the pool below, not a
++   // safety mechanism.
++   private final NestworldGenPool nestworldFeaturesPool =
++         new NestworldGenPool(Math.max(0, net.nestworld.region.NestworldTuning.CHUNK_GEN_FEATURES_MAX_CONCURRENT));
 +
 +   /**
 +    * NestWorld: run {@code p_nw_real} (the real generate() call) now if {@code
@@ -287,7 +289,10 @@
 +    */
 +   private CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> nestworldGateGeneration(
 +         ChunkStatus p_nw_status, java.util.function.Supplier<CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>>> p_nw_real) {
-+      if (p_nw_status == ChunkStatus.f_62322_) return this.nestworldFeaturesPool.gate(p_nw_real);
++      if (p_nw_status == ChunkStatus.f_62322_) {
++         return net.nestworld.region.NestworldTuning.CHUNK_GEN_FEATURES_MAX_CONCURRENT <= 0
++               ? p_nw_real.get() : this.nestworldFeaturesPool.gate(p_nw_real);
++      }
 +      if (net.nestworld.region.NestworldTuning.CHUNK_GEN_MAX_CONCURRENT <= 0) return p_nw_real.get();
 +      if (!NESTWORLD_GATEABLE_STATUSES.contains(p_nw_status)) return p_nw_real.get();
 +      return this.nestworldNoiseSurfaceCarversPool.gate(p_nw_real);
@@ -439,43 +444,21 @@
        }
     }
  
-@@ -625,8 +_,48 @@
+@@ -625,8 +_,26 @@
        this.f_140133_.m_46473_().m_6525_(() -> {
           return "chunkGenerate " + p_140362_;
        });
 +      // NestWorld: route to a worldgen-mailbox shard by a COARSE SPATIAL BLOCK, not a raw
-+      // chunk-position hash — AND always force FEATURES onto shard 0 (fully serialized),
-+      // never spatially routed. Both measures were needed; spatial blocking ALONE was
-+      // tried and CONFIRMED insufficient by testing (reproduced the identical deadlock
-+      // below with 32x32-chunk blocks in place).
-+      //
-+      // Root cause (confirmed via two crash-report thread dumps): FEATURES-status
-+      // generation for ore veins (net.minecraft.world.level.levelgen.feature.OreFeature —
-+      // verified BY GREPPING THE ENTIRE VANILLA SOURCE TREE to be the ONLY caller of
-+      // `new BulkSectionAccess(...)`, so this is the ONLY status with this hazard) uses
-+      // BulkSectionAccess, which acquires each touched LevelChunkSection's semaphore
-+      // (PalettedContainer.acquire(), OUR OWN lock — see the field-group comment there —
-+      // not vanilla's) the FIRST time an ore-blob placement step touches it, in whatever
-+      // order the blob's shape happens to visit positions, and holds ALL of them until
-+      // the whole placement call finishes. That set of sections is NOT known upfront (ore
-+      // blobs are placed incrementally), so canonical lock-ordering cannot fix this
-+      // without rewriting OreFeature's placement algorithm — the only sound fix available
-+      // without touching vanilla's generation logic is to make sure no TWO ore-placement
-+      // calls ever run concurrently in the first place. A chunk whose ore blob reaches
-+      // into a neighbour being placed on a DIFFERENT shard at the same time can deadlock
-+      // AB-BA against it (thread 1 holds section A, wants B; thread 2 holds B, wants A) —
-+      // spatial blocking only reduces how often two such chunks land on different shards,
-+      // it doesn't prevent it, hence still reproducing.
-+      //
-+      // NOISE/SURFACE/CARVERS remain spatially sharded (their generation tasks are pure
-+      // leaf computations over the already-fetched neighbour list per NESTWORLD_GATEABLE_
-+      // STATUSES' own comment, and none of them construct a BulkSectionAccess), so they
-+      // still get real N-way throughput; only FEATURES gives that up in exchange for
-+      // being provably deadlock-free the same way vanilla always was (one at a time).
++      // chunk-position hash — a raw hash scatters adjacent chunks essentially randomly
++      // across shards, which matters for statuses whose generation can touch a neighbour's
++      // data. All four gateable statuses (NOISE/SURFACE/CARVERS/FEATURES) are routed the
++      // same way now; FEATURES no longer needs the special-cased shard-0-only treatment it
++      // once did — see BulkSectionAccess's own comment for why concurrent FEATURES
++      // placement (ore veins etc., including GregTech/Mekanism/Lost Cities' own custom
++      // placement code, not just vanilla OreFeature) is now deadlock-free by construction
++      // regardless of which shard a chunk and its neighbours land on.
 +      ProcessorHandle<ChunkTaskPriorityQueueSorter.Message<Runnable>> nestworldShard;
 +      if (this.nestworldWorldgenShards.length == 1) {
-+         nestworldShard = this.nestworldWorldgenShards[0];
-+      } else if (p_140362_ == ChunkStatus.f_62322_) {
 +         nestworldShard = this.nestworldWorldgenShards[0];
 +      } else {
 +         int nestworldBlockX = chunkpos.f_45578_ >> net.nestworld.region.NestworldTuning.WORLDGEN_SHARD_BLOCK_SHIFT;

@@ -8,7 +8,7 @@
     private static final int f_188031_ = 0;
     private final PaletteResize<T> f_63070_ = (p_238275_, p_238276_) -> {
        return 0;
-@@ -31,14 +_,26 @@
+@@ -31,14 +_,36 @@
     private final IdMap<T> f_63071_;
     private volatile PalettedContainer.Data<T> f_188032_;
     private final PalettedContainer.Strategy f_188033_;
@@ -30,6 +30,16 @@
     public void m_63084_() {
 -      this.f_199441_.m_199416_();
 +      this.nestworldContainerLock.acquireUninterruptibly();
++   }
++
++   /**
++    * NestWorld: non-blocking acquire — used by {@code BulkSectionAccess}'s deadlock-free
++    * multi-section acquisition (release-all-and-reacquire-in-total-order on contention,
++    * rather than blocking while already holding other sections' locks). See
++    * BulkSectionAccess.java's own comment for the full algorithm and why it's deadlock-free.
++    */
++   public boolean tryAcquire() {
++      return this.nestworldContainerLock.tryAcquire();
     }
  
     public void m_63120_() {

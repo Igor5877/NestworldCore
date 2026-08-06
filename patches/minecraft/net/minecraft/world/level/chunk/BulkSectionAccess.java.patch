@@ -1,0 +1,119 @@
+--- a/net/minecraft/world/level/chunk/BulkSectionAccess.java
++++ b/net/minecraft/world/level/chunk/BulkSectionAccess.java
+@@ -16,6 +_,10 @@
+    private LevelChunkSection f_156100_;
+    private long f_156101_;
+ 
++   // NestWorld: consecutive-contention counter driving the backoff in
++   // nestworldReacquireAfterContention — reset to 0 on any uncontended acquire.
++   private int nestworldRetryCount = 0;
++
+    public BulkSectionAccess(LevelAccessor p_156103_) {
+       this.f_156098_ = p_156103_;
+    }
+@@ -26,21 +_,100 @@
+       if (i >= 0 && i < this.f_156098_.m_151559_()) {
+          long j = SectionPos.m_175568_(p_156105_);
+          if (this.f_156100_ == null || this.f_156101_ != j) {
+-            this.f_156100_ = this.f_156099_.computeIfAbsent(j, (p_156109_) -> {
++            LevelChunkSection nestworldExisting = this.f_156099_.get(j);
++            if (nestworldExisting != null) {
++               this.f_156100_ = nestworldExisting;
++            } else {
+                ChunkAccess chunkaccess = this.f_156098_.m_6325_(SectionPos.m_123171_(p_156105_.m_123341_()), SectionPos.m_123171_(p_156105_.m_123343_()));
+                LevelChunkSection levelchunksection = chunkaccess.m_183278_(i);
+-               levelchunksection.m_62981_();
+-               return levelchunksection;
+-            });
++               // NestWorld: deadlock-free multi-section acquisition — see
++               // nestworldReacquireAfterContention's comment for the full algorithm and
++               // correctness argument. Original vanilla behaviour (lazy acquire() on first
++               // touch, hold until close()) is a CONFIRMED AB-BA deadlock hazard when two
++               // BulkSectionAccess instances (e.g. two different chunks' ore-vein/structure
++               // placement — GregTech, Mekanism, and Lost Cities all construct this class
++               // directly, not just vanilla OreFeature) touch overlapping sections in
++               // opposite visit order concurrently.
++               if (levelchunksection.tryAcquire()) {
++                  this.f_156099_.put(j, levelchunksection);
++                  this.nestworldRetryCount = 0;
++               } else {
++                  this.nestworldReacquireAfterContention(j);
++               }
++               this.f_156100_ = this.f_156099_.get(j);
++            }
+             this.f_156101_ = j;
+          }
+-
+          return this.f_156100_;
+       } else {
+          return null;
+       }
+    }
+ 
++   /**
++    * NestWorld: called when a NEW section's {@code tryAcquire()} fails (another
++    * BulkSectionAccess instance currently holds it). Releases EVERY section this instance
++    * currently holds, then re-acquires the full wanted set (previously-held + the new one)
++    * in one fixed GLOBAL TOTAL ORDER (ascending packed {@code SectionPos} key) using
++    * BLOCKING {@code acquire()} — never skipping ahead, never holding a later-in-order
++    * section while waiting on an earlier one.
++    *
++    * <p>Deadlock-free by the standard "total lock ordering" theorem: if every acquirer of
++    * multiple locks takes them in the same fixed global order, a circular wait (hence
++    * deadlock) is structurally impossible — whichever instance is earliest in the contested
++    * chain always makes progress, and every instance's re-acquisition phase is itself
++    * finite (it never re-triggers a release once started), so no instance can wait forever.
++    * Does not livelock either, for the same reason — see round-11 design discussion for the
++    * full trace.
++    *
++    * <p>Deliberately does NOT attempt to preserve or replay any of the caller's own prior
++    * reads/decisions across this release-and-reacquire — CONFIRMED SAFE for the real
++    * callers of this class by reading their actual decompiled bytecode (GregTech's
++    * OrePlacer, Mekanism's ResizableOreFeature: both read-decide-write a single position
++    * immediately, never holding an old BlockState value across later positions; Lost
++    * Cities' ChunkDriver never reads through BulkSectionAccess for decisions at all — it
++    * accumulates placements in its own private array and only WRITES through this class in
++    * one final flush). A caller that DID cache a stale read across this retry point would
++    * be a genuine hazard this does not protect against — not the case for any confirmed
++    * real-world caller today.
++    *
++    * <p>A short exponential backoff (capped at 20ms) kicks in from the SECOND consecutive
++    * contention onward, to avoid pathological release/reacquire thrashing if many instances
++    * are repeatedly colliding under sustained load — the common (uncontended) path never
++    * pays this cost.
++    */
++   private void nestworldReacquireAfterContention(long newKey) {
++      long[] nestworldWanted = new long[this.f_156099_.size() + 1];
++      int nestworldN = 0;
++      for (Long2ObjectMap.Entry<LevelChunkSection> nestworldEntry : this.f_156099_.long2ObjectEntrySet()) {
++         nestworldEntry.getValue().m_63006_();
++         nestworldWanted[nestworldN++] = nestworldEntry.getLongKey();
++      }
++      this.f_156099_.clear();
++      nestworldWanted[nestworldN] = newKey;
++      java.util.Arrays.sort(nestworldWanted);
++
++      this.nestworldRetryCount++;
++      if (this.nestworldRetryCount > 1) {
++         long nestworldBackoffNanos = Math.min(2_000_000L << Math.min(this.nestworldRetryCount, 10), 20_000_000L);
++         java.util.concurrent.locks.LockSupport.parkNanos(nestworldBackoffNanos);
++      }
++
++      for (long nestworldKey : nestworldWanted) {
++         LevelChunkSection nestworldSection = this.nestworldResolveSection(nestworldKey);
++         nestworldSection.m_62981_(); // blocking, strictly ascending global order — deadlock-free
++         this.f_156099_.put(nestworldKey, nestworldSection);
++      }
++   }
++
++   private LevelChunkSection nestworldResolveSection(long nestworldKey) {
++      int nestworldSectionX = SectionPos.m_123213_(nestworldKey);
++      int nestworldSectionY = SectionPos.m_123225_(nestworldKey);
++      int nestworldSectionZ = SectionPos.m_123230_(nestworldKey);
++      ChunkAccess nestworldChunk = this.f_156098_.m_6325_(nestworldSectionX, nestworldSectionZ);
++      return nestworldChunk.m_183278_(this.f_156098_.m_151566_(nestworldSectionY));
++   }
++
+    public BlockState m_156110_(BlockPos p_156111_) {
+       LevelChunkSection levelchunksection = this.m_156104_(p_156111_);
+       if (levelchunksection == null) {
