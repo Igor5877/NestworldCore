@@ -73,9 +73,12 @@ Residual (deeper, non-crash, deferred): cross-region `recomputePath` in sendBloc
 a mob owned by another region — caught per-entity, transient path glitch at worst; revisit only if
 a real nav crash ever appears.
 
-### 🔍 Suspected — audit (not yet triggered)
+### 🔍 Suspected — audit pass complete (2026-08-07)
 Vanilla single-thread structures on the entity/block tick path. Audit each: does a region thread
-mutate it while another thread reads/mutates?
+mutate it while another thread reads/mutates? **Full list walked this pass** — 1 real bug found
+and fixed (MapItemSavedData, #11), 7 items confirmed safe by tracing actual call sites (not
+assumed), 2 items left explicitly open (Forge capabilities, Scoreboard/team) with a concrete
+recommended next step each rather than silently marked either way.
 - ~~**Scheduled ticks** — `LevelTicks` (block/fluid).~~ — **AUDITED, SAFE, see #10 above.**
 - ~~**Block-entity tick list** / `LevelChunk` tick lists.~~ — **AUDITED, SAFE.** Same collect-then-
   barrier-execute pattern as scheduled ticks: `NestworldRegionSystem.beginBlockEntityPhase` collects
@@ -165,9 +168,16 @@ mutate it while another thread reads/mutates?
   `ServerChunkCache`'s per-chunk `tickChunk` loop (main thread only) calls `queueRandomTicksFor`
   to collect into `randomTickBuckets`; `flushRandomTicksPhase()` — which hands the buckets to
   `pool.runWorkRound` — is called exactly once, AFTER that entire loop finishes, confirmed at the
-  call site (`ServerChunkCache.java` around line 464). No overlap window. **Weather** (rain/snow
-  tick, lightning) not yet separately audited — usually a small fixed set of per-level state
-  reads/writes on main during the same tick, lower suspicion, but not confirmed.
+  call site (`ServerChunkCache.java` around line 464). No overlap window.
+- ~~**Weather**~~ — **AUDITED, SAFE.** `advanceWeatherCycle()` (rain/thunder state advancement,
+  lightning-strike placement) is called from within `ServerLevel.tick()`, i.e. main-thread-only,
+  part of vanilla's global tick (step 1 of `tickAllRegions`, before the region barrier) — same
+  timing as raids/scheduled-ticks. The weather-state fields (`isRaining`/`isThundering`/etc.) are
+  simple primitives read constantly from region threads (spawn conditions, fire behavior) — atomic
+  at the primitive level in Java, so at worst a stale read, never a torn/corrupt one — same
+  "mailbox-adjacent" safe category already accepted for the Light Engine (#4). Lightning strikes
+  themselves spawn as normal entities (covered by the existing deferred-add fix, #6) and their
+  gameplay effects run on their own region-threaded tick like any other entity — nothing new here.
 
 ### ⏸️ Deferred — perf, not crash
 | Structure | Issue | Note |
@@ -191,13 +201,14 @@ mutate it while another thread reads/mutates?
 
 1. ~~**#3 ChunkHolder block-change**~~ — done.
 2. ~~**#4 Light engine**~~ — audited, safe.
-3. ~~**Audit pass** — walk the 🔍 list; fix any confirmed.~~ — done for the tick-phase-dispatched
-   structures (#10 scheduled ticks, block-entity tickers, random ticks — all safe by the same
-   collect-then-barrier pattern, see heuristic below). Remaining unaudited: Raids/village,
-   MapItemSavedData, Scoreboard, Boss events, Forge capability attach/invalidate, chunk save/unload
-   racing region tick, weather. These are event-driven (death/interaction-triggered) rather than
-   per-tick-phase-collected, so the shortcut heuristic below doesn't apply — each needs individual
-   tracing if picked up.
+3. ~~**Audit pass** — walk the 🔍 list; fix any confirmed.~~ — **DONE, full list walked
+   (2026-08-07).** Tick-phase-dispatched structures (#10 scheduled ticks, block-entity tickers,
+   random ticks, chunk save/unload, weather) all safe by the collect-then-barrier pattern. Boss
+   events safe (per-entity, never split across threads). Raids mostly safe (one narrow unconfirmed
+   chunk-load-time edge, low severity). MapItemSavedData was a REAL bug — fixed (#11). Forge
+   capabilities and Scoreboard/team races remain explicitly OPEN (not closed either direction) —
+   see their entries above for what a follow-up would need (a live capability-chain stress test;
+   deeper command-execution-timing tracing).
 4. ~~**#5 nav**~~ — done.
 5. ~~**Deferred POI scaling**~~ — done (#9, RWLock + lazy-stream fix).
 
