@@ -37,6 +37,23 @@ public class RegionThreadPool {
     private final ServerLevel level;
     private final CopyOnWriteArrayList<RegionThread> threads = new CopyOnWriteArrayList<>();
 
+    // NestWorld: breaks the regionPool timing-log bucket (NestworldRegionSystem's
+    // "Tick phases avg ms" line) down into dispatch (the sequential
+    // synchronized+notifyAll wakeup loop) vs wait (awaitLatch — time actually spent
+    // waiting for the slowest region thread, including OS scheduling latency once
+    // woken). Added to test the hypothesis in the Folia-barrier investigation notes:
+    // that OS thread-scheduling contention (when non-empty region count exceeds
+    // available cores), not the dispatch mechanism itself, dominates regionPool's
+    // ~15-25ms/tick baseline cost. Same on/off property as the existing phase-timing
+    // log for consistency; diagnostic only, no behavioural change.
+    private static final boolean TIMING_LOG =
+            !"false".equalsIgnoreCase(System.getProperty("nestworld.timingLog", "true"));
+    private static final int TIMING_LOG_INTERVAL = 200;
+    private long nestworldDispatchNanos = 0;
+    private long nestworldWaitNanos = 0;
+    private int nestworldWorkerCountAccum = 0;
+    private int nestworldTimedTicks = 0;
+
     public RegionThreadPool(ServerLevel level) {
         this.level = level;
     }
@@ -97,10 +114,30 @@ public class RegionThreadPool {
 
         CountDownLatch latch = new CountDownLatch(workers.size());
 
+        long nestworldT0 = TIMING_LOG ? System.nanoTime() : 0L;
         // Signal the working threads to start their tick
         for (RegionThread t : workers) t.requestTick(latch);
+        long nestworldT1 = TIMING_LOG ? System.nanoTime() : 0L;
 
         awaitLatch(latch);
+
+        if (TIMING_LOG) {
+            long nestworldT2 = System.nanoTime();
+            nestworldDispatchNanos += nestworldT1 - nestworldT0;
+            nestworldWaitNanos += nestworldT2 - nestworldT1;
+            nestworldWorkerCountAccum += workers.size();
+            if (++nestworldTimedTicks >= TIMING_LOG_INTERVAL) {
+                LOGGER.info("regionPool breakdown avg ms over {} ticks: dispatch={} wait={} avgWorkers={}",
+                        nestworldTimedTicks,
+                        String.format("%.3f", nestworldDispatchNanos / 1e6 / nestworldTimedTicks),
+                        String.format("%.3f", nestworldWaitNanos / 1e6 / nestworldTimedTicks),
+                        String.format("%.1f", (double) nestworldWorkerCountAccum / nestworldTimedTicks));
+                nestworldDispatchNanos = 0;
+                nestworldWaitNanos = 0;
+                nestworldWorkerCountAccum = 0;
+                nestworldTimedTicks = 0;
+            }
+        }
     }
 
     /**
