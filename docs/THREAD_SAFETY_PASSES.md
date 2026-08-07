@@ -130,27 +130,37 @@ recommended next step each rather than silently marked either way.
   and the whole phase is documented as running with "region threads parked at the barrier" — same
   safe timing as the other tick-phase items. No two threads can ever touch one entity's bossEvent
   concurrently.
-- **Forge capabilities** attach/invalidate on entities/chunks during region tick. **Traced, NOT
-  closed** (2026-08-07) — too diffuse for the single-call-site audit approach that closed the
-  tick-phase items above (capabilities have thousands of call sites across vanilla+every mod, not
-  one clear collection point). What's confirmed: `RegionChunkView.getBlockEntity()`'s deep-lock
-  path only protects the FETCH of the `BlockEntity` reference (`owner.getChunkLock().tryReadLock`
-  released in a `finally` before the method returns) — any `.getCapability()` call a caller makes
-  on the returned reference happens completely outside that lock, same fetch-under-lock/use-
-  outside-lock shape as the POI bug (#9) fixed this pass. Plausible mitigating argument (NOT
-  verified empirically): the barrier's "wait for slowest region" semantics mean the OWNING
-  region's thread cannot start a new tick (re-acquire its write lock, per the comment at
-  `RegionChunkView.java:166`) until every region — including whichever thread is doing this
-  foreign read — reaches the barrier together, which may bound the actual concurrent-mutation
-  window. The ghost-zone path (`BoundaryManager.getGhostChunk`, bounded-staleness by design) likely
-  inherits the same "stale but not corrupt" character already accepted for block-state reads,
-  *if* `CapabilityProvider`'s plain (non-volatile) `capabilities`/`valid` fields don't produce a
-  torn read under the JLS (individual reference/boolean field reads are atomic, visibility timing
-  is the open question, not corruption) — this reasoning has NOT been empirically stress-tested.
-  **Recommended next step if picked up**: a live test with a capability-heavy interaction (hopper→
-  chest item-handler chain, or similar) deliberately straddling a known region border under
-  sustained load, watching for capability-related exceptions or item duplication/loss — this is a
-  genuinely open question, not a closed one, unlike the items above.
+- **Forge capabilities** attach/invalidate on entities/chunks during region tick. **Refined
+  (2026-08-07) — split into two paths with DIFFERENT confidence levels**, after confirming a
+  concrete real-world trigger: hoppers pulling across a region border go through the exact same
+  `Level.getBlockEntity()` → `RegionChunkView` path (`HopperBlockEntity.getContainerAt` at line
+  351 calls it directly) — not a diffuse theoretical concern, a common, everyday interaction.
+  - **"Deep" cross-region path (`owner.getChunkLock().tryReadLock`) — CONFIRMED SAFE.** Verified
+    `RegionThread.java:219-245`: the owning region's `writeLock()` is held for its ENTIRE tick
+    (acquired before `tickEntities()`/`runWorkBudgeted`, released only in the `finally` after both
+    finish) — not a short critical section. Combined with the barrier's lockstep semantics (the
+    owner cannot start a NEW tick — re-acquire that write lock — until every region, including
+    whichever thread is doing this foreign read, reaches the barrier together, which cannot happen
+    while the reading region is still mid-tick), a foreign thread that successfully acquires the
+    brief read lock is guaranteed the owner's current tick is fully finished AND cannot resume
+    until the reader's own tick also finishes. Any `.getCapability()` call made after the fetch
+    returns is safe from concurrent owner mutation for this path.
+  - **Ghost-zone path (`BoundaryManager.getGhostChunk`, within `GHOST_DEPTH`=2 of a border) —
+    STILL OPEN, likely the more common case in practice.** This path takes NO lock at all (by
+    design, to avoid contention for the common near-border case) and returns the SAME live
+    `BlockEntity` object the owning region may be actively mutating THIS SAME TICK (both regions
+    genuinely run in parallel during step 4, not sequentially). Simple BlockState staleness here
+    is an accepted, documented tradeoff, but capability/container MUTATION is a different risk
+    category: e.g. two hoppers (one in-region, one ghost-zone-cross-region) both calling
+    `insertItem`/`extractItem` — or a container's `setItem`/`removeItem` — on the SAME chest's
+    internal `NonNullList` concurrently is a genuine unsynchronized structural mutation, not just
+    a stale read. **This is now the concrete, higher-priority half of the open question** — most
+    cross-region hopper/pipe interactions are near-border (ghost-zone depth), not "deep" reads.
+    **Recommended next step if picked up**: a live test with a hopper→chest chain deliberately
+    placed within 2 chunks of a known region border under sustained load, watching for item loss/
+    duplication or container-related exceptions — NOT yet attempted (mineflayer can't drive real
+    survival-mode item interaction easily; would need either a debug command or RCON-scripted
+    `/item`/`/setblock` sequencing).
 - ~~**`PersistentEntitySectionManager`** visibility/section transitions~~ — **FIXED, see #6 above.**
   Residual (non-crash, exotic): the rest of `onTrackingStart` still runs on the region thread for
   a section-move transition — `navigatingMobs` (concurrent, #5) and the C1 counter (synchronized)
