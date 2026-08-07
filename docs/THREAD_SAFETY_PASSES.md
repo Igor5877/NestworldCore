@@ -76,9 +76,11 @@ a real nav crash ever appears.
 ### 🔍 Suspected — audit pass complete (2026-08-07)
 Vanilla single-thread structures on the entity/block tick path. Audit each: does a region thread
 mutate it while another thread reads/mutates? **Full list walked this pass** — 1 real bug found
-and fixed (MapItemSavedData, #11), 7 items confirmed safe by tracing actual call sites (not
-assumed), 2 items left explicitly open (Forge capabilities, Scoreboard/team) with a concrete
-recommended next step each rather than silently marked either way.
+and fixed (MapItemSavedData, #11), 8 items confirmed safe by tracing actual call sites (not
+assumed) — including Scoreboard/team, closed after finding the command-execution-timing
+guarantee (`waitUntilNextTick`) that was missing earlier in this same pass. Only 1 item left
+genuinely open: the Forge-capabilities ghost-zone path (empirically tested once, clean, but not
+exhaustive proof — see its entry above for what would raise confidence further).
 - ~~**Scheduled ticks** — `LevelTicks` (block/fluid).~~ — **AUDITED, SAFE, see #10 above.**
 - ~~**Block-entity tick list** / `LevelChunk` tick lists.~~ — **AUDITED, SAFE.** Same collect-then-
   barrier-execute pattern as scheduled ticks: `NestworldRegionSystem.beginBlockEntityPhase` collects
@@ -100,24 +102,21 @@ recommended next step each rather than silently marked either way.
   deserialization specifically, not general gameplay) — not chased further given the marginal
   value; revisit only if a raid-loading-related exception is ever actually observed.
 - ~~**MapItemSavedData** (entity tracking on maps).~~ — **FIXED, see #11 above.**
-- **Scoreboard** (`Scoreboard` score/team updates). **Traced, NOT closed** (2026-08-07) — the
-  `playerScores`/`objectivesByName`/`teamsByPlayer` maps are ONE shared instance for the whole
-  level, plain HashMaps. Kill-count/criteria scoring turned out NOT to be the region-thread risk
-  it first looked like (`Entity.awardKillScore`'s base implementation only fires an advancement
-  criteria trigger, doesn't touch `Scoreboard` directly — traced the actual call chain to rule
-  this out rather than assume). The REAL confirmed region-thread-reachable touch point is
-  `Entity.getTeam()`/`getPlayersTeam()` (a READ, called constantly from region-threaded combat/
-  friendly-fire checks) racing against `/team join`/`/team leave` command execution
-  (`ScoreboardCommand`/`TeamCommand`, main-thread but NOT gated by the region-tick barrier the
-  way entity/block ticking is — commands run whenever queued, independent of tick phase). Whether
-  this main-thread command execution can genuinely OVERLAP a region thread's concurrent read
-  depends on exactly when/how `MinecraftServer`'s task queue drains relative to
-  `RegionThreadPool.awaitLatch()`'s barrier wait — NOT fully traced, this needs the same kind of
-  call-site tracing that closed the tick-phase items, just deeper (command execution timing isn't
-  as cleanly phase-separated as entity/block ticking is). Lower confidence and likely lower
-  severity than the MapItemSavedData bug (a torn HashMap READ during concurrent modification is
-  usually silent staleness or a rare exception, not a guaranteed crash) — flagged as open, not
-  silently assumed safe or unsafe.
+- ~~**Scoreboard** (`Scoreboard` score/team updates).~~ — **AUDITED, SAFE (resolved
+  2026-08-07, corrects the earlier "not closed" note in this same pass).** Kill-count scoring
+  ruled out early (`Entity.awardKillScore`'s base implementation only fires an advancement
+  criteria trigger, doesn't touch `Scoreboard` directly). The remaining concern —
+  `Entity.getTeam()`/`getPlayersTeam()` (read, called from region-threaded combat/friendly-fire
+  checks) racing `/team join`/`/team leave` command execution — is closed by tracing the actual
+  command-dispatch timing: `RconClient`/chat commands reach `MinecraftServer` via
+  `executeBlocking`, which queues onto the server's own task list; that queue is drained by
+  `runAllTasks()` inside `waitUntilNextTick()` (`MinecraftServer.java`), called from the main
+  server loop at line 665 STRICTLY AFTER `tickServer()` (line 661, which contains the entire
+  `tickChildren` → `tickAllRegions` → region-barrier sequence) has FULLY returned, and before the
+  next `tickServer()` call begins. Every command — RCON, console, or player-issued — executes in
+  the gap BETWEEN complete tick invocations, never overlapping ANY region thread's active work.
+  Stronger guarantee than the tick-phase pattern (not just "after the barrier," but "between
+  entire tick invocations") — closes this cleanly, no fix needed.
 - ~~**Boss events** (`ServerBossEvent` player sets).~~ — **AUDITED, SAFE.** `ServerBossEvent`
   (`players` HashSet) is per-ENTITY (each `WitherBoss`/`EnderDragon` owns its own instance), not
   a world-shared singleton like `MapItemSavedData` was — so the risk shape is different: does the
@@ -221,11 +220,12 @@ recommended next step each rather than silently marked either way.
 3. ~~**Audit pass** — walk the 🔍 list; fix any confirmed.~~ — **DONE, full list walked
    (2026-08-07).** Tick-phase-dispatched structures (#10 scheduled ticks, block-entity tickers,
    random ticks, chunk save/unload, weather) all safe by the collect-then-barrier pattern. Boss
-   events safe (per-entity, never split across threads). Raids mostly safe (one narrow unconfirmed
-   chunk-load-time edge, low severity). MapItemSavedData was a REAL bug — fixed (#11). Forge
-   capabilities and Scoreboard/team races remain explicitly OPEN (not closed either direction) —
-   see their entries above for what a follow-up would need (a live capability-chain stress test;
-   deeper command-execution-timing tracing).
+   events safe (per-entity, never split across threads). Scoreboard/team safe (commands execute
+   strictly between complete tick invocations, never overlapping region-thread work — traced
+   `MinecraftServer.waitUntilNextTick`). Raids mostly safe (one narrow unconfirmed chunk-load-time
+   edge, low severity). MapItemSavedData was a REAL bug — fixed (#11). Only Forge capabilities'
+   ghost-zone path remains open (empirically tested once, clean, not exhaustive — see its entry
+   above for what would raise confidence further).
 4. ~~**#5 nav**~~ — done.
 5. ~~**Deferred POI scaling**~~ — done (#9, RWLock + lazy-stream fix).
 
