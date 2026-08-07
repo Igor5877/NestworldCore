@@ -487,6 +487,35 @@ public final class NestworldTuning {
     public static final boolean AUTO_SPARK =
             Boolean.parseBoolean(System.getProperty("nestworld.autoSpark", "true"));
 
+    /**
+     * Cap on how long {@code /forceload add} blocks the main thread waiting for the
+     * requested chunks to finish generating, in milliseconds. Vanilla's own fix (already
+     * in this core, not gated by a flag) batches the N requested chunks into one combined
+     * wait instead of N sequential ones — bounded by the SLOWEST single chunk among them,
+     * not their sum — but that wait itself has NO timeout: on real heavy modpacks a single
+     * chunk of genuinely virgin territory (deep structure search, expensive per-chunk
+     * feature cost) can itself take well past a minute, and vanilla's {@code
+     * ServerHangWatchdog} force-kills the whole JVM at 60s with no graceful shutdown.
+     * Reproduced live (2026-08-07): a 49-chunk {@code /forceload add} at fresh coordinates
+     * crashed a real 188-mod server this way, despite {@link #CHUNK_GEN_ADMIT_BUDGET} /
+     * {@link #CHUNK_GEN_MAX_CONCURRENT} already active — admission/concurrency throttling
+     * bounds ongoing gameplay load, it does not bound how long ONE command is allowed to
+     * block waiting on work it already kicked off.
+     *
+     * <p>The registration side effect ({@code addForcedChunkAsync}'s ticket-adding, i.e.
+     * which chunks are marked "forced") already happens synchronously, unconditionally,
+     * BEFORE this wait even starts — timing out here does not undo or delay that. Chunks
+     * keep generating on the normal worker pool after the command returns; timing out just
+     * means the command's own response comes back before every last one is 100% done,
+     * instead of blocking indefinitely (and risking the whole server) to guarantee it.
+     *
+     * <p>{@code 0} = no timeout, vanilla-identical blocking behaviour (NOT recommended on
+     * a heavy real pack). Default 20s — a large margin under the 60s watchdog even
+     * accounting for scheduling jitter, per Gemini design review 2026-08-07.
+     */
+    public static final long FORCELOAD_WAIT_TIMEOUT_MS =
+            Long.getLong("nestworld.forceloadWaitTimeoutMs", 20_000L);
+
     private NestworldTuning() {
     }
 }
