@@ -1,6 +1,6 @@
 --- a/net/minecraft/server/commands/ForceLoadCommand.java
 +++ b/net/minecraft/server/commands/ForceLoadCommand.java
-@@ -119,13 +_,79 @@
+@@ -119,13 +_,85 @@
              ChunkPos chunkpos = null;
              int j2 = 0;
  
@@ -43,37 +43,43 @@
 +                  // them — but on a heavy real modpack even ONE virgin chunk's generation cost
 +                  // can itself exceed the 60s ServerHangWatchdog threshold, hard-killing the
 +                  // whole JVM with no graceful shutdown (reproduced live 2026-08-07, see
-+                  // NestworldTuning.FORCELOAD_WAIT_TIMEOUT_MS's javadoc). orTimeout() ARMS the
-+                  // deadline ON nestworldAll ITSELF and returns that SAME reference (not an
-+                  // independent derived future — a real pitfall caught during testing: an
-+                  // earlier version of this fix compared "the timed future" against
-+                  // "nestworldAll" as if they were different objects, so the timeout branch
-+                  // could never fire). isDone() flips true either way (normal or timeout), so a
-+                  // single managedBlock call still handles both outcomes; distinguishing WHICH
-+                  // one happened afterward needs join()+catch, not an isDone() comparison.
-+                  // The forced-chunk registration above already happened unconditionally before
-+                  // this wait started; timing out here does not undo it, generation continues on
-+                  // the normal worker pool regardless.
++                  // NestworldTuning.FORCELOAD_WAIT_TIMEOUT_MS's javadoc).
++                  //
++                  // NOT using CompletableFuture.orTimeout(): an earlier version of this fix did,
++                  // and it reproducibly still hit the 60s watchdog on a real 419-mod pack under
++                  // repeated forceload calls (2026-08-07, live jstack captures every 2s showed
++                  // the SAME managedBlock frame, unmoved, for 30+ seconds straight — well past
++                  // the 20s bound). orTimeout()'s deadline fires from a JVM-wide SHARED
++                  // single-thread scheduled executor (CompletableFuture's internal Delayer) —
++                  // under the severe G1 GC pressure this pack produces during real chunk
++                  // generation (documented: 80-99.9% GC CPU, see
++                  // chunkgen-gc-pressure-bottleneck in project memory), that one background
++                  // thread can be starved for many seconds past its nominal fire time, so the
++                  // "20s bound" was only nominal, not actually enforced under load. Mirrors the
++                  // ServerChunkCache.getChunk() proxy fix's approach instead: check a plain
++                  // System.nanoTime() deadline INSIDE the BooleanSupplier that managedBlock
++                  // itself polls on the main thread — no separate thread or scheduler involved,
++                  // so it can't be starved independently of the main thread's own progress.
 +                  if (net.nestworld.region.NestworldTuning.FORCELOAD_WAIT_TIMEOUT_MS > 0) {
-+                     nestworldAll.orTimeout(net.nestworld.region.NestworldTuning.FORCELOAD_WAIT_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
-+                  }
-+                  p_137686_.m_81377_().m_18701_(nestworldAll::isDone);
-+                  try {
-+                     nestworldAll.join();
-+                  } catch (java.util.concurrent.CompletionException nestworldEx) {
-+                     if (nestworldEx.getCause() instanceof java.util.concurrent.TimeoutException) {
++                     long nestworldDeadline = System.nanoTime()
++                           + net.nestworld.region.NestworldTuning.FORCELOAD_WAIT_TIMEOUT_MS * 1_000_000L;
++                     p_137686_.m_81377_().m_18701_(() -> nestworldAll.isDone() || System.nanoTime() >= nestworldDeadline);
++                     if (!nestworldAll.isDone()) {
++                        // The forced-chunk registration above already happened unconditionally
++                        // before this wait started; timing out here does not undo it —
++                        // generation continues on the normal worker pool regardless.
 +                        int nestworldCount = j2;
 +                        p_137686_.m_288197_(() -> Component.m_237113_(nestworldCount
 +                              + " chunks marked forced; generation is taking longer than "
 +                              + (net.nestworld.region.NestworldTuning.FORCELOAD_WAIT_TIMEOUT_MS / 1000) + "s and continues in the background."), true);
 +                        return nestworldCount;
 +                     }
-+                     // A genuine chunk-generation failure (not a timeout) — fall through to the
-+                     // normal success reporting below unchanged, matching this method's
-+                     // pre-existing behaviour (it never checked for exceptional completion
-+                     // before today's fix either). Not the scope of this change to newly surface
-+                     // that gap.
++                     // Completed within the deadline after all — join() below is now safe
++                     // and won't block (isDone() is already true).
++                  } else {
++                     p_137686_.m_81377_().m_18701_(nestworldAll::isDone);
 +                  }
++                  nestworldAll.join();
 +               }
 +            } else {
 +               for(int k2 = i1; k2 <= k1; ++k2) {
