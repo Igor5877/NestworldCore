@@ -46,6 +46,8 @@ Every extreme stress test so far has surfaced a new race of this class (POI → 
 | 5 | `ServerLevel.sendBlockUpdated` nav guard (`isUpdatingNavigations`) | shared boolean false-positives across region threads (log spam) | D (ThreadLocal guard; navigatingMobs was already concurrent) | 47.4.109 |
 | 6 | `ChunkMap.entityMap` via PESM visibility transition | entity walks/teleports into an entity-ticking section during a region tick → `startTracking` → `ChunkMap.addEntity` off-main ("Entity is already tracked!", enderman, 200-bot test 2026-07-03) | B (defer tracking ADDS to main, symmetric with removals; drained after removals so leave+re-enter lands tracked) | 47.4.141 |
 | 7 | `RandomSequences.sequences` (`Object2ObjectOpenHashMap`) | ANY loot roll (entity death or block break) on ANY region thread calls `get()` → `computeIfAbsent` off-main; two region threads racing the first request for a sequence corrupt the map during rehash (AIOOBE "Index -1 out of bounds for length 33" — found 2026-07-08 on a real 188-mod pack overnight soak: enderman death loot + villager block-break loot, 4 hits/8h) | C (concurrent replacement — `ConcurrentHashMap`, atomic `computeIfAbsent`) | 47.4.145 |
+| 8 | `ProtoChunk.heightmaps` (EnumMap+`Heightmap`) / `blockEntities`+`pendingBlockEntities` (HashMap) | `WorldGenRegion.setBlock()` can resolve into a NEIGHBOUR chunk while that neighbour concurrently decorates itself (`chunkGenFeaturesMaxConcurrent`); the block-state write itself was already lock-protected (PalettedContainer semaphore) but the heightmap update + block-entity registration that follows it were not | A (lock — `synchronized` on the shared map/field itself, same pattern as postProcessing) | 47.4.176→178, commit `353c845c3` |
+| 9 | `PoiSection.byType` (HashMap) via `PoiManager.getInChunk`'s lazy stream | `getRecords()` returned a lazy `Stream` straight over the section's HashMap with no lock held past the fetch; actual iteration (whenever the caller finally consumed it) raced unprotected against a concurrent `add()`/`remove()` (which hold the write lock for their full mutate, fix #1-adjacent from the RWLock upgrade) | A (eagerly materialise under the read lock instead of returning the raw lazy stream — **pitfall caught while fixing**: never hold `readLock()` across a call that might itself need `writeLock()` on a cache-miss/lazy-init path, e.g. `SectionStorage.getOrLoad`'s slow path — resolve those calls first, lock only around the pure-read extraction) | 47.4.176→178, commit `d7db5af05` |
 
 Also shipped: **explosion-ray cache** (`NestworldExplosionCache`, 47.4.105) — per-explosion block/fluid
 memoisation, bit-identical; all explosion block lookups route through it.
@@ -54,6 +56,7 @@ memoisation, bit-identical; all explosion block lookups route through it.
 | # | Structure | Finding |
 |---|---|---|
 | 4 | **Light engine** (`DynamicGraphMinFixedPoint` queue) | NOT racy. `ThreadedLevelLightEngine` isolates the graph behind a `ProcessorMailbox`: region threads only `addTask`/`tell` (thread-safe enqueue); the graph mutation (`runUpdate`/`super.checkBlock`) runs serially on the single light thread (`tryScheduleUpdate` only `mailbox.tell` + `scheduled.compareAndSet`). Light *reads* (getRawBrightness) are atomic byte-array reads — at worst stale, never corrupt. **Roadmap prediction was wrong** — light differs from POI precisely because it's mailbox-deferred, not directly accessed. |
+| 10 | **Scheduled ticks** (`LevelTicks` — block/fluid) | NOT racy, same isolation class as #4 but via a different mechanism: sequential-phase non-overlap, not a mailbox. `NestworldRegionSystem.runScheduledTicksPhase` calls `LevelTicks.tick()` (the unsynchronized main-thread drain — collects due ticks, `sortContainersToTick`/`drainContainers`) to completion FIRST, entirely on the main thread; only AFTER it returns are the collected callbacks bucketed and handed to `pool.runWorkRound(buckets)`, which the main thread then blocks on (barrier) until all region threads finish. Region threads never touch `LevelTicks`' unsynchronized internals concurrently with the main-thread drain — the two phases never overlap in time. The `addContainer`/`removeContainer`/`schedule`/`hasScheduledTick`/`willTickThisTick` methods ARE `synchronized` (pre-existing patch) for the case where a region-thread tick callback reschedules another tick (`schedule()`) — safe against other region threads doing the same, and main is parked in the barrier by then anyway. |
 
 ### Refined heuristic (from #4)
 A structure is crash-class ONLY if region threads touch it **directly**. If it sits behind a
@@ -61,7 +64,10 @@ A structure is crash-class ONLY if region threads touch it **directly**. If it s
 suspected list through this lens before assuming a fix is needed — many may be mailbox-isolated.
 
 ### ❌ Open — crash-class
-None known. All five confirmed crash-class races are fixed; #4 was investigated and found safe.
+None known. All seven confirmed crash-class races are fixed; #4 and #10 were investigated and
+found safe. Cross-chunk worldgen writes (#8, #9) were a separate discovery this pass — found via
+a differential correctness test (same seed, forced-serial vs default-concurrent generation), not
+a live crash — see [[concurrent-features-nondeterminism]].
 Residual (deeper, non-crash, deferred): cross-region `recomputePath` in sendBlockUpdated can repath
 a mob owned by another region — caught per-entity, transient path glitch at worst; revisit only if
 a real nav crash ever appears.
@@ -69,8 +75,13 @@ a real nav crash ever appears.
 ### 🔍 Suspected — audit (not yet triggered)
 Vanilla single-thread structures on the entity/block tick path. Audit each: does a region thread
 mutate it while another thread reads/mutates?
-- **Scheduled ticks** — `LevelTicks` (block/fluid). Core already patches it; verify per-region vs main.
-- **Block-entity tick list** / `LevelChunk` tick lists.
+- ~~**Scheduled ticks** — `LevelTicks` (block/fluid).~~ — **AUDITED, SAFE, see #10 above.**
+- ~~**Block-entity tick list** / `LevelChunk` tick lists.~~ — **AUDITED, SAFE.** Same collect-then-
+  barrier-execute pattern as scheduled ticks: `NestworldRegionSystem.beginBlockEntityPhase` collects
+  due tickers via the patched (still-serial, main-thread) `Level.tickBlockEntities`, and only AFTER
+  that full collection completes does `runBlockEntityPhase` bucket-and-dispatch to region threads
+  (`pool.runWorkRound`), which the main thread then blocks on. No window where a region thread and
+  the main-thread collection touch the shared ticker list concurrently.
 - **Raids / village** (`Raids`, POI-adjacent), **MapItemSavedData** (entity tracking on maps).
 - **Scoreboard** (`Scoreboard` score updates from mob death/criteria).
 - **Boss events** (`ServerBossEvent` player sets).
@@ -81,12 +92,18 @@ mutate it while another thread reads/mutates?
   are safe; `dragonParts` (multipart entities only) and `updateDynamicGameEventListener` (sculk)
   remain off-main there. Revisit only if a dragon/sculk crash ever appears.
 - **Chunk save/unload** racing region ticking the same chunk.
-- **Random-tick / weather** structures touched off-main.
+- ~~**Random-tick** structures touched off-main.~~ — **AUDITED, SAFE.** Same pattern again:
+  `ServerChunkCache`'s per-chunk `tickChunk` loop (main thread only) calls `queueRandomTicksFor`
+  to collect into `randomTickBuckets`; `flushRandomTicksPhase()` — which hands the buckets to
+  `pool.runWorkRound` — is called exactly once, AFTER that entire loop finishes, confirmed at the
+  call site (`ServerChunkCache.java` around line 464). No overlap window. **Weather** (rain/snow
+  tick, lightning) not yet separately audited — usually a small fixed set of per-level state
+  reads/writes on main during the same tick, lower suspicion, but not confirmed.
 
 ### ⏸️ Deferred — perf, not crash
 | Structure | Issue | Note |
 |---|---|---|
-| Global POI lock | doesn't scale to N region threads under distributed load (contention, not crash) | RWLock or concurrent-map + thread-safe PoiSection. See `[[poi-lock-scaling]]`. |
+| ~~Global POI lock~~ | ~~doesn't scale to N region threads under distributed load~~ | **DONE** — upgraded `ReentrantLock` → `ReentrantReadWriteLock` (commit `67f604566`); see #9 above and `poi-rwlock-and-fetch-mutate-race-fix` memory. |
 
 ## Methodology (how we find + fix)
 
@@ -103,11 +120,34 @@ mutate it while another thread reads/mutates?
 
 ## Priority order
 
-1. **#3 ChunkHolder block-change** — actively crashes on TNT. Do first.
-2. **#4 Light engine** — same queue class as POI, almost certainly the next FATAL under mass block edits.
-3. **Audit pass** — walk the 🔍 list; fix any confirmed.
-4. **#5 nav** — non-fatal, lower urgency but same class; cheap (ThreadLocal).
-5. **Deferred POI scaling** — only when distributed load actually proves the ceiling.
+1. ~~**#3 ChunkHolder block-change**~~ — done.
+2. ~~**#4 Light engine**~~ — audited, safe.
+3. ~~**Audit pass** — walk the 🔍 list; fix any confirmed.~~ — done for the tick-phase-dispatched
+   structures (#10 scheduled ticks, block-entity tickers, random ticks — all safe by the same
+   collect-then-barrier pattern, see heuristic below). Remaining unaudited: Raids/village,
+   MapItemSavedData, Scoreboard, Boss events, Forge capability attach/invalidate, chunk save/unload
+   racing region tick, weather. These are event-driven (death/interaction-triggered) rather than
+   per-tick-phase-collected, so the shortcut heuristic below doesn't apply — each needs individual
+   tracing if picked up.
+4. ~~**#5 nav**~~ — done.
+5. ~~**Deferred POI scaling**~~ — done (#9, RWLock + lazy-stream fix).
 
-When 1–3 are done, the core is robust enough that arbitrary feature-mods touching these classes from
-region threads are safe — which is the real compatibility story, far better than blocking mods.
+All of 1–5 above are now done or safe-confirmed. Also fixed this pass, discovered via differential
+correctness testing rather than a live crash: #8 (cross-chunk worldgen heightmaps/blockEntities
+race under `chunkGenFeaturesMaxConcurrent`).
+
+**Second heuristic (from #10, block-entity tickers, random ticks — 2026-08-07):** beyond the
+mailbox pattern (#4), NestworldCore's tick-phase dispatch has a SECOND systemic safety pattern
+worth checking before assuming a fix is needed: **collect-then-barrier-execute**. If a structure is
+only ever mutated by (a) the main thread during a single serial collection pass, and (b) region
+threads acting on the ALREADY-COLLECTED result AFTER that pass fully returns, with the main thread
+blocked on the region-thread barrier (`pool.runWorkRound`) before doing anything else with that
+structure — there is no concurrent-access window, regardless of whether anything is `synchronized`.
+This is the shape of `runScheduledTicksPhase`, `runBlockEntityPhase`/`beginBlockEntityPhase`, and
+`flushRandomTicksPhase`/`queueRandomTicksFor`. Before auditing a NEW suspected structure, check
+whether it's already routed through one of these three phase methods (or a similar collect→barrier
+call site) — if so, it's very likely already safe by construction.
+
+When all of 1–5 are done, the core is robust enough that arbitrary feature-mods touching these
+classes from region threads are safe — which is the real compatibility story, far better than
+blocking mods.
