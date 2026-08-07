@@ -11,7 +11,7 @@
     private final ProcessorHandle<ChunkTaskPriorityQueueSorter.Message<Runnable>> f_140143_;
     private final ChunkProgressListener f_140144_;
     private final ChunkStatusUpdateListener f_143031_;
-@@ -143,6 +_,301 @@
+@@ -143,6 +_,305 @@
     private final Long2LongMap f_202981_ = new Long2LongOpenHashMap();
     private final Queue<Runnable> f_140125_ = Queues.newConcurrentLinkedQueue();
     int f_140126_;
@@ -46,14 +46,16 @@
 +   private static final long NESTWORLD_ADMIT_WINDOW_NANOS = 50_000_000L; // ~1 tick at 20 TPS
 +   private final ThreadLocal<Boolean> nestworldInCascade = ThreadLocal.withInitial(() -> Boolean.FALSE);
 +   private final java.util.ArrayDeque<Runnable> nestworldDeferredAdmissions = new java.util.ArrayDeque<>();
-+   // NestWorld: a per-window admit RATE alone isn't enough — successive bursts each
-+   // pass their own rate check independently, so backlog can still pile up across
-+   // bursts (measured: 3 stacked 256-chunk bursts survived, the 4th still crossed 60s,
-+   // because admission was outpacing chunkGenBudget's separate promotion-apply rate).
-+   // This tracks how many bulk (holder,status) units are currently admitted but not
-+   // yet resolved (FULL or failed) and refuses new admissions once that count is at
-+   // the same budget — a standing concurrency cap that holds regardless of how many
-+   // separate bursts arrive, not just a per-window rate.
++   // NestWorld: a per-window admit RATE alone isn't enough to bound backlog across MANY
++   // separate bursts (each passes its own rate check independently) — this tracks how
++   // many bulk (holder,status) units are currently admitted but not yet resolved (FULL
++   // or failed). 2026-08-07: this used to be capped against CHUNK_GEN_ADMIT_BUDGET
++   // itself (the SAME small number as the rate), which is what made ordinary forceload
++   // bursts serialize into many sequential rounds and take 20s+ for what should be
++   // sub-second work (see NestworldTuning.CHUNK_GEN_ADMIT_BUDGET's javadoc for the
++   // measured before/after). Now checked against the independently-configured
++   // NestworldTuning.CHUNK_GEN_ADMIT_INFLIGHT_CAP instead (0 = no standing cap, only
++   // the rate paces admission) — see that constant's javadoc for the reasoning.
 +   private int nestworldInFlight = 0;
 +
 +   private void nestworldRefreshAdmitWindow() {
@@ -108,11 +110,13 @@
 +   }
 +
 +   /** NestWorld: true if both the per-window rate AND the standing in-flight
-+    *  concurrency cap have room for one more bulk admission right now. */
++    *  concurrency cap (independently configured — see NestworldTuning.
++    *  CHUNK_GEN_ADMIT_INFLIGHT_CAP) have room for one more bulk admission right now. */
 +   private boolean nestworldHasAdmitCapacity() {
 +      this.nestworldRefreshAdmitWindow();
-+      return this.nestworldAdmitWindowRemaining > 0
-+            && this.nestworldInFlight < net.nestworld.region.NestworldTuning.CHUNK_GEN_ADMIT_BUDGET;
++      if (this.nestworldAdmitWindowRemaining <= 0) return false;
++      int nestworldInflightCap = net.nestworld.region.NestworldTuning.CHUNK_GEN_ADMIT_INFLIGHT_CAP;
++      return nestworldInflightCap <= 0 || this.nestworldInFlight < nestworldInflightCap;
 +   }
 +
 +   /** NestWorld: record one bulk admission — consumes rate-window budget and occupies

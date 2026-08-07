@@ -172,12 +172,56 @@ public final class NestworldTuning {
      * driven (interactive) requests are never gated — same tiering rule as
      * {@link #CHUNK_GEN_BUDGET}.
      *
+     * <p><b>2026-08-07 redesign:</b> this used to ALSO double as the standing in-flight
+     * concurrency cap (how many admitted-but-unresolved scheduling units may exist at
+     * once) — the same small number gated both "how fast new work enters" AND "how much
+     * may be outstanding". That conflation is what made this mechanism actively harmful
+     * at ordinary scale: a ROUTINE {@code /forceload} of 9-16 chunks needs up to ~4
+     * gateable statuses each (NOISE/SURFACE/CARVERS/FEATURES), so a modest burst alone
+     * produces 40-60+ competing scheduling units — with the in-flight cap pinned to the
+     * same value as the per-window rate (e.g. 4), those units serialize into ~15+
+     * sequential rounds, each bounded by its slowest member. Measured live
+     * (2026-08-07, real 419-mod pack): a single isolated 9-16 chunk forceload call took
+     * 20s+ (hit the {@link #FORCELOAD_WAIT_TIMEOUT_MS} bailout) with this gate at its
+     * shipped default of 4/4/2 — with the whole gate disabled it took 0.78s, FASTER than
+     * vanilla stock Forge on the same pack/world (10.33s). See {@link
+     * #CHUNK_GEN_ADMIT_INFLIGHT_CAP} for the now-separate standing cap this rate limiter
+     * no longer doubles as.
+     *
      * <p>{@code 0} = unlimited (vanilla behaviour, default). Set e.g.
      * {@code -Dnestworld.chunkGenAdmitBudget=32} to admit at most 32 new bulk
-     * (holder,status) scheduling units per tick.
+     * (holder,status) scheduling units per ~tick-length window.
      */
     public static final int CHUNK_GEN_ADMIT_BUDGET =
             Integer.getInteger("nestworld.chunkGenAdmitBudget", 0);
+
+    /**
+     * Standing cap on how many bulk (holder,status) scheduling units may be
+     * <em>admitted but not yet resolved</em> at once — independent of {@link
+     * #CHUNK_GEN_ADMIT_BUDGET}'s per-window admission RATE. This is what actually
+     * defends against unbounded backlog growth across MANY separate bursts (each burst
+     * passes its own rate check independently, so a rate cap alone doesn't stop repeated
+     * bursts from piling up faster than they resolve — see the field-group comment on
+     * {@code ChunkMap.nestworldInFlight} for the original finding this protects
+     * against: 3 stacked 256-chunk bursts survived, a 4th crossed the 60s watchdog).
+     *
+     * <p>Deliberately NOT the same knob as {@link #CHUNK_GEN_MAX_CONCURRENT} — an
+     * "admitted" unit is pure scheduling bookkeeping (a stored {@code CompletableFuture}
+     * plus whatever of its dependency graph is in memory), not necessarily active CPU
+     * work (that's what {@code CHUNK_GEN_MAX_CONCURRENT}/{@code
+     * CHUNK_GEN_FEATURES_MAX_CONCURRENT} bound separately) — but a large number of
+     * simultaneously in-flight scheduling graphs is still real heap pressure, which is
+     * why this exists at all rather than leaving admission concurrency fully unbounded.
+     *
+     * <p>{@code 0} = unlimited — no standing cap, only {@link #CHUNK_GEN_ADMIT_BUDGET}'s
+     * rate paces admission (default; matches this file's usual "off unless configured"
+     * convention). Set e.g. {@code -Dnestworld.chunkGenAdmitInflightCap=512} to
+     * reintroduce a hard ceiling if a stacked-burst stress test on your own hardware
+     * shows the rate limiter alone isn't enough — pick the value from that test, not
+     * this default.
+     */
+    public static final int CHUNK_GEN_ADMIT_INFLIGHT_CAP =
+            Integer.getInteger("nestworld.chunkGenAdmitInflightCap", 0);
 
     /**
      * Cap on how many chunk-status GENERATION calls (the actual CPU-bound
