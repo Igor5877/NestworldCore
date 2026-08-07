@@ -48,6 +48,7 @@ Every extreme stress test so far has surfaced a new race of this class (POI → 
 | 7 | `RandomSequences.sequences` (`Object2ObjectOpenHashMap`) | ANY loot roll (entity death or block break) on ANY region thread calls `get()` → `computeIfAbsent` off-main; two region threads racing the first request for a sequence corrupt the map during rehash (AIOOBE "Index -1 out of bounds for length 33" — found 2026-07-08 on a real 188-mod pack overnight soak: enderman death loot + villager block-break loot, 4 hits/8h) | C (concurrent replacement — `ConcurrentHashMap`, atomic `computeIfAbsent`) | 47.4.145 |
 | 8 | `ProtoChunk.heightmaps` (EnumMap+`Heightmap`) / `blockEntities`+`pendingBlockEntities` (HashMap) | `WorldGenRegion.setBlock()` can resolve into a NEIGHBOUR chunk while that neighbour concurrently decorates itself (`chunkGenFeaturesMaxConcurrent`); the block-state write itself was already lock-protected (PalettedContainer semaphore) but the heightmap update + block-entity registration that follows it were not | A (lock — `synchronized` on the shared map/field itself, same pattern as postProcessing) | 47.4.176→178, commit `353c845c3` |
 | 9 | `PoiSection.byType` (HashMap) via `PoiManager.getInChunk`'s lazy stream | `getRecords()` returned a lazy `Stream` straight over the section's HashMap with no lock held past the fetch; actual iteration (whenever the caller finally consumed it) raced unprotected against a concurrent `add()`/`remove()` (which hold the write lock for their full mutate, fix #1-adjacent from the RWLock upgrade) | A (eagerly materialise under the read lock instead of returning the raw lazy stream — **pitfall caught while fixing**: never hold `readLock()` across a call that might itself need `writeLock()` on a cache-miss/lazy-init path, e.g. `SectionStorage.getOrLoad`'s slow path — resolve those calls first, lock only around the pure-read extraction) | 47.4.176→178, commit `d7db5af05` |
+| 11 | `MapItemSavedData` (`carriedBy`/`carriedByPlayers`/`bannerMarkers`/`decorations`/`frameMarkers`) | ONE shared instance per map ID, reachable from any region — two item frames in different regions displaying the same map, destroyed concurrently (combat/explosion) via `ItemFrame.removeFramedMap` → `removedFromFrame`, mutate the same unsynchronized HashMaps from two region threads at once | A (`synchronized` on every touching method, reentrant-safe for nested same-thread calls) + defensive copies for `getBanners`/`getDecorations` (previously returned the live `HashMap.values()` view — same escape shape as #9) | 47.4.181, commit `dc03ab347` |
 
 Also shipped: **explosion-ray cache** (`NestworldExplosionCache`, 47.4.105) — per-explosion block/fluid
 memoisation, bit-identical; all explosion block lookups route through it.
@@ -82,7 +83,8 @@ mutate it while another thread reads/mutates?
   that full collection completes does `runBlockEntityPhase` bucket-and-dispatch to region threads
   (`pool.runWorkRound`), which the main thread then blocks on. No window where a region thread and
   the main-thread collection touch the shared ticker list concurrently.
-- **Raids / village** (`Raids`, POI-adjacent), **MapItemSavedData** (entity tracking on maps).
+- **Raids / village** (`Raids`, POI-adjacent).
+- ~~**MapItemSavedData** (entity tracking on maps).~~ — **FIXED, see #11 above.**
 - **Scoreboard** (`Scoreboard` score updates from mob death/criteria).
 - **Boss events** (`ServerBossEvent` player sets).
 - **Forge capabilities** attach/invalidate on entities/chunks during region tick. **Traced, NOT
