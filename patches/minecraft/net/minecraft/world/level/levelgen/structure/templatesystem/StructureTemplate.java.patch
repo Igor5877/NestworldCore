@@ -104,3 +104,23 @@
                    ((Mob)p_275190_).m_6518_(p_74524_, p_74524_.m_6436_(BlockPos.m_274446_(vec31)), MobSpawnType.STRUCTURE, (SpawnGroupData)null, compoundtag);
                 }
  
+@@ -695,7 +_,18 @@
+ 
+    public static final class Palette {
+       private final List<StructureTemplate.StructureBlockInfo> f_74645_;
+-      private final Map<Block, List<StructureTemplate.StructureBlockInfo>> f_74646_ = Maps.newHashMap();
++      // NestWorld: this Palette instance is created once per loaded StructureTemplate
++      // and shared/reused across EVERY placement of that structure (StructureTemplateManager
++      // caches templates by ResourceLocation) -- vanilla only ever called blocks(Block)
++      // from one serialized worldgen worker at a time (see NestworldTuning.WORLDGEN_SHARDS's
++      // javadoc), so a plain HashMap here was never actually racy there. NestworldCore's
++      // worldgenShards>1/chunkGenMaxConcurrent enable genuine concurrent FEATURES generation
++      // across chunks, which CONFIRMED this as a real crash (ConcurrentModificationException
++      // in HashMap.computeIfAbsent, real 419-mod ATM9 pack, 2026-08-07, two chunks placing
++      // the same structure -- betterdungeons:small_dungeon -- concurrently). ConcurrentHashMap
++      // makes computeIfAbsent atomic; the mapping function is pure (filters the immutable
++      // `blocks` list), so this is a drop-in, behavior-preserving fix.
++      private final Map<Block, List<StructureTemplate.StructureBlockInfo>> f_74646_ = new java.util.concurrent.ConcurrentHashMap<>();
+ 
+       Palette(List<StructureTemplate.StructureBlockInfo> p_74648_) {
+          this.f_74645_ = p_74648_;

@@ -1,0 +1,45 @@
+--- a/net/minecraft/world/level/levelgen/structure/StructureCheck.java
++++ b/net/minecraft/world/level/levelgen/structure/StructureCheck.java
+@@ -68,7 +_,21 @@
+       this.f_204945_ = p_226713_.m_175515_(Registries.f_256944_);
+    }
+ 
+-   public StructureCheckResult m_226729_(ChunkPos p_226730_, Structure p_226731_, boolean p_226732_) {
++   // NestWorld: checkStart/onStructureLoad/incrementReference all read+mutate
++   // loadedChunks/featureChecks (plain, non-thread-safe fastutil/java maps) and this
++   // StructureCheck instance is shared across ALL chunks in a dimension. Vanilla only
++   // ever called these from a single serialized worldgen worker (see NestworldTuning.
++   // WORLDGEN_SHARDS's javadoc: one ProcessorMailbox per dimension, one run() at a
++   // time), so this was never a real race there. NestworldCore's worldgenShards>1 /
++   // chunkGenMaxConcurrent enable genuine concurrent STRUCTURE_STARTS generation across
++   // chunks -- CONFIRMED as a real, live crash for the sibling case (StructureTemplate.
++   // Palette.cache, a ConcurrentModificationException from vanilla's structure NBT
++   // template cache, 2026-08-07, real 419-mod ATM9 pack). Same shape here, fixed
++   // preemptively rather than waiting for it to also crash: synchronize the whole
++   // method rather than just the two computeIfAbsent calls, since the fast-path read
++   // above (loadedChunks.get(i)) is itself unsafe to run concurrently with any of this
++   // class's writers.
++   public synchronized StructureCheckResult m_226729_(ChunkPos p_226730_, Structure p_226731_, boolean p_226732_) {
+       long i = p_226730_.m_45588_();
+       Object2IntMap<Structure> object2intmap = this.f_197247_.get(i);
+       if (object2intmap != null) {
+@@ -180,7 +_,8 @@
+       return i == -1 || p_226754_ && i != 0 ? StructureCheckResult.START_NOT_PRESENT : StructureCheckResult.START_PRESENT;
+    }
+ 
+-   public void m_197282_(ChunkPos p_197283_, Map<Structure, StructureStart> p_197284_) {
++   // NestWorld: see checkStart's comment -- same shared-state race, same fix.
++   public synchronized void m_197282_(ChunkPos p_197283_, Map<Structure, StructureStart> p_197284_) {
+       long i = p_197283_.m_45588_();
+       Object2IntMap<Structure> object2intmap = new Object2IntOpenHashMap<>();
+       p_197284_.forEach((p_226749_, p_226750_) -> {
+@@ -199,7 +_,8 @@
+       });
+    }
+ 
+-   public void m_226722_(ChunkPos p_226723_, Structure p_226724_) {
++   // NestWorld: see checkStart's comment -- same shared-state race, same fix.
++   public synchronized void m_226722_(ChunkPos p_226723_, Structure p_226724_) {
+       this.f_197247_.compute(p_226723_.m_45588_(), (p_226745_, p_226746_) -> {
+          if (p_226746_ == null || p_226746_.isEmpty()) {
+             p_226746_ = new Object2IntOpenHashMap<>();

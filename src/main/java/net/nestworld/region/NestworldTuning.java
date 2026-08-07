@@ -23,6 +23,44 @@ public final class NestworldTuning {
             Integer.getInteger("nestworld.maxEntityPush", 8);
 
     /**
+     * Hard cap on how many {@code FallingBlockEntity} instances (sand, gravel,
+     * concrete powder, scaffolding, dripstone, suspicious sand/gravel) may exist
+     * across the whole server at once. {@code 0} = unlimited (vanilla behaviour,
+     * default).
+     *
+     * <p>Real-world trigger (2026-08-07, live ATM9, real player-built setup): a
+     * dispenser/observer "sand duper"-style loop accumulated 12500+ falling_block
+     * entities in a single tiny area. Unlike items, falling blocks never merge/stack,
+     * and each one runs its own gravity+collision physics AND constantly moves (so it's
+     * never visibility-static for the tracker either) every tick it's airborne — this
+     * single hotspot alone cost ~43ms in the owning region's entity round (correctly
+     * capped/deferred by {@link #REGION_ENTITY_BUDGET_NANOS}) PLUS ~46ms in the
+     * separate main-thread tracker/broadcast phase (packing and sending that many
+     * constantly-dirty entities' movement to the watching player) -- these two phases
+     * run sequentially, not in parallel, so together they blew a 50ms tick budget to
+     * ~97ms (TPS 20 -&gt; ~10) even though neither phase was individually pathological
+     * and the box was nowhere near CPU-saturated overall (region-entity-budget and the
+     * tracker parallelization flags were already doing their job; the sheer entity
+     * COUNT was the problem, not a missing optimization).
+     *
+     * <p>When the live count is at or above this cap, {@code FallingBlockEntity.fall()}
+     * still performs the normal block-removal side effect (so a capped block doesn't
+     * become permanently un-fallable / stuck mid-air visually) but skips adding the
+     * entity to the world -- the block simply vanishes instead of animating a fall and
+     * landing. Every caller of {@code fall()} unconditionally dereferences its return
+     * value (none currently null-check it), so the factory always returns a real,
+     * usable (if world-detached) object rather than {@code null} -- this is a
+     * deliberate constraint on how the cap can be implemented, not an oversight.
+     *
+     * <p>Set e.g. {@code -Dnestworld.maxFallingBlocks=2000} to cap globally. Pick a
+     * value well above anything normal building/mining produces (a large sand pyramid
+     * collapsing, TNT-cratering into a sand/gravel vein) -- this is an abuse/lag-machine
+     * safety valve, not a normal-gameplay throttle.
+     */
+    public static final int MAX_FALLING_BLOCKS =
+            Integer.getInteger("nestworld.maxFallingBlocks", 0);
+
+    /**
      * Per-tick budget in nanoseconds for one region's entity round. When the
      * round exceeds it, the remaining entities are deferred to the next tick
      * (round-robin), so an unsplittable point hotspot slows down locally
