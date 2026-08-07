@@ -1,0 +1,61 @@
+--- a/net/minecraft/world/ticks/ProtoChunkTicks.java
++++ b/net/minecraft/world/ticks/ProtoChunkTicks.java
+@@ -12,6 +_,22 @@
+ import net.minecraft.world.level.ChunkPos;
+ 
+ public class ProtoChunkTicks<T> implements SerializableTickContainer<T>, TickContainerAccess<T> {
++   // NestWorld: this container is NOT one-worker-thread-per-instance in practice.
++   // WorldGenRegion (the LevelAccessor used during FEATURES generation) spans a
++   // multi-chunk window (firstPos..lastPos) and resolves scheduleTick()/getBlockTicks()
++   // by BlockPos — so a feature that crosses a chunk boundary (e.g. a tree placed near
++   // the edge of the chunk it's generating) can schedule a tick into a NEIGHBOURING
++   // chunk's ProtoChunkTicks. Two worker threads generating adjacent chunks concurrently
++   // (now possible since CHUNK_GEN_FEATURES_MAX_CONCURRENT went from a hard cap of 1 to
++   // effectively unlimited) can have overlapping WorldGenRegion windows sharing that
++   // boundary chunk, and both call schedule() on the SAME ProtoChunkTicks instance —
++   // CONFIRMED as a real crash (ArrayIndexOutOfBoundsException in fastutil
++   // ObjectOpenCustomHashSet.rehash(), a classic concurrent-mutation-corrupts-hashset
++   // symptom, hit live on gen-spike-repro during a fresh 256-chunk generation burst).
++   // Unlike BulkSectionAccess this needs no multi-lock ordering dance: every method here
++   // touches exactly ONE ProtoChunkTicks instance in isolation (nothing ever holds two
++   // instances' locks at once), so plain `synchronized` on `this` is sufficient and
++   // cannot deadlock.
+    private final List<SavedTick<T>> f_193291_ = Lists.newArrayList();
+    private final Set<SavedTick<?>> f_193292_ = new ObjectOpenCustomHashSet<>(SavedTick.f_193310_);
+ 
+@@ -20,22 +_,22 @@
+       this.m_193295_(savedtick);
+    }
+ 
+-   private void m_193295_(SavedTick<T> p_193296_) {
++   private synchronized void m_193295_(SavedTick<T> p_193296_) {
+       if (this.f_193292_.add(p_193296_)) {
+          this.f_193291_.add(p_193296_);
+       }
+ 
+    }
+ 
+-   public boolean m_183582_(BlockPos p_193300_, T p_193301_) {
++   public synchronized boolean m_183582_(BlockPos p_193300_, T p_193301_) {
+       return this.f_193292_.contains(SavedTick.m_193335_(p_193301_, p_193300_));
+    }
+ 
+-   public int m_183574_() {
++   public synchronized int m_183574_() {
+       return this.f_193291_.size();
+    }
+ 
+-   public Tag m_183237_(long p_193308_, Function<T, String> p_193309_) {
++   public synchronized Tag m_183237_(long p_193308_, Function<T, String> p_193309_) {
+       ListTag listtag = new ListTag();
+ 
+       for(SavedTick<T> savedtick : this.f_193291_) {
+@@ -45,7 +_,7 @@
+       return listtag;
+    }
+ 
+-   public List<SavedTick<T>> m_193306_() {
++   public synchronized List<SavedTick<T>> m_193306_() {
+       return List.copyOf(this.f_193291_);
+    }
+ 

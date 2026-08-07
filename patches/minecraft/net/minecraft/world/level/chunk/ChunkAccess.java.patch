@@ -1,5 +1,25 @@
 --- a/net/minecraft/world/level/chunk/ChunkAccess.java
 +++ b/net/minecraft/world/level/chunk/ChunkAccess.java
+@@ -283,7 +_,18 @@
+    }
+ 
+    public void m_6561_(short p_62092_, int p_62093_) {
+-      m_62095_(this.m_6720_(), p_62093_).add(p_62092_);
++      // NestWorld: same cross-chunk-boundary write race as ProtoChunkTicks (see its
++      // patch for the full explanation) — WorldGenRegion can resolve markPosForPostprocessing
++      // / addPackedPostProcess to a NEIGHBOURING chunk's postProcessing array from a
++      // different worker thread generating an adjacent chunk. getOrCreateOffsetList's
++      // check-then-create is racy on its own (two threads could each see null and both
++      // allocate+assign, one silently overwriting the other's list), and ShortArrayList.add
++      // is not thread-safe either. Lock on the array field itself — every call site touching
++      // one chunk's postProcessing shares this exact array instance, so this is a correct,
++      // per-chunk lock with no cross-instance ordering ever required (no deadlock risk).
++      synchronized (this.f_187602_) {
++         m_62095_(this.m_6720_(), p_62093_).add(p_62092_);
++      }
+    }
+ 
+    public void m_5604_(CompoundTag p_62091_) {
 @@ -299,25 +_,30 @@
     public abstract CompoundTag m_8051_(BlockPos p_62104_);
  

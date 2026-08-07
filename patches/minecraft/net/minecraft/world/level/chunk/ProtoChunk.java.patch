@@ -1,0 +1,25 @@
+--- a/net/minecraft/world/level/chunk/ProtoChunk.java
++++ b/net/minecraft/world/level/chunk/ProtoChunk.java
+@@ -227,14 +_,20 @@
+    }
+ 
+    public void m_8113_(BlockPos p_63266_) {
++      // NestWorld: see ChunkAccess.addPackedPostProcess's patch — same cross-chunk-boundary
++      // race, same fix (lock on the shared per-chunk postProcessing array).
+       if (!this.m_151570_(p_63266_)) {
+-         ChunkAccess.m_62095_(this.f_187602_, this.m_151564_(p_63266_.m_123342_())).add(m_63280_(p_63266_));
++         synchronized (this.f_187602_) {
++            ChunkAccess.m_62095_(this.f_187602_, this.m_151564_(p_63266_.m_123342_())).add(m_63280_(p_63266_));
++         }
+       }
+ 
+    }
+ 
+    public void m_6561_(short p_63225_, int p_63226_) {
+-      ChunkAccess.m_62095_(this.f_187602_, p_63226_).add(p_63225_);
++      synchronized (this.f_187602_) {
++         ChunkAccess.m_62095_(this.f_187602_, p_63226_).add(p_63225_);
++      }
+    }
+ 
+    public Map<BlockPos, CompoundTag> m_63294_() {
