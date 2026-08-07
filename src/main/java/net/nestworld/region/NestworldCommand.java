@@ -56,7 +56,13 @@ public final class NestworldCommand {
                 .then(Commands.literal("unpinmod")
                         .then(Commands.argument("namespace", com.mojang.brigadier.arguments.StringArgumentType.word())
                                 .executes(ctx -> unpinMod(ctx.getSource(),
-                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "namespace"))))));
+                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "namespace")))))
+                .then(Commands.literal("debugsync")
+                        .then(Commands.argument("x", IntegerArgumentType.integer())
+                                .then(Commands.argument("z", IntegerArgumentType.integer())
+                                        .executes(ctx -> debugSyncGetChunk(ctx.getSource(),
+                                                IntegerArgumentType.getInteger(ctx, "x"),
+                                                IntegerArgumentType.getInteger(ctx, "z")))))));
 
         // /spark — in-game access to the spark standalone agent (see SparkBridge).
         // Only when the real spark mod is absent (dev runtime can't load it);
@@ -205,6 +211,32 @@ public final class NestworldCommand {
                             : "")), false);
         }
         return regions.size();
+    }
+
+    /**
+     * NestWorld debug: reproduces the exact blocking call shape mods like FTBChunks
+     * use for a map-click teleport ({@code Level.getChunk(chunkX, chunkZ)} — the
+     * synchronous, load-and-generate-if-needed overload), run directly on the main
+     * thread (same thread RCON commands execute on) so its timing matches what a
+     * real player's teleport into fresh territory would experience. Exists because
+     * mineflayer cannot connect to a real modded Forge server (FML2 handshake) and
+     * vanilla commands (data get block, summon) do NOT force the same synchronous
+     * load path — this command is the only safe, RCON-triggerable way to measure
+     * the actual "Phase 1" teleport-hang risk on a real modpack. Takes BLOCK
+     * coordinates (converted to chunk coordinates here) to match how a player
+     * position is normally specified.
+     */
+    private static int debugSyncGetChunk(CommandSourceStack src, int blockX, int blockZ) {
+        net.minecraft.server.level.ServerLevel level = src.getServer().overworld();
+        int chunkX = blockX >> 4;
+        int chunkZ = blockZ >> 4;
+        long start = System.nanoTime();
+        level.getChunk(chunkX, chunkZ);
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
+        src.sendSuccess(() -> Component.literal(String.format(
+                "debugsync: Level.getChunk(%d, %d) [block %d,%d] took %d ms",
+                chunkX, chunkZ, blockX, blockZ, elapsedMs)), false);
+        return (int) elapsedMs;
     }
 
     private static int split(CommandSourceStack src, int id) {
