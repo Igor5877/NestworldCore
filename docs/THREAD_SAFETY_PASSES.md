@@ -156,11 +156,18 @@ recommended next step each rather than silently marked either way.
     internal `NonNullList` concurrently is a genuine unsynchronized structural mutation, not just
     a stale read. **This is now the concrete, higher-priority half of the open question** — most
     cross-region hopper/pipe interactions are near-border (ghost-zone depth), not "deep" reads.
-    **Recommended next step if picked up**: a live test with a hopper→chest chain deliberately
-    placed within 2 chunks of a known region border under sustained load, watching for item loss/
-    duplication or container-related exceptions — NOT yet attempted (mineflayer can't drive real
-    survival-mode item interaction easily; would need either a debug command or RCON-scripted
-    `/item`/`/setblock` sequencing).
+    **Empirical test run (2026-08-07, gen-spike-repro)**: chest A (1728 diamonds) → hopper →
+    chest B, chest A/hopper on one side of the confirmed region border, chest B one block across
+    it (well within `GHOST_DEPTH`=2), RCON-scripted via `/setblock`+`/item replace block` (no
+    client needed). ~40 zombies spawned on both sides throughout to force genuine concurrent
+    region-thread activity (both regions actively ticking 45-75 entities each, not idle). Ran
+    ~9 minutes continuous transfer, checked item totals twice (mid-run and final) by summing NBT
+    `Items[].Count` across all three containers: **1728/1728 both times, zero loss, zero
+    duplication, zero exceptions in the server log.** Reassuring evidence — NOT exhaustive proof
+    (single test, ~9 min, one hopper pair, unmodded vanilla container code path only; a genuinely
+    rare race could still exist and simply not have been hit). If this needs stronger confidence
+    later: longer duration, multiple hopper pairs at once, and/or a modded `IItemHandler`
+    capability (not just vanilla `Container`) would extend coverage.
 - ~~**`PersistentEntitySectionManager`** visibility/section transitions~~ — **FIXED, see #6 above.**
   Residual (non-crash, exotic): the rest of `onTrackingStart` still runs on the region thread for
   a section-move transition — `navigatingMobs` (concurrent, #5) and the C1 counter (synchronized)
