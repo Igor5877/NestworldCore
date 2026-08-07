@@ -74,6 +74,26 @@ public final class NestworldTuning {
             Integer.getInteger("nestworld.deferredSpawnQueueCap", 200_000);
 
     /**
+     * Time budget (ms) for draining deferred spawns per tick, on top of the
+     * entity-count cap above. Region threads are fully idle at the barrier for
+     * the whole duration of this drain (it mutates ChunkMap's non-thread-safe
+     * entity tracking, so it must run alone) — so the count-based cap alone maps
+     * unpredictably to actual tick-time cost: real per-entity registration cost
+     * (chunk lookup + entity-list insert + tracking setup + events) varies with
+     * entity complexity, and a "budget" expressed purely as a count can silently
+     * consume far more of the tick than intended once real per-entity cost is
+     * known (confirmed live on ATM9 under a mass-TNT flood: ~1000 entities/tick
+     * cost ~150-200ms — CPU sat at ~64% the whole time because region threads
+     * were correctly idle, not because more cores were available to use).
+     * Draining stops at whichever limit — count or time — is hit first, so this
+     * only ever TIGHTENS the existing cap, never loosens it; it exists purely to
+     * make the per-tick cost of this phase predictable and directly tunable in
+     * milliseconds instead of an indirect entity count.
+     */
+    public static final long DEFERRED_SPAWN_BUDGET_NANOS =
+            Integer.getInteger("nestworld.deferredSpawnBudgetMs", 5) * 1_000_000L;
+
+    /**
      * Weight of one unit of block-tick heat relative to one owned entity when
      * the split scorer scores candidate cut lines (see {@link BlockTickHeat}).
      * Block-tick heat is a decayed per-second count, so a busy redstone column
