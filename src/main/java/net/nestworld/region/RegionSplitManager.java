@@ -96,7 +96,10 @@ public class RegionSplitManager {
      */
     private final Set<WorldRegion> mergeCandidates = new LinkedHashSet<>();
 
-    private int checkInterval = 0;
+    // NestWorld: wall-clock evaluation gate — see onTick()'s javadoc for why
+    // this replaced a tick-counted interval.
+    private static final long EVAL_INTERVAL_NANOS = 1_000_000_000L; // 1 real second
+    private long nestworldLastEvalNanos = 0L;
 
     public RegionSplitManager(RegionTree tree, RegionThreadPool pool, BlockTickHeat blockTickHeat) {
         this.tree = tree;
@@ -110,11 +113,27 @@ public class RegionSplitManager {
 
     /**
      * Must be called from the main thread each tick, after all region threads
-     * have finished their tick. Every 20 ticks it evaluates TPS per region.
+     * have finished their tick. Evaluates roughly once per real second.
+     *
+     * <p>NestWorld: wall-clock-gated, not tick-counted. The original "every 20
+     * ticks" gate implicitly assumed 20 TPS — under degraded TPS (exactly the
+     * condition split/merge decisions matter most for), 20 ticks stretches well
+     * past a real second, so SPLIT_CHECKS_REQUIRED/MERGE_CHECKS_REQUIRED (counts
+     * of consecutive EVALUATIONS, unchanged) end up spanning far more real time
+     * than their "100/500 game ticks" doc comment implies — confirmed live on
+     * ATM9: 20 regions lingered well after their individual cost had dropped to
+     * near-zero, because the 500-tick merge window took 35-90+s of real time
+     * at 14 and 5-6 TPS respectively, instead of the intended ~25s. Gating on
+     * elapsed real time instead makes the hysteresis window's real-time meaning
+     * hold regardless of current TPS — merge candidacy now accrues at a
+     * consistent rate in wall-clock time, recovering region count faster
+     * specifically during/after the degraded-TPS episodes where it matters.
      */
     public void onTick() {
-        if (++checkInterval < 20) return;
-        checkInterval = 0;
+        long nestworldNow = System.nanoTime();
+        if (nestworldLastEvalNanos == 0L) nestworldLastEvalNanos = nestworldNow;
+        if (nestworldNow - nestworldLastEvalNanos < EVAL_INTERVAL_NANOS) return;
+        nestworldLastEvalNanos = nestworldNow;
 
         // Once per second: age the block-tick heat window so the scorer reacts
         // to where load is now, not where it was minutes ago.
