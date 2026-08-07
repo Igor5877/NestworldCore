@@ -167,11 +167,22 @@ public class RegionSplitManager {
         // Stop splitting once we hit the region cap (see MAX_REGIONS_TOTAL): more
         // threads than this only add overhead; the per-region budget absorbs the
         // overload instead of fragmenting into dozens of tiny busy regions.
-        boolean atRegionCap = active.size() >= MAX_REGIONS_TOTAL;
-
+        //
+        // NestWorld: must be re-checked against pendingSplits.size() as it grows
+        // WITHIN this same loop, not just active.size() once up front. A single
+        // frozen "at cap" boolean computed before the loop lets every region that
+        // independently exceeds SPLIT_MS_THRESHOLD in the SAME evaluation queue a
+        // split, since none of them see each other's additions to pendingSplits —
+        // under a flood hitting many regions at once (confirmed live on ATM9
+        // during a mass-TNT stress test) this jumped straight from 19 to 26
+        // regions in one evaluation cycle, blowing past the cap of 20 (10 cores)
+        // and landing in exactly the fragmentation failure mode the cap exists
+        // to prevent (this class's own doc comment: "30 regions on 8 cores at
+        // 2-3 TPS").
         for (WorldRegion region : active) {
             double costMs = region.getAvgTickMs();
             boolean fillSplit = spareCores && region == hottest && costMs > SPLIT_FILL_CORES_MS;
+            boolean atRegionCap = active.size() + pendingSplits.size() >= MAX_REGIONS_TOTAL;
 
             if (!atRegionCap && (costMs > SPLIT_MS_THRESHOLD || fillSplit)) {
                 region.mergePressureChecks = 0;
