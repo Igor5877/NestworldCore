@@ -85,7 +85,24 @@ mutate it while another thread reads/mutates?
   the main-thread collection touch the shared ticker list concurrently.
 - **Raids / village** (`Raids`, POI-adjacent).
 - ~~**MapItemSavedData** (entity tracking on maps).~~ — **FIXED, see #11 above.**
-- **Scoreboard** (`Scoreboard` score updates from mob death/criteria).
+- **Scoreboard** (`Scoreboard` score/team updates). **Traced, NOT closed** (2026-08-07) — the
+  `playerScores`/`objectivesByName`/`teamsByPlayer` maps are ONE shared instance for the whole
+  level, plain HashMaps. Kill-count/criteria scoring turned out NOT to be the region-thread risk
+  it first looked like (`Entity.awardKillScore`'s base implementation only fires an advancement
+  criteria trigger, doesn't touch `Scoreboard` directly — traced the actual call chain to rule
+  this out rather than assume). The REAL confirmed region-thread-reachable touch point is
+  `Entity.getTeam()`/`getPlayersTeam()` (a READ, called constantly from region-threaded combat/
+  friendly-fire checks) racing against `/team join`/`/team leave` command execution
+  (`ScoreboardCommand`/`TeamCommand`, main-thread but NOT gated by the region-tick barrier the
+  way entity/block ticking is — commands run whenever queued, independent of tick phase). Whether
+  this main-thread command execution can genuinely OVERLAP a region thread's concurrent read
+  depends on exactly when/how `MinecraftServer`'s task queue drains relative to
+  `RegionThreadPool.awaitLatch()`'s barrier wait — NOT fully traced, this needs the same kind of
+  call-site tracing that closed the tick-phase items, just deeper (command execution timing isn't
+  as cleanly phase-separated as entity/block ticking is). Lower confidence and likely lower
+  severity than the MapItemSavedData bug (a torn HashMap READ during concurrent modification is
+  usually silent staleness or a rare exception, not a guaranteed crash) — flagged as open, not
+  silently assumed safe or unsafe.
 - ~~**Boss events** (`ServerBossEvent` player sets).~~ — **AUDITED, SAFE.** `ServerBossEvent`
   (`players` HashSet) is per-ENTITY (each `WitherBoss`/`EnderDragon` owns its own instance), not
   a world-shared singleton like `MapItemSavedData` was — so the risk shape is different: does the
