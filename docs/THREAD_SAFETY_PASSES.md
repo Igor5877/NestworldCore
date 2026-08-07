@@ -83,7 +83,19 @@ mutate it while another thread reads/mutates?
   that full collection completes does `runBlockEntityPhase` bucket-and-dispatch to region threads
   (`pool.runWorkRound`), which the main thread then blocks on. No window where a region thread and
   the main-thread collection touch the shared ticker list concurrently.
-- **Raids / village** (`Raids`, POI-adjacent).
+- ~~**Raids / village** (`Raids`, POI-adjacent).~~ — **AUDITED, MOSTLY SAFE**, one narrow
+  unconfirmed edge left. `Raids.tick()` (which advances/removes entries from the plain HashMap
+  `raidMap`) is called from `ServerLevel.tick()` — part of vanilla's global tick (step 1 of
+  `tickAllRegions`, main-thread, before the region barrier), same safe timing as
+  weather/scheduled-ticks/chunk-I/O. Raid triggering (Bad Omen in a village) is player-tick-
+  driven, also main-thread-only. The one narrow, NOT fully confirmed edge: `Raider.java`'s
+  `readAdditionalSaveData` (entity NBT deserialization, happens during chunk LOADING — a
+  different subsystem/thread pool than region entity-ticking) does `getRaids().get(raidId)`, a
+  plain `HashMap.get()` that could theoretically race the main thread's `raids.tick()` mutating
+  the same map concurrently with a chunk-load worker thread. Low severity if real (a stale/null
+  read at worst, not obviously crash-capable the way the fixed bugs were) and narrow (raid-entity
+  deserialization specifically, not general gameplay) — not chased further given the marginal
+  value; revisit only if a raid-loading-related exception is ever actually observed.
 - ~~**MapItemSavedData** (entity tracking on maps).~~ — **FIXED, see #11 above.**
 - **Scoreboard** (`Scoreboard` score/team updates). **Traced, NOT closed** (2026-08-07) — the
   `playerScores`/`objectivesByName`/`teamsByPlayer` maps are ONE shared instance for the whole
