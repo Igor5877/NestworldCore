@@ -1,6 +1,25 @@
 --- a/net/minecraft/world/level/chunk/ChunkAccess.java
 +++ b/net/minecraft/world/level/chunk/ChunkAccess.java
-@@ -283,7 +_,18 @@
+@@ -143,8 +_,16 @@
+    }
+ 
+    public Set<BlockPos> m_5928_() {
+-      Set<BlockPos> set = Sets.newHashSet(this.f_187609_.keySet());
+-      set.addAll(this.f_187610_.keySet());
++      // NestWorld: blockEntities/pendingBlockEntities can be concurrently mutated by a
++      // neighbouring chunk's worker thread during FEATURES generation — see the locks
++      // in ProtoChunk's setBlockEntity/setBlockEntityNbt.
++      Set<BlockPos> set;
++      synchronized (this.f_187609_) {
++         set = Sets.newHashSet(this.f_187609_.keySet());
++      }
++      synchronized (this.f_187610_) {
++         set.addAll(this.f_187610_.keySet());
++      }
+       return set;
+    }
+ 
+@@ -283,41 +_,61 @@
     }
  
     public void m_6561_(short p_62092_, int p_62093_) {
@@ -20,7 +39,21 @@
     }
  
     public void m_5604_(CompoundTag p_62091_) {
-@@ -299,25 +_,30 @@
+-      this.f_187609_.put(BlockEntity.m_187472_(p_62091_), p_62091_);
++      synchronized (this.f_187609_) {
++         this.f_187609_.put(BlockEntity.m_187472_(p_62091_), p_62091_);
++      }
+    }
+ 
+    @Nullable
+    public CompoundTag m_8049_(BlockPos p_62103_) {
+-      return this.f_187609_.get(p_62103_);
++      synchronized (this.f_187609_) {
++         return this.f_187609_.get(p_62103_);
++      }
+    }
+ 
+    @Nullable
     public abstract CompoundTag m_8051_(BlockPos p_62104_);
  
     public final void m_284254_(BiConsumer<BlockPos, BlockState> p_285269_) {

@@ -1,5 +1,84 @@
 --- a/net/minecraft/world/level/chunk/ProtoChunk.java
 +++ b/net/minecraft/world/level/chunk/ProtoChunk.java
+@@ -118,25 +_,37 @@
+             }
+ 
+             EnumSet<Heightmap.Types> enumset1 = this.m_6415_().m_62500_();
+-            EnumSet<Heightmap.Types> enumset = null;
+-
+-            for(Heightmap.Types heightmap$types : enumset1) {
+-               Heightmap heightmap = this.f_187608_.get(heightmap$types);
+-               if (heightmap == null) {
+-                  if (enumset == null) {
+-                     enumset = EnumSet.noneOf(Heightmap.Types.class);
++
++            // NestWorld: a WorldGenRegion's window during FEATURES generation can span
++            // into a NEIGHBOUR chunk (ore/blob features, structures placing blocks past
++            // their "center" chunk) — that neighbour may be concurrently decorating
++            // itself on its own worker thread. this.heightmaps is a plain EnumMap and
++            // each Heightmap's internal BitStorage mutation (primeHeightmaps/update) is
++            // not thread-safe; without this lock two threads racing on the same shared
++            // chunk's heightmap can corrupt it (lost updates / torn bit-storage writes),
++            // silently producing wrong surface heights. Same bug shape, same fix as the
++            // postProcessing lock above — lock on the shared per-chunk structure itself.
++            synchronized (this.f_187608_) {
++               EnumSet<Heightmap.Types> enumset = null;
++
++               for(Heightmap.Types heightmap$types : enumset1) {
++                  Heightmap heightmap = this.f_187608_.get(heightmap$types);
++                  if (heightmap == null) {
++                     if (enumset == null) {
++                        enumset = EnumSet.noneOf(Heightmap.Types.class);
++                     }
++
++                     enumset.add(heightmap$types);
+                   }
+-
+-                  enumset.add(heightmap$types);
+-               }
+-            }
+-
+-            if (enumset != null) {
+-               Heightmap.m_64256_(this, enumset);
+-            }
+-
+-            for(Heightmap.Types heightmap$types1 : enumset1) {
+-               this.f_187608_.get(heightmap$types1).m_64249_(i1, j, k1, p_63218_);
++               }
++
++               if (enumset != null) {
++                  Heightmap.m_64256_(this, enumset);
++               }
++
++               for(Heightmap.Types heightmap$types1 : enumset1) {
++                  this.f_187608_.get(heightmap$types1).m_64249_(i1, j, k1, p_63218_);
++               }
+             }
+ 
+             return blockstate;
+@@ -147,12 +_,20 @@
+    }
+ 
+    public void m_142169_(BlockEntity p_156488_) {
+-      this.f_187610_.put(p_156488_.m_58899_(), p_156488_);
++      // NestWorld: same cross-chunk-write race as the heightmaps lock above — a
++      // structure/feature block entity placed past the decorating chunk's own bounds
++      // lands in a neighbour chunk's plain HashMap while that neighbour may be
++      // concurrently mutating it on its own worker thread.
++      synchronized (this.f_187610_) {
++         this.f_187610_.put(p_156488_.m_58899_(), p_156488_);
++      }
+    }
+ 
+    @Nullable
+    public BlockEntity m_7702_(BlockPos p_63257_) {
+-      return this.f_187610_.get(p_63257_);
++      synchronized (this.f_187610_) {
++         return this.f_187610_.get(p_63257_);
++      }
+    }
+ 
+    public Map<BlockPos, BlockEntity> m_63292_() {
 @@ -227,14 +_,20 @@
     }
  
@@ -23,3 +102,28 @@
     }
  
     public Map<BlockPos, CompoundTag> m_63294_() {
+@@ -244,12 +_,21 @@
+    @Nullable
+    public CompoundTag m_8051_(BlockPos p_63275_) {
+       BlockEntity blockentity = this.m_7702_(p_63275_);
+-      return blockentity != null ? blockentity.m_187480_() : this.f_187609_.get(p_63275_);
++      if (blockentity != null) {
++         return blockentity.m_187480_();
++      }
++      synchronized (this.f_187609_) {
++         return this.f_187609_.get(p_63275_);
++      }
+    }
+ 
+    public void m_8114_(BlockPos p_63262_) {
+-      this.f_187610_.remove(p_63262_);
+-      this.f_187609_.remove(p_63262_);
++      synchronized (this.f_187610_) {
++         this.f_187610_.remove(p_63262_);
++      }
++      synchronized (this.f_187609_) {
++         this.f_187609_.remove(p_63262_);
++      }
+    }
+ 
+    @Nullable
