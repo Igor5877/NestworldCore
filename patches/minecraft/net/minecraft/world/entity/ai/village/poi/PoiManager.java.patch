@@ -40,6 +40,45 @@
     }
  
     public long m_27121_(Predicate<Holder<PoiType>> p_27122_, BlockPos p_27123_, int p_27124_, PoiManager.Occupancy p_27125_) {
+@@ -85,11 +_,34 @@
+ 
+    @VisibleForDebug
+    public Stream<PoiRecord> m_27117_(Predicate<Holder<PoiType>> p_27118_, ChunkPos p_27119_, PoiManager.Occupancy p_27120_) {
+-      return IntStream.range(this.f_156618_.m_151560_(), this.f_156618_.m_151561_()).boxed().map((p_217886_) -> {
++      // NestWorld: getRecords() returns a LAZY stream straight over a PoiSection's
++      // plain HashMap (byType) — the old code returned that lazy stream to the
++      // caller with no lock held, so the actual HashMap iteration (whenever the
++      // caller finally consumes the stream, e.g. via findFirst()/collect()) raced
++      // unprotected against a concurrent add()/remove() (which DO hold the write
++      // lock for their full mutate, see the class-level lock notes above). Eagerly
++      // materialising under the read lock closes that read-vs-write gap.
++      //
++      // IMPORTANT: the getOrLoad() calls happen OUTSIDE this lock, on purpose —
++      // getOrLoad's own cache-miss path takes the WRITE lock internally (after
++      // releasing its own read lock first, see SectionStorage.getOrLoad). If we
++      // held our read lock across that call, a cache miss would deadlock (a
++      // ReentrantReadWriteLock does not allow a read-lock holder to acquire the
++      // write lock — even on the same thread — while any read lock, including its
++      // own, is outstanding). So: resolve all sections first (each getOrLoad call
++      // is independently safe), THEN take the read lock only around the record
++      // extraction, which touches no lock itself.
++      List<Optional<PoiSection>> sections = IntStream.range(this.f_156618_.m_151560_(), this.f_156618_.m_151561_()).boxed().map((p_217886_) -> {
+          return this.m_63823_(SectionPos.m_123196_(p_27119_, p_217886_).m_123252_());
+-      }).filter(Optional::isPresent).flatMap((p_217942_) -> {
+-         return p_217942_.get().m_27304_(p_27118_, p_27120_);
+-      });
++      }).collect(java.util.stream.Collectors.toList());
++      this.nestworldLock.readLock().lock();
++      try {
++         return sections.stream().filter(Optional::isPresent).flatMap((p_217942_) -> {
++            return p_217942_.get().m_27304_(p_27118_, p_27120_);
++         }).collect(java.util.stream.Collectors.toList()).stream();
++      } finally {
++         this.nestworldLock.readLock().unlock();
++      }
+    }
+ 
+    public Stream<BlockPos> m_27138_(Predicate<Holder<PoiType>> p_27139_, Predicate<BlockPos> p_27140_, BlockPos p_27141_, int p_27142_, PoiManager.Occupancy p_27143_) {
 @@ -151,11 +_,16 @@
     }
  
