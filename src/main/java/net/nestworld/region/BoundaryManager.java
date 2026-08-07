@@ -38,12 +38,48 @@ public class BoundaryManager {
     }
 
     /**
-     * Called from the main thread after region threads finish each tick.
-     * Ghost views are created on demand, so there is nothing to refresh.
+     * Called from the main thread after region threads finish each tick — every
+     * region has released its write lock and is parked waiting for the next tick
+     * signal at this exact point (see {@code RegionThread.run()}: the write lock
+     * unlocks before the tick's completion latch counts down, and this method
+     * only runs after {@code RegionThreadPool.tickAllRegions()} returns, i.e.
+     * after every latch has counted down). Nothing else touches game state
+     * concurrently here, so it is safe to call {@code BlockEntity.saveWithFullMetadata()}
+     * directly on live, owner-mutated block entities.
+     *
+     * <p>NestWorld: Folia-style Stage 1 "Region Mailbox" pilot (see project memory
+     * folia-actor-model-staged-plan.md) — publishes a fresh ghost-zone block-entity
+     * NBT snapshot per region, replacing the old live unsynchronized pass-through
+     * read. One pass over every currently-loaded FULL chunk (reusing {@code
+     * ServerChunkCache.nestworldLoadedFull}, the same main-published lock-free
+     * snapshot region threads already use for chunk reads — no new scan mechanism
+     * introduced), grouping ghost-zone chunks' block entities by owning region.
      */
     public void syncGhostZones() {
-        // Intentionally empty — kept as a lifecycle hook for future
-        // invalidation logic (e.g. dropping views of unloaded chunks).
+        java.util.Map<WorldRegion, java.util.Map<Long, net.minecraft.nbt.CompoundTag>> perRegion =
+                new java.util.IdentityHashMap<>();
+        for (LevelChunk chunk : level.getChunkSource().nestworldLoadedFull.values()) {
+            if (chunk.getBlockEntities().isEmpty()) continue;
+            net.minecraft.world.level.ChunkPos pos = chunk.getPos();
+            WorldRegion owner = grid.getRegionForChunk(pos.x, pos.z);
+            if (owner == null || !withinGhostDepth(owner, pos.x, pos.z)) continue;
+            java.util.Map<Long, net.minecraft.nbt.CompoundTag> snapshot =
+                    perRegion.computeIfAbsent(owner, r -> new java.util.HashMap<>());
+            for (java.util.Map.Entry<BlockPos, BlockEntity> e : chunk.getBlockEntities().entrySet()) {
+                try {
+                    snapshot.put(e.getKey().asLong(), e.getValue().saveWithFullMetadata());
+                } catch (Throwable t) {
+                    // A misbehaving mod's BE serialization must not break every other
+                    // region's ghost-zone reads this tick — skip just this one entry.
+                    LOGGER.warn("Ghost-zone snapshot: failed to save block entity at {}: {}",
+                            e.getKey(), t.toString());
+                }
+            }
+        }
+        for (WorldRegion region : grid.getAllRegions()) {
+            region.nestworldPublishGhostSnapshot(
+                    perRegion.getOrDefault(region, java.util.Map.of()));
+        }
     }
 
     /**
@@ -60,7 +96,7 @@ public class BoundaryManager {
     public ChunkSnapshot getGhostChunk(WorldRegion ownerRegion, int cx, int cz) {
         if (!withinGhostDepth(ownerRegion, cx, cz)) return null;
         LevelChunk chunk = level.getChunkSource().getChunkNow(cx, cz);
-        return chunk == null ? null : new ChunkSnapshot(chunk);
+        return chunk == null ? null : new ChunkSnapshot(chunk, ownerRegion);
     }
 
     /** True when (cx,cz) — assumed inside {@code owner}'s bounds — is within
@@ -74,21 +110,42 @@ public class BoundaryManager {
 
     /**
      * Read-only view of a boundary chunk for cross-region access.
-     * Delegates to the live chunk — see class javadoc for why this is safe.
+     *
+     * <p>{@link #getBlockState} delegates to the live chunk — vanilla's {@code
+     * PalettedContainer} already guarantees lock-free-safe concurrent reads via its
+     * own volatile-snapshot design (verified by reading it directly: mutation swaps
+     * a whole new {@code Data} object onto a {@code volatile} field rather than
+     * mutating one a reader might be mid-read on), so this needs no Stage-1 mailbox
+     * treatment.
+     *
+     * <p>{@link #getBlockEntity}, in contrast, reads {@code ownerRegion}'s published
+     * ghost-zone NBT snapshot (see {@link WorldRegion#nestworldGetGhostSnapshot()},
+     * {@link #syncGhostZones()}) and reconstructs a DETACHED copy via {@code
+     * BlockEntity.loadStatic} — never the live, owner-mutated instance. Block
+     * entities have no equivalent lock-free-safe-read guarantee (arbitrary mutable
+     * fields, no vanilla or Forge contract protecting concurrent access), so the old
+     * {@code chunk.getBlockEntity(pos)} live pass-through here was a genuine,
+     * unprotected data race despite this class's javadoc claiming "1-tick-stale" —
+     * it was actually a live read with no staleness bound and no protection at all.
      */
     public static final class ChunkSnapshot {
         private final LevelChunk chunk;
+        private final WorldRegion ownerRegion;
 
-        ChunkSnapshot(LevelChunk chunk) {
+        ChunkSnapshot(LevelChunk chunk, WorldRegion ownerRegion) {
             this.chunk = chunk;
+            this.ownerRegion = ownerRegion;
         }
 
         public BlockState getBlockState(BlockPos pos) {
             return chunk.getBlockState(pos);
         }
 
+        @javax.annotation.Nullable
         public BlockEntity getBlockEntity(BlockPos pos) {
-            return chunk.getBlockEntity(pos);
+            net.minecraft.nbt.CompoundTag tag = ownerRegion.nestworldGetGhostSnapshot().get(pos.asLong());
+            if (tag == null) return null; // no BE at this position as of the last publish
+            return BlockEntity.loadStatic(pos, chunk.getBlockState(pos), tag);
         }
     }
 }

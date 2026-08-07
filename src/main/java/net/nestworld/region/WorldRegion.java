@@ -41,6 +41,36 @@ public class WorldRegion {
     /** Pinned regions (manual /nestworld split) are exempt from automatic merge. */
     public volatile boolean pinned = false;
 
+    // NestWorld: Folia-style Stage 1 "Region Mailbox" pilot (see project memory
+    // folia-actor-model-staged-plan.md). Published once per tick by BoundaryManager.
+    // syncGhostZones() (main thread, called right after the region barrier — every
+    // region thread has released its write lock and is parked waiting for the next
+    // tick signal at that point, so this publish never races a region's own writes).
+    // Keyed by BlockPos.asLong() -> a full NBT snapshot (BlockEntity.saveWithFullMetadata())
+    // of every block entity in this region's chunks within BoundaryManager.GHOST_DEPTH
+    // of a border. Readers on OTHER region threads reconstruct a DETACHED copy via
+    // BlockEntity.loadStatic(pos, state, tag) — never touch the live, owner-mutated
+    // instance. Replaces the old "ghost zone" live unsynchronized chunk.getBlockEntity()
+    // pass-through, which despite this class's javadoc promising "1-tick-stale" data was
+    // actually a genuine, unprotected data race on the live BlockEntity's mutable fields
+    // (unlike PalettedContainer's own getBlockState() reads, which vanilla already makes
+    // safe via a lock-free volatile-snapshot design — verified by reading PalettedContainer
+    // directly, not assumed; see the class's own nestworldContainerLock comment).
+    // AtomicReference gives safe publication (JMM) for the whole map as one unit — readers
+    // never see a partially-populated snapshot.
+    private final java.util.concurrent.atomic.AtomicReference<java.util.Map<Long, net.minecraft.nbt.CompoundTag>>
+            nestworldGhostBeSnapshot = new java.util.concurrent.atomic.AtomicReference<>(java.util.Map.of());
+
+    /** Called only from BoundaryManager.syncGhostZones() (main thread, post-barrier). */
+    void nestworldPublishGhostSnapshot(java.util.Map<Long, net.minecraft.nbt.CompoundTag> snapshot) {
+        this.nestworldGhostBeSnapshot.set(snapshot);
+    }
+
+    /** Safe to call from any region thread — lock-free read of the last-published snapshot. */
+    public java.util.Map<Long, net.minecraft.nbt.CompoundTag> nestworldGetGhostSnapshot() {
+        return this.nestworldGhostBeSnapshot.get();
+    }
+
     public WorldRegion(int id, int minChunkX, int minChunkZ, int maxChunkX, int maxChunkZ) {
         this.id = id;
         this.minChunkX = minChunkX;
