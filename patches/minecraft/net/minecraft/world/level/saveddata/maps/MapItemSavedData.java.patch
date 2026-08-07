@@ -1,0 +1,130 @@
+--- a/net/minecraft/world/level/saveddata/maps/MapItemSavedData.java
++++ b/net/minecraft/world/level/saveddata/maps/MapItemSavedData.java
+@@ -151,7 +_,17 @@
+       return m_164780_((double)this.f_256718_, (double)this.f_256789_, (byte)Mth.m_14045_(this.f_77890_ + p_164788_, 0, 4), this.f_77888_, this.f_77889_, this.f_77887_);
+    }
+ 
+-   public void m_77918_(Player p_77919_, ItemStack p_77920_) {
++   // NestWorld: MapItemSavedData is ONE shared instance per map ID, reachable from ANY chunk/
++   // region (two item frames in different regions can display the same map — a common decorative
++   // pattern). Its carriedBy/carriedByPlayers/bannerMarkers/decorations/frameMarkers are plain
++   // HashMap/ArrayList. tickCarriedBy is player-tick-driven (main thread only, players are never
++   // region-ticked), but removedFromFrame is reachable from a region thread via ItemFrame
++   // destruction (combat/explosion) — if two item frames sharing a map ID are destroyed by two
++   // different regions in the same tick, that's a genuine unsynchronized concurrent HashMap
++   // mutation. synchronized on `this` for every method touching these shared fields; reentrant
++   // for same-thread nested calls (tickCarriedBy -> addDecoration/removeDecoration), so no
++   // deadlock risk the way an upgrade-unsafe ReadWriteLock would have.
++   public synchronized void m_77918_(Player p_77919_, ItemStack p_77920_) {
+       if (!this.f_77896_.containsKey(p_77919_)) {
+          MapItemSavedData.HoldingPlayer mapitemsaveddata$holdingplayer = new MapItemSavedData.HoldingPlayer(p_77919_);
+          this.f_77896_.put(p_77919_, mapitemsaveddata$holdingplayer);
+@@ -203,7 +_,7 @@
+ 
+    }
+ 
+-   private void m_164799_(String p_164800_) {
++   private synchronized void m_164799_(String p_164800_) {
+       MapDecoration mapdecoration = this.f_77894_.remove(p_164800_);
+       if (mapdecoration != null && mapdecoration.m_77803_().m_181306_()) {
+          --this.f_181308_;
+@@ -235,7 +_,7 @@
+ 
+    }
+ 
+-   private void m_77937_(MapDecoration.Type p_77938_, @Nullable LevelAccessor p_77939_, String p_77940_, double p_77941_, double p_77942_, double p_77943_, @Nullable Component p_77944_) {
++   private synchronized void m_77937_(MapDecoration.Type p_77938_, @Nullable LevelAccessor p_77939_, String p_77940_, double p_77941_, double p_77942_, double p_77943_, @Nullable Component p_77944_) {
+       int i = 1 << this.f_77890_;
+       float f = (float)(p_77941_ - (double)this.f_256718_) / (float)i;
+       float f1 = (float)(p_77942_ - (double)this.f_256789_) / (float)i;
+@@ -303,7 +_,7 @@
+    }
+ 
+    @Nullable
+-   public Packet<?> m_164796_(int p_164797_, Player p_164798_) {
++   public synchronized Packet<?> m_164796_(int p_164797_, Player p_164798_) {
+       MapItemSavedData.HoldingPlayer mapitemsaveddata$holdingplayer = this.f_77896_.get(p_164798_);
+       return mapitemsaveddata$holdingplayer == null ? null : mapitemsaveddata$holdingplayer.m_164815_(p_164797_);
+    }
+@@ -322,7 +_,7 @@
+       this.f_77893_.forEach(MapItemSavedData.HoldingPlayer::m_164820_);
+    }
+ 
+-   public MapItemSavedData.HoldingPlayer m_77916_(Player p_77917_) {
++   public synchronized MapItemSavedData.HoldingPlayer m_77916_(Player p_77917_) {
+       MapItemSavedData.HoldingPlayer mapitemsaveddata$holdingplayer = this.f_77896_.get(p_77917_);
+       if (mapitemsaveddata$holdingplayer == null) {
+          mapitemsaveddata$holdingplayer = new MapItemSavedData.HoldingPlayer(p_77917_);
+@@ -333,7 +_,7 @@
+       return mapitemsaveddata$holdingplayer;
+    }
+ 
+-   public boolean m_77934_(LevelAccessor p_77935_, BlockPos p_77936_) {
++   public synchronized boolean m_77934_(LevelAccessor p_77935_, BlockPos p_77936_) {
+       double d0 = (double)p_77936_.m_123341_() + 0.5D;
+       double d1 = (double)p_77936_.m_123343_() + 0.5D;
+       int i = 1 << this.f_77890_;
+@@ -361,7 +_,7 @@
+       return false;
+    }
+ 
+-   public void m_77930_(BlockGetter p_77931_, int p_77932_, int p_77933_) {
++   public synchronized void m_77930_(BlockGetter p_77931_, int p_77932_, int p_77933_) {
+       Iterator<MapBanner> iterator = this.f_77897_.values().iterator();
+ 
+       while(iterator.hasNext()) {
+@@ -377,16 +_,19 @@
+ 
+    }
+ 
+-   public Collection<MapBanner> m_164809_() {
+-      return this.f_77897_.values();
++   public synchronized Collection<MapBanner> m_164809_() {
++      // NestWorld: defensive copy, not the live view — a caller iterating the returned
++      // collection outside this lock would otherwise race a concurrent mutation, same
++      // lazy-collection-escape shape as the POI getInChunk fix earlier this pass.
++      return new java.util.ArrayList<>(this.f_77897_.values());
+    }
+ 
+-   public void m_77947_(BlockPos p_77948_, int p_77949_) {
++   public synchronized void m_77947_(BlockPos p_77948_, int p_77949_) {
+       this.m_164799_("frame-" + p_77949_);
+       this.f_77898_.remove(MapFrame.m_77870_(p_77948_));
+    }
+ 
+-   public boolean m_164792_(int p_164793_, int p_164794_, byte p_164795_) {
++   public synchronized boolean m_164792_(int p_164793_, int p_164794_, byte p_164795_) {
+       byte b0 = this.f_77891_[p_164793_ + p_164794_ * 128];
+       if (b0 != p_164795_) {
+          this.m_164803_(p_164793_, p_164794_, p_164795_);
+@@ -396,12 +_,12 @@
+       }
+    }
+ 
+-   public void m_164803_(int p_164804_, int p_164805_, byte p_164806_) {
++   public synchronized void m_164803_(int p_164804_, int p_164805_, byte p_164806_) {
+       this.f_77891_[p_164804_ + p_164805_ * 128] = p_164806_;
+       this.m_164789_(p_164804_, p_164805_);
+    }
+ 
+-   public boolean m_164810_() {
++   public synchronized boolean m_164810_() {
+       for(MapDecoration mapdecoration : this.f_77894_.values()) {
+          if (mapdecoration.m_77803_() == MapDecoration.Type.MANSION || mapdecoration.m_77803_() == MapDecoration.Type.MONUMENT) {
+             return true;
+@@ -425,11 +_,12 @@
+ 
+    }
+ 
+-   public Iterable<MapDecoration> m_164811_() {
+-      return this.f_77894_.values();
++   public synchronized Iterable<MapDecoration> m_164811_() {
++      // NestWorld: defensive copy — see getBanners' comment above.
++      return new java.util.ArrayList<>(this.f_77894_.values());
+    }
+ 
+-   public boolean m_181312_(int p_181313_) {
++   public synchronized boolean m_181312_(int p_181313_) {
+       return this.f_181308_ >= p_181313_;
+    }
+ 
