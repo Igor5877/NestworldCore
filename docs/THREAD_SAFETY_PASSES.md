@@ -85,13 +85,40 @@ mutate it while another thread reads/mutates?
 - **Raids / village** (`Raids`, POI-adjacent), **MapItemSavedData** (entity tracking on maps).
 - **Scoreboard** (`Scoreboard` score updates from mob death/criteria).
 - **Boss events** (`ServerBossEvent` player sets).
-- **Forge capabilities** attach/invalidate on entities/chunks during region tick.
+- **Forge capabilities** attach/invalidate on entities/chunks during region tick. **Traced, NOT
+  closed** (2026-08-07) — too diffuse for the single-call-site audit approach that closed the
+  tick-phase items above (capabilities have thousands of call sites across vanilla+every mod, not
+  one clear collection point). What's confirmed: `RegionChunkView.getBlockEntity()`'s deep-lock
+  path only protects the FETCH of the `BlockEntity` reference (`owner.getChunkLock().tryReadLock`
+  released in a `finally` before the method returns) — any `.getCapability()` call a caller makes
+  on the returned reference happens completely outside that lock, same fetch-under-lock/use-
+  outside-lock shape as the POI bug (#9) fixed this pass. Plausible mitigating argument (NOT
+  verified empirically): the barrier's "wait for slowest region" semantics mean the OWNING
+  region's thread cannot start a new tick (re-acquire its write lock, per the comment at
+  `RegionChunkView.java:166`) until every region — including whichever thread is doing this
+  foreign read — reaches the barrier together, which may bound the actual concurrent-mutation
+  window. The ghost-zone path (`BoundaryManager.getGhostChunk`, bounded-staleness by design) likely
+  inherits the same "stale but not corrupt" character already accepted for block-state reads,
+  *if* `CapabilityProvider`'s plain (non-volatile) `capabilities`/`valid` fields don't produce a
+  torn read under the JLS (individual reference/boolean field reads are atomic, visibility timing
+  is the open question, not corruption) — this reasoning has NOT been empirically stress-tested.
+  **Recommended next step if picked up**: a live test with a capability-heavy interaction (hopper→
+  chest item-handler chain, or similar) deliberately straddling a known region border under
+  sustained load, watching for capability-related exceptions or item duplication/loss — this is a
+  genuinely open question, not a closed one, unlike the items above.
 - ~~**`PersistentEntitySectionManager`** visibility/section transitions~~ — **FIXED, see #6 above.**
   Residual (non-crash, exotic): the rest of `onTrackingStart` still runs on the region thread for
   a section-move transition — `navigatingMobs` (concurrent, #5) and the C1 counter (synchronized)
   are safe; `dragonParts` (multipart entities only) and `updateDynamicGameEventListener` (sculk)
   remain off-main there. Revisit only if a dragon/sculk crash ever appears.
-- **Chunk save/unload** racing region ticking the same chunk.
+- ~~**Chunk save/unload** racing region ticking the same chunk.~~ — **AUDITED, SAFE.**
+  `NestworldRegionSystem.tickAllRegions()` calls `overworld.getChunkSource().chunkMap.tick()`
+  (which contains `processUnloads`/`saveChunkIfNeeded`) at step 5c, explicitly AFTER step 4
+  (`pool.tickAllRegions()`, the full parallel region tick + barrier) — the code comment there
+  already states "Region threads are fully parked outside the step-4 window, so no race is
+  possible". The periodic full `saveAllChunks` autosave (every 6000 ticks) is even further
+  removed: called from `MinecraftServer.tickServer()` AFTER `tickChildren()` (which contains the
+  whole region-tick-plus-barrier call) fully returns — no region thread is running at all by then.
 - ~~**Random-tick** structures touched off-main.~~ — **AUDITED, SAFE.** Same pattern again:
   `ServerChunkCache`'s per-chunk `tickChunk` loop (main thread only) calls `queueRandomTicksFor`
   to collect into `randomTickBuckets`; `flushRandomTicksPhase()` — which hands the buckets to
