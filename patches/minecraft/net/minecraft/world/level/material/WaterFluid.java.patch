@@ -1,0 +1,31 @@
+--- a/net/minecraft/world/level/material/WaterFluid.java
++++ b/net/minecraft/world/level/material/WaterFluid.java
+@@ -54,8 +_,27 @@
+       return ParticleTypes.f_123803_;
+    }
+ 
++   // NestWorld: canConvertToSource() runs once per fluid position inside
++   // LevelChunk.postProcessGeneration() (the fluid-tick cleanup every freshly-generated
++   // chunk goes through before it starts ticking) — a real hot path while a player flies
++   // through fresh, water/lava-heavy terrain (confirmed via live jstack on real ATM9
++   // pack: main thread caught mid-lookup during a live TPS dip). GameRules.getBoolean()
++   // does a Guava ImmutableMap hash lookup on every single call even though the
++   // underlying BooleanValue object's IDENTITY never changes for a given (Level, Key)
++   // pair — only its internal boolean mutates in place via /gamerule. Caching the VALUE
++   // OBJECT reference (not the boolean) keeps this correctly live across gamerule
++   // changes while skipping the repeated map lookup. Guava MapMaker with weakKeys()
++   // instead of a plain ConcurrentHashMap: WaterFluid.Source/Flowing are process-wide
++   // singletons shared across region threads (needs thread-safety), but a strong-keyed
++   // map would pin every Level this ever sees alive forever — weak keys let entries for
++   // unloaded/discarded Level instances (test worlds, mod-managed dimensions) get
++   // collected instead of leaking.
++   private final java.util.Map<Level, GameRules.BooleanValue> nestworldWaterSourceConversionCache =
++         new com.google.common.collect.MapMaker().weakKeys().makeMap();
++
+    protected boolean m_6760_(Level p_256670_) {
+-      return p_256670_.m_46469_().m_46207_(GameRules.f_254725_);
++      return this.nestworldWaterSourceConversionCache.computeIfAbsent(p_256670_,
++            (nestworldLvl) -> nestworldLvl.m_46469_().m_46170_(GameRules.f_254725_)).m_46223_();
+    }
+ 
+    protected void m_7456_(LevelAccessor p_76450_, BlockPos p_76451_, BlockState p_76452_) {
