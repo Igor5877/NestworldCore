@@ -1,6 +1,6 @@
 --- a/net/minecraft/world/level/material/WaterFluid.java
 +++ b/net/minecraft/world/level/material/WaterFluid.java
-@@ -54,8 +_,27 @@
+@@ -54,8 +_,48 @@
        return ParticleTypes.f_123803_;
     }
  
@@ -11,21 +11,42 @@
 +   // pack: main thread caught mid-lookup during a live TPS dip). GameRules.getBoolean()
 +   // does a Guava ImmutableMap hash lookup on every single call even though the
 +   // underlying BooleanValue object's IDENTITY never changes for a given (Level, Key)
-+   // pair — only its internal boolean mutates in place via /gamerule. Caching the VALUE
-+   // OBJECT reference (not the boolean) keeps this correctly live across gamerule
-+   // changes while skipping the repeated map lookup. Guava MapMaker with weakKeys()
-+   // instead of a plain ConcurrentHashMap: WaterFluid.Source/Flowing are process-wide
-+   // singletons shared across region threads (needs thread-safety), but a strong-keyed
-+   // map would pin every Level this ever sees alive forever — weak keys let entries for
-+   // unloaded/discarded Level instances (test worlds, mod-managed dimensions) get
-+   // collected instead of leaking.
-+   private final java.util.Map<Level, GameRules.BooleanValue> nestworldWaterSourceConversionCache =
-+         new com.google.common.collect.MapMaker().weakKeys().makeMap();
++   // pair — only its internal boolean mutates in place via /gamerule.
++   //
++   // Single-slot cache instead of a map: a server has a handful of Level instances
++   // (one per dimension) that live for the server's whole lifetime, and call patterns
++   // are heavily repetitive for the SAME Level in a row (this exact loop, one chunk's
++   // worth of fluid positions at a time) — a map (even a fast one) is pure overhead
++   // next to a single reference comparison. nestworldCache is a single volatile
++   // pointer to an IMMUTABLE {level, value} pair, swapped atomically on a miss: any
++   // thread that reads it always sees a fully-consistent pair (never a torn read
++   // where one thread observes a level from one update and a value from another,
++   // which two SEPARATE volatile fields would risk under concurrent access from
++   // different region threads generating different dimensions at once). A race on
++   // the miss path just means one thread's freshly-built entry overwrites another's —
++   // both are correct, it only costs an extra GameRules lookup, never a wrong answer.
++   // NestWorld: package-private (not private) so LavaFluid.randomTick/canConvertToSource
++   // can reuse this same small immutable pair type instead of duplicating it.
++   static final class NestworldGameRuleCacheEntry {
++      final Level level;
++      final GameRules.BooleanValue value;
++      NestworldGameRuleCacheEntry(Level level, GameRules.BooleanValue value) {
++         this.level = level;
++         this.value = value;
++      }
++   }
++
++   private volatile NestworldGameRuleCacheEntry nestworldWaterSourceConversionCache;
 +
     protected boolean m_6760_(Level p_256670_) {
 -      return p_256670_.m_46469_().m_46207_(GameRules.f_254725_);
-+      return this.nestworldWaterSourceConversionCache.computeIfAbsent(p_256670_,
-+            (nestworldLvl) -> nestworldLvl.m_46469_().m_46170_(GameRules.f_254725_)).m_46223_();
++      NestworldGameRuleCacheEntry cached = this.nestworldWaterSourceConversionCache;
++      if (cached == null || cached.level != p_256670_) {
++         cached = new NestworldGameRuleCacheEntry(p_256670_,
++               p_256670_.m_46469_().m_46170_(GameRules.f_254725_));
++         this.nestworldWaterSourceConversionCache = cached;
++      }
++      return cached.value.m_46223_();
     }
  
     protected void m_7456_(LevelAccessor p_76450_, BlockPos p_76451_, BlockState p_76452_) {
