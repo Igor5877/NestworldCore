@@ -1,17 +1,28 @@
 --- a/net/minecraft/world/level/chunk/storage/SectionStorage.java
 +++ b/net/minecraft/world/level/chunk/storage/SectionStorage.java
-@@ -40,6 +_,14 @@
+@@ -40,6 +_,25 @@
     private final IOWorker f_63773_;
     private final Long2ObjectMap<Optional<R>> f_63774_ = new Long2ObjectOpenHashMap<>();
     private final LongLinkedOpenHashSet f_63775_ = new LongLinkedOpenHashSet();
 +   // NestWorld: vanilla SectionStorage (and PoiManager's DistanceTracker) is single-thread.
 +   // Region threads query POI (zombie MoveThroughVillageGoal) while the main thread ticks
 +   // the same storage -> the storage map / dirty set / DistanceTracker queues race and crash
-+   // (AIOOBE in LongLinkedOpenHashSet.removeFirstLong). One reentrant lock serialises all
-+   // storage + tracker mutation. No getChunk is called while holding it (readColumn loads
-+   // from the IOWorker, and PoiManager.ensureLoadedAndValid getChunk runs outside getOrLoad),
-+   // so there is no region<->main getChunk deadlock.
-+   protected final java.util.concurrent.locks.ReentrantLock nestworldLock = new java.util.concurrent.locks.ReentrantLock();
++   // (AIOOBE in LongLinkedOpenHashSet.removeFirstLong). No getChunk is called while holding it
++   // (readColumn loads from the IOWorker, and PoiManager.ensureLoadedAndValid getChunk runs
++   // outside getOrLoad), so there is no region<->main getChunk deadlock.
++   //
++   // NestWorld: upgraded from a plain ReentrantLock to a ReentrantReadWriteLock. The single
++   // mutex serialised EVERY region thread's POI reads (MoveThroughVillageGoal -> find ->
++   // getInChunk -> getOrLoad, the hot AI path) onto one lock, which does not scale past a
++   // handful of region threads under real distributed load (documented: regionPool phase
++   // measured 207ms against a 54ms worst single-region cost under a 17.5k-mob stress test —
++   // a 4x gap directly attributable to this lock). Reads (get/getOrLoad's fast path) now take
++   // a shared read lock so multiple region threads can look up POI data concurrently; writes
++   // (tick/getOrLoad's slow path/getOrCreate/setDirty) still take the exclusive write lock,
++   // same as before. write lock supports reentrant downgrade to read (a thread already holding
++   // write can also take read, e.g. getOrCreate calling getOrLoad), so nesting is safe;
++   // getOrLoad's own release-before-I/O-then-reacquire pattern is preserved unchanged.
++   protected final java.util.concurrent.locks.ReentrantReadWriteLock nestworldLock = new java.util.concurrent.locks.ReentrantReadWriteLock();
     private final Function<Runnable, Codec<R>> f_63776_;
     private final Function<Runnable, R> f_63777_;
     private final DataFixer f_63778_;
@@ -22,27 +33,27 @@
 -      while(this.m_202164_() && p_63812_.getAsBoolean()) {
 -         ChunkPos chunkpos = SectionPos.m_123184_(this.f_63775_.firstLong()).m_123251_();
 -         this.m_63825_(chunkpos);
-+      this.nestworldLock.lock();
++      this.nestworldLock.writeLock().lock();
 +      try {
 +         while(this.m_202164_() && p_63812_.getAsBoolean()) {
 +            ChunkPos chunkpos = SectionPos.m_123184_(this.f_63775_.firstLong()).m_123251_();
 +            this.m_63825_(chunkpos);
 +         }
 +      } finally {
-+         this.nestworldLock.unlock();
++         this.nestworldLock.writeLock().unlock();
        }
  
     }
-@@ -71,25 +_,53 @@
+@@ -71,25 +_,54 @@
  
     @Nullable
     protected Optional<R> m_63818_(long p_63819_) {
 -      return this.f_63774_.get(p_63819_);
-+      this.nestworldLock.lock();
++      this.nestworldLock.readLock().lock();
 +      try {
 +         return this.f_63774_.get(p_63819_);
 +      } finally {
-+         this.nestworldLock.unlock();
++         this.nestworldLock.readLock().unlock();
 +      }
     }
  
@@ -54,15 +65,16 @@
 -         if (optional != null) {
 -            return optional;
 +      }
-+      // NestWorld fast path: already loaded -> short lock, no disk.
-+      this.nestworldLock.lock();
++      // NestWorld fast path: already loaded -> shared read lock, no disk, multiple region
++      // threads can be in here concurrently.
++      this.nestworldLock.readLock().lock();
 +      try {
 +         Optional<R> optional = this.f_63774_.get(p_63824_);
 +         if (optional != null) {
 +            return optional;
 +         }
 +      } finally {
-+         this.nestworldLock.unlock();
++         this.nestworldLock.readLock().unlock();
 +      }
 +      // NestWorld: do the blocking disk read (IOWorker join) WITHOUT holding the lock -- that
 +      // join was the dominant POI lock contention under a mob crowd (spark: ~34ms/tick parked in
@@ -74,7 +86,7 @@
 +      ChunkPos chunkpos = SectionPos.m_123184_(p_63824_).m_123251_();
 +      Optional<CompoundTag> compound = this.m_223532_(chunkpos).join();
 +      RegistryOps<Tag> registryops = RegistryOps.m_255058_(NbtOps.f_128958_, this.f_223507_);
-+      this.nestworldLock.lock();
++      this.nestworldLock.writeLock().lock();
 +      try {
 +         Optional<R> optional = this.f_63774_.get(p_63824_);
 +         if (optional != null) {
@@ -95,11 +107,11 @@
 +            return optional;
           }
 +      } finally {
-+         this.nestworldLock.unlock();
++         this.nestworldLock.writeLock().unlock();
        }
     }
  
-@@ -99,19 +_,24 @@
+@@ -99,19 +_,28 @@
     }
  
     protected R m_63827_(long p_63828_) {
@@ -109,7 +121,11 @@
 -         Optional<R> optional = this.m_63823_(p_63828_);
 -         if (optional.isPresent()) {
 -            return optional.get();
-+      this.nestworldLock.lock();
++      // NestWorld: write lock for the whole method (not just the final storage.put) --
++      // getOrLoad is called reentrantly from inside here, and a thread holding the write
++      // lock can safely take the read lock too (reentrant downgrade), so this composes
++      // correctly with getOrLoad's own internal locking.
++      this.nestworldLock.writeLock().lock();
 +      try {
 +         if (this.m_156630_(p_63828_)) {
 +            throw (IllegalArgumentException)Util.m_137570_(new IllegalArgumentException("sectionPos out of bounds"));
@@ -131,7 +147,7 @@
 +            }
           }
 +      } finally {
-+         this.nestworldLock.unlock();
++         this.nestworldLock.writeLock().unlock();
        }
     }
  
@@ -144,7 +160,7 @@
 -         this.f_63775_.add(p_63788_);
 -      } else {
 -         f_63772_.warn("No data for position: {}", (Object)SectionPos.m_123184_(p_63788_));
-+      this.nestworldLock.lock();
++      this.nestworldLock.writeLock().lock();
 +      try {
 +         Optional<R> optional = this.f_63774_.get(p_63788_);
 +         if (optional != null && optional.isPresent()) {
@@ -153,7 +169,7 @@
 +            f_63772_.warn("No data for position: {}", (Object)SectionPos.m_123184_(p_63788_));
 +         }
 +      } finally {
-+         this.nestworldLock.unlock();
++         this.nestworldLock.writeLock().unlock();
        }
     }
  

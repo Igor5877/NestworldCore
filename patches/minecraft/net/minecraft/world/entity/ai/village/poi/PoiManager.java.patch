@@ -1,56 +1,176 @@
 --- a/net/minecraft/world/entity/ai/village/poi/PoiManager.java
 +++ b/net/minecraft/world/entity/ai/village/poi/PoiManager.java
-@@ -180,8 +_,13 @@
+@@ -46,14 +_,35 @@
+       this.f_27029_ = new PoiManager.DistanceTracker();
+    }
+ 
++   // NestWorld: the fetch (getOrCreate/getOrLoad, internally locked) and the subsequent
++   // PoiSection.add()/remove() mutation used to be TWO separate, unlocked-in-between steps --
++   // the section-storage lock protected the LOOKUP but not what the caller then did with the
++   // retrieved PoiSection object. PoiSection.records/byType are plain (non-thread-safe)
++   // HashMaps/HashSets, so two threads concurrently reaching add()/remove() for the SAME
++   // section (plausible now that FEATURES generation runs with real concurrency -- two
++   // neighbouring chunks' structure placement can both touch a shared boundary section's POI
++   // data) could race and corrupt them or silently lose a registration. CONFIRMED live on
++   // ATM9: a flood of "POI data mismatch: never registered" errors immediately preceded a
++   // ServerHangWatchdog crash. Fix: hold the write lock across the ENTIRE fetch+mutate
++   // sequence, not just the fetch.
+    public void m_217919_(BlockPos p_217920_, Holder<PoiType> p_217921_) {
+-      this.m_63827_(SectionPos.m_175568_(p_217920_)).m_218021_(p_217920_, p_217921_);
++      this.nestworldLock.writeLock().lock();
++      try {
++         this.m_63827_(SectionPos.m_175568_(p_217920_)).m_218021_(p_217920_, p_217921_);
++      } finally {
++         this.nestworldLock.writeLock().unlock();
++      }
+    }
+ 
+    public void m_27079_(BlockPos p_27080_) {
+-      this.m_63823_(SectionPos.m_175568_(p_27080_)).ifPresent((p_148657_) -> {
+-         p_148657_.m_27279_(p_27080_);
+-      });
++      this.nestworldLock.writeLock().lock();
++      try {
++         this.m_63823_(SectionPos.m_175568_(p_27080_)).ifPresent((p_148657_) -> {
++            p_148657_.m_27279_(p_27080_);
++         });
++      } finally {
++         this.nestworldLock.writeLock().unlock();
++      }
+    }
+ 
+    public long m_27121_(Predicate<Holder<PoiType>> p_27122_, BlockPos p_27123_, int p_27124_, PoiManager.Occupancy p_27125_) {
+@@ -151,11 +_,16 @@
+    }
+ 
+    public boolean m_27154_(BlockPos p_27155_) {
+-      return this.m_63823_(SectionPos.m_175568_(p_27155_)).map((p_217993_) -> {
+-         return p_217993_.m_27317_(p_27155_);
+-      }).orElseThrow(() -> {
+-         return Util.m_137570_(new IllegalStateException("POI never registered at " + p_27155_));
+-      });
++      this.nestworldLock.writeLock().lock();
++      try {
++         return this.m_63823_(SectionPos.m_175568_(p_27155_)).map((p_217993_) -> {
++            return p_217993_.m_27317_(p_27155_);
++         }).orElseThrow(() -> {
++            return Util.m_137570_(new IllegalStateException("POI never registered at " + p_27155_));
++         });
++      } finally {
++         this.nestworldLock.writeLock().unlock();
++      }
+    }
+ 
+    public boolean m_27091_(BlockPos p_27092_, Predicate<Holder<PoiType>> p_27093_) {
+@@ -180,48 +_,88 @@
     }
  
     public int m_27098_(SectionPos p_27099_) {
 -      this.f_27029_.m_27203_();
 -      return this.f_27029_.m_6172_(p_27099_.m_123252_());
-+      this.nestworldLock.lock();
++      this.nestworldLock.writeLock().lock();
 +      try {
 +         this.f_27029_.m_27203_();
 +         return this.f_27029_.m_6172_(p_27099_.m_123252_());
 +      } finally {
-+         this.nestworldLock.unlock();
++         this.nestworldLock.writeLock().unlock();
 +      }
     }
  
     boolean m_27197_(long p_27198_) {
-@@ -194,17 +_,32 @@
+-      Optional<PoiSection> optional = this.m_63818_(p_27198_);
+-      return optional == null ? false : optional.map((p_217883_) -> {
+-         return p_217883_.m_27304_((p_217927_) -> {
+-            return p_217927_.m_203656_(PoiTypeTags.f_215876_);
+-         }, PoiManager.Occupancy.IS_OCCUPIED).findAny().isPresent();
+-      }).orElse(false);
++      // NestWorld: read lock across the fetch AND the immediately-terminal stream evaluation
++      // (findAny().isPresent() consumes it fully within this method, no lazy escape) --
++      // otherwise this reads PoiSection.records/byType concurrently with an unrelated
++      // thread's add()/remove()/checkConsistencyWithBlocks() write, which now correctly holds
++      // the write lock for its own full fetch+mutate sequence.
++      this.nestworldLock.readLock().lock();
++      try {
++         Optional<PoiSection> optional = this.m_63818_(p_27198_);
++         return optional == null ? false : optional.map((p_217883_) -> {
++            return p_217883_.m_27304_((p_217927_) -> {
++               return p_217927_.m_203656_(PoiTypeTags.f_215876_);
++            }, PoiManager.Occupancy.IS_OCCUPIED).findAny().isPresent();
++         }).orElse(false);
++      } finally {
++         this.nestworldLock.readLock().unlock();
++      }
     }
  
     public void m_6202_(BooleanSupplier p_27105_) {
 -      super.m_6202_(p_27105_);
 -      this.f_27029_.m_27203_();
-+      this.nestworldLock.lock();
++      this.nestworldLock.writeLock().lock();
 +      try {
 +         super.m_6202_(p_27105_);
 +         this.f_27029_.m_27203_();
 +      } finally {
-+         this.nestworldLock.unlock();
++         this.nestworldLock.writeLock().unlock();
 +      }
     }
  
     protected void m_5838_(long p_27036_) {
 -      super.m_5838_(p_27036_);
 -      this.f_27029_.m_8288_(p_27036_, this.f_27029_.m_7409_(p_27036_), false);
-+      this.nestworldLock.lock();
++      this.nestworldLock.writeLock().lock();
 +      try {
 +         super.m_5838_(p_27036_);
 +         this.f_27029_.m_8288_(p_27036_, this.f_27029_.m_7409_(p_27036_), false);
 +      } finally {
-+         this.nestworldLock.unlock();
++         this.nestworldLock.writeLock().unlock();
 +      }
     }
  
     protected void m_5839_(long p_27145_) {
 -      this.f_27029_.m_8288_(p_27145_, this.f_27029_.m_7409_(p_27145_), false);
-+      this.nestworldLock.lock();
++      this.nestworldLock.writeLock().lock();
 +      try {
 +         this.f_27029_.m_8288_(p_27145_, this.f_27029_.m_7409_(p_27145_), false);
 +      } finally {
-+         this.nestworldLock.unlock();
++         this.nestworldLock.writeLock().unlock();
 +      }
     }
  
++   // NestWorld: whole method under the write lock -- see add()/remove()'s comment. This is
++   // the method most directly implicated in the observed "POI data mismatch" crash: it runs
++   // during chunk post-processing (structure/feature placement consistency check) and, before
++   // this fix, fetched the section under lock but then called refresh()/add() on it entirely
++   // unlocked, racing against another thread's concurrent add()/remove() on the same section.
     public void m_280570_(SectionPos p_281731_, LevelChunkSection p_281893_) {
+-      Util.m_137521_(this.m_63823_(p_281731_.m_123252_()), (p_217898_) -> {
+-         p_217898_.m_27302_((p_217967_) -> {
++      this.nestworldLock.writeLock().lock();
++      try {
++         Util.m_137521_(this.m_63823_(p_281731_.m_123252_()), (p_217898_) -> {
++            p_217898_.m_27302_((p_217967_) -> {
++               if (m_27060_(p_281893_)) {
++                  this.m_27069_(p_281893_, p_281731_, p_217967_);
++               }
++
++            });
++         }, () -> {
+             if (m_27060_(p_281893_)) {
+-               this.m_27069_(p_281893_, p_281731_, p_217967_);
++               PoiSection poisection = this.m_63827_(p_281731_.m_123252_());
++               this.m_27069_(p_281893_, p_281731_, poisection::m_218021_);
+             }
+ 
+          });
+-      }, () -> {
+-         if (m_27060_(p_281893_)) {
+-            PoiSection poisection = this.m_63827_(p_281731_.m_123252_());
+-            this.m_27069_(p_281893_, p_281731_, poisection::m_218021_);
+-         }
+-
+-      });
++      } finally {
++         this.nestworldLock.writeLock().unlock();
++      }
+    }
+ 
+    private static boolean m_27060_(LevelChunkSection p_27061_) {
