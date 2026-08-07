@@ -409,3 +409,79 @@ further this session** — the natural next lever is JVM/GC tuning (larger young
 `-XX:G1NewSizePercent`, more/fewer `-XX:ConcGCThreads`, possibly evaluating ZGC/Shenandoah for lower
 concurrent-collection overhead under this allocation pattern), not another chunk-gen-specific flag in
 NestworldCore itself.
+
+## Layer 8 (FIXED, commits fc03414bb/31d84d667, 2026-08-07): repeated-forceload freeze — admit-rate/concurrency conflation
+
+A regression of the exact same watchdog symptom, found via a 9-call `/forceload` grid reproduction on
+real ATM9 (419 mods): a bulk-forceload sequence would crash on call 4–6 (varying between runs) even
+with Layer 6's parallel-dispatch fix and Layers 4/5's throttle flags all active (`chunkGenBudget=2` +
+`chunkGenAdmitBudget=4` + `chunkGenMaxConcurrent=4`).
+
+**Investigation ruled out, in order, with live evidence each time (not guessed):**
+1. **GC pauses** — `-Xlog:gc*` showed zero GC activity during the freeze window (longest pause found
+   anywhere in the whole test: 1.1 s). Directly contradicts the Layer 7 GC-pressure finding being the
+   cause *here* — Layer 7's finding is real for raw generation throughput, just not what's freezing this
+   specific repeated-call scenario.
+2. **cgroup CPU throttling** — `cpu.max` unlimited, `nr_throttled=0`.
+3. **Simple lock contention with one thread starved** — per-thread `pidstat -t` showed the Server
+   thread's own CPU steady at 8–11% the whole freeze, no other single thread pegged near 100%.
+4. **JDK Flight Recorder execution sampling** (round 6 of diagnostics) found the Server thread genuinely
+   *executing* the whole 40+ s gap — not parked, not blocked — inside `DistanceManager`/`LightEngine`/
+   `ChunkSerializer`/our own `nestworldDrainDeferredAdmissions()` call chain. This looked at the time like
+   the real root cause (vanilla's ticket-propagation algorithm doing legitimately expensive work) and was
+   the working theory for a Gemini design-review round recommending a ticket-batching fix.
+5. **Root cause, found by directly testing the accumulation hypothesis** rather than accepting the JFR
+   read at face value: cleared all forced-chunk tickets between every call (`forceload remove all` after
+   each `add`) — the crash still happened, on a *clean* ticket slate. This ruled out cross-call ticket
+   accumulation. Followed by an isolated single-call test (zero prior forceload calls that session, both
+   on never-touched terrain and on terrain known already generated) — **both hit the same ~20 s stall**,
+   ruling out fresh-terrain-generation cost too.
+6. **Actual root cause:** `ChunkMap.nestworldHasAdmitCapacity()` (Layer 4's admit gate) checked
+   `nestworldInFlight` against `CHUNK_GEN_ADMIT_BUDGET` — the SAME constant that also governs the
+   per-window admission RATE. A routine forceload burst (9–16 chunks) needs up to ~4 gateable statuses
+   per chunk (`NOISE`/`SURFACE`/`CARVERS`/`FEATURES`), producing 40–60+ competing top-level scheduling
+   units — with the in-flight cap pinned at the rate's own small value (4), these serialize into 15+
+   sequential rounds, each bounded by its slowest member. This is a different mechanism from Layer 7's
+   GC-pressure finding (that's about raw allocation cost during real generation; this is about admission
+   bookkeeping artificially serializing work that was never CPU-bound in the first place) — both are real,
+   independent bottlenecks that happened to produce a similar-looking stall.
+
+**Direct A/B confirming the diagnosis** (real ATM9, same pack/world, isolated single forceload call,
+9–16 chunks, fresh coordinates each time):
+
+| Config | Result |
+|---|---|
+| `chunkGenAdmitBudget=4`/`chunkGenMaxConcurrent=4` (shipped Layer 4/5 defaults) | 20 s+ (hit the Layer 6b timeout fallback) |
+| Whole admit gate disabled | **0.78 s** — faster than vanilla stock Forge on the identical pack/world (10.33 s) |
+
+**Fix — decouple the rate from the standing concurrency cap** (`ChunkMap.nestworldHasAdmitCapacity()`,
+commit `31d84d667`): new `NestworldTuning.CHUNK_GEN_ADMIT_INFLIGHT_CAP`, independently configured,
+default `0` = unlimited (rate-only pacing — the in-flight cap only re-engages if explicitly set).
+`CHUNK_GEN_ADMIT_BUDGET` is now purely the per-window rate, no longer also a hard concurrency ceiling.
+
+**Validated in two stages, per this doc's established discipline (gen-spike-repro first, then real
+pack):**
+- **gen-spike-repro**, `chunkGenAdmitBudget=4` (matching ATM9's problematic value), inflight cap left
+  unset: a moderate forceload burst dropped from 20 s+ to **0.45 s**; a stacked 5×256-chunk stress burst
+  (1280 chunks total, the exact shape that used to crash by the 4th burst per Layers 4/5's own
+  core-scaling table) completed cleanly across all 5 calls (5.6–9.3 s each), no watchdog hit.
+- **Real ATM9** (419 mods), restored production config (`chunkGenBudget=2`/`chunkGenAdmitBudget=4`/
+  `chunkGenMaxConcurrent=4`, inflight cap still unset/unlimited): re-ran the original 9-call crash-repro
+  grid that reliably crashed on call 4–6 every single run that day. **All 9 calls completed cleanly**
+  (3.42–26.94 s each, first call slowest as expected for genuinely virgin terrain), zero crashes, zero
+  timeout fallbacks.
+
+**Also fixed alongside (commit `fc03414bb`), independently valuable:** the Layer 6b wait-timeout
+(`FORCELOAD_WAIT_TIMEOUT_MS`, first shipped to bound the single-call case) used `CompletableFuture.
+orTimeout()`, whose deadline fires from a JVM-wide shared scheduler thread — under the load this whole
+investigation was chasing, that thread's own timing isn't guaranteed either. Replaced with a plain
+`System.nanoTime()` deadline checked *inside* the `BooleanSupplier` that `managedBlock` itself polls on
+the main thread, removing the dependency on a separate thread entirely. Stands on its own as defense in
+depth regardless of the Layer 8 fix above.
+
+**Takeaway for future chunk-gen throttle work in this doc:** a rate limiter and a standing concurrency
+cap are different mechanisms even when they happen to share a config value that "seems like it should
+be the same number" — conflating them silently changes what gets bounded (how fast work enters vs. how
+much can be outstanding at once) and can make a safety mechanism actively harmful at the very scale
+(ordinary, moderate bulk requests) it was never meant to constrain in the first place. When adding a new
+throttle, ask explicitly which of the two it is before picking a default.

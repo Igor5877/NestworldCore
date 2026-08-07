@@ -1,6 +1,6 @@
 --- a/net/minecraft/server/commands/ForceLoadCommand.java
 +++ b/net/minecraft/server/commands/ForceLoadCommand.java
-@@ -119,13 +_,85 @@
+@@ -119,13 +_,90 @@
              ChunkPos chunkpos = null;
              int j2 = 0;
  
@@ -47,19 +47,24 @@
 +                  //
 +                  // NOT using CompletableFuture.orTimeout(): an earlier version of this fix did,
 +                  // and it reproducibly still hit the 60s watchdog on a real 419-mod pack under
-+                  // repeated forceload calls (2026-08-07, live jstack captures every 2s showed
-+                  // the SAME managedBlock frame, unmoved, for 30+ seconds straight — well past
-+                  // the 20s bound). orTimeout()'s deadline fires from a JVM-wide SHARED
-+                  // single-thread scheduled executor (CompletableFuture's internal Delayer) —
-+                  // under the severe G1 GC pressure this pack produces during real chunk
-+                  // generation (documented: 80-99.9% GC CPU, see
-+                  // chunkgen-gc-pressure-bottleneck in project memory), that one background
-+                  // thread can be starved for many seconds past its nominal fire time, so the
-+                  // "20s bound" was only nominal, not actually enforced under load. Mirrors the
-+                  // ServerChunkCache.getChunk() proxy fix's approach instead: check a plain
-+                  // System.nanoTime() deadline INSIDE the BooleanSupplier that managedBlock
-+                  // itself polls on the main thread — no separate thread or scheduler involved,
-+                  // so it can't be starved independently of the main thread's own progress.
++                  // repeated forceload calls. Mirrors the ServerChunkCache.getChunk() proxy
++                  // fix's approach instead: check a plain System.nanoTime() deadline INSIDE the
++                  // BooleanSupplier that managedBlock itself polls on the main thread, so the
++                  // check has no dependency on a separate scheduler thread.
++                  //
++                  // RESOLVED 2026-08-07 (see forceload-freeze-root-cause-found in project
++                  // memory): repeated forceload calls WERE still hitting the 60s watchdog even
++                  // with this deadline check in place, but not for the reason first suspected
++                  // (GC pauses were directly ruled out via -Xlog:gc* -- zero GC activity during
++                  // the freeze window). JFR execution sampling found the Server thread genuinely
++                  // executing real work the whole time inside ChunkMap's own bulk admission
++                  // gate (chunkGenAdmitBudget), which used to double as a hard standing
++                  // in-flight concurrency cap pinned to the same small value as its per-window
++                  // rate -- serializing a routine forceload's ~40-60 scheduling units into 15+
++                  // sequential rounds. Fixed at the root in ChunkMap.nestworldHasAdmitCapacity()
++                  // (commit 31d84d667) by decoupling the standing cap into its own independently
++                  // configured NestworldTuning.CHUNK_GEN_ADMIT_INFLIGHT_CAP (default unlimited).
++                  // This deadline check remains valuable as defense in depth regardless.
 +                  if (net.nestworld.region.NestworldTuning.FORCELOAD_WAIT_TIMEOUT_MS > 0) {
 +                     long nestworldDeadline = System.nanoTime()
 +                           + net.nestworld.region.NestworldTuning.FORCELOAD_WAIT_TIMEOUT_MS * 1_000_000L;

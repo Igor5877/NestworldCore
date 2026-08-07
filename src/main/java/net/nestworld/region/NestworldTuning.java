@@ -219,6 +219,11 @@ public final class NestworldTuning {
      * reintroduce a hard ceiling if a stacked-burst stress test on your own hardware
      * shows the rate limiter alone isn't enough — pick the value from that test, not
      * this default.
+     *
+     * <p><b>Has no effect unless {@link #CHUNK_GEN_ADMIT_BUDGET} is also &gt; 0</b> —
+     * {@code ChunkMap.nestworldTryScheduleNow} bypasses the ENTIRE admission gate
+     * (rate and this cap both) up front when the rate is disabled, so setting only
+     * this property with the rate left at its default is silently a no-op.
      */
     public static final int CHUNK_GEN_ADMIT_INFLIGHT_CAP =
             Integer.getInteger("nestworld.chunkGenAdmitInflightCap", 0);

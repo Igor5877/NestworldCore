@@ -78,7 +78,7 @@
           }
        }
     }
-@@ -269,10 +_,33 @@
+@@ -269,10 +_,34 @@
        }
  
        if (ChunkLevel.m_287158_(this.f_140007_).m_62427_(p_140050_)) {
@@ -89,9 +89,10 @@
 +         // NestWorld: gate brand-new top-level scheduling admissions (see
 +         // NestworldTuning.CHUNK_GEN_ADMIT_BUDGET). No-op when disabled (default), when
 +         // called mid-cascade, or when player-driven — nestworldTryScheduleNow bypasses
-+         // the check entirely in those cases. Bounded by BOTH a per-window admit rate
-+         // AND a standing in-flight concurrency cap, so backlog can't accumulate across
-+         // successive bursts even though each individual burst's own rate check passes.
++         // the check entirely in those cases. Bounded by a per-window admit RATE and,
++         // independently, an optional standing in-flight concurrency cap (NestworldTuning.
++         // CHUNK_GEN_ADMIT_INFLIGHT_CAP, default unlimited/off) for operators who need
++         // backlog across successive bursts bounded harder than the rate alone provides.
 +         final ChunkStatus nestworldStatus = p_140050_;
 +         final ChunkMap nestworldMap = p_140051_;
 +         CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> nestworldNow =
