@@ -311,22 +311,20 @@ public class NestworldRegionSystem {
         // NestWorld: stop at whichever limit — entity count or wall-clock time —
         // is hit first. The count alone doesn't bound tick-time cost predictably
         // (see NestworldTuning.DEFERRED_SPAWN_BUDGET_NANOS's javadoc); the time
-        // check only needs to run every few entities (System.nanoTime() itself
-        // has real cost) rather than after literally every single one.
-        int budget = NestworldTuning.MAX_DEFERRED_SPAWNS_PER_TICK;
+        // check only runs every 16 entities (via the bitmask), not after every
+        // single one, since System.nanoTime() itself has real per-call cost.
         long deadlineNanos = System.nanoTime() + NestworldTuning.DEFERRED_SPAWN_BUDGET_NANOS;
         net.minecraft.world.entity.Entity e;
-        int nestworldSinceTimeCheck = 0;
-        while (budget-- > 0 && (e = deferredSpawns.poll()) != null) {
+        int nestworldProcessed = 0;
+        while ((e = deferredSpawns.poll()) != null) {
             try {
                 overworld.addFreshEntity(e);
             } catch (Throwable t) {
                 LOGGER.warn("Deferred entity spawn failed: {}", t.toString());
             }
-            if (++nestworldSinceTimeCheck >= 16) {
-                nestworldSinceTimeCheck = 0;
-                if (System.nanoTime() >= deadlineNanos) break;
-            }
+            nestworldProcessed++;
+            if (nestworldProcessed >= NestworldTuning.MAX_DEFERRED_SPAWNS_PER_TICK) break;
+            if ((nestworldProcessed & 15) == 0 && System.nanoTime() >= deadlineNanos) break;
         }
     }
 
