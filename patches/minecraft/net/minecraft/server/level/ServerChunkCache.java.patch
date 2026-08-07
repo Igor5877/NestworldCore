@@ -21,7 +21,79 @@
           return CompletableFuture.supplyAsync(() -> {
              return this.m_7587_(p_8360_, p_8361_, p_8362_, p_8363_);
           }, this.f_8332_).join();
-@@ -146,7 +_,7 @@
+@@ -128,7 +_,43 @@
+ 
+          profilerfiller.m_6174_("getChunkCacheMiss");
+          CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> completablefuture = this.m_8456_(p_8360_, p_8361_, p_8362_, p_8363_);
+-         this.f_8332_.m_18701_(completablefuture::isDone);
++         // NestWorld: the ForceLoadCommand watchdog-crash fix's harder sibling. This exact
++         // call shape (status==FULL, load==true) is what Level.getChunk(x, z) resolves to —
++         // the ORIGINAL crash that motivated this project's Phase-1 work (a mod's map-click
++         // teleport blocking the main thread past the 60s ServerHangWatchdog on genuinely
++         // virgin territory on a heavy real pack). Scoped tightly to FULL+load so internal
++         // worldgen dependency-resolution calls (other statuses, or load=false probes) are
++         // completely untouched — vanilla-identical for every OTHER call shape.
++         if (p_8362_ == ChunkStatus.f_62326_ && p_8363_ && net.nestworld.region.NestworldTuning.GETCHUNK_WAIT_TIMEOUT_MS > 0) {
++            net.minecraft.world.level.chunk.LevelChunk.NestworldProxyLevelChunk nestworldProxy = this.nestworldPendingProxies.get(i);
++            if (nestworldProxy != null) {
++               // Someone else is already waiting on this exact position — return the SAME
++               // proxy reference (not a new one), so both callers transparently see it
++               // resolve to the real chunk together once ready.
++               if (completablefuture.isDone()) {
++                  this.nestworldResolveProxy(i, nestworldProxy, completablefuture);
++               }
++               return nestworldProxy;
++            }
++            long nestworldDeadline = System.nanoTime() + net.nestworld.region.NestworldTuning.GETCHUNK_WAIT_TIMEOUT_MS * 1_000_000L;
++            this.f_8332_.m_18701_(() -> completablefuture.isDone() || System.nanoTime() >= nestworldDeadline);
++            if (!completablefuture.isDone()) {
++               net.minecraft.world.level.chunk.LevelChunk.NestworldProxyLevelChunk proxy = new net.minecraft.world.level.chunk.LevelChunk.NestworldProxyLevelChunk(
++                     this.f_8329_, new ChunkPos(p_8360_, p_8361_),
++                     this.f_8329_.m_9598_().m_175515_(net.minecraft.core.registries.Registries.f_256952_)
++                           .m_246971_(net.minecraft.world.level.biome.Biomes.f_48202_));
++               this.nestworldPendingProxies.put(i, proxy);
++               completablefuture.whenComplete((either, throwable) -> this.nestworldResolveProxy(i, proxy, completablefuture));
++               // Deliberately NOT stored via storeInCache — that 4-slot cache is for
++               // legitimate resolved chunks; the proxy is looked up via
++               // nestworldPendingProxies specifically so it stops being handed out (and the
++               // normal fast path resumes) the instant nestworldResolveProxy clears it.
++               return proxy;
++            }
++            // Completed within the deadline after all — fall through to the normal path below.
++         } else {
++            this.f_8332_.m_18701_(completablefuture::isDone);
++         }
+          ChunkAccess chunkaccess1 = completablefuture.join().map((p_8406_) -> {
+             return p_8406_;
+          }, (p_8423_) -> {
+@@ -143,10 +_,34 @@
+       }
+    }
+ 
++   /** Pending single-chunk timeout proxies, keyed by ChunkPos.asLong — main-thread-only
++    *  (this whole getChunk() branch only runs on the main thread), so a plain map is safe. */
++   private final it.unimi.dsi.fastutil.longs.Long2ObjectMap<net.minecraft.world.level.chunk.LevelChunk.NestworldProxyLevelChunk> nestworldPendingProxies =
++         new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
++
++   private void nestworldResolveProxy(long pos, net.minecraft.world.level.chunk.LevelChunk.NestworldProxyLevelChunk proxy,
++                                       CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> future) {
++      if (proxy.isResolved()) return;
++      // Always unregister on completion, success OR failure — a genuine generation failure
++      // (not just a slow one) must not leave this position permanently stuck serving an
++      // unresolvable, never-cleared proxy to every future caller; the next call should get a
++      // fresh attempt through the normal path instead.
++      future.whenComplete((either, throwable) -> {
++         this.nestworldPendingProxies.remove(pos, proxy);
++         if (throwable == null && either != null) {
++            either.ifLeft((chunk) -> {
++               if (chunk instanceof LevelChunk levelChunk) {
++                  proxy.resolve(levelChunk);
++               }
++            });
++         }
++      });
++   }
++
     @Nullable
     public LevelChunk m_7131_(int p_8357_, int p_8358_) {
        if (Thread.currentThread() != this.f_8330_) {

@@ -166,12 +166,10 @@
                    throw new ReportedException(crashreport);
                 }
              }
-@@ -680,6 +_,34 @@
-       IMMEDIATE,
-       QUEUED,
+@@ -682,6 +_,34 @@
        CHECK;
-+   }
-+
+    }
+ 
 +
 +   /**
 +    * <strong>FOR INTERNAL USE ONLY</strong>
@@ -198,6 +196,130 @@
 +   @Override
 +   public Level getWorldForge() {
 +      return m_62953_();
-    }
- 
++   }
++
     @FunctionalInterface
+    public interface PostLoadProcessor {
+       void m_196866_(LevelChunk p_196867_);
+@@ -716,6 +_,121 @@
+ 
+       public String toString() {
+          return this.f_156444_.toString() + " <wrapped>";
++      }
++   }
++
++   /**
++    * NestWorld: a stand-in returned by {@code ServerChunkCache.getChunk()} when the real chunk
++    * hasn't finished generating within {@code NestworldTuning.GETCHUNK_WAIT_TIMEOUT_MS} — closes
++    * the sibling of the ForceLoadCommand watchdog-crash fix for the SINGLE-chunk synchronous read
++    * path (e.g. a mod's map-teleport calling {@code Level.getChunk(x, z)} directly, the ORIGINAL
++    * crash that motivated this whole project's Phase-1 work).
++    *
++    * <p>Nested inside {@code LevelChunk} rather than a standalone top-level file: a wholly-new
++    * top-level file in a vanilla package has no baseline in Forge's patch tooling ({@code
++    * checkAndFixPatches}/{@code fixPatchImports} both assume patches modify an existing vanilla
++    * file — a {@code /dev/null}-baseline new-file patch fails their import-order validation with
++    * no way to fix it, confirmed empirically). A nested class inside an already-patched vanilla
++    * file is just more diff content against a real baseline, which the tooling already handles.
++    *
++    * <p>{@code Level.getChunk(x, z)}'s contract is {@code @NotNull} and synchronous — unlike the
++    * ForceLoadCommand fix (where "registered, still generating" was an acceptable command
++    * response), a caller here expects to get back SOMETHING immediately usable. Design reviewed
++    * with Gemini (2026-08-07): a simpler "return a fresh, uncached {@code EmptyLevelChunk} each
++    * timed-out call" was considered and REJECTED — any caller that holds onto the returned
++    * reference (not just the immediate caller, but e.g. a block entity or mod system that caches
++    * a chunk pointer across ticks) would see permanently-stale empty data even after the real
++    * chunk finishes generating in the background, since a fresh empty object each call is never
++    * connected to the real one. This class solves that: {@code ServerChunkCache} returns the SAME
++    * proxy instance for repeat calls to the same still-pending position (see its
++    * {@code nestworldPendingProxies} map), and this proxy transparently starts delegating to the
++    * real chunk the moment it's ready — any code holding this exact reference sees it "become"
++    * real without needing to re-fetch.
++    *
++    * <p>Delegates every read/write to {@link #realChunk} once set (via {@link #resolve}); before
++    * that, falls back to the exact same safe-empty behaviour as vanilla's own {@link
++    * EmptyLevelChunk} (VOID_AIR reads, no-op writes, empty block-entity map) — not a new invented
++    * fallback, the same one vanilla already uses elsewhere for "nothing here yet" reads.
++    */
++   public static class NestworldProxyLevelChunk extends LevelChunk {
++      private final net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome> nestworldFallbackBiome;
++      private volatile LevelChunk realChunk;
++
++      public NestworldProxyLevelChunk(Level level, ChunkPos pos, net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome> fallbackBiome) {
++         super(level, pos);
++         this.nestworldFallbackBiome = fallbackBiome;
++      }
++
++      /** Called once the real chunk finishes generating — every future call on this same
++       *  reference (whoever is still holding it) starts seeing real data immediately. */
++      public void resolve(LevelChunk real) {
++         this.realChunk = real;
++      }
++
++      public boolean isResolved() {
++         return this.realChunk != null;
++      }
++
++      public BlockState m_8055_(BlockPos pos) {
++         LevelChunk real = this.realChunk;
++         return real != null ? real.m_8055_(pos) : Blocks.f_50626_.m_49966_();
++      }
++
++      @Nullable
++      public BlockState m_6978_(BlockPos pos, BlockState state, boolean isMoving) {
++         LevelChunk real = this.realChunk;
++         return real != null ? real.m_6978_(pos, state, isMoving) : null;
++      }
++
++      public FluidState m_6425_(BlockPos pos) {
++         LevelChunk real = this.realChunk;
++         return real != null ? real.m_6425_(pos) : Fluids.f_76191_.m_76145_();
++      }
++
++      public int m_7146_(BlockPos pos) {
++         LevelChunk real = this.realChunk;
++         return real != null ? real.m_7146_(pos) : 0;
++      }
++
++      @Nullable
++      public BlockEntity m_5685_(BlockPos pos, LevelChunk.EntityCreationType creationType) {
++         LevelChunk real = this.realChunk;
++         return real != null ? real.m_5685_(pos, creationType) : null;
++      }
++
++      public void m_142170_(BlockEntity be) {
++         LevelChunk real = this.realChunk;
++         if (real != null) real.m_142170_(be);
++      }
++
++      public void m_142169_(BlockEntity be) {
++         LevelChunk real = this.realChunk;
++         if (real != null) real.m_142169_(be);
++      }
++
++      public void m_8114_(BlockPos pos) {
++         LevelChunk real = this.realChunk;
++         if (real != null) real.m_8114_(pos);
++      }
++
++      public boolean m_6430_() {
++         LevelChunk real = this.realChunk;
++         return real == null || real.m_6430_();
++      }
++
++      public boolean m_5566_(int minY, int maxY) {
++         LevelChunk real = this.realChunk;
++         return real == null || real.m_5566_(minY, maxY);
++      }
++
++      public FullChunkStatus m_287138_() {
++         LevelChunk real = this.realChunk;
++         return real != null ? real.m_287138_() : FullChunkStatus.FULL;
++      }
++
++      public net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome> m_203495_(int x, int y, int z) {
++         LevelChunk real = this.realChunk;
++         return real != null ? real.m_203495_(x, y, z) : this.nestworldFallbackBiome;
+       }
+    }
+ }

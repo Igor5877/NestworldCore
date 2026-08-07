@@ -516,6 +516,38 @@ public final class NestworldTuning {
     public static final long FORCELOAD_WAIT_TIMEOUT_MS =
             Long.getLong("nestworld.forceloadWaitTimeoutMs", 20_000L);
 
+    /**
+     * Sibling of {@link #FORCELOAD_WAIT_TIMEOUT_MS} for the harder, original crash: a mod
+     * calling {@code Level.getChunk(x, z)} directly (e.g. FTBChunks' map-click teleport) for
+     * genuinely virgin territory on a heavy real modpack, blocking the main thread on
+     * {@code ServerChunkCache}'s {@code managedBlock} wait past the 60s {@code
+     * ServerHangWatchdog} threshold — the ORIGINAL crash that motivated this whole project's
+     * Phase-1 work (see {@code phase1-teleport-crash-reproduced} project notes).
+     *
+     * <p>Unlike {@code /forceload add} (whose command response can legitimately say
+     * "registered, still generating"), {@code Level.getChunk(x, z)} is {@code @NotNull} and
+     * synchronous — thousands of call sites throughout vanilla and every mod assume it always
+     * returns a fully-ready chunk immediately. Design reviewed with Gemini (2026-08-07): a
+     * timeout here returns a {@link net.minecraft.world.level.chunk.ProxyLevelChunk} instead
+     * of blocking further — a real, type-correct {@code LevelChunk} that transparently starts
+     * delegating to the actual chunk once generation finishes (the SAME object reference stays
+     * valid for any caller still holding it), falling back to vanilla's own {@code
+     * EmptyLevelChunk}-style safe-empty behaviour (VOID_AIR reads, no-op writes) until then.
+     *
+     * <p>This is a real, accepted behavioural tradeoff, not a free fix: a caller that
+     * teleports a player into the returned proxy's position before it resolves will see void
+     * air (and could take fall/void damage) for up to this many milliseconds, rather than the
+     * whole server hanging for up to 60s. Chosen deliberately over the status quo (a full JVM
+     * watchdog kill affecting every player) — see the design discussion in memory for the
+     * full tradeoff analysis.
+     *
+     * <p>{@code 0} = no timeout, vanilla-identical blocking behaviour (NOT recommended on a
+     * heavy real pack — this is the exact call path from the original live crash). Default
+     * 20s, matching {@link #FORCELOAD_WAIT_TIMEOUT_MS}'s margin under the 60s watchdog.
+     */
+    public static final long GETCHUNK_WAIT_TIMEOUT_MS =
+            Long.getLong("nestworld.getChunkWaitTimeoutMs", 20_000L);
+
     private NestworldTuning() {
     }
 }
