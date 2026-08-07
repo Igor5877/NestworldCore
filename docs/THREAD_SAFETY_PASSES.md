@@ -86,7 +86,18 @@ mutate it while another thread reads/mutates?
 - **Raids / village** (`Raids`, POI-adjacent).
 - ~~**MapItemSavedData** (entity tracking on maps).~~ — **FIXED, see #11 above.**
 - **Scoreboard** (`Scoreboard` score updates from mob death/criteria).
-- **Boss events** (`ServerBossEvent` player sets).
+- ~~**Boss events** (`ServerBossEvent` player sets).~~ — **AUDITED, SAFE.** `ServerBossEvent`
+  (`players` HashSet) is per-ENTITY (each `WitherBoss`/`EnderDragon` owns its own instance), not
+  a world-shared singleton like `MapItemSavedData` was — so the risk shape is different: does the
+  SAME entity's bossEvent ever get touched by two threads at once? `startSeenByPlayer`/
+  `stopSeenByPlayer` (which call `bossEvent.addPlayer`/`removePlayer`) are invoked from
+  `ServerEntity`, itself driven by `ChunkMap`'s tracker-broadcast phase — traced both the
+  `regionalizedTracker` and default code paths in `ChunkMap.java` (~line 1660-1757):
+  `TRACKER_PARALLEL_BROADCAST`'s parallel split is always by TrackedEntity (one thread per
+  entity's `sendChanges()`), never splitting a single entity's own broadcast work across threads,
+  and the whole phase is documented as running with "region threads parked at the barrier" — same
+  safe timing as the other tick-phase items. No two threads can ever touch one entity's bossEvent
+  concurrently.
 - **Forge capabilities** attach/invalidate on entities/chunks during region tick. **Traced, NOT
   closed** (2026-08-07) — too diffuse for the single-call-site audit approach that closed the
   tick-phase items above (capabilities have thousands of call sites across vanilla+every mod, not
