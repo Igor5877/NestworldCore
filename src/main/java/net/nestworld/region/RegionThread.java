@@ -362,6 +362,23 @@ public class RegionThread extends Thread {
         long carriedNanos = System.nanoTime() - w0;
 
         java.util.UUID[] ids = region.getOwnedEntityIds().toArray(new java.util.UUID[0]);
+        // NestWorld: unconditional, unbudgeted cleanup pass BEFORE the budgeted
+        // ticking loop below. A dead/removed UUID is only ever discovered (and
+        // cleaned via region.removeEntity()) when the round-robin ticking window
+        // happens to reach it -- bounded by REGION_ENTITY_BUDGET_NANOS, so under a
+        // large owned-set a genuinely-dead entry can sit for many ticks before the
+        // cursor cycles back to it (confirmed live: 16/100 killed entities still
+        // stuck in ownedEntityIds after 300+ ticks in one measured case). Checking
+        // isRemoved() is orders of magnitude cheaper than actually ticking an
+        // entity, so doing it for the WHOLE set every tick (not just the budgeted
+        // slice) is cheap even at thousands of owned entities, and guarantees
+        // cleanup keeps pace with death rate regardless of round-robin budget
+        // pressure.
+        for (java.util.UUID id : ids) {
+            Entity e = level.getEntity(id);
+            if (e == null || e.isRemoved()) region.removeEntity(id);
+        }
+        ids = region.getOwnedEntityIds().toArray(new java.util.UUID[0]);
         int n = ids.length;
         if (n == 0) {
             lastTickedCount = 0;
@@ -391,18 +408,36 @@ public class RegionThread extends Thread {
             processed++;
             java.util.UUID uuid = ids[idx];
             Entity entity = level.getEntity(uuid);
-            if (entity == null || entity.isRemoved() || entity.isPassenger()) continue;
+            // NestWorld: a null/removed entity's UUID was never cleaned out of
+            // ownedEntityIds -- only BoundaryEntityTransfer (border crossing) and
+            // RegionSplitManager (split/merge) ever called removeEntity(); plain
+            // death/discard/despawn never did. Confirmed as a real, unbounded leak
+            // (not just a cosmetic /nestworld status display issue): ownedEntityIds
+            // grew to 21000+ stale UUIDs on a live ATM9 region after a mass
+            // falling-block kill, and this loop re-copies + re-looks-up every one of
+            // them, every tick, forever, since the array is rebuilt from the live set
+            // each call. isPassenger() is deliberately NOT cleaned up here -- a
+            // passenger is still a live, owned entity, just skipped for direct
+            // ticking this pass (its vehicle ticks it).
+            if (entity == null || entity.isRemoved()) { region.removeEntity(uuid); continue; }
+            if (entity.isPassenger()) continue;
 
             try {
                 entity.checkDespawn();
-                if (entity.isRemoved()) continue;
+                // NestWorld: checkDespawn() can itself remove the entity (natural
+                // despawn) -- same cleanup as the null/isRemoved() check above.
+                if (entity.isRemoved()) { region.removeEntity(uuid); continue; }
                 // Mirror vanilla: only tick entities inside entity-ticking chunks,
                 // otherwise idle mobs at the edge of loaded terrain burn CPU on AI.
                 if (!level.isPositionEntityTicking(entity.blockPosition())) continue;
                 level.tickNonPassenger(entity);
                 ticked++;
                 // Phase 2: track this owned entity now (region phase). Skip if the tick removed it.
-                if (nestworldTrack && !entity.isRemoved()) {
+                if (entity.isRemoved()) {
+                    // NestWorld: the MOST common death path -- fall/fire/void/combat
+                    // damage taken during the entity's own tick call. Same cleanup.
+                    region.removeEntity(uuid);
+                } else if (nestworldTrack) {
                     nestworldChunkMap.nestworldTrackOwned(entity, nestworldTickNo, nestworldPlayers);
                 }
             } catch (Throwable t) {
