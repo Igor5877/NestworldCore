@@ -1,54 +1,19 @@
 --- a/net/minecraft/world/entity/item/FallingBlockEntity.java
 +++ b/net/minecraft/world/entity/item/FallingBlockEntity.java
-@@ -48,6 +_,16 @@
- 
- public class FallingBlockEntity extends Entity {
-    private static final Logger f_201970_ = LogUtils.getLogger();
-+   // NestWorld: see NestworldTuning.MAX_FALLING_BLOCKS's javadoc -- global live-count
-+   // cap against runaway falling-block accumulation (e.g. a dispenser/observer "sand
-+   // duper" loop). Incremented only when an instance is actually added to the world
-+   // (fall() below); nestworldCounted tracks whether THIS instance was counted, so
-+   // remove() decrements exactly once regardless of how many times it's called or
-+   // which of vanilla's several discard() call sites triggered it. FallingBlock
-+   // ticking (the dominant spawn source) runs on region threads under NestworldCore's
-+   // sharding, so concurrent increments from different regions are real -- must be atomic.
-+   private static final java.util.concurrent.atomic.AtomicInteger nestworldActiveCount = new java.util.concurrent.atomic.AtomicInteger();
-+   private boolean nestworldCounted;
-    private BlockState f_31946_ = Blocks.f_49992_.m_49966_();
-    public int f_31942_;
-    public boolean f_31943_ = true;
-@@ -78,10 +_,31 @@
+@@ -78,6 +_,14 @@
     public static FallingBlockEntity m_201971_(Level p_201972_, BlockPos p_201973_, BlockState p_201974_) {
        FallingBlockEntity fallingblockentity = new FallingBlockEntity(p_201972_, (double)p_201973_.m_123341_() + 0.5D, (double)p_201973_.m_123342_(), (double)p_201973_.m_123343_() + 0.5D, p_201974_.m_61138_(BlockStateProperties.f_61362_) ? p_201974_.m_61124_(BlockStateProperties.f_61362_, Boolean.valueOf(false)) : p_201974_);
        p_201972_.m_7731_(p_201973_, p_201974_.m_60819_().m_76188_(), 3);
--      p_201972_.m_7967_(fallingblockentity);
-+      // NestWorld: see NestworldTuning.MAX_FALLING_BLOCKS's javadoc. Every caller of
-+      // fall() dereferences the return value unconditionally, so this must always
-+      // return a real object -- capping means skipping addFreshEntity (the block
-+      // vanishes instead of animating a fall), never returning null.
-+      int nestworldCap = net.nestworld.region.NestworldTuning.MAX_FALLING_BLOCKS;
-+      if (nestworldCap <= 0 || nestworldActiveCount.get() < nestworldCap) {
-+         nestworldActiveCount.incrementAndGet();
-+         fallingblockentity.nestworldCounted = true;
-+         p_201972_.m_7967_(fallingblockentity);
-+      }
++      // NestWorld: see NestworldTuning.MAX_FALLING_BLOCKS's javadoc. The cap is enforced
++      // in NestworldRegionSystem's EntityJoinLevelEvent listener, NOT here -- a live
++      // ATM9 pack showed a mod constructing FallingBlockEntity and calling
++      // addFreshEntity() directly (bypassing this factory entirely: 20981 falling_block
++      // entities existed with maxFallingBlocks=3000 active). EntityJoinLevelEvent fires
++      // for every path an entity can join a level (this factory's addFreshEntity call,
++      // any mod's direct addFreshEntity call, and PersistentEntitySectionManager's own
++      // internal add path), so gating there instead is the only bypass-proof choke point.
+       p_201972_.m_7967_(fallingblockentity);
        return fallingblockentity;
-    }
- 
-+   // NestWorld: counterpart to fall()'s increment -- see NestworldTuning.MAX_FALLING_BLOCKS.
-+   // Entity.remove() is the single root removal path (natural discard, chunk unload,
-+   // /kill, etc. all funnel through it), so hooking here (rather than each of vanilla's
-+   // several discard() call sites in tick()) can't miss a removal path.
-+   public void m_142687_(Entity.RemovalReason p_nestworldReason) {
-+      if (this.nestworldCounted) {
-+         this.nestworldCounted = false;
-+         nestworldActiveCount.decrementAndGet();
-+      }
-+      super.m_142687_(p_nestworldReason);
-+   }
-+
-    public boolean m_6097_() {
-       return false;
     }
 @@ -120,11 +_,11 @@
           if (!this.m_9236_().f_46443_) {

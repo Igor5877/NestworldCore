@@ -162,6 +162,42 @@ public class NestworldRegionSystem {
         NestworldCommand.register(event.getDispatcher());
     }
 
+    // NestWorld: see NestworldTuning.MAX_FALLING_BLOCKS's javadoc. Global live-count cap
+    // against runaway falling-block accumulation (e.g. a dispenser/observer "sand duper"
+    // loop, or -- confirmed live on ATM9 -- a mod constructing FallingBlockEntity and
+    // calling addFreshEntity() directly, bypassing FallingBlockEntity.fall()'s own factory
+    // entirely: 20981 falling_block entities existed with a fall()-based cap of 3000 in
+    // effect). EntityJoinLevelEvent fires for EVERY path an entity can join a level --
+    // Level.addFreshEntity() (used by fall() and any mod calling it directly) AND
+    // PersistentEntitySectionManager's own internal add path (chunk load, other add
+    // routes) -- so this is the one truly bypass-proof choke point. Cancelling here means
+    // the entity object still exists (any caller already holding a reference, e.g.
+    // AnvilBlock.falling()'s setHurtsEntities() call, still has a valid non-null object to
+    // call methods on) but never actually joins the level -- matches fall()'s own existing
+    // "block vanishes instead of animating a fall" trade-off for the capped case.
+    // loadedFromDisk() entities are NEVER blocked (would destroy legitimately-saved world
+    // state) but ARE still counted, so the running total stays accurate against reality.
+    private static final java.util.concurrent.atomic.AtomicInteger nestworldFallingBlockCount =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+    @SubscribeEvent
+    public static void onEntityJoinLevel(net.minecraftforge.event.entity.EntityJoinLevelEvent event) {
+        if (!(event.getEntity() instanceof net.minecraft.world.entity.item.FallingBlockEntity)) return;
+        int cap = NestworldTuning.MAX_FALLING_BLOCKS;
+        if (cap > 0 && !event.loadedFromDisk() && nestworldFallingBlockCount.get() >= cap) {
+            event.setCanceled(true);
+            return;
+        }
+        nestworldFallingBlockCount.incrementAndGet();
+    }
+
+    @SubscribeEvent
+    public static void onEntityLeaveLevel(net.minecraftforge.event.entity.EntityLeaveLevelEvent event) {
+        if (event.getEntity() instanceof net.minecraft.world.entity.item.FallingBlockEntity) {
+            nestworldFallingBlockCount.decrementAndGet();
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Initialisation
     // -----------------------------------------------------------------------
