@@ -259,6 +259,47 @@ public class NestworldRegionSystem {
         }
     }
 
+    /**
+     * Ticks entities owned by regions whose RegionThread was disabled after
+     * repeated crashes (see {@link RegionThreadPool}'s MAX_CRASHES). Mirrors
+     * {@link #tickPinnedEntitiesOnMain}'s vanilla-parity gate, but reads each
+     * disabled region's owned-entity set directly instead of scanning every
+     * loaded entity — disabled regions are rare and this keeps the cost
+     * proportional to their entity count, not the whole world's.
+     *
+     * Race reasoning: a disabled region has no RegionThread at all (removed
+     * from the pool's thread list before being marked disabled), so for the
+     * entire tick nothing else can touch entities in its owned set — this is
+     * a strictly stronger guarantee than the pinned-entity case, which merely
+     * relies on region threads never being assigned that type. The set itself
+     * is only otherwise written by {@code BoundaryEntityTransfer.checkAndReassign()}
+     * (phase 3, main thread, already completed earlier this tick) or by a
+     * manual /nestworld split|merge (main thread only). Called only when at
+     * least one region is disabled.
+     */
+    private void tickDisabledRegionEntitiesOnMain() {
+        for (WorldRegion region : pool.getDisabledRegionObjects()) {
+            // Snapshot: ticking (despawn, death, explosion) can remove an entity
+            // from this region's owned set mid-iteration; mirrors the same
+            // toArray() snapshot RegionThread.tickEntities() takes for the
+            // identical reason.
+            java.util.UUID[] ids = region.getOwnedEntityIds().toArray(new java.util.UUID[0]);
+            for (java.util.UUID uuid : ids) {
+                net.minecraft.world.entity.Entity entity = overworld.getEntity(uuid);
+                if (entity == null || entity.isRemoved() || entity.isPassenger()) continue;
+                try {
+                    entity.checkDespawn();
+                    if (entity.isRemoved()) continue;
+                    if (!overworld.isPositionEntityTicking(entity.blockPosition())) continue;
+                    overworld.tickNonPassenger(entity);
+                } catch (Throwable t) {
+                    LOGGER.warn("Disabled-region {} entity {} tick error: {}",
+                            region.getId(), entity.getType().getDescriptionId(), t.toString());
+                }
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Persistent region layout
     // -----------------------------------------------------------------------
@@ -515,6 +556,12 @@ public class NestworldRegionSystem {
         // would. Zero cost when nothing is pinned.
         if (!pins.isEmpty()) tickPinnedEntitiesOnMain();
 
+        // 3c-2. Tick entities owned by crash-disabled regions on the main thread —
+        // those regions have no RegionThread any more, so without this they would
+        // sit frozen forever instead of degrading to unparallelized-but-alive.
+        // Zero cost when no region is disabled.
+        if (!pool.getDisabledRegions().isEmpty()) tickDisabledRegionEntitiesOnMain();
+
         // 3d. Predictive frontier: request generation of chunks ahead of moving
         // players so terrain is ready before they arrive (no-op unless enabled).
         // Additive — only adds expiring region tickets; the tiered budget paces them.
@@ -735,7 +782,7 @@ public class NestworldRegionSystem {
                 blockTickHeat.recordVetoable(cx, cz);
             }
             WorldRegion region = pinned ? null
-                    : cascadeSafe ? grid.getRegionForChunk(cx, cz)
+                    : cascadeSafe ? aliveRegionOrNull(grid.getRegionForChunk(cx, cz))
                     : interiorRegionFor(cx, cz);
             if (region == null) {
                 mainBes.add(ticker);
@@ -805,15 +852,29 @@ public class NestworldRegionSystem {
 
     /** The region owning chunk (cx,cz) if the chunk sits strictly inside its interior (outside
      *  the border band); null routes the work to the main-thread bucket. Shared routing rule of
-     *  the parallel work rounds (see routeScheduledTick). */
+     *  the parallel work rounds (see routeScheduledTick). Also routes to main when the owning
+     *  region has no live RegionThread (crash-disabled, see {@link #aliveRegionOrNull}) — a work
+     *  round only ever picks up buckets keyed by a currently-alive thread's region
+     *  ({@link RegionThreadPool#runWorkRound}), so bucketing to a disabled region's (dead)
+     *  thread would silently vanish the work every tick instead of running it. */
     private WorldRegion interiorRegionFor(int cx, int cz) {
-        WorldRegion region = grid.getRegionForChunk(cx, cz);
+        WorldRegion region = aliveRegionOrNull(grid.getRegionForChunk(cx, cz));
         if (region != null
                 && cx >= region.getMinChunkX() + BORDER_BAND_CHUNKS && cx <= region.getMaxChunkX() - BORDER_BAND_CHUNKS
                 && cz >= region.getMinChunkZ() + BORDER_BAND_CHUNKS && cz <= region.getMaxChunkZ() - BORDER_BAND_CHUNKS) {
             return region;
         }
         return null;
+    }
+
+    /** Null if {@code region} is null or crash-disabled (no live RegionThread — see
+     *  {@link RegionThreadPool#getDisabledRegions()}), otherwise {@code region} unchanged.
+     *  Only ever called from the main thread (BE/scheduled-tick/block-event collection phases,
+     *  which all run before {@code pool.tickAllRegions()} dispatches this same round to region
+     *  threads), matching {@code disabledRegions}' documented main-thread-only access pattern —
+     *  no new synchronization is needed to read it here. */
+    private WorldRegion aliveRegionOrNull(WorldRegion region) {
+        return (region != null && !pool.getDisabledRegions().contains(region.getId())) ? region : null;
     }
 
     // -----------------------------------------------------------------------
