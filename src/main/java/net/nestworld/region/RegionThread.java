@@ -37,6 +37,11 @@ public class RegionThread extends Thread {
     final WorldRegion region;
     private final ServerLevel level;
 
+    /** Public accessor for vanilla-patched files outside this package (e.g. Explosion's
+     *  Stage 3 cross-region write classification) — {@code region} itself stays
+     *  package-private since most callers are within net.nestworld.region. */
+    public WorldRegion getRegion() { return region; }
+
     private volatile boolean running = true;
     /** Latch for the tick currently being requested; null when idle. */
     private volatile CountDownLatch tickLatch = null;
@@ -193,78 +198,204 @@ public class RegionThread extends Thread {
     // Main loop
     // -----------------------------------------------------------------------
 
+    /** One dispatched unit of work: either an entity round ({@code work == null}) or a
+     *  work round ({@code work != null}), plus the latch to count down when done. */
+    private record DispatchedTick(CountDownLatch latch, java.util.List<Runnable> work) {}
+
     @Override
     public void run() {
         while (running) {
-            CountDownLatch latch;
-            java.util.List<Runnable> work;
-            // Block until the pool requests a tick or a work round
-            synchronized (tickSignal) {
-                while (running && tickLatch == null) {
-                    try { tickSignal.wait(); }
-                    catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-                }
-                latch = tickLatch;
-                tickLatch = null;
-                work = pendingWork;
-                pendingWork = null;
+            if (NestworldTuning.FREE_RUNNING_REGIONS_ENABLED && region.isFreeRunning()) {
+                runFreeRunningTick();
+                continue;
             }
-            if (!running) {
-                if (latch != null) latch.countDown();
-                break;
+            DispatchedTick dispatched = awaitDispatch();
+            if (dispatched == null) {
+                if (!running) break; // genuine shutdown
+                continue; // woken by a free-running toggle instead — loop back and branch above
             }
+            runOneTick(dispatched.latch(), dispatched.work());
+        }
+    }
 
-            long tickStart = System.nanoTime();
+    /** Persists across calls — the next scheduled local-tick deadline, self-paced. */
+    private long freeRunningNextTickNanos = 0;
+
+    /**
+     * Step 3 (docs/LOCAL_TICK_STAGE4.md, "Step 3 — Single Free-Running Region"): one
+     * iteration of this region's OWN self-paced loop, called repeatedly from {@link #run()}
+     * instead of {@link #awaitDispatch()} while {@code region.isFreeRunning()}. No shared
+     * latch or signal object — this region's pacing is entirely its own from here on.
+     *
+     * <p>Order matters: (1) the save rendezvous check MUST run first and ONLY here,
+     * between local ticks — never mid-tick — since this is the one point guaranteed to
+     * be a consistent, safe-to-serialize state (Gemini's review flagged this as the
+     * critical detail to get right). (2) drain any main-thread-dispatched work batch
+     * (design point 2) — queue-based, non-blocking, "drop if backlogged" same as
+     * {@code RegionThreadPool.runWorkRoundDropIfBacklogged} elsewhere. (3) the self-paced
+     * entity round itself, run only once {@code freeRunningNextTickNanos} has elapsed;
+     * catches up without rubber-banding if behind, same philosophy vanilla's own tick
+     * loop already uses; parks a short, bounded interval otherwise so this thread stays
+     * responsive to shutdown/toggle-off/incoming work rather than sleeping long stretches.
+     */
+    private void runFreeRunningTick() {
+        if (region.nestworldCheckSaveRendezvous()) {
+            return;
+        }
+
+        java.util.List<Runnable> work = region.nestworldPollFreeRunningWork();
+        if (work != null) {
+            runOneTick(null, work);
+        }
+
+        long now = System.nanoTime();
+        if (freeRunningNextTickNanos == 0) {
+            freeRunningNextTickNanos = now;
+        }
+        if (now >= freeRunningNextTickNanos) {
+            runOneTick(null, null);
+            freeRunningNextTickNanos += NestworldTuning.FREE_RUNNING_TARGET_TICK_NANOS;
+            // Don't rubber-band: if badly behind (e.g. this region was paused for a
+            // save rendezvous, or genuinely overloaded), resync to now instead of
+            // trying to burn through a backlog of missed deadlines back-to-back.
+            long behindBy = now - freeRunningNextTickNanos;
+            if (behindBy > NestworldTuning.FREE_RUNNING_TARGET_TICK_NANOS * 5) {
+                freeRunningNextTickNanos = now;
+            }
+        } else {
+            long parkNanos = Math.min(freeRunningNextTickNanos - now, 5_000_000L);
+            if (parkNanos > 0) {
+                java.util.concurrent.locks.LockSupport.parkNanos(parkNanos);
+            }
+        }
+    }
+
+    /**
+     * Stage 5 tick-scheduler architecture, Part 5a (docs/LOCAL_TICK_STAGE4.md, "Stage 5
+     * tick-scheduler architecture — DECIDED"): pure structural extraction, ZERO behavior
+     * change from the original inline synchronized/wait block this replaced — separates
+     * "how does this thread learn it's time to tick" from "what does one tick actually
+     * do" ({@link #runOneTick}), so a later step (free-running regions) can replace ONLY
+     * this method's body (self-paced timing instead of waiting for the pool's shared
+     * signal) without touching the tick body at all. Blocks until the pool requests a
+     * tick/work round, or shutdown is signalled. Returns null on shutdown — any latch
+     * that was already pending at that point is still counted down first, exactly as
+     * the original inline code did.
+     *
+     * <p>Step 3: also wakes (and returns null, WITHOUT it meaning shutdown) when this
+     * region gets toggled free-running WHILE this thread is blocked here from a PRIOR
+     * barrier-dispatched iteration — found live during Step 3's first test: without
+     * this, the pool stops dispatching to a newly-free-running region entirely (by
+     * design), so nothing would ever wake a thread already parked in the old
+     * indefinite {@code wait()}, and it would sit stuck forever instead of transitioning
+     * into {@link #runFreeRunningTick()}. {@link WorldRegion#nestworldSetFreeRunning}
+     * calls {@link #nestworldWakeForFreeRunningToggle()} specifically to cover this.
+     */
+    private DispatchedTick awaitDispatch() {
+        CountDownLatch latch;
+        java.util.List<Runnable> work;
+        // Block until the pool requests a tick or a work round, or this region is
+        // toggled free-running (see above).
+        synchronized (tickSignal) {
+            while (running && tickLatch == null
+                    && !(NestworldTuning.FREE_RUNNING_REGIONS_ENABLED && region.isFreeRunning())) {
+                try { tickSignal.wait(); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            }
+            latch = tickLatch;
+            tickLatch = null;
+            work = pendingWork;
+            pendingWork = null;
+        }
+        if (!running) {
+            if (latch != null) latch.countDown();
+            return null;
+        }
+        if (latch == null) {
+            // Woken by a free-running toggle with nothing actually dispatched (the
+            // normal shutdown case was already handled above) — tell run() to loop
+            // back and re-check, not that this was a shutdown.
+            return null;
+        }
+        return new DispatchedTick(latch, work);
+    }
+
+    /** Wakes this thread if it's blocked in {@link #awaitDispatch()} — called when this
+     *  region transitions INTO free-running mode, since the pool stops dispatching to
+     *  it from that point on and nothing else would ever wake an already-waiting thread. */
+    public void nestworldWakeForFreeRunningToggle() {
+        synchronized (tickSignal) { tickSignal.notifyAll(); }
+    }
+
+    /**
+     * Stage 5 tick-scheduler architecture, Part 5a: pure structural extraction of the
+     * tick body — acquire the region's write lock, run either a work round or an entity
+     * round, record timing/accounting, count down the latch. ZERO behavior change from
+     * the original inline code this replaced.
+     *
+     * <p>Step 3: {@code latch} is nullable — a free-running region's self-paced local
+     * tick has no shared latch (nobody is waiting on it), so the final countdown is
+     * skipped when null. Every other caller (the barrier-dispatched path) still always
+     * passes a real latch, unchanged.
+     */
+    private void runOneTick(CountDownLatch latch, java.util.List<Runnable> work) {
+        long tickStart = System.nanoTime();
+        try {
+            long stamp = region.getChunkLock().writeLock();
             try {
-                long stamp = region.getChunkLock().writeLock();
-                try {
-                    clearChunkCache(); // chunks may have unloaded since last tick
-                    // Test hook: force this region's thread to crash every tick,
-                    // exercising the pool's backoff + disable path.
-                    if (CRASH_TEST_REGION == region.getId()) {
-                        throw new RuntimeException("nestworld crash-test injection (region "
-                                + region.getId() + ")");
-                    }
-                    if (work != null) {
-                        runWorkBudgeted(work);
-                    } else {
-                        long e0 = System.nanoTime();
-                        tickEntities();
-                        entNanos += System.nanoTime() - e0;
-                        if (++timedTicks >= 200) {
-                            LOGGER.info("[{}] avg ms over {} ticks: entities={} ({} owned, {} ticked{})",
-                                    getName(), timedTicks,
-                                    String.format("%.2f", entNanos / 1e6 / timedTicks),
-                                    region.getOwnedEntityIds().size(), lastTickedCount,
-                                    (lastDeferredCount > 0 ? ", " + lastDeferredCount + " deferred by budget" : "")
-                                            + (lastWorkDeferred > 0 ? ", " + lastWorkDeferred + " work deferred" : ""));
-                            entNanos = 0; timedTicks = 0;
-                        }
-                    }
-                } finally {
-                    region.getChunkLock().unlockWrite(stamp);
+                clearChunkCache(); // chunks may have unloaded since last tick
+                // Test hook: force this region's thread to crash every tick,
+                // exercising the pool's backoff + disable path.
+                if (CRASH_TEST_REGION == region.getId()) {
+                    throw new RuntimeException("nestworld crash-test injection (region "
+                            + region.getId() + ")");
                 }
-            } catch (Throwable crash) {
-                handleCrash(crash);
-                // after crash, running == false; latch is still counted down below
-            } finally {
-                // Work rounds and the entity round are halves of the same game
-                // tick — fold work time into the entity round's TPS record so
-                // region cost (split heuristic) reflects the full tick.
                 if (work != null) {
-                    workRoundNanos += System.nanoTime() - tickStart;
-                    // Entity-less regions are skipped by the entity round, so
-                    // record here or their cost would never update.
-                    if (region.getOwnedEntityIds().isEmpty()) {
-                        region.recordTickDuration(workRoundNanos);
-                        workRoundNanos = 0;
-                    }
+                    runWorkBudgeted(work);
                 } else {
-                    region.recordTickDuration(System.nanoTime() - tickStart + workRoundNanos);
+                    applyPendingEntityImpacts();
+                    applyPendingEntityPushes();
+                    applyPendingEntityMutations();
+                    long e0 = System.nanoTime();
+                    tickEntities();
+                    entNanos += System.nanoTime() - e0;
+                    publishEntitySnapshot();
+                    if (++timedTicks >= 200) {
+                        LOGGER.info("[{}] avg ms over {} ticks: entities={} ({} owned, {} ticked{}) localTick={}",
+                                getName(), timedTicks,
+                                String.format("%.2f", entNanos / 1e6 / timedTicks),
+                                region.getOwnedEntityIds().size(), lastTickedCount,
+                                (lastDeferredCount > 0 ? ", " + lastDeferredCount + " deferred by budget" : "")
+                                        + (lastWorkDeferred > 0 ? ", " + lastWorkDeferred + " work deferred" : ""),
+                                region.getLocalTickCount());
+                        entNanos = 0; timedTicks = 0;
+                    }
+                }
+            } finally {
+                region.getChunkLock().unlockWrite(stamp);
+            }
+        } catch (Throwable crash) {
+            handleCrash(crash);
+            // after crash, running == false; latch is still counted down below
+        } finally {
+            // Work rounds and the entity round are halves of the same game
+            // tick — fold work time into the entity round's TPS record so
+            // region cost (split heuristic) reflects the full tick.
+            if (work != null) {
+                workRoundNanos += System.nanoTime() - tickStart;
+                // Entity-less regions are skipped by the entity round, so
+                // record here or their cost would never update.
+                if (region.getOwnedEntityIds().isEmpty()) {
+                    region.recordTickDuration(workRoundNanos);
+                    region.nestworldAdvanceLocalTick();
                     workRoundNanos = 0;
                 }
-                latch.countDown();
+            } else {
+                region.recordTickDuration(System.nanoTime() - tickStart + workRoundNanos);
+                region.nestworldAdvanceLocalTick();
+                workRoundNanos = 0;
             }
+            if (latch != null) latch.countDown();
         }
     }
 
@@ -338,6 +469,121 @@ public class RegionThread extends Thread {
     private volatile int lastDeferredCount = 0;
 
     public int getLastDeferredCount() { return lastDeferredCount; }
+
+    /**
+     * Stage 3 EXTENSION (docs/LOCAL_TICK_STAGE4.md, "Entity Safety Layer" — the
+     * Explosion.explode() entity-damage race, found during the Stage 5 audit):
+     * applies every ENTITY_IMPACT message posted to this region since its last tick
+     * — always on THIS region's own thread, the entity's sole owner, before this
+     * tick's own AI/physics processing runs (same "drain inbox first" ordering the
+     * mailbox already uses elsewhere). A foreign explosion's damage/knockback on one
+     * of this region's own entities is computed HERE, via a safe same-thread read of
+     * the entity's live position — never by the triggering region's thread. Runs
+     * every entity round unconditionally; a tick with nothing queued is a cheap
+     * empty-queue check, not worth budgeting separately.
+     */
+    private void applyPendingEntityImpacts() {
+        for (RegionMessage<?> msg : region.nestworldDrainMailbox(RegionMessage.Type.ENTITY_IMPACT)) {
+            RegionMessage.EntityImpact impact = (RegionMessage.EntityImpact) msg.payload();
+            try {
+                net.minecraft.world.entity.Entity entity = level.getEntity(impact.entityId());
+                if (entity != null && !entity.isRemoved()) {
+                    impact.explosion().nestworldApplyEntityImpact(entity);
+                }
+            } catch (Throwable t) {
+                LOGGER.warn("Deferred entity impact on {} failed: {}", impact.entityId(), t.toString());
+            }
+            MailboxAudit.recordApplied(msg.auditId(), region, RegionMessage.Type.ENTITY_IMPACT);
+        }
+    }
+
+    /**
+     * Stage 5 "Entity Safety Layer" follow-up (docs/LOCAL_TICK_STAGE4.md): applies every
+     * ENTITY_PUSH message posted to this region since its last tick — same "owner applies,
+     * sender never mutates" discipline as {@link #applyPendingEntityImpacts()}. Found via
+     * {@link EntityOwnershipGuard} catching real violations on ATM9 (vanilla's entity-
+     * collision push-apart, {@code Entity.push(Entity)} reached through {@code LivingEntity
+     * .doPush}, mutates BOTH colliding entities' deltaMovement directly — a foreign-owned
+     * entity near a region border got mutated from the wrong thread). The delta vector was
+     * already fully computed by the sender from a safe snapshot read; this only re-checks
+     * isVehicle()/isPushable() — the vanilla guard on the push's OWN side — since that is
+     * only safe to read here, on the entity's owning thread.
+     */
+    private void applyPendingEntityPushes() {
+        for (RegionMessage<?> msg : region.nestworldDrainMailbox(RegionMessage.Type.ENTITY_PUSH)) {
+            RegionMessage.EntityPush push = (RegionMessage.EntityPush) msg.payload();
+            try {
+                net.minecraft.world.entity.Entity entity = level.getEntity(push.entityId());
+                if (entity != null && !entity.isRemoved() && !entity.isVehicle() && entity.isPushable()) {
+                    entity.push(push.dx(), push.dy(), push.dz());
+                }
+            } catch (Throwable t) {
+                LOGGER.warn("Deferred entity push on {} failed: {}", push.entityId(), t.toString());
+            }
+            MailboxAudit.recordApplied(msg.auditId(), region, RegionMessage.Type.ENTITY_PUSH);
+        }
+    }
+
+    /**
+     * Entity Safety Layer "Bucket A" generic primitive (docs/LOCAL_TICK_STAGE4.md): applies
+     * every ENTITY_MUTATE message posted to this region since its last tick — same "owner
+     * applies" discipline as {@link #applyPendingEntityImpacts()}/{@link #applyPendingEntityPushes()}.
+     * Covers the AOE-style "scan radius, mutate every entity found" call sites found beyond
+     * Explosion/push (ThrownPotion, EvokerFangs, AreaEffectCloud, Guardian, Axolotl,
+     * Ravager.roar(), ...) via a small closed op-code union instead of a bespoke message
+     * type per site.
+     */
+    private void applyPendingEntityMutations() {
+        for (RegionMessage<?> msg : region.nestworldDrainMailbox(RegionMessage.Type.ENTITY_MUTATE)) {
+            RegionMessage.EntityMutate mutate = (RegionMessage.EntityMutate) msg.payload();
+            try {
+                net.minecraft.world.entity.Entity entity = level.getEntity(mutate.entityId());
+                if (entity != null && !entity.isRemoved()) {
+                    EntityMutationOp op = mutate.op();
+                    if (op instanceof EntityMutationOp.Damage d) {
+                        entity.hurt(d.source(), d.amount());
+                    } else if (op instanceof EntityMutationOp.AddEffect e) {
+                        if (entity instanceof net.minecraft.world.entity.LivingEntity le) {
+                            le.addEffect(e.effect(), e.source());
+                        }
+                    } else if (op instanceof EntityMutationOp.Ignite i) {
+                        entity.setSecondsOnFire(i.seconds());
+                    } else if (op instanceof EntityMutationOp.ExtinguishFire) {
+                        entity.extinguishFire();
+                    }
+                }
+            } catch (Throwable t) {
+                LOGGER.warn("Deferred entity mutation on {} failed: {}", mutate.entityId(), t.toString());
+            }
+            MailboxAudit.recordApplied(msg.auditId(), region, RegionMessage.Type.ENTITY_MUTATE);
+        }
+    }
+
+    /**
+     * Stage 5 "Entity Safety Layer" (docs/LOCAL_TICK_STAGE4.md): publishes this
+     * region's {@link WorldRegion.EntitySnapshot} — a detached, immutable copy of
+     * every owned entity's position fields — for {@code BoundaryEntityTransfer}'s
+     * main-thread scan to read instead of the live {@code Entity} objects this
+     * thread itself just finished mutating. Runs AFTER {@code tickEntities()} so the
+     * snapshot reflects this tick's final, settled positions. A fresh {@code HashMap}
+     * is built and handed to the region's {@code AtomicReference} as one unit —
+     * readers on other threads never see a partially-populated map. A deliberately
+     * SEPARATE pass over {@code ownedEntityIds} (not piggybacked on tickEntities()'s
+     * own budgeted round-robin) — correctness first; folding this into that loop is
+     * a possible follow-up if profiling ever shows the extra pass matters, not
+     * attempted now.
+     */
+    private void publishEntitySnapshot() {
+        java.util.Map<java.util.UUID, WorldRegion.EntitySnapshot> snapshot =
+                new java.util.HashMap<>(region.getOwnedEntityIds().size());
+        for (java.util.UUID uuid : region.getOwnedEntityIds()) {
+            net.minecraft.world.entity.Entity e = level.getEntity(uuid);
+            if (e == null) continue;
+            snapshot.put(uuid, new WorldRegion.EntitySnapshot(
+                    e.getX(), e.getY(), e.getZ(), e.xo, e.yo, e.zo, e.isRemoved()));
+        }
+        region.nestworldPublishEntitySnapshot(snapshot);
+    }
 
     /**
      * Ticks the entities assigned to this region, stopping when the round

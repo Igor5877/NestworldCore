@@ -43,6 +43,9 @@ public class RegionTree {
 
     // --- Public API ---
 
+    /** The WorldGrid this tree keeps in sync with its own leaf set. */
+    public WorldGrid getGrid() { return grid; }
+
     /** Returns all active (leaf) regions in an unordered list. */
     public List<WorldRegion> getActiveRegions() {
         lock.readLock().lock();

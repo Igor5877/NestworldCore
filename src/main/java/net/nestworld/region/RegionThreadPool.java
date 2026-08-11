@@ -106,8 +106,12 @@ public class RegionThreadPool {
         // Threads still holding budget-deferred work must wake regardless, or
         // a one-shot scheduled-tick burst in an entity-less region would
         // freeze mid-cascade until the next work round happens to reach it.
+        // Step 3 (docs/LOCAL_TICK_STAGE4.md): a free-running region ticks itself on its
+        // own pace (RegionThread.runFreeRunningTick()) — never dispatched or waited on
+        // here. No-op unless NestworldTuning.FREE_RUNNING_REGIONS_ENABLED.
         java.util.List<RegionThread> workers = new java.util.ArrayList<>();
         for (RegionThread t : threads) {
+            if (NestworldTuning.FREE_RUNNING_REGIONS_ENABLED && t.region.isFreeRunning()) continue;
             if (!t.region.getOwnedEntityIds().isEmpty() || t.getLastWorkDeferred() > 0) workers.add(t);
         }
         if (workers.isEmpty()) return;
@@ -151,7 +155,15 @@ public class RegionThreadPool {
         java.util.List<RegionThread> workers = new java.util.ArrayList<>();
         for (RegionThread t : threads) {
             java.util.List<Runnable> work = assignments.get(t.region);
-            if (work != null && !work.isEmpty()) workers.add(t);
+            if (work == null || work.isEmpty()) continue;
+            // Step 3 (docs/LOCAL_TICK_STAGE4.md, design point 2): a free-running region
+            // never blocks on this latch-dispatch — its own loop drains this bucket
+            // non-blockingly at the start of each of its own local ticks. NOT waited on.
+            if (NestworldTuning.FREE_RUNNING_REGIONS_ENABLED && t.region.isFreeRunning()) {
+                t.region.nestworldPostFreeRunningWork(work);
+                continue;
+            }
+            workers.add(t);
         }
         if (workers.isEmpty()) return;
 

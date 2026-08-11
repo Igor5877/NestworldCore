@@ -98,6 +98,36 @@ public final class NestworldTuning {
             Integer.getInteger("nestworld.crossRegionReadLockTimeoutMs", 2) * 1_000_000L;
 
     /**
+     * Stage 5 tick-scheduler architecture, Part 3 (docs/LOCAL_TICK_STAGE4.md, "Stage 5
+     * tick-scheduler architecture — DECIDED", Blocker 3 read-side). Quantified "cascade
+     * safety margin": {@link #BORDER_BAND_CHUNKS}'s 32-block width plus the maximum
+     * single-cascade reach across the vanilla mechanisms that can trigger from a
+     * border-band-deferred write — redstone dust decaying from a 15-strength source is
+     * the binding case (wider than a piston's 12-block {@code MAX_PUSH_DEPTH}), both
+     * confirmed by reading the actual constants, not assumed. 32+15=47, rounded up to a
+     * whole-chunk margin. Before applying a deferred EXPLOSION_APPLY/BLOCK_WRITE message,
+     * every region within this many blocks of the write's position must be lock-excluded
+     * — see {@link WorldGrid#getRegionsWithinMargin} and the apply-site guard in
+     * {@code NestworldRegionSystem}. Under today's still-barrier-synchronized model this
+     * lock is always uncontended (every region is already parked at the point it runs) —
+     * it becomes load-bearing only once Part 5 (free-running regions) ships.
+     */
+    public static final int CASCADE_SAFETY_MARGIN_BLOCKS =
+            Integer.getInteger("nestworld.cascadeSafetyMarginBlocks", 48);
+
+    /**
+     * Cap on how long applying a deferred border-band write will wait to acquire ANOTHER
+     * region's {@code chunkLock} (see {@link #CASCADE_SAFETY_MARGIN_BLOCKS}). Same
+     * philosophy as {@link #CROSS_REGION_READ_LOCK_TIMEOUT_NANOS} — short relative to a
+     * tick, never blocks indefinitely. On timeout the write is re-posted to its own
+     * destination mailbox and retried on a later pass instead of applied — the same
+     * "eventually applied" Tier 2 contract every other deferred write already uses, not a
+     * new failure mode.
+     */
+    public static final long CASCADE_LOCK_TIMEOUT_NANOS =
+            Integer.getInteger("nestworld.cascadeLockTimeoutMs", 2) * 1_000_000L;
+
+    /**
      * Anti-grief: cap how many region-thread-spawned entities are registered on
      * the main thread per tick (the rest carry to following ticks). Off-main
      * spawns (mob breeding, projectiles, abilities) are queued and drained on
@@ -130,6 +160,46 @@ public final class NestworldTuning {
      */
     public static final long DEFERRED_SPAWN_BUDGET_NANOS =
             Integer.getInteger("nestworld.deferredSpawnBudgetMs", 5) * 1_000_000L;
+
+    /**
+     * Stage 5.3 design v3 (docs/LOCAL_TICK_STAGE4.md): time budget (ms), shared
+     * across all regions, for applying deferred cross-region mailbox messages
+     * (EXPLOSION_APPLY, BLOCK_WRITE) at the post-region-tick barrier point. Same
+     * "count alone doesn't bound tick-time cost predictably" reasoning as {@link
+     * #DEFERRED_SPAWN_BUDGET_NANOS} — a single flood-triggering event (e.g. a
+     * chain-reaction explosion whose blast crosses a region boundary) can post an
+     * arbitrarily large batch; without a budget, applying it all in one barrier
+     * pass would stall the main thread for however long that batch takes. Any
+     * messages left unapplied when the budget is hit simply stay queued — they
+     * are picked up on a LATER tick's barrier pass, extending (not violating) the
+     * existing Tier 2 "eventually applied" contract these message types already
+     * use. Generous default so normal play never hits it.
+     */
+    public static final long MAILBOX_DRAIN_BUDGET_NANOS =
+            Integer.getInteger("nestworld.mailboxDrainBudgetMs", 5) * 1_000_000L;
+
+    /**
+     * Step 3 (docs/LOCAL_TICK_STAGE4.md, "Step 3 — Single Free-Running Region"): hard
+     * kill-switch for the entire free-running-region code path. Off by default —
+     * {@code RegionThread.run()}'s branch on {@code region.isFreeRunning()} is dead
+     * code, byte-for-byte the same execution path as today, unless this is set AND a
+     * region is explicitly toggled via {@code /nestworld freerun <id>}. Gemini-reviewed
+     * design (2026-08-10): "sound and implementable... proceed with implementation."
+     */
+    public static final boolean FREE_RUNNING_REGIONS_ENABLED =
+            System.getenv("NESTWORLD_FREE_RUNNING_REGIONS") != null
+                    || Boolean.getBoolean("nestworld.freeRunningRegions");
+
+    /** Target cadence for a free-running region's own self-paced loop — same ~50ms/tick
+     *  vanilla itself targets, so a free-running region's baseline pace matches today's
+     *  unless something (load, deliberate throttling) pushes it off that target. */
+    public static final long FREE_RUNNING_TARGET_TICK_NANOS = 50_000_000L;
+
+    /** Bounded wait for a free-running region to confirm it has paused for a world-save
+     *  rendezvous (design point 3) — same timeout-not-indefinite-block philosophy as
+     *  {@link #CROSS_REGION_READ_LOCK_TIMEOUT_NANOS}/{@link #CASCADE_LOCK_TIMEOUT_NANOS}. */
+    public static final long FREE_RUNNING_SAVE_RENDEZVOUS_TIMEOUT_NANOS =
+            Integer.getInteger("nestworld.freeRunningSaveRendezvousTimeoutMs", 2000) * 1_000_000L;
 
     /**
      * Weight of one unit of block-tick heat relative to one owned entity when
@@ -604,6 +674,46 @@ public final class NestworldTuning {
             Long.getLong("nestworld.forceloadWaitTimeoutMs", 20_000L);
 
     /**
+     * Layer 12 (2026-08-11): {@link #FORCELOAD_WAIT_TIMEOUT_MS} bounds a SINGLE {@code
+     * /forceload add} call's own wait, but does nothing to bound several such calls issued in
+     * quick succession — each independently gets its own full 20s allowance, so N calls back
+     * to back can still add up to N*20s on the SAME main thread and blow through the 60s
+     * {@code ServerHangWatchdog} threshold. This is the exact same bug CLASS as the
+     * {@code getChunk()} first-call burst-budget gap (see {@link #GETCHUNK_BURST_BUDGET_MS}),
+     * just in this separate command path — found live (2026-08-11) when a 4-call, 1024-chunk
+     * {@code /forceload add} batch (32x32, tiled into 256-chunk blocks by vanilla's per-command
+     * cap) crashed a real ATM9 server via a genuine Watchdog kill, stack rooted at {@code
+     * ForceLoadCommand}'s own {@code managedBlock} wait.
+     *
+     * <p>Unlike {@code getChunk()}'s per-TICK budget (a hot path, naturally scoped to one game
+     * tick), {@code /forceload} is an infrequent, administrative command whose OWN wait can
+     * itself span many ticks — a per-tick reset does not naturally bound consecutive calls the
+     * way it does for getChunk(). Instead this is a rolling WALL-CLOCK window: a shared budget
+     * of {@link #FORCELOAD_BURST_BUDGET_MS} that resets every {@link
+     * #FORCELOAD_BURST_WINDOW_MS}, consumed by every {@code /forceload add} call's actual wait
+     * time (not just calls after the first) — mirroring the getChunk() fix's
+     * {@code Math.min(perCallTimeout, remainingBudget)} pattern exactly.
+     *
+     * <p>{@code 0} = disabled, falls back to {@link #FORCELOAD_WAIT_TIMEOUT_MS}'s old per-call-
+     * only behaviour (NOT recommended — this is precisely the gap that just crashed a real
+     * server). Default 3s, matching {@link #GETCHUNK_BURST_BUDGET_MS}'s philosophy: generous
+     * enough for one legitimate large forceload, small enough that a rapid-fire batch of them
+     * degrades to fast proxy/early-return responses well before stacking up to 60s.
+     */
+    public static final long FORCELOAD_BURST_BUDGET_MS =
+            Long.getLong("nestworld.forceloadBurstBudgetMs", 3_000L);
+
+    /**
+     * The rolling wall-clock window over which {@link #FORCELOAD_BURST_BUDGET_MS} is spent and
+     * replenished. Default 5s — long enough to catch a tight burst of several {@code
+     * /forceload add} calls issued back-to-back (the crashing scenario: 4 calls whose own
+     * combined wait time spanned ~63s), short enough that a lone admin issuing occasional
+     * forceload commands minutes apart never sees any throttling at all.
+     */
+    public static final long FORCELOAD_BURST_WINDOW_MS =
+            Long.getLong("nestworld.forceloadBurstWindowMs", 5_000L);
+
+    /**
      * Sibling of {@link #FORCELOAD_WAIT_TIMEOUT_MS} for the harder, original crash: a mod
      * calling {@code Level.getChunk(x, z)} directly (e.g. FTBChunks' map-click teleport) for
      * genuinely virgin territory on a heavy real modpack, blocking the main thread on
@@ -634,6 +744,75 @@ public final class NestworldTuning {
      */
     public static final long GETCHUNK_WAIT_TIMEOUT_MS =
             Long.getLong("nestworld.getChunkWaitTimeoutMs", 20_000L);
+
+    /**
+     * NestWorld: caps the TOTAL time the main thread will spend blocking inside
+     * {@code ServerChunkCache.getChunk()}'s FULL+load=true proxy path across ONE server
+     * tick, on top of {@link #GETCHUNK_WAIT_TIMEOUT_MS}'s existing per-CALL bound.
+     *
+     * <p>Found necessary live, 2026-08-09: Draconic Evolution's reactor-explosion raycast
+     * (BrandonsCore's {@code ProcessHandler.onServerTick()} -> {@code ExplosionHelper
+     * .removeBlock()} -> {@code Level.getChunk()}) calls {@code getChunk()} synchronously,
+     * on the MAIN thread, once per traced/removed block position, all within a single
+     * {@code updateProcess()} invocation — i.e. a tight loop of many such calls in one
+     * tick. GETCHUNK_WAIT_TIMEOUT_MS correctly bounds any ONE of those calls to 20s, but
+     * does nothing to bound their SUM: a real crash-report (twice, same day) caught the
+     * main thread stuck at exactly this call chain when the 60s ServerHangWatchdog fired —
+     * a handful of genuinely-cold chunks in the same burst, each legitimately taking a
+     * large fraction of the per-call budget, adds up past 60s even though no single call
+     * ever violated its own bound. This is the main-thread analogue of the RegionThread
+     * cumulative-wait gap (see {@code regionthread-getchunk-blocking-crash} project notes)
+     * — bounding one call was necessary but not sufficient.
+     *
+     * <p>Once this tick's budget is exhausted, FURTHER FULL+load=true calls THIS TICK skip
+     * the wait entirely and return a proxy immediately (same {@code NestworldProxyLevelChunk}
+     * object used for a single-call timeout) rather than attempting even a short wait —
+     * cheap and correct, since by definition the tick is already over-budget. The budget
+     * refills at the start of the next tick. Every OTHER call shape (non-FULL, load=false,
+     * internal worldgen dependency resolution) is completely untouched, matching
+     * GETCHUNK_WAIT_TIMEOUT_MS's existing scoping.
+     *
+     * <p>{@code 0} = disabled (only the per-call bound applies, vanilla-identical to before
+     * this flag existed). Default 3000ms: generous for ordinary gameplay (a handful of
+     * fresh-chunk loads from normal exploration resolve in low tens of ms total, nowhere
+     * near this budget) while keeping any single tick's worst case far under the 60s
+     * watchdog even stacked with other main-thread work measured the same day (up to
+     * ~26ms/tick from the vanilla sub-phase and chunkSource breakdowns).
+     */
+    public static final long GETCHUNK_BURST_BUDGET_MS =
+            Long.getLong("nestworld.getChunkBurstBudgetMs", 3_000L);
+
+    /**
+     * Layer 10 (docs/GEN_SPIKE.md): the hard invariant — project owner's explicit
+     * direction, 2026-08-11, after the burst-budget-first-call fix above still left a
+     * BOUNDED (not zero) main-thread wait: "MAIN THREAD НІКОЛИ НЕ МОЖЕ БЛОКУВАТИСЯ НА
+     * WORLDGEN... 0 секунд очікування worldgen." Default {@code true}: the gameplay-
+     * thread FULL+load=true {@code getChunk()} path never attempts the bounded wait at
+     * all — it degrades straight to the existing {@code NestworldProxyLevelChunk}
+     * (VOID_AIR-until-resolved) the instant a chunk isn't already done, reusing 100% of
+     * the machinery {@link #GETCHUNK_BURST_BUDGET_MS}/{@link #GETCHUNK_WAIT_TIMEOUT_MS}
+     * already built — this only changes WHEN it's taken, not what it does.
+     *
+     * <p>Deliberately NOT a replacement for the two flags above — set this to
+     * {@code false} to fall back to their bounded-tolerance behavior (e.g. for an
+     * operator who has measured that a few seconds of real generation completing
+     * synchronously is worth it for their specific mod set) — same "don't remove the
+     * old path, gate the new one" discipline as every other toggle in this class.
+     *
+     * <p>What this does NOT solve (explicitly out of scope, matching this project's
+     * existing caution about the critical loading path): a caller still gets a
+     * SEMANTICALLY DIFFERENT result (void air, not the eventual real terrain) the
+     * instant this path is taken — for arbitrary third-party mod code (not something
+     * this project can rewrite), there is no way to make blocking impossible AND
+     * preserve full semantic correctness at the same time without a bytecode-level
+     * continuation/suspend-resume transform, which is a fundamentally different (and
+     * far larger) undertaking than this flag. For operations THIS project owns
+     * (Explosion, BLOCK_WRITE cascades), the real fix already exists as the
+     * check-batch-defer-replay pattern via {@code NestworldGenPool}/the region
+     * admission budget — this flag is specifically about the OUTER opaque-caller case.
+     */
+    public static final boolean GETCHUNK_ZERO_WAIT_MAIN_THREAD =
+            !"false".equalsIgnoreCase(System.getProperty("nestworld.getChunkZeroWaitMainThread", "true"));
 
     private NestworldTuning() {
     }

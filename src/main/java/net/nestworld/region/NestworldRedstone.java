@@ -48,7 +48,7 @@ public final class NestworldRedstone {
             } catch (WireHandler.NetworkOutOfBounds oob) {
                 if (rt.wireCallDepth > 1) throw oob; // unwind to outermost frame
                 handler.nestworldReset();
-                NestworldRegionSystem.get().deferWireUpdate(pos);
+                NestworldRegionSystem.get().deferWireUpdate(rt.region, pos);
                 return true;
             } finally {
                 rt.wireCallDepth--;
@@ -66,7 +66,7 @@ public final class NestworldRedstone {
             } catch (WireHandler.NetworkOutOfBounds oob) {
                 if (rt.wireCallDepth > 1) throw oob;
                 handler.nestworldReset();
-                NestworldRegionSystem.get().deferWireUpdate(pos);
+                NestworldRegionSystem.get().deferWireUpdate(rt.region, pos);
             } finally {
                 rt.wireCallDepth--;
             }
@@ -84,7 +84,7 @@ public final class NestworldRedstone {
             } catch (WireHandler.NetworkOutOfBounds oob) {
                 if (rt.wireCallDepth > 1) throw oob;
                 handler.nestworldReset();
-                NestworldRegionSystem.get().deferWireUpdate(pos);
+                NestworldRegionSystem.get().deferWireUpdate(rt.region, pos);
             } finally {
                 rt.wireCallDepth--;
             }

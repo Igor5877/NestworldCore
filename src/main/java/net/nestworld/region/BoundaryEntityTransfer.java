@@ -128,6 +128,18 @@ public class BoundaryEntityTransfer {
                 if (seen.add(e.getId())) processEntity(e, false);
             }
         }
+
+        // Stage 2 (docs/LOCAL_TICK_STAGE4.md): apply every ENTITY_TRANSFER message posted
+        // this pass. Still runs synchronously in the same tick, at the same barrier-safe
+        // point ownership changes have always been applied at — this does not change WHEN
+        // ownership moves, only formalizes the interaction as a tagged message instead of
+        // an ad-hoc direct field mutation, per the Stage 4 decision's Tier-2 shape.
+        for (WorldRegion region : grid.getAllRegions()) {
+            for (RegionMessage<?> msg : region.nestworldDrainMailbox(RegionMessage.Type.ENTITY_TRANSFER)) {
+                region.addEntity((UUID) msg.payload());
+                MailboxAudit.recordApplied(msg.auditId(), region, RegionMessage.Type.ENTITY_TRANSFER);
+            }
+        }
     }
 
     /** Per-entity ownership check, shared by the full scan and the event-driven drain. */
@@ -155,20 +167,55 @@ public class BoundaryEntityTransfer {
             return;
         }
 
+        // NestWorld: Entity Safety Layer (docs/LOCAL_TICK_STAGE4.md) — findOwner only
+        // checks ownedEntityIds set membership (no live Entity field read), so it's
+        // always safe; moved earlier so we know WHICH region's snapshot to consult
+        // below before touching any position-dependent field.
+        WorldRegion currentOwner = findOwner(uuid);
+
+        // NestWorld: read position via the OWNING region's own published
+        // EntitySnapshot instead of the live Entity object — under free-running
+        // regions, that region's own thread could be concurrently mutating these
+        // exact fields (setPos/move during its own tick); the snapshot is a
+        // detached copy, safe from any thread, published once per the owning
+        // region's own tick (same Tier-1 pattern the ghost-zone BlockEntity
+        // snapshot already uses). An UNOWNED entity (not yet assigned — never
+        // true for a type other than Player, which is already excluded above,
+        // except in the brief window before its first assignment) has no region
+        // thread racing it yet, so a direct live read remains correct and safe.
+        double ex, ey, ez, exo, eyo, ezo;
+        if (currentOwner != null) {
+            WorldRegion.EntitySnapshot snap = currentOwner.nestworldGetEntitySnapshot().get(uuid);
+            if (snap == null || snap.removed()) {
+                // Not in this cycle's snapshot yet (just transferred in, or the owner
+                // hasn't published since) — skip this pass rather than fall back to a
+                // live read (that would silently reintroduce the hazard). The periodic
+                // full-pass safety net and the next cycle's snapshot both self-heal
+                // this within one tick, same "up to one cycle stale" tolerance the
+                // ghost-zone snapshot already accepts.
+                return;
+            }
+            ex = snap.x(); ey = snap.y(); ez = snap.z();
+            exo = snap.xo(); eyo = snap.yo(); ezo = snap.zo();
+        } else {
+            ex = entity.getX(); ey = entity.getY(); ez = entity.getZ();
+            exo = entity.xo; eyo = entity.yo; ezo = entity.zo;
+        }
+
         // NestWorld: an entity that did not move this tick cannot have changed chunk, so it
-        // keeps its current owner. Skip the chunkPosition() allocation + toLong + map work for
+        // keeps its current owner. Skip the ChunkPos allocation + toLong + map work for
         // the (common, at high entity counts) stationary case — but only once it has been
         // assigned (lastChunkKey set, sentinel default = NO_CHUNK), so a spawned-stationary
         // entity still gets its initial owner on the pass that first sees it. Same no-movement
         // shortcut as the tracker (NestworldTuning.TRACKER_SPATIAL_CULL); also cuts the ChunkPos
         // allocation churn that pressures GC under big entity piles (e.g. 150k TNT).
         if (!fullPass && net.nestworld.region.NestworldTuning.TRACKER_SPATIAL_CULL
-                && entity.getX() == entity.xo && entity.getY() == entity.yo && entity.getZ() == entity.zo
+                && ex == exo && ey == eyo && ez == ezo
                 && lastChunkKey.get(entity.getId()) != NO_CHUNK) {
             return;
         }
 
-        ChunkPos currentChunk = entity.chunkPosition();
+        ChunkPos currentChunk = new ChunkPos(net.minecraft.util.Mth.floor(ex) >> 4, net.minecraft.util.Mth.floor(ez) >> 4);
         long chunkKey = currentChunk.toLong();
         if (!fullPass) {
             // One int-keyed lookup; sentinel default means absent != any real chunk.
@@ -176,7 +223,6 @@ public class BoundaryEntityTransfer {
         }
         lastChunkKey.put(entity.getId(), chunkKey);
 
-        WorldRegion currentOwner = findOwner(uuid);
         WorldRegion correctRegion = grid.getRegionFor(currentChunk);
 
         if (correctRegion == null || correctRegion == currentOwner) return;
@@ -184,8 +230,14 @@ public class BoundaryEntityTransfer {
         // Mark as transferring to skip double-tick for one tick
         inTransfer.put(uuid, Boolean.TRUE);
 
+        // Stage 2: remove from the old owner immediately (same as before — this thread
+        // already owns that mutation at this safe point), but hand the new ownership off
+        // as a posted RegionMessage rather than calling correctRegion.addEntity() directly.
+        // Applied at the end of checkAndReassign() via nestworldDrainMailbox(), still this
+        // same tick — see the Stage 4 decision doc for why timing is unchanged for now.
         if (currentOwner != null) currentOwner.removeEntity(uuid);
-        correctRegion.addEntity(uuid);
+        correctRegion.nestworldPostMessage(RegionMessage.entityTransfer(
+                currentOwner, correctRegion, level.getServer().getTickCount(), uuid));
 
         LOGGER.debug("Entity {} moved from {} to {}", uuid,
                 currentOwner != null ? currentOwner.getId() : "none", correctRegion.getId());

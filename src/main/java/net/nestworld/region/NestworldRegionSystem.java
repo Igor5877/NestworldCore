@@ -261,6 +261,14 @@ public class NestworldRegionSystem {
                 || Boolean.getBoolean("nestworld.layoutTest")) {
             RegionTree.selfTest();
         }
+        if (System.getenv("NESTWORLD_MAILBOX_TEST") != null
+                || Boolean.getBoolean("nestworld.mailboxTest")) {
+            BoundaryManager.selfTest();
+        }
+        if (System.getenv("NESTWORLD_MARGIN_TEST") != null
+                || Boolean.getBoolean("nestworld.marginTest")) {
+            WorldGrid.selfTest();
+        }
 
         if (restored) {
             LOGGER.info("NestWorld restored saved layout — {} region(s): {}",
@@ -520,12 +528,12 @@ public class NestworldRegionSystem {
         // 2. Apply boundary redstone signals + wire updates whose network left
         // their region last tick (deferred by NestworldRedstone)
         signalQueue.flush();
-        net.minecraft.core.BlockPos wirePos;
-        while ((wirePos = deferredWireUpdates.poll()) != null) {
+        RegionMessage<net.minecraft.core.BlockPos> wireMsg;
+        while ((wireMsg = deferredWireUpdates.poll()) != null) {
             try {
-                overworld.nestworldWireHandler.onWireUpdated(wirePos);
+                overworld.nestworldWireHandler.onWireUpdated(wireMsg.payload());
             } catch (Throwable t) {
-                LOGGER.warn("Deferred wire update at {} failed: {}", wirePos, t.toString());
+                LOGGER.warn("Deferred wire update at {} failed: {}", wireMsg.payload(), t.toString());
             }
         }
         long t2 = System.nanoTime();
@@ -560,6 +568,49 @@ public class NestworldRegionSystem {
         // 4. Parallel tick — blocks until all region threads finish
         pool.tickAllRegions();
         long t4 = System.nanoTime();
+
+        // 4b. Stage 3 (docs/LOCAL_TICK_STAGE4.md, "entity-triggered block-write race"):
+        // apply explosion batches posted THIS tick by regions whose explosions reached
+        // into a neighbouring region's territory. Must run here — after the region-tick
+        // round (explosions happen during step 4, so nothing existed to apply before it)
+        // but before ghost-zone sync (5) below, so the freshly-destroyed blocks/removed
+        // block entities are reflected in this tick's ghost-zone snapshot instead of
+        // lagging an extra tick. Every region thread is parked here, same as every other
+        // main-thread-only phase in this method.
+        // Stage 5.3 design v3 (docs/LOCAL_TICK_STAGE4.md, "budgeted drain" fix): one
+        // deadline shared across every region and both message types in this pass —
+        // a flood targeting any single region (e.g. a chain-reaction explosion whose
+        // blast crosses a boundary) cannot stall the main thread past this budget.
+        // Anything left queued once the deadline hits is picked up on a LATER tick's
+        // pass instead — extends, not violates, these message types' existing Tier 2
+        // "eventually applied" contract.
+        long nestworldMailboxDeadline = System.nanoTime() + NestworldTuning.MAILBOX_DRAIN_BUDGET_NANOS;
+        for (WorldRegion region : grid.getAllRegions()) {
+            region.nestworldDrainMailboxBudgeted(RegionMessage.Type.EXPLOSION_APPLY, nestworldMailboxDeadline, msg -> {
+                try {
+                    net.minecraft.world.level.Explosion.NestworldExplosionBatch batch =
+                            (net.minecraft.world.level.Explosion.NestworldExplosionBatch) msg.payload();
+                    nestworldApplyWithCascadeGuard(region, msg, batch.positions(),
+                            () -> net.minecraft.world.level.Explosion.nestworldApplyBatch(batch));
+                } catch (Throwable t) {
+                    LOGGER.warn("Deferred explosion batch apply failed: {}", t.toString());
+                }
+            });
+            // 4c. Stage 3 EXTENSION (docs/LOCAL_TICK_STAGE4.md): generic Level.setBlock()
+            // calls (mob-AI, mod code — e.g. Draconic Evolution's reactor, EnderDragon/
+            // WitherBoss) deferred by Level.setBlock()'s guard when made from a region
+            // thread for a position outside its own bounds. Same barrier-safe point as
+            // EXPLOSION_APPLY above, applied on main so it is always safe to write anywhere.
+            region.nestworldDrainMailboxBudgeted(RegionMessage.Type.BLOCK_WRITE, nestworldMailboxDeadline, msg -> {
+                try {
+                    RegionMessage.BlockWrite write = (RegionMessage.BlockWrite) msg.payload();
+                    nestworldApplyWithCascadeGuard(region, msg, java.util.List.of(write.pos()),
+                            () -> overworld.setBlock(write.pos(), write.newState(), write.flags(), write.recursionLeft()));
+                } catch (Throwable t) {
+                    LOGGER.warn("Deferred block write at {} failed: {}", msg, t.toString());
+                }
+            });
+        }
 
         // 5. Refresh ghost zones (runs while region threads are paused at barrier)
         boundaryManager.syncGhostZones();
@@ -633,12 +684,15 @@ public class NestworldRegionSystem {
      */
     private static final int BORDER_BAND_CHUNKS = NestworldTuning.BORDER_BAND_CHUNKS;
 
-    /** Wire updates whose network left its region; re-run on main next tick. */
-    private final java.util.Queue<net.minecraft.core.BlockPos> deferredWireUpdates =
+    /** Wire updates whose network left its region; re-run on main next tick. Stage 2
+     *  (docs/LOCAL_TICK_STAGE4.md): wrapped in the tagged RegionMessage shape — this is
+     *  the ACTUALLY-WIRED "Deferred" tier precedent (BoundarySignalQueue, despite its
+     *  javadoc, is dead code — enqueue() is never called anywhere in the repo). */
+    private final java.util.Queue<RegionMessage<net.minecraft.core.BlockPos>> deferredWireUpdates =
             new java.util.concurrent.ConcurrentLinkedQueue<>();
 
-    public void deferWireUpdate(net.minecraft.core.BlockPos pos) {
-        deferredWireUpdates.add(pos.immutable());
+    public void deferWireUpdate(WorldRegion sourceRegion, net.minecraft.core.BlockPos pos) {
+        deferredWireUpdates.add(RegionMessage.wireUpdate(sourceRegion, server.getTickCount(), pos.immutable()));
     }
 
     /**
@@ -650,14 +704,46 @@ public class NestworldRegionSystem {
      * any region, run on the main thread first (regions are parked then, so
      * their cascades may safely cross borders).
      */
+    // NestWorld DIAG (2026-08-11, chasing the LevelTicks NPE found under Layer 13.1's
+    // heavy sustained chunk-gen load -- crash-2026-08-11_02.35.16-server.txt): captures
+    // the thread identity this phase is expected to always run on, and a flag other code
+    // can check to detect a concurrent/reentrant mutation of the shared per-level
+    // LevelTicks structure while this phase is iterating it. Diagnostic only -- no
+    // behaviour change, just loud logging if the invariant is ever violated. See project
+    // memory: leveticks-race-under-heavy-chunkgen.
+    private static volatile Thread nestworldMainThreadIdentity = null;
+    public static volatile boolean nestworldLevelTicksIterating = false;
+
+    /** NestWorld DIAG: true if called from any thread other than the captured main
+     * tick thread (or if that identity hasn't been captured yet -- treated as unknown,
+     * not a violation, since it just means runScheduledTicksPhase hasn't run yet). */
+    public static boolean nestworldIsOffMainThread() {
+        Thread main = nestworldMainThreadIdentity;
+        return main != null && main != Thread.currentThread();
+    }
+
     public void runScheduledTicksPhase(ServerLevel level, long gameTime) {
+        NestworldTickOwnership.noteServerTick(gameTime);
+        Thread nestworldHere = Thread.currentThread();
+        if (nestworldMainThreadIdentity == null) {
+            nestworldMainThreadIdentity = nestworldHere;
+        } else if (nestworldMainThreadIdentity != nestworldHere) {
+            LOGGER.error("NestWorld DIAG: runScheduledTicksPhase called from unexpected thread '{}' (expected '{}')",
+                    nestworldHere.getName(), nestworldMainThreadIdentity.getName());
+        }
+
         java.util.Map<WorldRegion, java.util.List<Runnable>> buckets = new java.util.IdentityHashMap<>();
         java.util.List<Runnable> mainBucket = new java.util.ArrayList<>();
 
-        level.getBlockTicks().tick(gameTime, 65536, (pos, block) ->
-                routeScheduledTick(pos, () -> level.nestworldRunBlockTick(pos, block), buckets, mainBucket));
-        level.getFluidTicks().tick(gameTime, 65536, (pos, fluid) ->
-                routeScheduledTick(pos, () -> level.nestworldRunFluidTick(pos, fluid), buckets, mainBucket));
+        nestworldLevelTicksIterating = true;
+        try {
+            level.getBlockTicks().tick(gameTime, 65536, (pos, block) ->
+                    routeScheduledTick(pos, () -> level.nestworldRunBlockTick(pos, block), buckets, mainBucket));
+            level.getFluidTicks().tick(gameTime, 65536, (pos, fluid) ->
+                    routeScheduledTick(pos, () -> level.nestworldRunFluidTick(pos, fluid), buckets, mainBucket));
+        } finally {
+            nestworldLevelTicksIterating = false;
+        }
 
         for (Runnable r : mainBucket) {
             try {
@@ -1007,6 +1093,139 @@ public class NestworldRegionSystem {
      *  resolved through its region grid. */
     public ServerLevel getOverworld()                 { return overworld; }
     public WorldGrid getGrid()                        { return grid; }
+
+    /**
+     * Step 3 (docs/LOCAL_TICK_STAGE4.md, "Step 3 — Single Free-Running Region", design
+     * point 3): called from {@code ServerLevel.save()} before chunk/entity serialization.
+     * Requests a save rendezvous from every currently free-running region belonging to
+     * this level's overworld (in Step 3, at most one) and waits — bounded, same
+     * timeout-not-indefinite-block philosophy as every other cross-region wait in this
+     * codebase — for each to confirm it has paused at a safe point (between its own
+     * local ticks, never mid-tick). A region that doesn't respond in time is logged and
+     * the save proceeds anyway rather than risking hanging the whole save indefinitely —
+     * a rare timeout means that region's data might reflect a slightly newer tick than
+     * intended, not corruption (its OWN thread is what's writing that data, just not
+     * demonstrably paused at the exact moment save started).
+     *
+     * @return the paused regions, to hand back to {@link #nestworldResumeFreeRunningRegionsAfterSave}
+     */
+    public static java.util.List<WorldRegion> nestworldPauseFreeRunningRegionsForSave(ServerLevel level) {
+        if (!NestworldTuning.FREE_RUNNING_REGIONS_ENABLED || !isInitialised()
+                || level != INSTANCE.overworld) {
+            return java.util.List.of();
+        }
+        java.util.List<WorldRegion> freeRunning = new java.util.ArrayList<>();
+        java.util.List<java.util.concurrent.CountDownLatch> paused = new java.util.ArrayList<>();
+        for (WorldRegion region : INSTANCE.grid.getAllRegions()) {
+            if (region.isFreeRunning()) {
+                freeRunning.add(region);
+                paused.add(region.nestworldRequestSaveRendezvous());
+            }
+        }
+        for (int i = 0; i < freeRunning.size(); i++) {
+            try {
+                boolean confirmed = paused.get(i).await(
+                        NestworldTuning.FREE_RUNNING_SAVE_RENDEZVOUS_TIMEOUT_NANOS, java.util.concurrent.TimeUnit.NANOSECONDS);
+                if (!confirmed) {
+                    LOGGER.warn("Region #{} did not confirm save rendezvous within {}ms — saving anyway",
+                            freeRunning.get(i).getId(),
+                            NestworldTuning.FREE_RUNNING_SAVE_RENDEZVOUS_TIMEOUT_NANOS / 1_000_000L);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        return freeRunning;
+    }
+
+    /** Releases every region {@link #nestworldPauseFreeRunningRegionsForSave} paused. */
+    public static void nestworldResumeFreeRunningRegionsAfterSave(java.util.List<WorldRegion> paused) {
+        for (WorldRegion region : paused) {
+            region.nestworldReleaseSaveRendezvous();
+        }
+    }
+
+    /** NestWorld: Stage 3 generic block-write guard (docs/LOCAL_TICK_STAGE4.md) — called
+     *  from {@code Level.setBlock()}'s NestWorld guard when a region thread targets a
+     *  position outside its own bounds. Computes the vanilla-equivalent boolean result
+     *  synchronously via the SAFE (Tier 0) {@code getBlockState()} read — cheap and
+     *  correct from any thread, unlike the actual mutation — and defers the real write
+     *  to a {@link RegionMessage} applied on the main thread during {@code
+     *  tickAllRegions()}'s step 4c, the same barrier-safe point Explosion's Stage 3
+     *  batches already use. Callers relying on the return value (e.g. mob-AI follow-up
+     *  logic: drop items, spawn particles, only if something actually changed) see the
+     *  correct answer immediately; the visible world state itself lags by up to one
+     *  region-tick round, same latency class already accepted throughout Stage 1-3. */
+    public boolean nestworldDeferForeignBlockWrite(WorldRegion source, WorldRegion destination,
+            net.minecraft.core.BlockPos pos, net.minecraft.world.level.block.state.BlockState newState,
+            int flags, int recursionLeft) {
+        boolean nestworldWouldChange = !overworld.getBlockState(pos).equals(newState);
+        destination.nestworldPostMessage(RegionMessage.blockWrite(source, destination, server.getTickCount(),
+                new RegionMessage.BlockWrite(pos.immutable(), newState, flags, recursionLeft)));
+        return nestworldWouldChange;
+    }
+
+    /**
+     * Stage 5 tick-scheduler architecture, Part 3 (docs/LOCAL_TICK_STAGE4.md, "Stage 5
+     * tick-scheduler architecture — DECIDED", Blocker 3 read-side). Applies {@code
+     * applyWork} only after acquiring the {@code chunkLock} of every region within
+     * {@link NestworldTuning#CASCADE_SAFETY_MARGIN_BLOCKS} of every position in {@code
+     * positions} — the set whose territory a piston push or redstone cascade triggered
+     * by this write could plausibly reach. Locks are acquired in ascending region-ID
+     * order (deadlock avoidance, same rule any future multi-region lock acquisition in
+     * this codebase must follow) with a bounded timeout ({@link
+     * NestworldTuning#CASCADE_LOCK_TIMEOUT_NANOS}). On timeout: does NOT apply — re-posts
+     * {@code msg} to {@code destination}'s own mailbox so it is retried on a later pass,
+     * the same "eventually applied" Tier 2 contract every other deferred write already
+     * uses, not a new failure mode.
+     *
+     * <p>Under today's still-barrier-synchronized model this is always uncontended —
+     * every region thread is already parked at the point this runs (step 4b/4c, after
+     * {@code pool.tickAllRegions()}'s barrier) — so lock acquisition here always succeeds
+     * immediately. It becomes load-bearing only once regions go free-running (Part 5),
+     * at which point a border-band-deferred write's cascade could otherwise race a
+     * neighbouring region's own concurrent tick. Deliberately built and tested now, while
+     * harmless, rather than deferred until Part 5 needs it for the first time.
+     */
+    private void nestworldApplyWithCascadeGuard(WorldRegion destination, RegionMessage<?> msg,
+            java.util.Collection<net.minecraft.core.BlockPos> positions, Runnable applyWork) {
+        java.util.TreeSet<WorldRegion> toLock = new java.util.TreeSet<>(
+                java.util.Comparator.comparingInt(WorldRegion::getId));
+        for (net.minecraft.core.BlockPos pos : positions) {
+            toLock.addAll(grid.getRegionsWithinMargin(pos, NestworldTuning.CASCADE_SAFETY_MARGIN_BLOCKS));
+        }
+        java.util.List<WorldRegion> locked = new java.util.ArrayList<>(toLock.size());
+        java.util.List<Long> stamps = new java.util.ArrayList<>(toLock.size());
+        long deadline = System.nanoTime() + NestworldTuning.CASCADE_LOCK_TIMEOUT_NANOS;
+        try {
+            for (WorldRegion r : toLock) {
+                long remainingNanos = deadline - System.nanoTime();
+                long stamp = 0L;
+                if (remainingNanos > 0) {
+                    try {
+                        stamp = r.getChunkLock().tryWriteLock(remainingNanos, java.util.concurrent.TimeUnit.NANOSECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                if (stamp == 0L) {
+                    LOGGER.warn("Cascade guard: timed out locking region {} for a deferred write near {} "
+                            + "— re-queued for a later pass", r.getId(), positions);
+                    destination.nestworldRequeueMessage(msg); // NOT a new "sent" — same message, still pending
+                    return;
+                }
+                locked.add(r);
+                stamps.add(stamp);
+            }
+            applyWork.run();
+            MailboxAudit.recordApplied(msg.auditId(), destination, msg.messageType());
+        } finally {
+            for (int i = locked.size() - 1; i >= 0; i--) {
+                locked.get(i).getChunkLock().unlockWrite(stamps.get(i));
+            }
+        }
+    }
+
     public RegionTree getTree()                       { return tree; }
     public RegionThreadPool getPool()                 { return pool; }
     public RegionSplitManager getSplitManager()       { return splitManager; }

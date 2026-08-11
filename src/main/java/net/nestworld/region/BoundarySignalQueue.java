@@ -10,22 +10,28 @@ import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
- * Propagates redstone signals across region boundaries with a maximum
- * delay of 1 game tick (imperceptible in normal gameplay).
+ * <b>DEAD CODE as of 2026-08-09 — {@link #enqueue} is never called by any code in this
+ * repository</b> (confirmed by grepping NestworldCore's own sources and every vanilla
+ * patch). The class was designed to propagate redstone signals across region boundaries
+ * with a 1-tick delay, but nothing was ever wired up to actually call {@link #enqueue};
+ * {@link #flush} runs every tick as a cheap no-op ({@code queue} is always empty). The
+ * REAL, actually-wired equivalent mechanism is {@link NestworldRegionSystem}'s
+ * {@code deferredWireUpdates} queue (posted to by {@link NestworldRedstone} on a
+ * {@code WireHandler.NetworkOutOfBounds}), which now uses the {@link RegionMessage}
+ * shape (see {@code docs/LOCAL_TICK_STAGE4.md}, Stage 2). Kept for now rather than
+ * deleted (still constructed and its harmless no-op {@code flush()} still runs) — a
+ * cleanup candidate for a future pass, not touched here to keep this change scoped.
  *
- * <p>When a redstone component inside Region A updates a block state
- * that lies on the boundary (within {@link BoundaryManager#GHOST_DEPTH}
- * chunks of another region), it enqueues a {@link SignalEntry} here instead
- * of directly updating the neighbouring region's chunk data.
+ * <p>Original design intent, for whoever picks this up: propagate redstone signals
+ * across region boundaries with a maximum delay of 1 game tick (imperceptible in normal
+ * gameplay). When a redstone component inside Region A updates a block state that lies
+ * on the boundary (within {@link BoundaryManager#GHOST_DEPTH} chunks of another region),
+ * it would enqueue a {@link SignalEntry} here instead of directly updating the
+ * neighbouring region's chunk data; {@link #flush()} (main thread, start of next tick)
+ * would apply every pending update to the live ServerLevel.
  *
- * <p>At the start of the next tick (before region threads begin),
- * {@link #flush()} is called by the main thread.  It applies every
- * pending signal update to the live ServerLevel, so Region B's thread
- * will see the updated block state during that tick.
- *
- * <p>Thread-safety: enqueue() is called from RegionThread contexts
- * (concurrent) while flush() is called from the main thread while all
- * region threads are paused at the tick barrier.
+ * <p>Thread-safety (as designed): enqueue() from RegionThread contexts (concurrent),
+ * flush() from the main thread while all region threads are paused at the tick barrier.
  */
 public class BoundarySignalQueue {
 

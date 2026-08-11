@@ -485,3 +485,288 @@ be the same number" — conflating them silently changes what gets bounded (how 
 much can be outstanding at once) and can make a safety mechanism actively harmful at the very scale
 (ordinary, moderate bulk requests) it was never meant to constrain in the first place. When adding a new
 throttle, ask explicitly which of the two it is before picking a default.
+
+## Layer 9: first-call-in-a-tick escaped the burst budget (2026-08-10/11)
+
+A real ATM9 crash (`crash-2026-08-10_19.33.51-server.txt`) reproduced exactly the failure class
+`GETCHUNK_BURST_BUDGET_MS` (Layer prior to this one) was built to prevent — a single 60-second tick,
+watchdog-killed — via a NEW trigger: EvilCraft's `WorldHelpers.foldArea` (called from
+`EntityVengeanceSpirit.canSpawnNew`, itself triggered by a Draconic Evolution reactor explosion's
+`LivingDeathEvent`) calling `Level.getBlockState()` → `getChunk()` repeatedly, all within one
+main-thread event-handler invocation.
+
+**Root cause, found by re-reading `ServerChunkCache.getChunk()`'s FULL+load=true path line by line**:
+`GETCHUNK_BURST_BUDGET_MS`'s cumulative-per-tick check (`if (nestworldBurstBudgetRemainingNanos <= 0)
+{ ...return proxy immediately... }`) only gated the SECOND and later `getChunk()` call in a tick. The
+FIRST call's own wait deadline was still computed purely from `GETCHUNK_WAIT_TIMEOUT_MS` (20s default),
+completely independent of the burst budget — so a single genuinely-cold chunk could still consume up to
+the full per-call timeout before the burst mechanism ever got a chance to act. 2-3 such calls for
+DISTINCT cold chunk positions in the same tick (exactly what a `foldArea` scan over several unloaded
+chunks produces) could each independently burn close to 20s, stacking well past the 60s watchdog even
+though no single call ever violated its own nominal bound — the same "bounding one call is necessary
+but not sufficient" lesson `GETCHUNK_BURST_BUDGET_MS` itself was built to fix, reopened by an edge case
+in its own accounting.
+
+**Fix**: cap EVERY call's own deadline (including the first) to whichever is smaller — its individual
+`GETCHUNK_WAIT_TIMEOUT_MS` bound, or the tick's remaining burst budget:
+```java
+long nestworldCallBudgetNanos = Math.min(
+        GETCHUNK_WAIT_TIMEOUT_MS * 1_000_000L,
+        Math.max(nestworldBurstBudgetRemainingNanos, 0L));
+long nestworldDeadline = System.nanoTime() + nestworldCallBudgetNanos;
+```
+`GETCHUNK_BURST_BUDGET_MS = 0` (disabled) still degrades cleanly to the old pure-per-call-timeout
+behavior (`nestworldBurstBudgetRemainingNanos` is `Long.MAX_VALUE` in that case), so the "0 = vanilla-
+identical" semantics for both flags are preserved.
+
+**What this does NOT solve** (explicitly scoped out, matching this doc's own established caution about
+this critical path): the deeper "arbitrary third-party mod code gets a semantically meaningful READY/
+DEFERRED/UNAVAILABLE result instead of a safe-but-possibly-stale proxy" question. For code THIS project
+owns (Explosion, BLOCK_WRITE cascades), that already exists via the batch-check-defer-replay pattern
+`NestworldGenPool`/the region admission budget implement. For opaque mod code calling vanilla's
+synchronous `getChunk()` (EvilCraft here), there is no third option beyond "block" or "return a safe
+stand-in now" without rewriting the mod — the `NestworldProxyLevelChunk` (VOID_AIR-until-resolved)
+fallback is the existing, already-reviewed, honest answer for that case, unchanged by this fix. The
+Watchdog itself was NOT touched, disabled, or its threshold changed — it remains the safety net; if a
+60s tick recurs after this fix, that is a signal a DIFFERENT unbounded synchronous path exists
+somewhere, not a reason to raise the limit.
+
+**Validated**: added `/nestworld debugsyncburst <x> <z> <count>` — calls `Level.getChunk()` `count`
+times in a tight loop within ONE command invocation (guaranteed same tick, unlike issuing `count`
+separate `/nestworld debugsync` commands, which land in different ticks over separate RCON round-trips
+and each get a fresh per-tick budget — a real methodology trap hit while testing this). 15 genuinely
+cold chunks in one tick: **repro** — first call 1752ms, next few decreasing (363/242/428/281ms) as
+remaining budget shrank, then 7-9ms each (near-instant proxy) once exhausted — TOTAL 3151ms. **ATM9**
+(419 mods, real modded worldgen) — TOTAL 3005ms for the same 15-in-one-tick shape. Both essentially
+exactly the ~3000ms burst budget, confirming the fix bounds the WHOLE tick's cumulative cost regardless
+of how many cold chunks a single mod call touches — not just calls after the first. Zero exceptions,
+zero Mixin errors, 20 TPS maintained on both servers throughout.
+
+## Layer 10: the hard invariant — zero wait, not bounded wait (2026-08-11, same session)
+
+The project owner pushed further after Layer 9: a bounded (3s) wait is still a wait — the real goal
+should be a HARD INVARIANT: **"MAIN THREAD НІКОЛИ НЕ МОЖЕ БЛОКУВАТИСЯ НА WORLDGEN"** — not 3 seconds,
+not 20 seconds, 0 seconds. Laid out a full architecture distinguishing "gameplay/mod thread" (never
+waits) from "worldgen execution context" (`NestworldGenPool`, where synchronous dependency resolution
+is fine because it's inside the controlled pipeline, not blocking a game tick) — and was explicit that
+a FULLY general fix (arbitrary third-party mod code getting a proper suspend/resume continuation
+instead of stale data) is impossible without bytecode transformation or rewriting the mod: "100%
+гарантія від блокування + 100% семантична сумісність з абсолютно довільним модом одночасно —
+неможлива. Це фундаментальне обмеження, а не недолік." Proposed the practical compromise instead: make
+the EXISTING proxy-return machinery (Layer 6b/9) trigger with ZERO wait by default for the gameplay-
+thread FULL+load=true path, keep the bounded-budget flags as an explicit opt-out fallback (not
+removed), and add violation telemetry so any future regression is visible.
+
+**Implementation — reused 100% of existing machinery, changed only WHEN it's invoked**:
+`NestworldTuning.GETCHUNK_ZERO_WAIT_MAIN_THREAD` (default `true`) — the condition that previously only
+triggered the immediate-proxy path when the burst budget was already exhausted
+(`nestworldBurstBudgetRemainingNanos <= 0`) now ALSO triggers it unconditionally when this flag is on:
+```java
+if ((GETCHUNK_ZERO_WAIT_MAIN_THREAD || nestworldBurstBudgetRemainingNanos <= 0) && !completablefuture.isDone()) {
+   ...return proxy immediately, same NestworldProxyLevelChunk as before...
+}
+```
+Under the default, the bounded-wait code below (Layer 9's fix) becomes structurally unreachable for
+the gameplay-thread FULL+load=true path — not just "should be near-zero," but dead code by
+construction. `GETCHUNK_BURST_BUDGET_MS`/`GETCHUNK_WAIT_TIMEOUT_MS` are NOT removed — set
+`-Dnestworld.getChunkZeroWaitMainThread=false` to fall back to the bounded-tolerance behavior.
+
+**Explicitly still out of scope, matching the owner's own framing**: internal worldgen dependency
+resolution (a chunk's own FEATURES/STRUCTURE_STARTS generation needing a neighbor chunk) still uses
+the vanilla-identical blocking `managedBlock(completablefuture::isDone)` path (the `else` branch,
+non-FULL/load=false calls) — this is INSIDE the controlled generation pipeline in the owner's own
+framing, and remains the deadlock-risk area this doc has cautioned about since Layer 1. For operations
+this project owns (Explosion, BLOCK_WRITE), the real "operation suspends, resumes once dependencies are
+ready" pattern already exists via `NestworldGenPool`/the region admission budget — this flag is
+specifically about the opaque-third-party-mod-caller case, where a semantically-perfect result isn't
+achievable and a safe stand-in (VOID_AIR until resolved) is the honest tradeoff, same as before, just
+now taken immediately instead of after up to 3s.
+
+**Validated**: `/nestworld debugsyncburst` (Layer 9's same-tick test), 15 cold chunks — **repro**:
+TOTAL 100ms (was 3151ms under Layer 9 alone). **ATM9**: TOTAL 11ms (was 3005ms). A harsher 50-chunk
+repro run: TOTAL 311ms, and `/nestworld chunkstats` confirms the invariant quantitatively — `blocking:
+0`, `total wait: 0 ms`, all 65 calls became `proxy creations`. Confirmed a burst-tested chunk still
+resolves to real generated terrain in the background (not permanently stuck void) via forceload +
+block-state check. **Real ATM9 organic load** (players/mobs, not just the synthetic test) since this
+boot: 124,069 total `getChunk()` calls, **100.0% fast-path hits**, only 5 calls ever reached the
+blocking branch at all (the out-of-scope internal-dependency path) — cumulative wait from those:
+**0 ms** (rounds to zero, i.e. negligible). 20 TPS, 0 `EntityOwnershipGuard` violations, zero
+exceptions, zero Mixin errors on both servers throughout.
+
+This is the strongest form of the guarantee available without a mod-rewriting/bytecode-transform
+undertaking: not "we tested N chunks and it didn't fall over," but "the gameplay thread cannot reach
+a worldgen-blocking code path for this call shape — it's structurally excluded by default." The
+Watchdog remains fully enabled and untouched throughout — if it ever fires for a chunk-related stall
+again, that is now a strong, specific signal pointing at the one remaining scoped-out path (internal
+worldgen dependency resolution), not a reason to raise its threshold.
+
+## The "unlimited generation" test — reconfirms WHY the admission/promotion budgets exist
+
+Asked directly: "а без обмежень по генерації?" (and without generation limits?). Temporarily disabled
+`chunkGenAdmitBudget`/`chunkGenMaxConcurrent` on gen-spike-repro (`0` = unlimited/vanilla) and re-ran
+the exact 256-fresh-chunk `/forceload` test from Layer 1. Result: chunks resolved almost instantly by
+raw generation throughput, but the server hit a genuine **`Can't keep up! Running 13234ms or 264 ticks
+behind`** — a real ~13s main-thread stall, live-reproduced on demand. Restored the original settings
+afterward (`admitBudget=4`, `maxConcurrent=8` on repro) and confirmed clean recovery, 20 TPS, 0
+`EntityOwnershipGuard` violations.
+
+**Important nuance, caught while writing this up**: gen-spike-repro's `chunkGenBudget` (the SEPARATE
+promotion-side budget — see below) was already `0`/disabled the entire time (commented out in
+`user_jvm_args.txt`), in BOTH the "with admission limits" and "without admission limits" runs — so the
+13s stall wasn't caused by toggling a promotion-side cap directly. It confirms something more specific
+and, in a way, more interesting: admission-side pacing (`chunkGenAdmitBudget`/`chunkGenMaxConcurrent`,
+which control how fast NEW generation work enters the pipeline) has a real SECONDARY effect of
+smoothing the completion/promotion side too, purely by preventing 256 chunks from finishing generation
+in a tight time window in the first place — even with the promotion-side budget itself left off. ATM9
+runs with BOTH `chunkGenBudget=2` (promotion) AND `admitBudget=4`/`maxConcurrent=4` (admission) active
+— the more defended default of the two servers.
+
+**Reframed goal** (matching the owner's own correction): not "make main-thread integration
+instantaneous" but "make sure 256 chunks completing doesn't turn into 10-13 seconds of ONE tick's
+work" — admission pacing already does this indirectly; the dedicated `CHUNK_GEN_BUDGET` promotion cap
+(next section) does it directly and explicitly.
+
+## Layer 11: chunk-promotion latency telemetry (2026-08-11, same session)
+
+The owner asked for exactly this after the unlimited-generation test: not just "does it fall over" but
+ongoing visibility into the promotion step's own cost, so a REAL regression (or the point where it
+starts becoming the bottleneck instead of generation itself) is visible before the next `Can't keep
+up!` rather than after. Also correctly noted this project already has the "Approach A" mechanism
+GEN_SPIKE.md's own original design section proposed and marked "not shipped yet" — it WAS shipped
+since: `NestworldTuning.CHUNK_GEN_BUDGET` (`DistanceManager.nestworldFutureBudget`), a tiered per-tick
+cap on `ChunkHolder.updateFutures()` calls (player-ticket chunks never throttled; bulk/forceload-driven
+chunks paced, lowest ticket level first, deferred holders redriving automatically next tick) — this
+section adds the missing piece: measuring it.
+
+**Implementation**: every `updateFutures()` call site in `DistanceManager.runAllUpdates()` (all 3:
+the unbudgeted path, the Tier-1 player-ticket path, the Tier-2 bulk-budgeted path) now routes through
+`nestworldTimedUpdateFutures()`, which times the call and records the sample into a 2048-slot ring
+buffer (same shape as `WorldRegion.tickDurationsNs`/`getPercentileTickMs`, sized larger since
+individual promotion calls happen far more often than region ticks). `/nestworld chunkpromotion`
+reports: `pending` (live gauge — `chunksToUpdateFutures.size()` right now), `applied` (cumulative since
+boot), `avg`/`p95`/`p99`/`max` (from the rolling window).
+
+**Validated**: baseline on gen-spike-repro (light ambient load): `applied=2,209`, `avg=0.481ms`,
+`p95=0.072ms`, `p99=0.285ms`, `max=8.571ms`. Triggered the same 256-chunk `/forceload` batch (with
+admission limits back on): `applied` jumped to `6,868` (+4,659 promotions from the batch — matches
+~256 chunks × up to 4 gateable statuses each), `pending=0` throughout (never fell behind), latency
+distribution actually IMPROVED under load (`avg=0.178ms`, `max=5.895ms`) — direct, quantitative
+confirmation that the admission pacing keeps promotion cost small and smooth even during a real burst,
+not just "TPS looked fine." ATM9 (real organic load, `chunkGenBudget=2` active): `pending=0`,
+`avg=0.038ms`, `p95=0.093ms`, `p99=0.421ms`, `max=16.466ms` (one genuine tail outlier — worth watching
+if it recurs, not alarming on its own). Zero exceptions, zero Mixin errors, 20 TPS, 0
+`EntityOwnershipGuard` violations on both servers throughout.
+
+## A further idea, deliberately NOT attempted tonight: parallel chunk-promotion/prepare-commit split
+
+The owner's next proposal, after seeing the telemetry request through: split `updateFutures()`'s own
+work into a PARALLELIZABLE "prepare" phase (thread-safe pieces: chunk-status-transition computation,
+region-owned `ChunkHolder` state, immutable snapshot construction) and a minimal, still-main-thread-
+only "publish/commit" phase (reference swap, state update, required listener notification) — using
+this project's own region-ownership model to let each region prepare its own ready chunks
+independently, so a 256-chunk burst becomes "region A: 8 ready, region B: 3 ready, ..." instead of one
+undifferentiated main-thread queue. Framed explicitly as a natural fit for where Stage 5's own
+architecture is heading (region independence + a controlled, still-centralized pipeline for what
+inherently must stay global).
+
+**Also explicitly self-cautioned by the owner**: this is NOT "just let 8 threads mutate `ChunkMap`" —
+that "is almost guaranteed to open a new class of race conditions." Proposed classifying the promotion
+path's pieces the same rigorous way this session's Entity Safety Layer audit classified cross-region
+entity access, before touching anything:
+
+| Piece | Parallel-safe? |
+|---|---|
+| Worldgen itself | already parallel |
+| Immutable-data preparation | yes |
+| Chunk-local state | yes, if ownership is guaranteed |
+| Region-owned `ChunkHolder` state | yes |
+| Global tickets | needs its own protocol |
+| Player visibility | needs care |
+| `ChunkMap`'s own global structure | needs care |
+| Network publication | main-thread/Netty only |
+| Mod callbacks on chunk load | very dangerous — arbitrary mod code, same "can't guarantee semantics for opaque callers" limit as Layer 10 |
+
+**Why this is NOT implemented tonight, deliberately**: `ChunkMap`/`ChunkHolder` is exactly the class
+this project's OWN history has repeatedly found subtle bugs in from changes of roughly this shape and
+ambition — the "sand duper" incident, the phase-ordering double-tracking bug, the "invisible items"
+desync (see project memory: `regionalized-tracker-fix`, `chunkholder-blockchange-race`). A change this
+large, touching this specific class, deserves the same design-then-independent-review discipline every
+other consequential architecture decision this session got (the Stage 5 tick-scheduler architecture,
+the Entity Safety Layer's generic mutation primitive, Step 3's implementation) — not a rushed extension
+of an already very long session. The owner's own closing guidance for THIS piece was explicitly
+measure-first: gather real p95/p99 promotion latency on ATM9 under sustained load (now possible via
+Layer 11's telemetry) and let that data — not a target throughput number — drive whether/how much
+concurrency to introduce. Recorded here as a clearly-scoped, well-reasoned future direction, matching
+this doc's own established "why not shipped yet" pattern (see the original Approach A/B section above)
+— not abandoned, just correctly sequenced behind its own dedicated design pass.
+
+## Layer 12 (FIXED, 47.4.199, 2026-08-11): `/forceload`'s own cross-call burst-budget gap — found by the owner's own scaling test
+
+The owner's own explicitly-requested 256→512→1000→2000 fresh-chunk scaling series (see above) found a
+**real, live Watchdog crash** on ATM9 during batch 1024: `ServerHangWatchdog detected that a single
+server tick took 60.00 seconds`, crash report `crash-2026-08-11_01.21.11-server.txt`, stack rooted at
+`ForceLoadCommand.java:179`. This is a *separate* code path from `ServerChunkCache.getChunk()` (Layers
+9/10, above) — the exact same bug **class**, in a file not touched by this session's earlier work.
+
+**Root cause**: `NestworldTuning.FORCELOAD_WAIT_TIMEOUT_MS` (20s) bounds a single `/forceload add`
+call's own wait, but nothing bounded several such calls issued back to back — each independently got
+its own full 20s allowance. The scaling-test script issued 4 separate `/forceload add` calls for batch
+1024 (256-chunk vanilla per-command cap, tiled into a 32x32 area); if each got close to its own 20s
+bound, 3+ in a row exceeds the 60s watchdog threshold — which is exactly what happened (issuance alone
+measured 62.99s across the 4 calls before the crash).
+
+**Fix** (`ForceLoadCommand.java` + `NestworldTuning.java`): the identical `Math.min(perCallTimeout,
+remainingBudget)` pattern as Layer 9, but with two differences reflecting `/forceload`'s different
+shape versus `getChunk()`'s hot per-tick path:
+- New `FORCELOAD_BURST_BUDGET_MS` (default 3000ms) / `FORCELOAD_BURST_WINDOW_MS` (default 5000ms) —
+  a **rolling wall-clock window**, not a per-tick reset. `/forceload` is an infrequent, administrative
+  command whose own wait can itself span many ticks, so "reset every tick" doesn't naturally bound
+  consecutive calls the way it does for `getChunk()`.
+- Implemented as plain `private static` fields on `ForceLoadCommand` (main-thread-only, no
+  synchronization needed — commands always run on the server thread).
+- Every call's deadline is now `Math.min(FORCELOAD_WAIT_TIMEOUT_MS, remaining rolling-window budget)`,
+  and every call's actual wait time (not just calls after the first) debits the shared budget.
+
+**Validated** against the *exact* crashing scenario (4x `/forceload add`, 256 chunks each, 1024 total,
+issued back to back) on both servers, with a stricter check than "command returned"/"position isn't
+reported as unloaded" — see the methodology note below.
+
+| | repro | ATM9 (real crash target) |
+|---|---|---|
+| 4-call issuance time (was ~63s, crashing) | 4.33s | 3.04s |
+| Watchdog fired? | no | no |
+| All 1024 chunks confirmed **real** terrain | yes, by t=27.6s | yes, by t=54.8s |
+| TPS throughout | 20.0 (no dip) | dropped to 6.5–9.1 TPS for ~20s during the tail (t≈33–55s), then recovered to 20.0 |
+
+**Methodology note — validating "operation actually finished," not just "chunk responds"**: the
+scaling-test's original loaded-check (`data get block` not saying "not loaded") turned out to be a
+false positive for this specific validation: a chunk that's still a Layer-10 `NestworldProxyLevelChunk`
+stand-in also doesn't say "not loaded" (it's filled with `minecraft:void_air`, a real loaded-but-empty
+chunk, by design). Re-checked with `execute if block X Y Z minecraft:void_air run list` at y=-60 (well
+underground on ATM9) — this distinguishes "still a proxy" (predicate true) from "real generated
+terrain" (predicate false, since real stone/deepslate isn't `void_air`) from "genuinely unloaded" (the
+command itself fails to parse against an unloaded chunk, a distinct third signal). Confirms the crash's
+own P0 concern: a fast command return is not proof the underlying work is done — Layer 12 only had to
+prove the *command* doesn't block the main thread; separately confirming all 1024 chunks eventually
+became real terrain (not stuck as proxies) is what closes the loop.
+
+**The TPS dip is real, but it's the already-known GC/CPU ceiling, not a new bug**: ATM9 briefly ran at
+~1/3 speed (`Can't keep up! Running ... 42–164 ticks behind`, 4 occurrences in the log around this
+window) roughly 30–55s into the burst, before recovering cleanly to 20 TPS on its own. `jstat -gc`
+showed active G1 young/concurrent-cycle activity across this window. This matches this doc's own
+already-exhaustively-investigated Layer 7 finding (GC pressure, not scheduling, is the throughput
+ceiling for raw chunk-gen+promotion volume — see `chunkgen-gc-pressure-bottleneck` /
+`gc-algorithm-tried-no-help` / `heap-increase-fixes-gc-not-throughput` in project memory) — **not** a
+new architectural gap, and not something Layer 12 was ever meant to solve. Layer 12's scope was
+strictly "the main thread must never block past a bounded, shared budget waiting on `/forceload`'s own
+completion" — that invariant now holds even under 4 back-to-back calls landing in the exact pattern
+that crashed the server. The raw cost of generating+promoting 1024 chunks in under a minute is a
+separate, already-diagnosed, deliberately-not-re-opened-tonight problem.
+
+**A general NestWorld invariant, not just a one-off fix** (owner's framing, worth stating explicitly):
+any synchronous operation that can wait on chunk/worldgen completion needs **both** (a) a per-call
+timeout, **and** (b) protection against cumulative main-thread blocking across several such calls in
+quick succession. A per-call timeout alone is not sufficient — Layer 9 and Layer 12 are two independent
+discoveries of the same missing half of this invariant, in two unrelated files. Any *future* synchronous
+wait added to this core (a new command, a new mod-compat shim) should be checked against this pattern
+from the start, not discovered again via a crash.

@@ -181,22 +181,39 @@ public class RegionSplitManager {
         // 2-3 TPS").
         for (WorldRegion region : active) {
             double costMs = region.getAvgTickMs();
+            // NestWorld: Stage 4.5 conclusion (docs/LOCAL_TICK_STAGE4.md) — the barrier's
+            // wait tracks the SLOWEST region's tick, not its average. A region whose
+            // average looks healthy but whose tick cost spikes intermittently (long tail)
+            // is invisible to an average-only heuristic yet can still be the tick's
+            // bottleneck on the ticks that matter. p95 over the same 100-tick window
+            // catches this — reuses existing raw samples, no new tracking added.
+            double p95Ms = region.getPercentileTickMs(0.95);
+            boolean tailHot = p95Ms > SPLIT_MS_THRESHOLD;
             boolean fillSplit = spareCores && region == hottest && costMs > SPLIT_FILL_CORES_MS;
             boolean atRegionCap = active.size() + pendingSplits.size() >= MAX_REGIONS_TOTAL;
 
-            if (!atRegionCap && (costMs > SPLIT_MS_THRESHOLD || fillSplit)) {
+            if (!atRegionCap && (costMs > SPLIT_MS_THRESHOLD || tailHot || fillSplit)) {
                 region.mergePressureChecks = 0;
                 mergeCandidates.remove(region);
                 if (++region.splitPressureChecks >= SPLIT_CHECKS_REQUIRED && region.canSplit()) {
                     if (splitWouldSeparateLoad(region)) {
                         pendingSplits.add(region);
+                        if (tailHot && costMs <= SPLIT_MS_THRESHOLD) {
+                            LOGGER.info("Split of {} triggered by p95 tail ({} ms) despite average"
+                                            + " looking healthy ({} ms)", region,
+                                    String.format("%.1f", p95Ms), String.format("%.1f", costMs));
+                        }
                     } else {
                         logSkippedSplit(region);
                     }
                     region.resetThresholdCounters();
                 }
-            } else if (costMs < MERGE_MS_THRESHOLD
+            } else if (costMs < MERGE_MS_THRESHOLD && !tailHot
                     && (active.size() > SPLIT_TARGET_PARALLELISM || region.getOwnedEntityIds().isEmpty())) {
+                // NestWorld: also require the tail to be quiet, not just the average —
+                // merging two siblings back together when one still spikes above the
+                // split threshold would just reproduce the same bottleneck one step later
+                // (split/merge thrash), defeating the point of catching it here at all.
                 region.splitPressureChecks = 0;
                 if (++region.mergePressureChecks >= MERGE_CHECKS_REQUIRED && !region.pinned) {
                     mergeCandidates.add(region); // persists until merged or cost rises
@@ -252,27 +269,82 @@ public class RegionSplitManager {
         CutChoice choice = loadAwareCut(region);
         // Manual /nestworld split bypasses the hotspot veto: fall back to the
         // raw median on the preferred axis so an operator can still force a cut.
-        WorldRegion[] children = (choice != null)
-                ? tree.split(region, choice.axis, choice.cut)
-                : tree.split(region, entityMedianCut(region));
-        if (children == null) return null; // at min size or not in tree
+        return nestworldWithRegionLocks(java.util.List.of(region), () -> {
+            WorldRegion[] children = (choice != null)
+                    ? tree.split(region, choice.axis, choice.cut)
+                    : tree.split(region, entityMedianCut(region));
+            if (children == null) return null; // at min size or not in tree
 
-        pool.remove(region);
-        pool.spawn(children[0]);
-        pool.spawn(children[1]);
+            pool.remove(region);
+            pool.spawn(children[0]);
+            pool.spawn(children[1]);
 
-        // Hand all entities to child A; BoundaryEntityTransfer reassigns any
-        // that actually live in child B on the next tick via the grid lookup.
-        for (java.util.UUID uuid : region.getOwnedEntityIds()) {
-            children[0].addEntity(uuid);
+            // Hand all entities to child A; BoundaryEntityTransfer reassigns any
+            // that actually live in child B on the next tick via the grid lookup.
+            for (java.util.UUID uuid : region.getOwnedEntityIds()) {
+                children[0].addEntity(uuid);
+            }
+
+            LOGGER.info("Split {} -> [{}, {}]  (cost was {} ms; {} entities, heat {}; cut {} axis; hottest {})",
+                    region, children[0], children[1], String.format("%.1f", region.getAvgTickMs()),
+                    region.getOwnedEntityIds().size(), String.format("%.1f", blockTickHeat.totalInRegion(region)),
+                    choice != null ? choice.axis : region.preferredSplitAxis(),
+                    blockTickHeat.hotspotSummary(region, 3));
+            return children;
+        });
+    }
+
+    /**
+     * Stage 5 tick-scheduler architecture, Part 4 (docs/LOCAL_TICK_STAGE4.md, "Stage 5
+     * tick-scheduler architecture — DECIDED"). Acquires the {@code chunkLock} of every
+     * region in {@code primary} PLUS every region directly adjacent to any of them (
+     * {@link WorldGrid#getAdjacentRegions}) — whose adjacency bookkeeping the BSP
+     * mutation could affect — in ascending region-ID order (same deadlock-avoidance
+     * rule the border-band cascade guard in {@code NestworldRegionSystem} uses), with a
+     * bounded timeout. On timeout: does NOT run {@code body} — returns {@code null},
+     * same as every other "can't split/merge right now" case these methods already
+     * return null for; the split/merge heuristic re-evaluates every tick, so this is
+     * retried automatically, not lost.
+     *
+     * <p>Under today's still-barrier-synchronized model this is always uncontended
+     * (every region thread is already parked when {@code applyPending()} runs); becomes
+     * load-bearing only once regions go free-running (Part 5).
+     */
+    private <T> T nestworldWithRegionLocks(java.util.Collection<WorldRegion> primary,
+            java.util.function.Supplier<T> body) {
+        WorldGrid grid = tree.getGrid();
+        java.util.TreeSet<WorldRegion> toLock = new java.util.TreeSet<>(
+                java.util.Comparator.comparingInt(WorldRegion::getId));
+        toLock.addAll(primary);
+        for (WorldRegion r : primary) toLock.addAll(grid.getAdjacentRegions(r));
+        java.util.List<WorldRegion> locked = new java.util.ArrayList<>(toLock.size());
+        java.util.List<Long> stamps = new java.util.ArrayList<>(toLock.size());
+        long deadline = System.nanoTime() + NestworldTuning.CASCADE_LOCK_TIMEOUT_NANOS;
+        try {
+            for (WorldRegion r : toLock) {
+                long remainingNanos = deadline - System.nanoTime();
+                long stamp = 0L;
+                if (remainingNanos > 0) {
+                    try {
+                        stamp = r.getChunkLock().tryWriteLock(remainingNanos, java.util.concurrent.TimeUnit.NANOSECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                if (stamp == 0L) {
+                    LOGGER.warn("Split/merge lock guard: timed out locking region {} — skipping this pass, "
+                            + "will be retried automatically", r.getId());
+                    return null;
+                }
+                locked.add(r);
+                stamps.add(stamp);
+            }
+            return body.get();
+        } finally {
+            for (int i = locked.size() - 1; i >= 0; i--) {
+                locked.get(i).getChunkLock().unlockWrite(stamps.get(i));
+            }
         }
-
-        LOGGER.info("Split {} -> [{}, {}]  (cost was {} ms; {} entities, heat {}; cut {} axis; hottest {})",
-                region, children[0], children[1], String.format("%.1f", region.getAvgTickMs()),
-                region.getOwnedEntityIds().size(), String.format("%.1f", blockTickHeat.totalInRegion(region)),
-                choice != null ? choice.axis : region.preferredSplitAxis(),
-                blockTickHeat.hotspotSummary(region, 3));
-        return children;
     }
 
     /**
@@ -647,18 +719,20 @@ public class RegionSplitManager {
      * Returns the merged region, or null if the two are not tree siblings.
      */
     public WorldRegion doMerge(WorldRegion a, WorldRegion b) {
-        WorldRegion merged = tree.merge(a, b);
-        if (merged == null) return null;
+        return nestworldWithRegionLocks(java.util.List.of(a, b), () -> {
+            WorldRegion merged = tree.merge(a, b);
+            if (merged == null) return null;
 
-        pool.remove(a);
-        pool.remove(b);
-        pool.spawn(merged);
+            pool.remove(a);
+            pool.remove(b);
+            pool.spawn(merged);
 
-        for (java.util.UUID uuid : a.getOwnedEntityIds()) merged.addEntity(uuid);
-        for (java.util.UUID uuid : b.getOwnedEntityIds()) merged.addEntity(uuid);
+            for (java.util.UUID uuid : a.getOwnedEntityIds()) merged.addEntity(uuid);
+            for (java.util.UUID uuid : b.getOwnedEntityIds()) merged.addEntity(uuid);
 
-        LOGGER.info("Merged [{}, {}] -> {}  (costs were {} ms, {} ms)",
-                a, b, merged, String.format("%.1f", a.getAvgTickMs()), String.format("%.1f", b.getAvgTickMs()));
-        return merged;
+            LOGGER.info("Merged [{}, {}] -> {}  (costs were {} ms, {} ms)",
+                    a, b, merged, String.format("%.1f", a.getAvgTickMs()), String.format("%.1f", b.getAvgTickMs()));
+            return merged;
+        });
     }
 }

@@ -62,7 +62,45 @@ public final class NestworldCommand {
                                 .then(Commands.argument("z", IntegerArgumentType.integer())
                                         .executes(ctx -> debugSyncGetChunk(ctx.getSource(),
                                                 IntegerArgumentType.getInteger(ctx, "x"),
-                                                IntegerArgumentType.getInteger(ctx, "z")))))));
+                                                IntegerArgumentType.getInteger(ctx, "z"))))))
+                .then(Commands.literal("debugsyncburst")
+                        .then(Commands.argument("x", IntegerArgumentType.integer())
+                                .then(Commands.argument("z", IntegerArgumentType.integer())
+                                        .then(Commands.argument("count", IntegerArgumentType.integer(1, 100))
+                                                .executes(ctx -> debugSyncGetChunkBurst(ctx.getSource(),
+                                                        IntegerArgumentType.getInteger(ctx, "x"),
+                                                        IntegerArgumentType.getInteger(ctx, "z"),
+                                                        IntegerArgumentType.getInteger(ctx, "count")))))))
+                .then(Commands.literal("chunkstats").executes(ctx -> chunkStats(ctx.getSource())))
+                .then(Commands.literal("chunkpromotion").executes(ctx -> chunkPromotion(ctx.getSource())))
+                .then(Commands.literal("setgenconcurrency")
+                        .then(Commands.argument("n", IntegerArgumentType.integer(0))
+                                .executes(ctx -> setGenConcurrency(ctx.getSource(),
+                                        IntegerArgumentType.getInteger(ctx, "n")))))
+                .then(Commands.literal("genconcurrency").executes(ctx -> genConcurrency(ctx.getSource())))
+                .then(Commands.literal("mspt").executes(ctx -> msptPercentiles(ctx.getSource())))
+                .then(Commands.literal("stresschunks")
+                        .then(Commands.argument("count", IntegerArgumentType.integer(1, 200000))
+                                .then(Commands.argument("baseX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("baseZ", IntegerArgumentType.integer())
+                                                .executes(ctx -> stressChunks(ctx.getSource(),
+                                                        IntegerArgumentType.getInteger(ctx, "count"),
+                                                        IntegerArgumentType.getInteger(ctx, "baseX"),
+                                                        IntegerArgumentType.getInteger(ctx, "baseZ")))))))
+                .then(Commands.literal("teststage3write")
+                        .then(Commands.argument("x", IntegerArgumentType.integer())
+                                .then(Commands.argument("y", IntegerArgumentType.integer())
+                                        .then(Commands.argument("z", IntegerArgumentType.integer())
+                                                .executes(ctx -> testStage3Write(ctx.getSource(),
+                                                        IntegerArgumentType.getInteger(ctx, "x"),
+                                                        IntegerArgumentType.getInteger(ctx, "y"),
+                                                        IntegerArgumentType.getInteger(ctx, "z")))))))
+                .then(Commands.literal("scheduler").executes(ctx -> scheduler(ctx.getSource())))
+                .then(Commands.literal("mailboxaudit").executes(ctx -> mailboxAudit(ctx.getSource())))
+                .then(Commands.literal("entityguard").executes(ctx -> entityGuard(ctx.getSource())))
+                .then(Commands.literal("freerun")
+                        .then(Commands.argument("id", IntegerArgumentType.integer(0))
+                                .executes(ctx -> freeRun(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "id"))))));
 
         // /spark — in-game access to the spark standalone agent (see SparkBridge).
         // Only when the real spark mod is absent (dev runtime can't load it);
@@ -76,6 +114,107 @@ public final class NestworldCommand {
                             .executes(ctx -> SparkBridge.run(ctx.getSource(),
                                     com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "args")))));
         }
+    }
+
+    /**
+     * Stage 4.1 (docs/LOCAL_TICK_STAGE4.md): observational classification of every
+     * active region — IDLE/RUNNING/DELAYED/OVERLOADED — over the existing barrier.
+     * Does not change tick semantics; purely reports state RegionThread/WorldRegion
+     * already track.
+     */
+    private static int scheduler(CommandSourceStack src) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        NestworldRegionSystem sys = NestworldRegionSystem.get();
+        java.util.List<RegionScheduler.Classification> classes =
+                RegionScheduler.classifyAll(sys.getPool());
+        java.util.Map<RegionScheduler.State, Integer> counts = new java.util.EnumMap<>(RegionScheduler.State.class);
+        for (RegionScheduler.Classification c : classes) {
+            counts.merge(c.state(), 1, Integer::sum);
+        }
+        src.sendSuccess(() -> Component.literal(String.format(
+                "NestWorld scheduler: %d region(s) — idle=%d running=%d delayed=%d overloaded=%d",
+                classes.size(),
+                counts.getOrDefault(RegionScheduler.State.IDLE, 0),
+                counts.getOrDefault(RegionScheduler.State.RUNNING, 0),
+                counts.getOrDefault(RegionScheduler.State.DELAYED, 0),
+                counts.getOrDefault(RegionScheduler.State.OVERLOADED, 0))), false);
+        for (RegionScheduler.Classification c : classes) {
+            if (c.state() == RegionScheduler.State.IDLE) continue;
+            src.sendSuccess(() -> Component.literal(String.format(
+                    "  #%d [%s] avg=%.1fms deferredEntities=%d workDeferred=%d",
+                    c.region().getId(), c.state(), c.avgTickMs(),
+                    c.lastDeferredEntities(), c.lastWorkDeferred())), false);
+        }
+        return classes.size();
+    }
+
+    /**
+     * Stage 5 prerequisite (docs/LOCAL_TICK_STAGE4.md, "Part 5 staging"): reports
+     * {@link MailboxAudit}'s running totals and flags any message stuck in flight
+     * longer than 5s (a generous window — real apply latency is at most a few ticks)
+     * as a possible loss. No-op (reports disabled) unless NESTWORLD_MAILBOX_AUDIT=1.
+     */
+    private static int mailboxAudit(CommandSourceStack src) {
+        if (!MailboxAudit.ENABLED) {
+            src.sendFailure(Component.literal(
+                    "Mailbox audit is disabled — set NESTWORLD_MAILBOX_AUDIT=1 (or -Dnestworld.mailboxAudit=true) and restart"));
+            return 0;
+        }
+        int stale = MailboxAudit.logStaleEntries(5_000_000_000L);
+        src.sendSuccess(() -> Component.literal("Mailbox audit: " + MailboxAudit.summary()
+                + (stale > 0 ? String.format(" — %d stale (check log)", stale) : "")), false);
+        return 1;
+    }
+
+    /**
+     * Entity Safety Layer invariant check (docs/LOCAL_TICK_STAGE4.md, "Entity Safety
+     * Layer"): reports {@link EntityOwnershipGuard}'s running violation count. Zero
+     * violations across a soak run is the pass criterion for NO_FOREIGN_ENTITY_MUTATION.
+     * No-op (reports disabled) unless NESTWORLD_ENTITY_GUARD=1.
+     */
+    private static int entityGuard(CommandSourceStack src) {
+        if (!EntityOwnershipGuard.ENABLED) {
+            src.sendFailure(Component.literal(
+                    "Entity ownership guard is disabled — set NESTWORLD_ENTITY_GUARD=1 (or -Dnestworld.entityGuard=true) and restart"));
+            return 0;
+        }
+        long violations = EntityOwnershipGuard.violations();
+        src.sendSuccess(() -> Component.literal(violations == 0
+                ? "Entity ownership guard: 0 violations (NO_FOREIGN_ENTITY_MUTATION holds)"
+                : "Entity ownership guard: " + violations + " violation(s) — check log for NO_FOREIGN_ENTITY_MUTATION"), false);
+        return (int) Math.min(violations, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Step 3 (docs/LOCAL_TICK_STAGE4.md, "Step 3 — Single Free-Running Region"): toggles
+     * free-running mode for one region — explicit, observable, command-driven selection
+     * for this validation phase rather than an automatic heuristic. No-op (reports
+     * disabled) unless NESTWORLD_FREE_RUNNING_REGIONS=1.
+     */
+    private static int freeRun(CommandSourceStack src, int id) {
+        if (!NestworldTuning.FREE_RUNNING_REGIONS_ENABLED) {
+            src.sendFailure(Component.literal(
+                    "Free-running regions are disabled — set NESTWORLD_FREE_RUNNING_REGIONS=1 (or -Dnestworld.freeRunningRegions=true) and restart"));
+            return 0;
+        }
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        NestworldRegionSystem sys = NestworldRegionSystem.get();
+        WorldRegion region = findRegion(sys, id);
+        if (region == null) {
+            src.sendFailure(Component.literal("No active region with id " + id));
+            return 0;
+        }
+        boolean newState = !region.isFreeRunning();
+        region.nestworldSetFreeRunning(newState);
+        src.sendSuccess(() -> Component.literal(
+                "Region #" + id + " free-running: " + (newState ? "ON" : "OFF")), true);
+        return 1;
     }
 
     /**
@@ -199,16 +338,35 @@ public final class NestworldCommand {
             int deferred = thread != null ? thread.getLastDeferredCount() : 0;
             int workDeferred = thread != null ? thread.getLastWorkDeferred() : 0;
             double regionHeat = heat.totalInRegion(r);
+            // NestWorld: Stage 4.5 — show p95 only when it noticeably diverges from the
+            // average (long tail hiding behind a healthy-looking mean); a well-behaved
+            // region's p95 tracks its average closely and would just be noise here.
+            double avgMs = r.getAvgTickMs();
+            double p95Ms = r.getPercentileTickMs(0.95);
+            boolean showP95 = p95Ms > avgMs * 1.5 && p95Ms > 2.0;
+            // NestWorld: Stage 5.3 design v3 "budgeted drain" fix — a mailbox that still
+            // has messages queued AFTER the barrier pass (nestworldDrainMailboxBudgeted
+            // hit its time budget) is only expected under a genuine flood; 0 the rest of
+            // the time, so shown only when non-zero instead of every tick.
+            int mailboxDepth = r.nestworldMailboxSize();
+            // Step 3 (docs/LOCAL_TICK_STAGE4.md): a free-running region's localTickCount
+            // diverging from server.tickCount is expected and exactly what to watch —
+            // shown only for regions actually toggled free-running, zero-cost otherwise.
+            boolean freeRunning = r.isFreeRunning();
+            long tickDelta = freeRunning ? r.getLocalTickCount() - src.getServer().getTickCount() : 0;
             src.sendSuccess(() -> Component.literal(String.format(
-                    "  #%d chunks(%d,%d)-(%d,%d) cost=%.1fms entities=%d%s%s%s",
+                    "  #%d chunks(%d,%d)-(%d,%d) cost=%.1fms%s entities=%d%s%s%s%s%s",
                     r.getId(), r.getMinChunkX(), r.getMinChunkZ(),
                     r.getMaxChunkX(), r.getMaxChunkZ(),
-                    r.getAvgTickMs(), r.getOwnedEntityIds().size(),
+                    avgMs, showP95 ? String.format(" p95=%.1fms", p95Ms) : "",
+                    r.getOwnedEntityIds().size(),
                     deferred > 0 ? " deferred=" + deferred : "",
                     workDeferred > 0 ? " workDeferred=" + workDeferred : "",
+                    mailboxDepth > 0 ? " mailbox=" + mailboxDepth : "",
                     regionHeat >= 1.0
                             ? String.format(" heat=%.0f[%s]", regionHeat, heat.hotspotSummary(r, 3))
-                            : "")), false);
+                            : "",
+                    freeRunning ? String.format(" FREE-RUNNING localTick=%d (%+d)", r.getLocalTickCount(), tickDelta) : "")), false);
         }
         return regions.size();
     }
@@ -237,6 +395,250 @@ public final class NestworldCommand {
                 "debugsync: Level.getChunk(%d, %d) [block %d,%d] took %d ms",
                 chunkX, chunkZ, blockX, blockZ, elapsedMs)), false);
         return (int) elapsedMs;
+    }
+
+    /**
+     * Like {@code debugsync}, but calls {@code Level.getChunk()} {@code count} times in a
+     * tight loop, ALL within this ONE command invocation — i.e. guaranteed to run within
+     * the SAME server tick, unlike issuing {@code count} separate {@code debugsync}
+     * commands (each a separate RCON round-trip, likely landing in different ticks and
+     * each getting a fresh per-tick burst budget). Reproduces the actual shape of the
+     * 2026-08-10 crash (EvilCraft's WorldHelpers.foldArea calling getBlockState() -&gt;
+     * getChunk() repeatedly within one event-handler invocation) to validate the
+     * GETCHUNK_BURST_BUDGET_MS cumulative-per-tick cap.
+     */
+    private static int debugSyncGetChunkBurst(CommandSourceStack src, int blockX, int blockZ, int count) {
+        net.minecraft.server.level.ServerLevel level = src.getServer().overworld();
+        long totalStart = System.nanoTime();
+        StringBuilder perCall = new StringBuilder();
+        for (int i = 0; i < count; i++) {
+            int chunkX = (blockX >> 4) + i * 2;
+            int chunkZ = blockZ >> 4;
+            long start = System.nanoTime();
+            level.getChunk(chunkX, chunkZ);
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
+            if (i > 0) perCall.append(", ");
+            perCall.append(elapsedMs);
+        }
+        long totalMs = (System.nanoTime() - totalStart) / 1_000_000L;
+        src.sendSuccess(() -> Component.literal(String.format(
+                "debugsyncburst: %d calls in ONE tick, per-call ms=[%s], TOTAL=%d ms",
+                count, perCall, totalMs)), false);
+        return (int) totalMs;
+    }
+
+    /**
+     * NW-CHUNK-FASTPATH telemetry (see docs/LOCAL_TICK_STAGE4.md). Reports main-thread
+     * {@code ServerChunkCache.getChunk()} call accounting since server start: how many
+     * calls hit the new nestworldLoadedFull fast path vs fell through to the blocking
+     * managedBlock() path, and total time spent blocked. Counters are cumulative
+     * (not reset per call) — compare two readings to measure a specific window (e.g.
+     * before/after reproducing a known-heavy event).
+     *
+     * <p>Layer 10 (docs/GEN_SPIKE.md): under {@code GETCHUNK_ZERO_WAIT_MAIN_THREAD}'s
+     * default (true), the gameplay-thread FULL+load=true path can no longer REACH the
+     * blocking branch at all — that's now a structural guarantee (dead code under the
+     * default config), not just a monitored invariant. So "total wait"/"blocking" here
+     * should trend toward reflecting ONLY the still-open, out-of-scope case (internal
+     * worldgen dependency resolution — non-FULL/load=false calls, which never went
+     * through the FULL+load branch to begin with) — a persistently nonzero reading is
+     * now a MORE useful signal than before, not a less useful one, since the biggest
+     * prior contributor is gone.
+     */
+    private static int chunkStats(CommandSourceStack src) {
+        net.minecraft.server.level.ServerChunkCache cache =
+                (net.minecraft.server.level.ServerChunkCache) src.getServer().overworld().getChunkSource();
+        long lookups = cache.nestworldChunkLookups.get();
+        long fastHits = cache.nestworldFastPathHits.get();
+        long blocking = cache.nestworldBlockingCalls.get();
+        long waitNanos = cache.nestworldWaitNanos.get();
+        long proxies = cache.nestworldProxyCreations.get();
+        long regionTimeouts = cache.nestworldRegionGetChunkTimeouts.get();
+        double fastPct = lookups == 0 ? 0.0 : 100.0 * fastHits / lookups;
+        double avgBlockMs = blocking == 0 ? 0.0 : (waitNanos / 1_000_000.0) / blocking;
+        src.sendSuccess(() -> Component.literal("NW Chunk FastPath (main-thread getChunk, cumulative)"), false);
+        src.sendSuccess(() -> Component.literal(String.format(
+                "  calls: %,d   fast-path hits: %,d (%.1f%%)   blocking: %,d",
+                lookups, fastHits, fastPct, blocking)), false);
+        src.sendSuccess(() -> Component.literal(String.format(
+                "  total wait: %.0f ms   avg blocking: %.3f ms   proxy creations: %,d",
+                waitNanos / 1_000_000.0, avgBlockMs, proxies)), false);
+        src.sendSuccess(() -> Component.literal(String.format(
+                "  region-thread getChunk timeouts: %,d%s",
+                regionTimeouts,
+                regionTimeouts > 0 ? " (safety valve engaged — see RegionThread getChunk blocking crash fix)" : "")), false);
+        return (int) lookups;
+    }
+
+    /**
+     * Layer 11 (docs/GEN_SPIKE.md, project owner's explicit request, 2026-08-11):
+     * chunk-PROMOTION telemetry — distinct from {@link #chunkStats}'s getChunk() call
+     * accounting. This measures the OTHER main-thread chunk-loading cost: {@code
+     * DistanceManager.runAllUpdates()}'s {@code updateFutures()} calls, the "integrate
+     * a chunk whose generation just finished" step that GEN_SPIKE.md's very first
+     * finding named as the actual freeze mechanism behind mass-chunk-gen events (256
+     * fresh chunks completing near-simultaneously produced a real 13.2s main-thread
+     * stall in a same-session test, even with getChunk() itself already zero-wait).
+     * {@code pending} is a live gauge (current backlog); the rest are cumulative since
+     * server start.
+     */
+    private static int chunkPromotion(CommandSourceStack src) {
+        net.minecraft.server.level.ServerChunkCache cache =
+                (net.minecraft.server.level.ServerChunkCache) src.getServer().overworld().getChunkSource();
+        net.minecraft.server.level.DistanceManager dm = cache.chunkMap.getDistanceManager();
+        int pending = dm.nestworldPromotionPending();
+        long applied = dm.nestworldPromotionTotalApplied();
+        double avgMs = dm.nestworldPromotionAvgMs();
+        double p95 = dm.nestworldPromotionPercentileMs(0.95);
+        double p99 = dm.nestworldPromotionPercentileMs(0.99);
+        double maxMs = dm.nestworldPromotionMaxMs();
+        src.sendSuccess(() -> Component.literal("NW Chunk Promotion (main-thread updateFutures(), cumulative)"), false);
+        src.sendSuccess(() -> Component.literal(String.format(
+                "  pending: %,d   applied: %,d   avg: %.3f ms", pending, applied, avgMs)), false);
+        src.sendSuccess(() -> Component.literal(String.format(
+                "  p95: %.3f ms   p99: %.3f ms   max: %.3f ms", p95, p99, maxMs)), false);
+        return pending;
+    }
+
+    /**
+     * NestWorld (Layer 13.1): live concurrency-cap change for the shared NOISE/SURFACE/
+     * CARVERS generation pool, no restart required -- see ChunkMap.nestworldSetGenConcurrency's
+     * javadoc. Built to run a clean scaling benchmark (2/4/6/8/10/12) on one warmed-up JVM,
+     * since a restart before every data point was found to introduce a real JIT-compilation-
+     * storm confound (see project memory: layer13-concurrency-sweep-partial-and-jit-storm).
+     * Only takes effect if the server was booted with a positive
+     * -Dnestworld.chunkGenMaxConcurrent (0 disables gating entirely, independent of this).
+     */
+    private static int setGenConcurrency(CommandSourceStack src, int n) {
+        net.minecraft.server.level.ServerChunkCache cache =
+                (net.minecraft.server.level.ServerChunkCache) src.getServer().overworld().getChunkSource();
+        cache.chunkMap.nestworldSetGenConcurrency(n);
+        src.sendSuccess(() -> Component.literal("NW gen-pool concurrency set to " + n), true);
+        return n;
+    }
+
+    /**
+     * NestWorld (Layer 13.1): main-thread MSPT percentiles (p50/p95/p99/max), for the
+     * scaling benchmark's "does the main thread's own tick time degrade" question --
+     * complements chunkpromotion (WHY it might degrade) with the actual tick-time
+     * distribution. Reuses vanilla's own {@code MinecraftServer.tickTimes} ring buffer
+     * (last 100 ticks, nanoseconds) -- no new tracking needed, it was already there.
+     */
+    private static int msptPercentiles(CommandSourceStack src) {
+        long[] ticks = src.getServer().tickTimes.clone();
+        double[] ms = new double[ticks.length];
+        for (int i = 0; i < ticks.length; i++) ms[i] = ticks[i] / 1_000_000.0;
+        java.util.Arrays.sort(ms);
+        double avg = java.util.Arrays.stream(ms).average().orElse(0.0);
+        double p50 = ms[(int) (ms.length * 0.50)];
+        double p95 = ms[(int) Math.min(ms.length - 1, ms.length * 0.95)];
+        double p99 = ms[(int) Math.min(ms.length - 1, ms.length * 0.99)];
+        double max = ms[ms.length - 1];
+        src.sendSuccess(() -> Component.literal(String.format(
+                "NW MSPT (last %d ticks): avg=%.2f p50=%.2f p95=%.2f p99=%.2f max=%.2f",
+                ticks.length, avg, p50, p95, p99, max)), false);
+        return (int) p99;
+    }
+
+    private static int genConcurrency(CommandSourceStack src) {
+        net.minecraft.server.level.ServerChunkCache cache =
+                (net.minecraft.server.level.ServerChunkCache) src.getServer().overworld().getChunkSource();
+        int cap = cache.chunkMap.nestworldGenConcurrency();
+        int poolPending = cache.chunkMap.nestworldGenPoolPending();
+        src.sendSuccess(() -> Component.literal(
+                "NW gen-pool concurrency: " + cap + "   queued-in-pool: " + poolPending), false);
+        return cap;
+    }
+
+    /**
+     * NestWorld debug (see docs/LOCAL_TICK_STAGE4.md, "DistanceManager root cause
+     * investigation"): simulates a Draconic-Evolution-reactor-style raycast burst —
+     * {@code count} synchronous {@code Level.getBlockState()} calls to SCATTERED,
+     * genuinely fresh (never-before-touched) chunk positions, all within this ONE
+     * command execution (one tick), run directly on the main thread. Unlike
+     * {@code /forceload} (a batched ticket registration, already stress-tested this
+     * project's history), this matches the actual access shape suspected of driving
+     * {@code DistanceManager.chunksToUpdateFutures} backlog growth: many individual
+     * top-level chunk requests issued rapidly from ordinary game code, not a bulk
+     * command. Positions spiral outward from (baseX, baseZ) with wide spacing so
+     * every call is guaranteed to touch a chunk this test (or anything else) has
+     * never generated before — repeat calls with a NEW base to get a clean sample.
+     */
+    private static int stressChunks(CommandSourceStack src, int count, int baseX, int baseZ) {
+        net.minecraft.server.level.ServerLevel level = src.getServer().overworld();
+        net.minecraft.server.level.ServerChunkCache cache =
+                (net.minecraft.server.level.ServerChunkCache) level.getChunkSource();
+        long lookupsBefore = cache.nestworldChunkLookups.get();
+        long fastBefore = cache.nestworldFastPathHits.get();
+        long blockingBefore = cache.nestworldBlockingCalls.get();
+        long waitBefore = cache.nestworldWaitNanos.get();
+
+        // Spiral outward in chunk-sized (16-block) steps, wide enough (37 blocks ~=
+        // 2.3 chunks) that consecutive positions essentially never land in the same
+        // chunk even after thousands of steps — approximates a raycast fanning out
+        // from a central point rather than a compact, already-generated-adjacent area.
+        long start = System.nanoTime();
+        net.minecraft.core.BlockPos.MutableBlockPos pos = new net.minecraft.core.BlockPos.MutableBlockPos();
+        double angle = 0.0;
+        double radius = 0.0;
+        for (int i = 0; i < count; i++) {
+            angle += 0.7;
+            radius += 37.0 / (2.0 * Math.PI * Math.max(1.0, radius / 37.0) + 1.0);
+            int x = baseX + (int) Math.round(radius * Math.cos(angle));
+            int z = baseZ + (int) Math.round(radius * Math.sin(angle));
+            pos.set(x, 100, z);
+            level.getBlockState(pos);
+        }
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
+
+        long lookupsDelta = cache.nestworldChunkLookups.get() - lookupsBefore;
+        long fastDelta = cache.nestworldFastPathHits.get() - fastBefore;
+        long blockingDelta = cache.nestworldBlockingCalls.get() - blockingBefore;
+        long waitDeltaMs = (cache.nestworldWaitNanos.get() - waitBefore) / 1_000_000L;
+        src.sendSuccess(() -> Component.literal(String.format(
+                "stresschunks: %,d getBlockState() calls around (%d,%d) took %,d ms wall-clock "
+                        + "(chunkstats delta: lookups=%,d fast=%,d blocking=%,d wait=%,dms)",
+                count, baseX, baseZ, elapsedMs, lookupsDelta, fastDelta, blockingDelta, waitDeltaMs)), false);
+        return (int) elapsedMs;
+    }
+
+    /** Debug: exercises the Stage 3 generic block-write mailbox mechanism
+     *  (RegionMessage.BLOCK_WRITE -> post -> drain -> apply, step 4c of
+     *  tickAllRegions()) end-to-end WITHOUT needing a live mob-AI/mod trigger.
+     *  Runs on the main thread (this command's caller), so it does not exercise
+     *  Level.setBlock()'s entry guard itself (simple boolean logic, low risk,
+     *  verified by inspection) -- it validates the newer/riskier plumbing:
+     *  message posting, draining, and the deferred apply landing correctly on
+     *  a DIFFERENT region than the one that "sourced" the write. */
+    private static int testStage3Write(CommandSourceStack src, int x, int y, int z) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        NestworldRegionSystem sys = NestworldRegionSystem.get();
+        net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(x, y, z);
+        WorldRegion destination = sys.getGrid().getRegionForChunk(x >> 4, z >> 4);
+        if (destination == null) {
+            src.sendFailure(Component.literal("No region owns chunk (" + (x >> 4) + "," + (z >> 4) + ")"));
+            return 0;
+        }
+        WorldRegion source = null;
+        for (WorldRegion r : sys.getGrid().getAllRegions()) {
+            if (r != destination) { source = r; break; }
+        }
+        if (source == null) {
+            src.sendFailure(Component.literal("Need at least 2 active regions for this test"));
+            return 0;
+        }
+        net.minecraft.world.level.block.state.BlockState before = sys.getOverworld().getBlockState(pos);
+        boolean result = sys.nestworldDeferForeignBlockWrite(source, destination, pos,
+                net.minecraft.world.level.block.Blocks.GOLD_BLOCK.defaultBlockState(), 3, 0);
+        final WorldRegion srcF = source, destF = destination;
+        src.sendSuccess(() -> Component.literal(String.format(
+                "teststage3write: posted BLOCK_WRITE at (%d,%d,%d), source=region#%d dest=region#%d, "
+                        + "before=%s, computed-return=%b (will apply on main next tick's step 4c)",
+                x, y, z, srcF.getId(), destF.getId(), before.getBlock(), result)), false);
+        return 1;
     }
 
     private static int split(CommandSourceStack src, int id) {

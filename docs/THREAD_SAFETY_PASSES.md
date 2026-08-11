@@ -64,8 +64,24 @@ A structure is crash-class ONLY if region threads touch it **directly**. If it s
 `ProcessorMailbox` / task queue / is main-only / is already deferred, it is safe. Re-scan the
 suspected list through this lens before assuming a fix is needed — many may be mailbox-isolated.
 
-### ❌ Open — crash-class
-None known. All seven confirmed crash-class races are fixed; #4 and #10 were investigated and
+### ✅ Fixed (continued)
+| # | Structure | Race | Fix | Build |
+|---|---|---|---|---|
+| 12 | `ChunkAccess.structureStarts`/`structuresRefences`, `ProtoChunk.carvingMasks`/`entities` | same crash-class as #8 — `WorldGenRegion` resolves a write into a NEIGHBOUR chunk during concurrent feature/structure generation (`chunkGenFeaturesMaxConcurrent` > 1); these four siblings of #8's fields were left unprotected (`getOrCreateCarvingMask()`'s `computeIfAbsent` was the same unsafe "check-then-create" shape the class's own `postProcessing` comment already warned about) | A (`synchronized` on the shared field, identical pattern to #8) + defensive-copy on `getAllStarts()`/`getAllReferences()`/`ProtoChunk.getEntities()` (same lesson as #9/#11 — never return a live view across the lock boundary) | 2026-08-10, this session |
+| 13 | `FlowingFluid.shapes` (`IdentityHashMap`, one instance server-wide per fluid type) | fluid ticking on ANY region thread calls `getShape()` → unguarded `computeIfAbsent()` | A (`synchronized` on the shared field) | 2026-08-10, this session |
+| 14 | `DimensionDataStorage.cache` (`HashMap`, one per dimension) | `get()`'s check-miss-load-put is a genuine TOCTOU — two region threads racing the first request for the same `SavedData` key (map, raid, scoreboard) can both miss, both read from disk, one `put()` clobbers the other or corrupts the map mid-rehash; `set()`/`save()` touch the same unprotected map | A (`synchronized` on the shared field across `get()`/`set()`/`save()` — the whole check-then-create sequence, not just individual map ops) | 2026-08-10, this session |
+
+Found during the exhaustive Local Tick / Stage 4 architecture review (see
+`docs/LOCAL_TICK_STAGE4.md`), independent of that decision. Validated on gen-spike-repro:
+256 fresh chunks force-generated with `chunkGenFeaturesMaxConcurrent=8` (structures +
+carving active), zero exceptions, 20 TPS throughout; deployed to ATM9, clean boot, no new
+crash-reports. Live reproduction of the EXACT race (two neighbour chunks' FEATURES
+generation landing in the same tick window) was not directly forced — same
+difficulty class as other rare cross-thread timing races this session — confidence rests
+on the proven #8/#9/#11 fix pattern plus a clean real-generation stress run, not a live
+crash-before/no-crash-after A/B.
+
+All other confirmed crash-class races are fixed; #4 and #10 were investigated and
 found safe. Cross-chunk worldgen writes (#8, #9) were a separate discovery this pass — found via
 a differential correctness test (same seed, forced-serial vs default-concurrent generation), not
 a live crash — see [[concurrent-features-nondeterminism]].
