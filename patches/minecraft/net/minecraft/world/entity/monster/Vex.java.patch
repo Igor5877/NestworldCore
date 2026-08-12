@@ -1,0 +1,14 @@
+--- a/net/minecraft/world/entity/monster/Vex.java
++++ b/net/minecraft/world/entity/monster/Vex.java
+@@ -254,7 +_,10 @@
+          LivingEntity livingentity = Vex.this.m_5448_();
+          if (livingentity != null) {
+             if (Vex.this.m_20191_().m_82381_(livingentity.m_20191_())) {
+-               Vex.this.m_7327_(livingentity);
++               if (!(Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt)
++                       || nestworldRt.getRegion().ownsEntity(livingentity.m_20148_())) {
++                  Vex.this.m_7327_(livingentity);
++               }
+                Vex.this.m_34042_(false);
+             } else {
+                double d0 = Vex.this.m_20280_(livingentity);

@@ -44,3 +44,18 @@
              if (d0 > 1024.0D) {
                 this.f_25547_ += 10;
              } else if (d0 > 256.0D) {
+@@ -121,7 +_,13 @@
+       if (p_25558_ <= d0 && this.f_25548_ <= 0) {
+          this.m_25563_();
+          this.f_25540_.m_6674_(InteractionHand.MAIN_HAND);
+-         this.f_25540_.m_7327_(p_25557_);
++         // NestWorld: same class of race as Stage 4.4's MeleeAttack.java fix (Brain AI) --
++         // doHurtTarget() mutates the target directly; safe-skip (retry next tick) if this
++         // Goal-based-AI mob's target isn't owned by this region thread.
++         if (!(Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt)
++                 || nestworldRt.getRegion().ownsEntity(p_25557_.m_20148_())) {
++            this.f_25540_.m_7327_(p_25557_);
++         }
+       }
+ 
+    }

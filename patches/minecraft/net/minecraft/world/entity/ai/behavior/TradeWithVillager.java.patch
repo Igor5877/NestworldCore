@@ -1,0 +1,30 @@
+--- a/net/minecraft/world/entity/ai/behavior/TradeWithVillager.java
++++ b/net/minecraft/world/entity/ai/behavior/TradeWithVillager.java
+@@ -26,7 +_,26 @@
+    }
+ 
+    protected boolean m_6114_(ServerLevel p_24416_, Villager p_24417_) {
+-      return BehaviorUtils.m_22639_(p_24417_.m_6274_(), MemoryModuleType.f_26374_, EntityType.f_20492_);
++      if (!BehaviorUtils.m_22639_(p_24417_.m_6274_(), MemoryModuleType.f_26374_, EntityType.f_20492_)) {
++         return false;
++      }
++      // NestWorld: Stage 4.4 (docs/LOCAL_TICK_STAGE4.md) -- start()/tick() below mutate the
++      // OTHER villager directly (BehaviorUtils.lockGazeAndWalkToEachOther sets look/move
++      // targets on both; gossip() reads the other's private gossips field), with no lock or
++      // mailbox -- the entity-to-entity analogue of the cross-region block-write race Stage 3
++      // already covers. If the target isn't owned by THIS region thread, skip this tick
++      // entirely rather than touch it directly -- same "safe skip" shape as the RegionThread
++      // getChunk(load=false) path (return null/false instead of racing), not a defer: a
++      // momentary AI interaction has nothing sensible to queue for later, it simply retries
++      // next tick (typically once the villagers have drifted off the border, or ownership
++      // transfer has caught up). canStillUse() delegates here, so this also gates continuation.
++      if (Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt) {
++         Villager nestworldTarget = (Villager) p_24417_.m_6274_().m_21952_(MemoryModuleType.f_26374_).get();
++         if (!nestworldRt.getRegion().getOwnedEntityIds().contains(nestworldTarget.m_20148_())) {
++            return false;
++         }
++      }
++      return true;
+    }
+ 
+    protected boolean m_6737_(ServerLevel p_24419_, Villager p_24420_, long p_24421_) {

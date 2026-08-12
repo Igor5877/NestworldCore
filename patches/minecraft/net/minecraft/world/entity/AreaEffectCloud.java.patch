@@ -1,0 +1,15 @@
+--- a/net/minecraft/world/entity/AreaEffectCloud.java
++++ b/net/minecraft/world/entity/AreaEffectCloud.java
+@@ -250,7 +_,11 @@
+                               if (mobeffectinstance1.m_19544_().m_8093_()) {
+                                  mobeffectinstance1.m_19544_().m_19461_(this, this.m_19749_(), livingentity, mobeffectinstance1.m_19564_(), 0.5D);
+                               } else {
+-                                 livingentity.m_147207_(new MobEffectInstance(mobeffectinstance1), this);
++                                 MobEffectInstance nestworldFresh = new MobEffectInstance(mobeffectinstance1);
++                                 if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, livingentity,
++                                         new net.nestworld.region.EntityMutationOp.AddEffect(nestworldFresh, this))) {
++                                    livingentity.m_147207_(nestworldFresh, this);
++                                 }
+                               }
+                            }
+ 

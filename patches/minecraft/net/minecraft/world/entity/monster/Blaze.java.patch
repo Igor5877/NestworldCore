@@ -1,0 +1,14 @@
+--- a/net/minecraft/world/entity/monster/Blaze.java
++++ b/net/minecraft/world/entity/monster/Blaze.java
+@@ -180,7 +_,10 @@
+ 
+                if (this.f_32244_ <= 0) {
+                   this.f_32244_ = 20;
+-                  this.f_32242_.m_7327_(livingentity);
++                  if (!(Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt)
++                          || nestworldRt.getRegion().ownsEntity(livingentity.m_20148_())) {
++                     this.f_32242_.m_7327_(livingentity);
++                  }
+                }
+ 
+                this.f_32242_.m_21566_().m_6849_(livingentity.m_20185_(), livingentity.m_20186_(), livingentity.m_20189_(), 1.0D);

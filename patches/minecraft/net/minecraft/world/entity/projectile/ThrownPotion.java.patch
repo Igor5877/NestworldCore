@@ -1,0 +1,35 @@
+--- a/net/minecraft/world/entity/projectile/ThrownPotion.java
++++ b/net/minecraft/world/entity/projectile/ThrownPotion.java
+@@ -109,11 +_,18 @@
+          double d0 = this.m_20280_(livingentity);
+          if (d0 < 16.0D) {
+             if (livingentity.m_6126_()) {
+-               livingentity.m_6469_(this.m_269291_().m_269104_(this, this.m_19749_()), 1.0F);
++               if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, livingentity,
++                       new net.nestworld.region.EntityMutationOp.Damage(
++                               this.m_269291_().m_269104_(this, this.m_19749_()), 1.0F))) {
++                  livingentity.m_6469_(this.m_269291_().m_269104_(this, this.m_19749_()), 1.0F);
++               }
+             }
+ 
+             if (livingentity.m_6060_() && livingentity.m_6084_()) {
+-               livingentity.m_252836_();
++               if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, livingentity,
++                       new net.nestworld.region.EntityMutationOp.ExtinguishFire())) {
++                  livingentity.m_252836_();
++               }
+             }
+          }
+       }
+@@ -151,7 +_,10 @@
+                         });
+                         MobEffectInstance mobeffectinstance1 = new MobEffectInstance(mobeffect, i, mobeffectinstance.m_19564_(), mobeffectinstance.m_19571_(), mobeffectinstance.m_19572_());
+                         if (!mobeffectinstance1.m_267633_(20)) {
+-                           livingentity.m_147207_(mobeffectinstance1, entity);
++                           if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, livingentity,
++                                   new net.nestworld.region.EntityMutationOp.AddEffect(mobeffectinstance1, entity))) {
++                              livingentity.m_147207_(mobeffectinstance1, entity);
++                           }
+                         }
+                      }
+                   }

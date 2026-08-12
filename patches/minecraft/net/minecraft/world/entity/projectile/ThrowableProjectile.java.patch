@@ -1,11 +1,12 @@
 --- a/net/minecraft/world/entity/projectile/ThrowableProjectile.java
 +++ b/net/minecraft/world/entity/projectile/ThrowableProjectile.java
-@@ -58,7 +_,7 @@
+@@ -58,7 +_,8 @@
           }
        }
  
 -      if (hitresult.m_6662_() != HitResult.Type.MISS && !flag) {
-+      if (hitresult.m_6662_() != HitResult.Type.MISS && !flag && !net.minecraftforge.event.ForgeEventFactory.onProjectileImpact(this, hitresult)) {
++      if (hitresult.m_6662_() != HitResult.Type.MISS && !flag && !net.minecraftforge.event.ForgeEventFactory.onProjectileImpact(this, hitresult)
++              && !net.nestworld.region.ProjectileImpactGuard.isForeignHit(this, hitresult)) {
           this.m_6532_(hitresult);
        }
  

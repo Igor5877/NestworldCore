@@ -1,0 +1,18 @@
+--- a/net/minecraft/world/entity/ai/behavior/RamTarget.java
++++ b/net/minecraft/world/entity/ai/behavior/RamTarget.java
+@@ -64,6 +_,15 @@
+ 
+    protected void m_6725_(ServerLevel p_217366_, Goat p_217367_, long p_217368_) {
+       List<LivingEntity> list = p_217366_.m_45971_(LivingEntity.class, this.f_147803_, p_217367_, p_217367_.m_20191_());
++      // NestWorld: Stage 4.4 -- hurt()/knockback() below mutate the OTHER entity directly;
++      // the target here comes from a live spatial query every tick (not a cached memory), so
++      // it can never be assumed same-region. Filter to owned candidates before picking
++      // list.get(0) below, same safe-skip spirit as MeleeAttack -- a fresh list is built
++      // instead of mutating in place, since getNearbyEntities()'s return mutability isn't
++      // guaranteed.
++      if (Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt && !list.isEmpty()) {
++         list = list.stream().filter(e -> nestworldRt.getRegion().getOwnedEntityIds().contains(e.m_20148_())).collect(java.util.stream.Collectors.toList());
++      }
+       Brain<?> brain = p_217367_.m_6274_();
+       if (!list.isEmpty()) {
+          LivingEntity livingentity = list.get(0);

@@ -18,7 +18,16 @@
           this.m_20095_();
        }
  
-@@ -186,9 +_,35 @@
+@@ -183,12 +_,44 @@
+                if (entity instanceof Player && entity1 instanceof Player && !((Player)entity1).m_7099_((Player)entity)) {
+                   hitresult = null;
+                   entityhitresult = null;
++               } else if (net.nestworld.region.ProjectileImpactGuard.isForeignHit(this, hitresult)) {
++                  // NestWorld: safe-skip, same as the melee-attack-goal fix (task #53) --
++                  // don't apply this hit now (arrow keeps flying), retry once ownership
++                  // settles or the arrow simply misses by moving past.
++                  hitresult = null;
++                  entityhitresult = null;
                 }
              }
  

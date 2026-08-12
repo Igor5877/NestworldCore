@@ -1,0 +1,24 @@
+--- a/net/minecraft/world/entity/projectile/EvokerFangs.java
++++ b/net/minecraft/world/entity/projectile/EvokerFangs.java
+@@ -113,13 +_,19 @@
+       LivingEntity livingentity = this.m_19749_();
+       if (p_36945_.m_6084_() && !p_36945_.m_20147_() && p_36945_ != livingentity) {
+          if (livingentity == null) {
+-            p_36945_.m_6469_(this.m_269291_().m_269425_(), 6.0F);
++            if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, p_36945_,
++                    new net.nestworld.region.EntityMutationOp.Damage(this.m_269291_().m_269425_(), 6.0F))) {
++               p_36945_.m_6469_(this.m_269291_().m_269425_(), 6.0F);
++            }
+          } else {
+             if (livingentity.m_7307_(p_36945_)) {
+                return;
+             }
+ 
+-            p_36945_.m_6469_(this.m_269291_().m_269104_(this, livingentity), 6.0F);
++            if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, p_36945_,
++                    new net.nestworld.region.EntityMutationOp.Damage(this.m_269291_().m_269104_(this, livingentity), 6.0F))) {
++               p_36945_.m_6469_(this.m_269291_().m_269104_(this, livingentity), 6.0F);
++            }
+          }
+ 
+       }

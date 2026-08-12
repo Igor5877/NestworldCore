@@ -11,12 +11,13 @@
        if (!p_37137_.m_213877_() && p_37137_.m_6084_() && (flag || flag1) && !(this.m_20280_(p_37137_) > 1024.0D)) {
           return false;
        } else {
-@@ -241,7 +_,7 @@
+@@ -241,7 +_,8 @@
  
     private void m_37171_() {
        HitResult hitresult = ProjectileUtil.m_278158_(this, this::m_5603_);
 -      this.m_6532_(hitresult);
-+      if (hitresult.m_6662_() == HitResult.Type.MISS || !net.minecraftforge.event.ForgeEventFactory.onProjectileImpact(this, hitresult)) this.m_6532_(hitresult);
++      if ((hitresult.m_6662_() == HitResult.Type.MISS || !net.minecraftforge.event.ForgeEventFactory.onProjectileImpact(this, hitresult))
++              && !net.nestworld.region.ProjectileImpactGuard.isForeignHit(this, hitresult)) this.m_6532_(hitresult);
     }
  
     protected boolean m_5603_(Entity p_37135_) {

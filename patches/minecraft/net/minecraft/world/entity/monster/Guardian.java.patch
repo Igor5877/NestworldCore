@@ -1,0 +1,14 @@
+--- a/net/minecraft/world/entity/monster/Guardian.java
++++ b/net/minecraft/world/entity/monster/Guardian.java
+@@ -305,7 +_,10 @@
+             Entity entity = p_32820_.m_7640_();
+             if (entity instanceof LivingEntity) {
+                LivingEntity livingentity = (LivingEntity)entity;
+-               livingentity.m_6469_(this.m_269291_().m_269374_(this), 2.0F);
++               if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, livingentity,
++                       new net.nestworld.region.EntityMutationOp.Damage(this.m_269291_().m_269374_(this), 2.0F))) {
++                  livingentity.m_6469_(this.m_269291_().m_269374_(this), 2.0F);
++               }
+             }
+          }
+ 

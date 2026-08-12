@@ -9,3 +9,55 @@
              boolean flag = false;
              AABB aabb = this.m_20191_().m_82400_(0.2D);
  
+@@ -203,7 +_,9 @@
+             this.f_33321_ = 40;
+             this.m_5496_(SoundEvents.f_12362_, 1.0F, 1.0F);
+             this.m_9236_().m_7605_(this, (byte)39);
+-            p_33361_.m_7334_(this);
++            if (!net.nestworld.region.EntityPushHelper.redirectIfForeign(this, p_33361_)) {
++               p_33361_.m_7334_(this);
++            }
+          } else {
+             this.m_33339_(p_33361_);
+          }
+@@ -217,7 +_,10 @@
+       if (this.m_6084_()) {
+          for(LivingEntity livingentity : this.m_9236_().m_6443_(LivingEntity.class, this.m_20191_().m_82400_(4.0D), f_33319_)) {
+             if (!(livingentity instanceof AbstractIllager)) {
+-               livingentity.m_6469_(this.m_269291_().m_269333_(this), 6.0F);
++               if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, livingentity,
++                       new net.nestworld.region.EntityMutationOp.Damage(this.m_269291_().m_269333_(this), 6.0F))) {
++                  livingentity.m_6469_(this.m_269291_().m_269333_(this), 6.0F);
++               }
+             }
+ 
+             this.m_33339_(livingentity);
+@@ -241,7 +_,27 @@
+       double d0 = p_33340_.m_20185_() - this.m_20185_();
+       double d1 = p_33340_.m_20189_() - this.m_20189_();
+       double d2 = Math.max(d0 * d0 + d1 * d1, 0.001D);
+-      p_33340_.m_5997_(d0 / d2 * 4.0D, 0.2D, d1 / d2 * 4.0D);
++      double nestworldDx = d0 / d2 * 4.0D;
++      double nestworldDy = 0.2D;
++      double nestworldDz = d1 / d2 * 4.0D;
++      // NestWorld: same cross-region hazard as Entity.push(Entity) (already fixed via
++      // EntityPushHelper/ENTITY_PUSH) but this call already has its own precomputed
++      // delta -- reuse ENTITY_PUSH directly instead of EntityPushHelper's two-entity
++      // direction math.
++      if (net.nestworld.region.NestworldRegionSystem.isInitialised()
++              && Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt
++              && this.m_9236_() == net.nestworld.region.NestworldRegionSystem.get().getOverworld()) {
++         net.nestworld.region.WorldRegion nestworldOwner = net.nestworld.region.NestworldRegionSystem.get()
++                 .getGrid().findOwningRegion(p_33340_.m_20148_());
++         if (nestworldOwner != null && nestworldOwner != nestworldRt.getRegion()) {
++            nestworldOwner.nestworldPostMessage(net.nestworld.region.RegionMessage.entityPush(
++                    nestworldRt.getRegion(), nestworldOwner, this.m_9236_().m_7654_().m_129921_(),
++                    new net.nestworld.region.RegionMessage.EntityPush(
++                            p_33340_.m_20148_(), nestworldDx, nestworldDy, nestworldDz)));
++            return;
++         }
++      }
++      p_33340_.m_5997_(nestworldDx, nestworldDy, nestworldDz);
+    }
+ 
+    public void m_7822_(byte p_33335_) {

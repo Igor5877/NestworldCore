@@ -1,0 +1,20 @@
+--- a/net/minecraft/world/entity/ai/behavior/PoiCompetitorScan.java
++++ b/net/minecraft/world/entity/ai/behavior/PoiCompetitorScan.java
+@@ -43,7 +_,16 @@
+          villager1 = p_23725_;
+       }
+ 
+-      villager1.m_6274_().m_21936_(MemoryModuleType.f_26360_);
++      // NestWorld: Stage 4.4 -- villager1 (the "loser" of the job-site competition) can be
++      // EITHER the acting villager or a different one found via a live NEAREST_LIVING_ENTITIES
++      // scan (see the stream/reduce above) -- eraseMemory() on a foreign-region villager would
++      // race its own region thread. Safe-skip: if villager1 isn't owned by this region thread,
++      // leave both villagers' JOB_SITE memory untouched this tick rather than mutate across
++      // threads; the competition naturally re-evaluates next tick.
++      if (!(Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt)
++            || nestworldRt.getRegion().getOwnedEntityIds().contains(villager1.m_20148_())) {
++         villager1.m_6274_().m_21936_(MemoryModuleType.f_26360_);
++      }
+       return villager;
+    }
+ 

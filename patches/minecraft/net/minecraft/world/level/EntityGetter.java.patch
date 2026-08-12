@@ -1,6 +1,6 @@
 --- a/net/minecraft/world/level/EntityGetter.java
 +++ b/net/minecraft/world/level/EntityGetter.java
-@@ -53,9 +_,28 @@
+@@ -53,16 +_,35 @@
     default List<VoxelShape> m_183134_(@Nullable Entity p_186451_, AABB p_186452_) {
        if (p_186452_.m_82309_() < 1.0E-7D) {
           return List.of();
@@ -30,3 +30,11 @@
           if (list.isEmpty()) {
              return List.of();
           } else {
+             ImmutableList.Builder<VoxelShape> builder = ImmutableList.builderWithExpectedSize(list.size());
+ 
+             for(Entity entity : list) {
+-               builder.add(Shapes.m_83064_(entity.m_20191_()));
++               builder.add(Shapes.m_83064_(net.nestworld.region.EntityBoundsHelper.safeBoundingBox(entity)));
+             }
+ 
+             return builder.build();

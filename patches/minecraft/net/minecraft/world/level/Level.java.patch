@@ -33,8 +33,52 @@
        this.f_46446_ = p_270692_;
        this.f_46442_ = p_270739_;
        this.f_204147_ = p_270240_;
-@@ -198,11 +_,40 @@
+@@ -196,13 +_,84 @@
+       } else if (!this.f_46443_ && this.m_46659_()) {
+          return false;
        } else {
++         // NestWorld: Stage 3 EXTENSION beyond Explosion (docs/LOCAL_TICK_STAGE4.md,
++         // "entity-triggered block-write race" -> classification table's remaining UNSAFE
++         // rows: mob-AI direct block writes, mod code bypassing vanilla Explosion). Covers
++         // THIS single choke point that setBlock/removeBlock/destroyBlock/setBlockAndUpdate
++         // all funnel through — e.g. EnderDragon/WitherBoss goals, and Draconic Evolution's
++         // reactor (confirmed via bytecode read the same session to call ServerLevel
++         // .removeBlock() directly, bypassing vanilla Explosion entirely).
++         //
++         // Stage 5 "Blocker 3" widening (docs/LOCAL_TICK_STAGE4.md, "border-band under
++         // independent local time"): the ORIGINAL version of this guard only checked
++         // ownership (out-of-bounds), not border-band proximity — a write comfortably
++         // inside the calling region's own bounds but within BORDER_BAND_CHUNKS of one of
++         // its edges applied directly, with its full neighborChanged/piston/comparator
++         // cascade, unlike the other 3 border-band-routed phases (scheduled ticks, block
++         // events, block entities) which have always kept ANYTHING in the band off region
++         // threads entirely, specifically because a cascade can reach a few blocks past its
++         // origin. Now both cases — out-of-bounds AND in-bounds-but-in-band — get the same
++         // deferred treatment (posted to the OWNING region's mailbox, which for the
++         // in-band-but-in-bounds case is the calling region itself — same barrier-safe
++         // apply point, just off the region thread's own call stack).
++         //
++         // The cheap containsChunk()/isInBorderBand() bounds checks (both simple O(1)
++         // rectangle tests against the CALLING region, not a grid scan) filter out the
++         // overwhelming common case — writing well inside your own territory — for free;
++         // only a genuine border-band or cross-region write (rare) pays for the grid lookup.
++         if (Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt) {
++            net.nestworld.region.WorldRegion nestworldCallingRegion = nestworldRt.getRegion();
++            int nestworldCx = p_46605_.m_123341_() >> 4;
++            int nestworldCz = p_46605_.m_123343_() >> 4;
++            boolean nestworldOutOfBounds = !nestworldCallingRegion.containsChunk(nestworldCx, nestworldCz);
++            if ((nestworldOutOfBounds || nestworldCallingRegion.isInBorderBand(nestworldCx, nestworldCz))
++                  && net.nestworld.region.NestworldRegionSystem.isInitialised()
++                  && this == net.nestworld.region.NestworldRegionSystem.get().getOverworld()) {
++               net.nestworld.region.WorldRegion nestworldOwner = nestworldOutOfBounds
++                     ? net.nestworld.region.NestworldRegionSystem.get().getGrid().getRegionForChunk(nestworldCx, nestworldCz)
++                     : nestworldCallingRegion;
++               if (nestworldOwner != null) {
++                  return net.nestworld.region.NestworldRegionSystem.get().nestworldDeferForeignBlockWrite(
++                        nestworldCallingRegion, nestworldOwner, p_46605_, p_46606_, p_46607_, p_46608_);
++               }
++            }
++         }
           LevelChunk levelchunk = this.m_46745_(p_46605_);
           Block block = p_46606_.m_60734_();
 +

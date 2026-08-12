@@ -9,3 +9,14 @@
     };
     private final NonNullList<ItemStack> f_31538_ = NonNullList.m_122780_(2, ItemStack.f_41583_);
     private final NonNullList<ItemStack> f_31539_ = NonNullList.m_122780_(4, ItemStack.f_41583_);
+@@ -283,7 +_,9 @@
+       for(int i = 0; i < list.size(); ++i) {
+          Entity entity = list.get(i);
+          if (this.m_20280_(entity) <= 0.2D) {
+-            entity.m_7334_(this);
++            if (!net.nestworld.region.EntityPushHelper.redirectIfForeign(this, entity)) {
++               entity.m_7334_(this);
++            }
+          }
+       }
+ 

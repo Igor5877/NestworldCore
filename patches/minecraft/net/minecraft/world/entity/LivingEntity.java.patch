@@ -360,9 +360,11 @@
                 }
              }
           }
-@@ -1583,6 +_,8 @@
+@@ -1582,7 +_,10 @@
+    }
  
     protected void m_6475_(DamageSource p_21240_, float p_21241_) {
++      net.nestworld.region.EntityOwnershipGuard.check(this, "actuallyHurt");
        if (!this.m_6673_(p_21240_)) {
 +         p_21241_ = net.minecraftforge.common.ForgeHooks.onLivingHurt(this, p_21240_, p_21241_);
 +         if (p_21241_ <= 0) return;
@@ -534,8 +536,6 @@
           this.m_9236_().m_142425_(EntityTypeTest.m_156916_(Player.class), this.m_20191_(), EntitySelector.m_20421_(this)).forEach(this::m_7324_);
        } else {
 -         List<Entity> list = this.m_9236_().m_6249_(this, this.m_20191_(), EntitySelector.m_20421_(this));
--         if (!list.isEmpty()) {
--            int i = this.m_9236_().m_46469_().m_46215_(GameRules.f_46149_);
 +         int nestworldCramming = this.m_9236_().m_46469_().m_46215_(GameRules.f_46149_);
 +         List<Entity> list;
 +         if (net.nestworld.region.NestworldTuning.MAX_ENTITY_PUSH < 0) {
@@ -547,10 +547,60 @@
 +            list = new java.util.ArrayList<>();
 +            this.m_9236_().m_260826_(net.minecraft.world.level.entity.EntityTypeTest.m_156916_(Entity.class), this.m_20191_(), new net.nestworld.region.NestworldPushPredicate(EntitySelector.m_20421_(this), this), list, nestworldCap);
 +         }
-+         if (!list.isEmpty()) {
+          if (!list.isEmpty()) {
+-            int i = this.m_9236_().m_46469_().m_46215_(GameRules.f_46149_);
 +            int i = nestworldCramming;
              if (i > 0 && list.size() > i - 1 && this.f_19796_.m_188503_(4) == 0) {
                 int j = 0;
+ 
+@@ -2673,6 +_,48 @@
+    }
+ 
+    protected void m_7324_(Entity p_20971_) {
++      // NestWorld: LivingEntity.doPush -> Entity.push(Entity) mutates BOTH colliding
++      // entities' deltaMovement directly (vanilla push-apart physics). p_20971_.push(this)
++      // means the RECEIVER (p_20971_, possibly foreign) gets mutated -- same class of
++      // cross-region hazard as the Explosion P0 fix, found live via EntityOwnershipGuard.
++      // Original single-line call kept as the fallback/default path, byte-for-byte, to
++      // avoid repeating the Explosion.java mixin-compat mistake (never extract/rewrite a
++      // heavily-Mixin'd vanilla method's body -- only branch around it).
++      if (net.nestworld.region.NestworldRegionSystem.isInitialised()
++              && Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt
++              && this.m_9236_() == net.nestworld.region.NestworldRegionSystem.get().getOverworld()) {
++         net.nestworld.region.WorldRegion nestworldOwner = net.nestworld.region.NestworldRegionSystem.get()
++                 .getGrid().findOwningRegion(p_20971_.m_20148_());
++         if (nestworldOwner != null && nestworldOwner != nestworldRt.getRegion()) {
++            if (this.m_20365_(p_20971_) || p_20971_.f_19794_ || this.f_19794_) {
++               return;
++            }
++            net.nestworld.region.WorldRegion.EntitySnapshot nestworldSnap =
++                    nestworldOwner.nestworldGetEntitySnapshot().get(p_20971_.m_20148_());
++            if (nestworldSnap == null || nestworldSnap.removed()) {
++               return;
++            }
++            double nestworldD0 = this.m_20185_() - nestworldSnap.x();
++            double nestworldD1 = this.m_20189_() - nestworldSnap.z();
++            double nestworldD2 = net.minecraft.util.Mth.m_14005_(nestworldD0, nestworldD1);
++            if (nestworldD2 >= (double) 0.01F) {
++               nestworldD2 = Math.sqrt(nestworldD2);
++               nestworldD0 /= nestworldD2;
++               nestworldD1 /= nestworldD2;
++               double nestworldD3 = Math.min(1.0D / nestworldD2, 1.0D);
++               nestworldD0 *= nestworldD3 * (double) 0.05F;
++               nestworldD1 *= nestworldD3 * (double) 0.05F;
++               if (!this.m_20160_() && this.m_6094_()) {
++                  this.m_5997_(nestworldD0, 0.0D, nestworldD1);
++               }
++               nestworldOwner.nestworldPostMessage(net.nestworld.region.RegionMessage.entityPush(
++                       nestworldRt.getRegion(), nestworldOwner, this.m_9236_().m_7654_().m_129921_(),
++                       new net.nestworld.region.RegionMessage.EntityPush(
++                               p_20971_.m_20148_(), -nestworldD0, 0.0D, -nestworldD1)));
++            }
++            return;
++         }
++      }
+       p_20971_.m_7334_(this);
+    }
  
 @@ -2821,8 +_,11 @@
  

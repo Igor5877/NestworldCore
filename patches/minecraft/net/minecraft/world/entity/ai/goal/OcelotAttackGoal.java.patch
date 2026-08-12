@@ -1,0 +1,14 @@
+--- a/net/minecraft/world/entity/ai/goal/OcelotAttackGoal.java
++++ b/net/minecraft/world/entity/ai/goal/OcelotAttackGoal.java
+@@ -59,7 +_,10 @@
+       if (!(d1 > d0)) {
+          if (this.f_25656_ <= 0) {
+             this.f_25656_ = 20;
+-            this.f_25654_.m_7327_(this.f_25655_);
++            if (!(Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt)
++                    || nestworldRt.getRegion().ownsEntity(this.f_25655_.m_20148_())) {
++               this.f_25654_.m_7327_(this.f_25655_);
++            }
+          }
+       }
+    }

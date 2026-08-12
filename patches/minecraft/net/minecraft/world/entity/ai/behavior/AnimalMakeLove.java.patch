@@ -1,0 +1,36 @@
+--- a/net/minecraft/world/entity/ai/behavior/AnimalMakeLove.java
++++ b/net/minecraft/world/entity/ai/behavior/AnimalMakeLove.java
+@@ -24,7 +_,22 @@
+    }
+ 
+    protected boolean m_6114_(ServerLevel p_22401_, Animal p_22402_) {
+-      return p_22402_.m_27593_() && this.m_22431_(p_22402_).isPresent();
++      if (!p_22402_.m_27593_()) return false;
++      Optional<? extends Animal> nestworldPartner = this.m_22431_(p_22402_);
++      return nestworldPartner.isPresent() && nestworldOwnedByCallingRegion(nestworldPartner.get());
++   }
++
++   // NestWorld: Stage 4.4 (docs/LOCAL_TICK_STAGE4.md) -- start()/tick() below mutate the
++   // OTHER animal directly (mutual BREED_TARGET memory set/erase, lockGazeAndWalkToEachOther,
++   // spawnChildFromBreeding), same entity-to-entity race class as TradeWithVillager's gossip
++   // fix. Safe-skip (not mailbox/defer) if the partner isn't owned by this region thread --
++   // checked here AND in canStillUse() (which does its own independent re-derivation, unlike
++   // TradeWithVillager where canStillUse delegates to this method) so ownership is
++   // re-verified every tick, not just at start -- the partner could walk across a region
++   // border mid-interaction.
++   private static boolean nestworldOwnedByCallingRegion(net.minecraft.world.entity.Entity target) {
++      return !(Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt)
++            || nestworldRt.getRegion().getOwnedEntityIds().contains(target.m_20148_());
+    }
+ 
+    protected void m_6735_(ServerLevel p_22404_, Animal p_22405_, long p_22406_) {
+@@ -41,7 +_,8 @@
+          return false;
+       } else {
+          Animal animal = this.m_22409_(p_22417_);
+-         return animal.m_6084_() && p_22417_.m_7848_(animal) && BehaviorUtils.m_22636_(p_22417_.m_6274_(), animal) && p_22418_ <= this.f_22389_;
++         return animal.m_6084_() && p_22417_.m_7848_(animal) && BehaviorUtils.m_22636_(p_22417_.m_6274_(), animal)
++               && p_22418_ <= this.f_22389_ && nestworldOwnedByCallingRegion(animal);
+       }
+    }
+ 

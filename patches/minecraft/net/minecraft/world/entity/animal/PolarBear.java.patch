@@ -1,0 +1,14 @@
+--- a/net/minecraft/world/entity/animal/PolarBear.java
++++ b/net/minecraft/world/entity/animal/PolarBear.java
+@@ -288,7 +_,10 @@
+          double d0 = this.m_6639_(p_29589_);
+          if (p_29590_ <= d0 && this.m_25564_()) {
+             this.m_25563_();
+-            this.f_25540_.m_7327_(p_29589_);
++            if (!(Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt)
++                    || nestworldRt.getRegion().ownsEntity(p_29589_.m_20148_())) {
++               this.f_25540_.m_7327_(p_29589_);
++            }
+             PolarBear.this.m_29567_(false);
+          } else if (p_29590_ <= d0 * 2.0D) {
+             if (this.m_25564_()) {

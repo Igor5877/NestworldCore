@@ -1,0 +1,29 @@
+--- a/net/minecraft/world/entity/ai/behavior/VillagerMakeLove.java
++++ b/net/minecraft/world/entity/ai/behavior/VillagerMakeLove.java
+@@ -34,6 +_,16 @@
+       return p_24628_ <= this.f_24613_ && this.m_24639_(p_24627_);
+    }
+ 
++   // NestWorld: Stage 4.4 (docs/LOCAL_TICK_STAGE4.md) -- start()/tick()/breed() below mutate
++   // the OTHER villager directly (lockGazeAndWalkToEachOther, eatAndDigestFood, setAge), same
++   // race class as TradeWithVillager's gossip fix. isBreedingPossible() (called by both the
++   // start gate and canStillUse, so re-verified every tick, not just at start) now also
++   // requires the breed target to be owned by this region thread.
++   private static boolean nestworldOwnedByCallingRegion(net.minecraft.world.entity.Entity target) {
++      return !(Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt)
++            || nestworldRt.getRegion().getOwnedEntityIds().contains(target.m_20148_());
++   }
++
+    protected void m_6735_(ServerLevel p_24652_, Villager p_24653_, long p_24654_) {
+       AgeableMob ageablemob = p_24653_.m_6274_().m_21952_(MemoryModuleType.f_26375_).get();
+       BehaviorUtils.m_22602_(p_24653_, ageablemob, 0.5F);
+@@ -88,7 +_,8 @@
+       if (!optional.isPresent()) {
+          return false;
+       } else {
+-         return BehaviorUtils.m_22639_(brain, MemoryModuleType.f_26375_, EntityType.f_20492_) && p_24640_.m_35506_() && optional.get().m_35506_();
++         return BehaviorUtils.m_22639_(brain, MemoryModuleType.f_26375_, EntityType.f_20492_) && p_24640_.m_35506_() && optional.get().m_35506_()
++               && nestworldOwnedByCallingRegion(optional.get());
+       }
+    }
+ 

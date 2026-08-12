@@ -54,3 +54,27 @@
        }
     }
  
+@@ -1010,7 +_,10 @@
+          double d0 = this.m_6639_(p_28724_);
+          if (p_28725_ <= d0 && this.m_25564_()) {
+             this.m_25563_();
+-            this.f_25540_.m_7327_(p_28724_);
++            if (!(Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt)
++                    || nestworldRt.getRegion().ownsEntity(p_28724_.m_20148_())) {
++               this.f_25540_.m_7327_(p_28724_);
++            }
+             Fox.this.m_5496_(SoundEvents.f_11945_, 1.0F, 1.0F);
+          }
+ 
+@@ -1128,7 +_,10 @@
+          }
+ 
+          if (livingentity != null && Fox.this.m_20270_(livingentity) <= 2.0F) {
+-            Fox.this.m_7327_(livingentity);
++            if (!(Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt)
++                    || nestworldRt.getRegion().ownsEntity(livingentity.m_20148_())) {
++               Fox.this.m_7327_(livingentity);
++            }
+          } else if (Fox.this.m_146909_() > 0.0F && Fox.this.m_20096_() && (float)Fox.this.m_20184_().f_82480_ != 0.0F && Fox.this.m_9236_().m_8055_(Fox.this.m_20183_()).m_60713_(Blocks.f_50125_)) {
+             Fox.this.m_146926_(60.0F);
+             Fox.this.m_6710_((LivingEntity)null);

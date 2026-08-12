@@ -532,6 +532,22 @@
        return this.f_19799_.getDouble(p_204037_);
     }
  
+@@ -3113,6 +_,7 @@
+    }
+ 
+    public void m_20256_(Vec3 p_20257_) {
++      net.nestworld.region.EntityOwnershipGuard.check(this, "setDeltaMovement");
+       this.f_19827_ = p_20257_;
+    }
+ 
+@@ -3177,6 +_,7 @@
+    }
+ 
+    public final void m_20343_(double p_20344_, double p_20345_, double p_20346_) {
++      net.nestworld.region.EntityOwnershipGuard.check(this, "setPosRaw");
+       if (this.f_19825_.f_82479_ != p_20344_ || this.f_19825_.f_82480_ != p_20345_ || this.f_19825_.f_82481_ != p_20346_) {
+          this.f_19825_ = new Vec3(p_20344_, p_20345_, p_20346_);
+          int i = Mth.m_14107_(p_20344_);
 @@ -3192,6 +_,7 @@
  
           this.f_146801_.m_142044_();
@@ -548,6 +564,14 @@
     public float m_274421_() {
        return this.f_19793_;
     }
+@@ -3282,6 +_,7 @@
+    }
+ 
+    public final void m_142467_(Entity.RemovalReason p_146876_) {
++      net.nestworld.region.EntityOwnershipGuard.check(this, "setRemoved(" + p_146876_ + ")");
+       if (this.f_146795_ == null) {
+          this.f_146795_ = p_146876_;
+       }
 @@ -3319,6 +_,109 @@
     public boolean m_142265_(Level p_146843_, BlockPos p_146844_) {
        return true;

@@ -1,0 +1,17 @@
+--- a/net/minecraft/world/entity/ai/behavior/MeleeAttack.java
++++ b/net/minecraft/world/entity/ai/behavior/MeleeAttack.java
+@@ -15,7 +_,13 @@
+          return p_258526_.group(p_258526_.m_257492_(MemoryModuleType.f_26371_), p_258526_.m_257495_(MemoryModuleType.f_26372_), p_258526_.m_258080_(MemoryModuleType.f_26373_), p_258526_.m_257495_(MemoryModuleType.f_148205_)).apply(p_258526_, (p_258529_, p_258530_, p_258531_, p_258532_) -> {
+             return (p_258539_, p_258540_, p_258541_) -> {
+                LivingEntity livingentity = p_258526_.m_258051_(p_258530_);
+-               if (!m_23527_(p_258540_) && p_258540_.m_217066_(livingentity) && p_258526_.<NearestVisibleLivingEntities>m_258051_(p_258532_).m_186107_(livingentity)) {
++               // NestWorld: Stage 4.4 -- doHurtTarget() below mutates the OTHER entity's
++               // health/knockback state directly. Combat is far more frequent than villager
++               // gossip/breeding, so this is likely the highest-traffic instance of this race
++               // class. Safe-skip if the target isn't owned by this region thread.
++               if (!m_23527_(p_258540_) && p_258540_.m_217066_(livingentity) && p_258526_.<NearestVisibleLivingEntities>m_258051_(p_258532_).m_186107_(livingentity)
++                     && (!(Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt)
++                           || nestworldRt.getRegion().getOwnedEntityIds().contains(livingentity.m_20148_()))) {
+                   p_258529_.m_257512_(new EntityTracker(livingentity, true));
+                   p_258540_.m_6674_(InteractionHand.MAIN_HAND);
+                   p_258540_.m_7327_(livingentity);
