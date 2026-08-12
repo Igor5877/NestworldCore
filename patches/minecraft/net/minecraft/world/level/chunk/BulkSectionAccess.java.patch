@@ -11,7 +11,7 @@
     public BulkSectionAccess(LevelAccessor p_156103_) {
        this.f_156098_ = p_156103_;
     }
-@@ -26,21 +_,100 @@
+@@ -26,19 +_,98 @@
        if (i >= 0 && i < this.f_156098_.m_151559_()) {
           long j = SectionPos.m_175568_(p_156105_);
           if (this.f_156100_ == null || this.f_156101_ != j) {
@@ -48,8 +48,8 @@
        } else {
           return null;
        }
-    }
- 
++   }
++
 +   /**
 +    * NestWorld: called when a NEW section's {@code tryAcquire()} fails (another
 +    * BulkSectionAccess instance currently holds it). Releases EVERY section this instance
@@ -112,8 +112,6 @@
 +      int nestworldSectionZ = SectionPos.m_123230_(nestworldKey);
 +      ChunkAccess nestworldChunk = this.f_156098_.m_6325_(nestworldSectionX, nestworldSectionZ);
 +      return nestworldChunk.m_183278_(this.f_156098_.m_151566_(nestworldSectionY));
-+   }
-+
+    }
+ 
     public BlockState m_156110_(BlockPos p_156111_) {
-       LevelChunkSection levelchunksection = this.m_156104_(p_156111_);
-       if (levelchunksection == null) {

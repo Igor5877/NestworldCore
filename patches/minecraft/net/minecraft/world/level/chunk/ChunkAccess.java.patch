@@ -19,6 +19,88 @@
        return set;
     }
  
+@@ -192,44 +_,69 @@
+       return this.f_187604_;
+    }
+ 
++   // NestWorld: THREAD_SAFETY_PASSES.md #12 -- same crash-class as #8 (blockEntities/
++   // pendingBlockEntities/heightmaps): WorldGenRegion.setBlock()/addReferenceForStructure()/
++   // etc. can resolve into a NEIGHBOUR chunk while that neighbour concurrently decorates
++   // itself (chunkGenFeaturesMaxConcurrent > 1). structureStarts and structuresRefences are
++   // plain HashMaps with no protection at all -- fixed with the same "synchronized on the
++   // shared field" pattern (fix pattern A) already used for the #8 fields just above.
+    @Nullable
+    public StructureStart m_213652_(Structure p_223005_) {
+-      return this.f_187617_.get(p_223005_);
++      synchronized (this.f_187617_) {
++         return this.f_187617_.get(p_223005_);
++      }
+    }
+ 
+    public void m_213792_(Structure p_223010_, StructureStart p_223011_) {
+-      this.f_187617_.put(p_223010_, p_223011_);
++      synchronized (this.f_187617_) {
++         this.f_187617_.put(p_223010_, p_223011_);
++      }
+       this.f_187603_ = true;
+    }
+ 
+    public Map<Structure, StructureStart> m_6633_() {
+-      return Collections.unmodifiableMap(this.f_187617_);
++      // NestWorld: defensive copy under the lock, not a live unmodifiable VIEW over the
++      // same backing map -- same lesson as fix #9/#11 (a caller iterating the "unmodifiable"
++      // wrapper later, off-lock, would still race a concurrent put()/clear() on the real map).
++      synchronized (this.f_187617_) {
++         return Collections.unmodifiableMap(new java.util.HashMap<>(this.f_187617_));
++      }
+    }
+ 
+    public void m_8040_(Map<Structure, StructureStart> p_62090_) {
+-      this.f_187617_.clear();
+-      this.f_187617_.putAll(p_62090_);
++      synchronized (this.f_187617_) {
++         this.f_187617_.clear();
++         this.f_187617_.putAll(p_62090_);
++      }
+       this.f_187603_ = true;
+    }
+ 
+    public LongSet m_213649_(Structure p_223017_) {
+-      return this.f_187618_.getOrDefault(p_223017_, f_207932_);
++      synchronized (this.f_187618_) {
++         return this.f_187618_.getOrDefault(p_223017_, f_207932_);
++      }
+    }
+ 
+    public void m_213843_(Structure p_223007_, long p_223008_) {
+-      this.f_187618_.computeIfAbsent(p_223007_, (p_223019_) -> {
+-         return new LongOpenHashSet();
+-      }).add(p_223008_);
++      synchronized (this.f_187618_) {
++         this.f_187618_.computeIfAbsent(p_223007_, (p_223019_) -> {
++            return new LongOpenHashSet();
++         }).add(p_223008_);
++      }
+       this.f_187603_ = true;
+    }
+ 
+    public Map<Structure, LongSet> m_62769_() {
+-      return Collections.unmodifiableMap(this.f_187618_);
++      synchronized (this.f_187618_) {
++         return Collections.unmodifiableMap(new java.util.HashMap<>(this.f_187618_));
++      }
+    }
+ 
+    public void m_62737_(Map<Structure, LongSet> p_187663_) {
+-      this.f_187618_.clear();
+-      this.f_187618_.putAll(p_187663_);
++      synchronized (this.f_187618_) {
++         this.f_187618_.clear();
++         this.f_187618_.putAll(p_187663_);
++      }
+       this.f_187603_ = true;
+    }
+ 
 @@ -283,41 +_,61 @@
     }
  

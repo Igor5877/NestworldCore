@@ -1,0 +1,58 @@
+--- a/net/minecraft/world/level/LevelAccessor.java
++++ b/net/minecraft/world/level/LevelAccessor.java
+@@ -41,22 +_,51 @@
+       return new ScheduledTick<>(p_186480_, p_186479_, this.m_6106_().m_6793_() + (long)p_186481_, this.m_183596_());
+    }
+ 
++   // NestWorld (2026-08-11): fix for a CONFIRMED race -- a free-running region's own
++   // thread calling scheduleTick() (e.g. water rescheduling its own flow) used to call
++   // LevelTicks.schedule() directly off-thread, racing the main thread's unsynchronized
++   // LevelTicks.tick() iteration (267 live violations caught by NestworldTickOwnership
++   // during a controlled soak). Gemini-reviewed 2026-08-11 ("proceed with this design").
++   // Branch added at the top, original single-line body kept intact as the non-free-
++   // running fallback -- same "branch around, don't rewrite" discipline that avoided a
++   // real Mixin-compat break earlier this session (Explosion.explode()). See project
++   // memory: leveticks-race-under-heavy-chunkgen.
+    default void m_186464_(BlockPos p_186465_, Block p_186466_, int p_186467_, TickPriority p_186468_) {
+-      this.m_183326_().m_183393_(this.m_186482_(p_186465_, p_186466_, p_186467_, p_186468_));
++      ScheduledTick<Block> nestworldTick = this.m_186482_(p_186465_, p_186466_, p_186467_, p_186468_);
++      if (net.nestworld.region.NestworldRegionSystem.nestworldIsFreeRunningRegionThread()) {
++         net.nestworld.region.NestworldRegionSystem.nestworldEnqueueScheduleTick(() -> this.m_183326_().m_183393_(nestworldTick));
++         return;
++      }
++      this.m_183326_().m_183393_(nestworldTick);
+    }
+ 
+    default void m_186460_(BlockPos p_186461_, Block p_186462_, int p_186463_) {
+-      this.m_183326_().m_183393_(this.m_186478_(p_186461_, p_186462_, p_186463_));
++      ScheduledTick<Block> nestworldTick = this.m_186478_(p_186461_, p_186462_, p_186463_);
++      if (net.nestworld.region.NestworldRegionSystem.nestworldIsFreeRunningRegionThread()) {
++         net.nestworld.region.NestworldRegionSystem.nestworldEnqueueScheduleTick(() -> this.m_183326_().m_183393_(nestworldTick));
++         return;
++      }
++      this.m_183326_().m_183393_(nestworldTick);
+    }
+ 
+    LevelTickAccess<Fluid> m_183324_();
+ 
+    default void m_186473_(BlockPos p_186474_, Fluid p_186475_, int p_186476_, TickPriority p_186477_) {
+-      this.m_183324_().m_183393_(this.m_186482_(p_186474_, p_186475_, p_186476_, p_186477_));
++      ScheduledTick<Fluid> nestworldTick = this.m_186482_(p_186474_, p_186475_, p_186476_, p_186477_);
++      if (net.nestworld.region.NestworldRegionSystem.nestworldIsFreeRunningRegionThread()) {
++         net.nestworld.region.NestworldRegionSystem.nestworldEnqueueScheduleTick(() -> this.m_183324_().m_183393_(nestworldTick));
++         return;
++      }
++      this.m_183324_().m_183393_(nestworldTick);
+    }
+ 
+    default void m_186469_(BlockPos p_186470_, Fluid p_186471_, int p_186472_) {
+-      this.m_183324_().m_183393_(this.m_186478_(p_186470_, p_186471_, p_186472_));
++      ScheduledTick<Fluid> nestworldTick = this.m_186478_(p_186470_, p_186471_, p_186472_);
++      if (net.nestworld.region.NestworldRegionSystem.nestworldIsFreeRunningRegionThread()) {
++         net.nestworld.region.NestworldRegionSystem.nestworldEnqueueScheduleTick(() -> this.m_183324_().m_183393_(nestworldTick));
++         return;
++      }
++      this.m_183324_().m_183393_(nestworldTick);
+    }
+ 
+    LevelData m_6106_();

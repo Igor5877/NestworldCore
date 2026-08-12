@@ -1,19 +1,31 @@
 --- a/net/minecraft/world/level/Explosion.java
 +++ b/net/minecraft/world/level/Explosion.java
-@@ -56,6 +_,16 @@
+@@ -56,6 +_,28 @@
     private final ExplosionDamageCalculator f_46019_;
     private final ObjectArrayList<BlockPos> f_46020_ = new ObjectArrayList<>();
     private final Map<Player, Vec3> f_46021_ = Maps.newHashMap();
 +   private final Vec3 position;
 +   // NestWorld: per-explosion block/fluid cache for the read-only explode() phase.
-+   // Lazily created; one Explosion = one detonation = one region thread, so it is
-+   // lock-free and bit-identical (blocks are immutable + unchanged during explode()).
-+   private net.nestworld.region.NestworldExplosionCache nestworldCache;
++   // Lazily created, ThreadLocal: originally "one Explosion = one detonation = one
++   // region thread", but the Stage 3 EXTENSION entity-impact deferral (see
++   // nestworldApplyEntityImpact(Entity) below) can now have a SECOND thread (a
++   // foreign entity's owning region) touch the SAME Explosion instance later, for
++   // that entity's replayed impact, while the ORIGINAL thread may still be
++   // concurrently processing its own local entities -- a real cross-thread race on
++   // this plain (non-concurrent) cache, found via a live ArrayIndexOutOfBounds
++   // during Stage 5 audit testing. ThreadLocal restores the original "exactly one
++   // thread touches this instance" invariant per-thread instead of per-Explosion:
++   // each thread that ever calls nestworldCache()/nestworldSeenPercent() on this
++   // object gets its own independent cache, so there is never a shared mutable
++   // structure between them, only ever a full duplicate (memory cost is trivial --
++   // a handful of small hashmap entries per thread, per explosion, immediately
++   // eligible for GC once the explosion finishes).
++   private final ThreadLocal<net.nestworld.region.NestworldExplosionCache> nestworldCache = new ThreadLocal<>();
 +   // NestWorld (C2): per-explosion memo of exposure (seenPercent) keyed by entity block position
 +   // + quantized hitbox size, so same-size entities sharing a block (a TNT pile) reuse one raycast
-+   // while differently-sized ones (armor stand vs horse) never share an entry. Lazily created;
-+   // lives only for this explosion.
-+   private it.unimi.dsi.fastutil.longs.Long2FloatOpenHashMap nestworldExposureCache;
++   // while differently-sized ones (armor stand vs horse) never share an entry. Lazily created,
++   // ThreadLocal for the same cross-thread-replay reason as nestworldCache above.
++   private final ThreadLocal<it.unimi.dsi.fastutil.longs.Long2FloatOpenHashMap> nestworldExposureCache = new ThreadLocal<>();
  
     public Explosion(Level p_46024_, @Nullable Entity p_46025_, double p_46026_, double p_46027_, double p_46028_, float p_46029_, List<BlockPos> p_46030_) {
        this(p_46024_, p_46025_, p_46026_, p_46027_, p_46028_, p_46029_, false, Explosion.BlockInteraction.DESTROY_WITH_DECAY, p_46030_);
@@ -25,16 +37,18 @@
     }
  
     private ExplosionDamageCalculator m_46062_(@Nullable Entity p_46063_) {
-@@ -120,6 +_,88 @@
+@@ -120,6 +_,92 @@
        }
     }
  
-+   /** NestWorld: the per-explosion block/fluid cache, created on first use. */
++   /** NestWorld: this thread's per-explosion block/fluid cache, created on first use. */
 +   private net.nestworld.region.NestworldExplosionCache nestworldCache() {
-+      if (this.nestworldCache == null) {
-+         this.nestworldCache = new net.nestworld.region.NestworldExplosionCache(this.f_46012_);
++      net.nestworld.region.NestworldExplosionCache c = this.nestworldCache.get();
++      if (c == null) {
++         c = new net.nestworld.region.NestworldExplosionCache(this.f_46012_);
++         this.nestworldCache.set(c);
 +      }
-+      return this.nestworldCache;
++      return c;
 +   }
 +
 +   /** NestWorld: a copy of {@link #getSeenPercent} whose exposure raycast reads
@@ -67,14 +81,16 @@
 +      }
 +      long nestworldKey = (((((nestworldDx << 11 | nestworldDy) << 11 | nestworldDz) << 10
 +            | nestworldSx) << 10 | nestworldSz) << 11) | nestworldSy;
-+      if (this.nestworldExposureCache == null) {
-+         this.nestworldExposureCache = new it.unimi.dsi.fastutil.longs.Long2FloatOpenHashMap();
-+         this.nestworldExposureCache.defaultReturnValue(Float.NaN);
++      it.unimi.dsi.fastutil.longs.Long2FloatOpenHashMap nestworldExpCache = this.nestworldExposureCache.get();
++      if (nestworldExpCache == null) {
++         nestworldExpCache = new it.unimi.dsi.fastutil.longs.Long2FloatOpenHashMap();
++         nestworldExpCache.defaultReturnValue(Float.NaN);
++         this.nestworldExposureCache.set(nestworldExpCache);
 +      }
-+      float nestworldCached = this.nestworldExposureCache.get(nestworldKey);
++      float nestworldCached = nestworldExpCache.get(nestworldKey);
 +      if (!Float.isNaN(nestworldCached)) return nestworldCached;
 +      float nestworldV = nestworldComputeSeenPercent(p_46065_, p_46066_);
-+      this.nestworldExposureCache.put(nestworldKey, nestworldV);
++      nestworldExpCache.put(nestworldKey, nestworldV);
 +      return nestworldV;
 +   }
 +
@@ -125,42 +141,301 @@
                       if (!this.f_46012_.m_46739_(blockpos)) {
                          break;
                       }
-@@ -176,6 +_,7 @@
+@@ -176,11 +_,47 @@
        int j2 = Mth.m_14107_(this.f_46015_ - (double)f2 - 1.0D);
        int j1 = Mth.m_14107_(this.f_46015_ + (double)f2 + 1.0D);
        List<Entity> list = this.f_46012_.m_45933_(this.f_46016_, new AABB((double)k1, (double)i2, (double)j2, (double)l1, (double)i1, (double)j1));
 +      net.minecraftforge.event.ForgeEventFactory.onExplosionDetonate(this.f_46012_, this, list, f2);
        Vec3 vec3 = new Vec3(this.f_46013_, this.f_46014_, this.f_46015_);
++
++      // NestWorld: Stage 3 EXTENSION -- entity damage/knockback race, found during the
++      // Stage 5 "Entity Safety Layer" audit (docs/LOCAL_TICK_STAGE4.md). This loop used
++      // to read/mutate entity.getX()/getEyeY()/getZ()/hurt()/setDeltaMovement() for EVERY
++      // nearby entity unconditionally -- a genuine, PRE-EXISTING race independent of
++      // Stage 5: all regions already tick in PARALLEL today, so an explosion triggered on
++      // region A's thread reading/mutating an entity owned by region B directly races
++      // region B's own concurrent tick of that same entity, in the SAME barrier round.
++      // A foreign entity's impact is deferred via the mailbox to its owning region, which
++      // replays the computation itself from a safe same-thread read (nestworldApplyEntityImpact
++      // (Entity) below) -- single-writer, not a lock.
++      //
++      // IMPORTANT: the LOCAL-entity loop body below is kept byte-for-byte IDENTICAL to
++      // vanilla, in this exact method, not extracted into a shared helper -- an earlier
++      // version of this fix DID extract it, which broke a real mod's Mixin
++      // (amendments-common.mixins.json:ExplosionMixin, a cancellable knockback hook using
++      // MixinExtras local-variable capture at a specific point inside THIS method) that
++      // depends on this exact bytecode shape existing inside Explosion.explode() itself.
++      // The replay path (nestworldApplyEntityImpact(Entity)) below has its OWN independent
++      // copy of the same maths instead of sharing this one -- a deliberate, small,
++      // intentional duplication to protect third-party mod compatibility, not an oversight.
++      net.nestworld.region.RegionThread nestworldRt =
++              Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt0 ? nestworldRt0 : null;
++      boolean nestworldSharded = nestworldRt != null && net.nestworld.region.NestworldRegionSystem.isInitialised()
++              && this.f_46012_ == net.nestworld.region.NestworldRegionSystem.get().getOverworld();
  
        for(int k2 = 0; k2 < list.size(); ++k2) {
-@@ -191,7 +_,7 @@
+          Entity entity = list.get(k2);
+          if (!entity.m_6128_()) {
++            if (nestworldSharded) {
++               net.nestworld.region.WorldRegion nestworldOwner = net.nestworld.region.NestworldRegionSystem.get()
++                       .getGrid().findOwningRegion(entity.m_20148_());
++               if (nestworldOwner != null && nestworldOwner != nestworldRt.getRegion()) {
++                  nestworldOwner.nestworldPostMessage(net.nestworld.region.RegionMessage.entityImpact(
++                          nestworldRt.getRegion(), nestworldOwner, this.f_46012_.m_7654_().m_129921_(),
++                          new net.nestworld.region.RegionMessage.EntityImpact(this, entity.m_20148_())));
++                  continue;
++               }
++            }
+             double d12 = Math.sqrt(entity.m_20238_(vec3)) / (double)f2;
+             if (d12 <= 1.0D) {
+                double d5 = entity.m_20185_() - this.f_46013_;
+@@ -191,8 +_,31 @@
                    d5 /= d13;
                    d7 /= d13;
                    d9 /= d13;
 -                  double d14 = (double)m_46064_(vec3, entity);
 +                  double d14 = (double)this.nestworldSeenPercent(vec3, entity);
                    double d10 = (1.0D - d12) * d14;
++                  // NestWorld: second, LATE ownership re-check -- deliberately duplicated
++                  // (not shared with the check above / with nestworldApplyEntityImpact)
++                  // for the same third-party-mod-Mixin-compatibility reason documented on
++                  // nestworldApplyEntityImpact below: an earlier attempt to share this kind
++                  // of check via extraction broke a real mod's MixinExtras hook into this
++                  // exact method. The check above this loop only proves ownership at LOOP
++                  // START; a free-running region can run many explosions back-to-back with
++                  // no pause for BoundaryEntityTransfer's main-thread reassignment scan (see
++                  // project memory: freerunning-neighbor-boundary-race.md) -- so ownership
++                  // can change between that check and this entity's actual mutation below.
++                  // Re-checking here, immediately before the FIRST mutating call (hurt()),
++                  // catches that window without touching hurt()/setDeltaMovement's call
++                  // shape themselves.
++                  if (nestworldSharded) {
++                     net.nestworld.region.WorldRegion nestworldOwner2 = net.nestworld.region.NestworldRegionSystem.get()
++                             .getGrid().findOwningRegion(entity.m_20148_());
++                     if (nestworldOwner2 != null && nestworldOwner2 != nestworldRt.getRegion()) {
++                        nestworldOwner2.nestworldPostMessage(net.nestworld.region.RegionMessage.entityImpact(
++                                nestworldRt.getRegion(), nestworldOwner2, this.f_46012_.m_7654_().m_129921_(),
++                                new net.nestworld.region.RegionMessage.EntityImpact(this, entity.m_20148_())));
++                        continue;
++                     }
++                  }
                    entity.m_6469_(this.m_46077_(), (float)((int)((d10 * d10 + d10) / 2.0D * 7.0D * (double)f2 + 1.0D)));
                    double d11;
-@@ -245,7 +_,7 @@
-             if (!blockstate.m_60795_()) {
-                BlockPos blockpos1 = blockpos.m_7949_();
-                this.f_46012_.m_46473_().m_6180_("explosion_blocks");
--               if (block.m_6903_(this)) {
-+               if (blockstate.canDropFromExplosion(this.f_46012_, blockpos, this)) {
-                   Level $$9 = this.f_46012_;
-                   if ($$9 instanceof ServerLevel) {
-                      ServerLevel serverlevel = (ServerLevel)$$9;
-@@ -262,8 +_,7 @@
-                   }
-                }
- 
--               this.f_46012_.m_7731_(blockpos, Blocks.f_50016_.m_49966_(), 3);
--               block.m_7592_(this.f_46012_, blockpos, this);
-+               blockstate.onBlockExploded(this.f_46012_, blockpos, this);
-                this.f_46012_.m_46473_().m_7238_();
+                   if (entity instanceof LivingEntity) {
+@@ -217,7 +_,46 @@
              }
           }
+       }
+-
++   }
++
++   /** NestWorld: Stage 3 EXTENSION -- entry point for a REPLAYED (foreign-owner) entity
++    *  impact drained from the mailbox, called only from the entity's OWNING region thread
++    *  (see {@code RegionThread.applyPendingEntityImpacts()}). Deliberately an INDEPENDENT
++    *  copy of explode()'s per-entity maths, not a call into that method's loop body -- see
++    *  the NestWorld comment above that loop for why (a real mod's Mixin depends on the
++    *  original method keeping its exact bytecode shape). Player knockback tracking
++    *  ({@code hitPlayers}) is intentionally omitted here: a foreign-owned Player never
++    *  reaches this path since players are never region-owned (always treated as local). */
++   public void nestworldApplyEntityImpact(Entity entity) {
++      Vec3 vec3 = new Vec3(this.f_46013_, this.f_46014_, this.f_46015_);
++      float f2 = this.f_46017_ * 2.0F;
++      double d12 = Math.sqrt(entity.m_20238_(vec3)) / (double)f2;
++      if (d12 <= 1.0D) {
++         double d5 = entity.m_20185_() - this.f_46013_;
++         double d7 = (entity instanceof PrimedTnt ? entity.m_20186_() : entity.m_20188_()) - this.f_46014_;
++         double d9 = entity.m_20189_() - this.f_46015_;
++         double d13 = Math.sqrt(d5 * d5 + d7 * d7 + d9 * d9);
++         if (d13 != 0.0D) {
++            d5 /= d13;
++            d7 /= d13;
++            d9 /= d13;
++            double d14 = (double)this.nestworldSeenPercent(vec3, entity);
++            double d10 = (1.0D - d12) * d14;
++            entity.m_6469_(this.m_46077_(), (float)((int)((d10 * d10 + d10) / 2.0D * 7.0D * (double)f2 + 1.0D)));
++            double d11;
++            if (entity instanceof LivingEntity) {
++               LivingEntity livingentity = (LivingEntity)entity;
++               d11 = ProtectionEnchantment.m_45135_(livingentity, d10);
++            } else {
++               d11 = d10;
++            }
++
++            d5 *= d11;
++            d7 *= d11;
++            d9 *= d11;
++            entity.m_20256_(entity.m_20184_().m_82549_(new Vec3(d5, d7, d9)));
++         }
++      }
+    }
+ 
+    public void m_46075_(boolean p_46076_) {
+@@ -234,53 +_,124 @@
+          }
+       }
+ 
++      // NestWorld: shuffle unconditionally (was: only inside "if (flag)") and BEFORE
++      // classification below, so the region-local subset still gets the original
++      // gameplay-variety shuffle order, not just the unsharded/main-thread case. Harmless
++      // when flag is false (order only matters for iteration, which then doesn't happen).
++      Util.m_214673_(this.f_46020_, this.f_46012_.f_46441_);
++
++      // NestWorld: Stage 3 (see docs/LOCAL_TICK_STAGE4.md, "entity-triggered block-write
++      // race") -- classify toBlow ONCE, shared by both the destroy-and-loot loop below and
++      // the fire-spread loop, so a position belonging to a DIFFERENT region than the one
++      // that triggered this explosion is never written directly from the wrong thread by
++      // EITHER mechanism. Only applies when called from a region thread for the sharded
++      // overworld -- a main-thread-triggered explosion (player/pinned-entity/command) is
++      // already safe to write anywhere, exactly as before, since region threads are parked
++      // during those tick phases (see NestworldRegionSystem.tickAllRegions()'s phase order).
++      java.util.List<BlockPos> nestworldLocalBlow = this.f_46020_;
++      if (Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt
++              && net.nestworld.region.NestworldRegionSystem.isInitialised()
++              && this.f_46012_ == net.nestworld.region.NestworldRegionSystem.get().getOverworld()) {
++         nestworldLocalBlow = new java.util.ArrayList<>();
++         java.util.Map<net.nestworld.region.WorldRegion, java.util.List<BlockPos>> nestworldForeign =
++                 new java.util.IdentityHashMap<>();
++         net.nestworld.region.WorldGrid nestworldGrid = net.nestworld.region.NestworldRegionSystem.get().getGrid();
++         for (BlockPos nestworldPos : this.f_46020_) {
++            net.nestworld.region.WorldRegion nestworldOwner =
++                    nestworldGrid.getRegionForChunk(nestworldPos.m_123341_() >> 4, nestworldPos.m_123343_() >> 4);
++            java.util.List<BlockPos> nestworldTarget = (nestworldOwner == null || nestworldOwner == nestworldRt.getRegion())
++                    ? nestworldLocalBlow
++                    : nestworldForeign.computeIfAbsent(nestworldOwner, r -> new java.util.ArrayList<>());
++            nestworldTarget.add(nestworldPos.m_7949_());
++         }
++         if (!nestworldForeign.isEmpty()) {
++            long nestworldTick = this.f_46012_.m_7654_().m_129921_();
++            for (var nestworldEntry : nestworldForeign.entrySet()) {
++               nestworldEntry.getKey().nestworldPostMessage(net.nestworld.region.RegionMessage.explosionApply(
++                       nestworldRt.getRegion(), nestworldEntry.getKey(), nestworldTick,
++                       new NestworldExplosionBatch(this, nestworldEntry.getValue(), flag)));
++            }
++         }
++      }
++
+       if (flag) {
+-         ObjectArrayList<Pair<ItemStack, BlockPos>> objectarraylist = new ObjectArrayList<>();
+          boolean flag1 = this.m_252906_() instanceof Player;
+-         Util.m_214673_(this.f_46020_, this.f_46012_.f_46441_);
+-
+-         for(BlockPos blockpos : this.f_46020_) {
+-            BlockState blockstate = this.f_46012_.m_8055_(blockpos);
+-            Block block = blockstate.m_60734_();
+-            if (!blockstate.m_60795_()) {
+-               BlockPos blockpos1 = blockpos.m_7949_();
+-               this.f_46012_.m_46473_().m_6180_("explosion_blocks");
+-               if (block.m_6903_(this)) {
+-                  Level $$9 = this.f_46012_;
+-                  if ($$9 instanceof ServerLevel) {
+-                     ServerLevel serverlevel = (ServerLevel)$$9;
+-                     BlockEntity blockentity = blockstate.m_155947_() ? this.f_46012_.m_7702_(blockpos) : null;
+-                     LootParams.Builder lootparams$builder = (new LootParams.Builder(serverlevel)).m_287286_(LootContextParams.f_81460_, Vec3.m_82512_(blockpos)).m_287286_(LootContextParams.f_81463_, ItemStack.f_41583_).m_287289_(LootContextParams.f_81462_, blockentity).m_287289_(LootContextParams.f_81455_, this.f_46016_);
+-                     if (this.f_46010_ == Explosion.BlockInteraction.DESTROY_WITH_DECAY) {
+-                        lootparams$builder.m_287286_(LootContextParams.f_81464_, this.f_46017_);
+-                     }
+-
+-                     blockstate.m_222967_(serverlevel, blockpos, ItemStack.f_41583_, flag1);
+-                     blockstate.m_287290_(lootparams$builder).forEach((p_46074_) -> {
+-                        m_46067_(objectarraylist, p_46074_, blockpos1);
+-                     });
+-                  }
+-               }
+-
+-               this.f_46012_.m_7731_(blockpos, Blocks.f_50016_.m_49966_(), 3);
+-               block.m_7592_(this.f_46012_, blockpos, this);
+-               this.f_46012_.m_46473_().m_7238_();
+-            }
+-         }
+-
+-         for(Pair<ItemStack, BlockPos> pair : objectarraylist) {
+-            Block.m_49840_(this.f_46012_, pair.getSecond(), pair.getFirst());
+-         }
++         nestworldDestroyBlocks(nestworldLocalBlow, flag1);
+       }
+ 
+       if (this.f_46009_) {
+-         for(BlockPos blockpos2 : this.f_46020_) {
+-            if (this.f_46011_.m_188503_(3) == 0 && this.f_46012_.m_8055_(blockpos2).m_60795_() && this.f_46012_.m_8055_(blockpos2.m_7495_()).m_60804_(this.f_46012_, blockpos2.m_7495_())) {
+-               this.f_46012_.m_46597_(blockpos2, BaseFireBlock.m_49245_(this.f_46012_, blockpos2));
++         nestworldSpreadFire(nestworldLocalBlow);
++      }
++
++   }
++
++   // NestWorld: Stage 3 -- the destroy-and-loot loop body, extracted so it can run over
++   // either the full toBlow (main-thread/unsharded case, unchanged behaviour) or just a
++   // region's own local subset (region-thread case) or a foreign batch replayed later on
++   // main (see NestworldExplosionBatch/nestworldApplyBatch below). Logic is byte-for-byte
++   // the original loop body, only the iterated list changed.
++   private void nestworldDestroyBlocks(java.util.List<BlockPos> p_positions, boolean p_flag1) {
++      ObjectArrayList<Pair<ItemStack, BlockPos>> objectarraylist = new ObjectArrayList<>();
++      for(BlockPos blockpos : p_positions) {
++         BlockState blockstate = this.f_46012_.m_8055_(blockpos);
++         Block block = blockstate.m_60734_();
++         if (!blockstate.m_60795_()) {
++            BlockPos blockpos1 = blockpos.m_7949_();
++            this.f_46012_.m_46473_().m_6180_("explosion_blocks");
++            if (blockstate.canDropFromExplosion(this.f_46012_, blockpos, this)) {
++               Level $$9 = this.f_46012_;
++               if ($$9 instanceof ServerLevel) {
++                  ServerLevel serverlevel = (ServerLevel)$$9;
++                  BlockEntity blockentity = blockstate.m_155947_() ? this.f_46012_.m_7702_(blockpos) : null;
++                  LootParams.Builder lootparams$builder = (new LootParams.Builder(serverlevel)).m_287286_(LootContextParams.f_81460_, Vec3.m_82512_(blockpos)).m_287286_(LootContextParams.f_81463_, ItemStack.f_41583_).m_287289_(LootContextParams.f_81462_, blockentity).m_287289_(LootContextParams.f_81455_, this.f_46016_);
++                  if (this.f_46010_ == Explosion.BlockInteraction.DESTROY_WITH_DECAY) {
++                     lootparams$builder.m_287286_(LootContextParams.f_81464_, this.f_46017_);
++                  }
++
++                  blockstate.m_222967_(serverlevel, blockpos, ItemStack.f_41583_, p_flag1);
++                  blockstate.m_287290_(lootparams$builder).forEach((p_46074_) -> {
++                     m_46067_(objectarraylist, p_46074_, blockpos1);
++                  });
++               }
+             }
+-         }
+-      }
+-
++
++            blockstate.onBlockExploded(this.f_46012_, blockpos, this);
++            this.f_46012_.m_46473_().m_7238_();
++         }
++      }
++
++      for(Pair<ItemStack, BlockPos> pair : objectarraylist) {
++         Block.m_49840_(this.f_46012_, pair.getSecond(), pair.getFirst());
++      }
++   }
++
++   // NestWorld: Stage 3 -- the fire-spread loop body, extracted for the same reason as
++   // nestworldDestroyBlocks above. Byte-for-byte the original loop body.
++   private void nestworldSpreadFire(java.util.List<BlockPos> p_positions) {
++      for(BlockPos blockpos2 : p_positions) {
++         if (this.f_46011_.m_188503_(3) == 0 && this.f_46012_.m_8055_(blockpos2).m_60795_() && this.f_46012_.m_8055_(blockpos2.m_7495_()).m_60804_(this.f_46012_, blockpos2.m_7495_())) {
++            this.f_46012_.m_46597_(blockpos2, BaseFireBlock.m_49245_(this.f_46012_, blockpos2));
++         }
++      }
++   }
++
++   /** NestWorld: Stage 3 -- a foreign-region subset of one explosion's toBlow, deferred via
++    *  RegionMessage instead of written directly from the wrong (triggering) thread. {@code
++    *  spawnDrops} mirrors the caller's {@code interactsWithBlocks()} result at post time
++    *  (KEEP-interaction explosions skip loot/destruction but may still spread fire). */
++   public record NestworldExplosionBatch(Explosion explosion, java.util.List<BlockPos> positions, boolean spawnDrops) {}
++
++   /** NestWorld: Stage 3 -- applies one foreign-region explosion batch's block effects on
++    *  the CURRENT thread. Must only be called from a barrier-safe point (main thread, no
++    *  region thread active) -- see NestworldRegionSystem's drain call site, which runs this
++    *  right after the region-tick round finishes for the same tick the batch was posted in. */
++   public static void nestworldApplyBatch(NestworldExplosionBatch batch) {
++      if (batch.spawnDrops()) {
++         batch.explosion().nestworldDestroyBlocks(batch.positions(), batch.explosion().m_252906_() instanceof Player);
++      }
++      if (batch.explosion().f_46009_) {
++         batch.explosion().nestworldSpreadFire(batch.positions());
++      }
+    }
+ 
+    public boolean m_254884_() {
 @@ -354,6 +_,15 @@
  
     public List<BlockPos> m_46081_() {

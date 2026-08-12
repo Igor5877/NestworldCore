@@ -1,103 +1,70 @@
 --- a/net/minecraft/util/ClassInstanceMultiMap.java
 +++ b/net/minecraft/util/ClassInstanceMultiMap.java
-@@ -13,54 +_,64 @@
+@@ -13,9 +_,9 @@
  import java.util.stream.Collectors;
  
  public class ClassInstanceMultiMap<T> extends AbstractCollection<T> {
 -   private final Map<Class<?>, List<T>> f_13527_ = Maps.newHashMap();
--   private final Class<T> f_13528_;
++   private final Map<Class<?>, List<T>> f_13527_ = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Class<T> f_13528_;
 -   private final List<T> f_13529_ = Lists.newArrayList();
--
--   public ClassInstanceMultiMap(Class<T> p_13531_) {
--      this.f_13528_ = p_13531_;
--      this.f_13527_.put(p_13531_, this.f_13529_);
--   }
--
--   public boolean add(T p_13536_) {
++   private final List<T> f_13529_ = new java.util.concurrent.CopyOnWriteArrayList<>();
+ 
+    public ClassInstanceMultiMap(Class<T> p_13531_) {
+       this.f_13528_ = p_13531_;
+@@ -23,28 +_,32 @@
+    }
+ 
+    public boolean add(T p_13536_) {
 -      boolean flag = false;
--
++      synchronized (this) {
++         boolean flag = false;
+ 
 -      for(Map.Entry<Class<?>, List<T>> entry : this.f_13527_.entrySet()) {
 -         if (entry.getKey().isInstance(p_13536_)) {
 -            flag |= entry.getValue().add(p_13536_);
--         }
--      }
--
--      return flag;
--   }
--
--   public boolean remove(Object p_13543_) {
--      boolean flag = false;
--
--      for(Map.Entry<Class<?>, List<T>> entry : this.f_13527_.entrySet()) {
--         if (entry.getKey().isInstance(p_13543_)) {
--            List<T> list = entry.getValue();
--            flag |= list.remove(p_13543_);
--         }
--      }
--
--      return flag;
--   }
--
--   public boolean contains(Object p_13540_) {
--      return this.m_13533_(p_13540_.getClass()).contains(p_13540_);
--   }
--
--   public <S> Collection<S> m_13533_(Class<S> p_13534_) {
--      if (!this.f_13528_.isAssignableFrom(p_13534_)) {
--         throw new IllegalArgumentException("Don't know how to search for " + p_13534_);
--      } else {
--         List<? extends T> list = this.f_13527_.computeIfAbsent(p_13534_, (p_13538_) -> {
--            return this.f_13529_.stream().filter(p_13538_::isInstance).collect(Collectors.toList());
--         });
--         return (Collection<S>)Collections.unmodifiableCollection(list);
--      }
--   }
-+   private final Map<Class<?>, List<T>> f_13527_ = new java.util.concurrent.ConcurrentHashMap<>();
-+   private final Class<T> f_13528_;
-+   private final List<T> f_13529_ = new java.util.concurrent.CopyOnWriteArrayList<>();
-+
-+   public ClassInstanceMultiMap(Class<T> p_13531_) {
-+      this.f_13528_ = p_13531_;
-+      this.f_13527_.put(p_13531_, this.f_13529_);
-+   }
-+
-+   public boolean add(T p_13536_) {
-+      synchronized (this) {
-+         boolean flag = false;
-+
 +         for(Map.Entry<Class<?>, List<T>> entry : this.f_13527_.entrySet()) {
 +            if (entry.getKey().isInstance(p_13536_)) {
 +               flag |= entry.getValue().add(p_13536_);
 +            }
-+         }
+          }
 +
 +         return flag;
-+      }
-+   }
-+
-+   public boolean remove(Object p_13543_) {
+       }
+-
+-      return flag;
+    }
+ 
+    public boolean remove(Object p_13543_) {
+-      boolean flag = false;
 +      synchronized (this) {
 +         boolean flag = false;
-+
+ 
+-      for(Map.Entry<Class<?>, List<T>> entry : this.f_13527_.entrySet()) {
+-         if (entry.getKey().isInstance(p_13543_)) {
+-            List<T> list = entry.getValue();
+-            flag |= list.remove(p_13543_);
 +         for(Map.Entry<Class<?>, List<T>> entry : this.f_13527_.entrySet()) {
 +            if (entry.getKey().isInstance(p_13543_)) {
 +               List<T> list = entry.getValue();
 +               flag |= list.remove(p_13543_);
 +            }
-+         }
+          }
 +
 +         return flag;
-+      }
-+   }
-+
-+   public boolean contains(Object p_13540_) {
-+      return this.m_13533_(p_13540_.getClass()).contains(p_13540_);
-+   }
-+
-+   public <S> Collection<S> m_13533_(Class<S> p_13534_) {
-+      if (!this.f_13528_.isAssignableFrom(p_13534_)) {
-+         throw new IllegalArgumentException("Don't know how to search for " + p_13534_);
-+      } else {
+       }
+-
+-      return flag;
+    }
+ 
+    public boolean contains(Object p_13540_) {
+@@ -55,9 +_,15 @@
+       if (!this.f_13528_.isAssignableFrom(p_13534_)) {
+          throw new IllegalArgumentException("Don't know how to search for " + p_13534_);
+       } else {
+-         List<? extends T> list = this.f_13527_.computeIfAbsent(p_13534_, (p_13538_) -> {
+-            return this.f_13529_.stream().filter(p_13538_::isInstance).collect(Collectors.toList());
+-         });
 +         List<? extends T> list = this.f_13527_.get(p_13534_);
 +         if (list == null) {
 +            synchronized (this) {
@@ -107,9 +74,6 @@
 +            }
 +         }
 +
-+         return (Collection<S>)Collections.unmodifiableCollection(list);
-+      }
-+   }
- 
-    public Iterator<T> iterator() {
-       return (Iterator<T>)(this.f_13529_.isEmpty() ? Collections.emptyIterator() : Iterators.unmodifiableIterator(this.f_13529_.iterator()));
+          return (Collection<S>)Collections.unmodifiableCollection(list);
+       }
+    }

@@ -56,7 +56,7 @@
              }
  
              return blockstate;
-@@ -147,12 +_,20 @@
+@@ -147,20 +_,33 @@
     }
  
     public void m_142169_(BlockEntity p_156488_) {
@@ -79,6 +79,34 @@
     }
  
     public Map<BlockPos, BlockEntity> m_63292_() {
+       return this.f_187610_;
+    }
+ 
++   // NestWorld: THREAD_SAFETY_PASSES.md #12 -- same crash-class as #8/the ChunkAccess
++   // structureStarts/structuresRefences fix above. entities is a plain ArrayList reachable
++   // from WorldGenRegion.getChunk(i,j).addEntity(...) across the cross-chunk write path.
+    public void m_63242_(CompoundTag p_63243_) {
+-      this.f_63157_.add(p_63243_);
++      synchronized (this.f_63157_) {
++         this.f_63157_.add(p_63243_);
++      }
+    }
+ 
+    public void m_6286_(Entity p_63183_) {
+@@ -185,7 +_,12 @@
+    }
+ 
+    public List<CompoundTag> m_63293_() {
+-      return this.f_63157_;
++      // NestWorld: defensive copy under the lock, not the live list -- same lesson as
++      // fix #9/#11 (a caller iterating the returned list off-lock would still race a
++      // concurrent addEntity() from another region thread's WorldGenRegion write).
++      synchronized (this.f_63157_) {
++         return new java.util.ArrayList<>(this.f_63157_);
++      }
+    }
+ 
+    public ChunkStatus m_6415_() {
 @@ -227,14 +_,20 @@
     }
  
@@ -102,7 +130,7 @@
     }
  
     public Map<BlockPos, CompoundTag> m_63294_() {
-@@ -244,12 +_,21 @@
+@@ -244,27 +_,45 @@
     @Nullable
     public CompoundTag m_8051_(BlockPos p_63275_) {
        BlockEntity blockentity = this.m_7702_(p_63275_);
@@ -126,4 +154,33 @@
 +      }
     }
  
++   // NestWorld: THREAD_SAFETY_PASSES.md #12 -- getOrCreateCarvingMask()'s unsynchronized
++   // computeIfAbsent is exactly the "check-then-create" shape this class's own postProcessing
++   // comment already calls unsafe; same fix pattern A as the fields above.
     @Nullable
+    public CarvingMask m_183612_(GenerationStep.Carving p_188185_) {
+-      return this.f_63166_.get(p_188185_);
++      synchronized (this.f_63166_) {
++         return this.f_63166_.get(p_188185_);
++      }
+    }
+ 
+    public CarvingMask m_183613_(GenerationStep.Carving p_188191_) {
+-      return this.f_63166_.computeIfAbsent(p_188191_, (p_289528_) -> {
+-         return new CarvingMask(this.m_141928_(), this.m_141937_());
+-      });
++      synchronized (this.f_63166_) {
++         return this.f_63166_.computeIfAbsent(p_188191_, (p_289528_) -> {
++            return new CarvingMask(this.m_141928_(), this.m_141937_());
++         });
++      }
+    }
+ 
+    public void m_188186_(GenerationStep.Carving p_188187_, CarvingMask p_188188_) {
+-      this.f_63166_.put(p_188187_, p_188188_);
++      synchronized (this.f_63166_) {
++         this.f_63166_.put(p_188187_, p_188188_);
++      }
+    }
+ 
+    public void m_63209_(LevelLightEngine p_63210_) {

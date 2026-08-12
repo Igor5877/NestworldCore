@@ -34,3 +34,27 @@
     protected abstract boolean m_6760_(Level p_256009_);
  
     protected void m_6364_(LevelAccessor p_76005_, BlockPos p_76006_, BlockState p_76007_, Direction p_76008_, FluidState p_76009_) {
+@@ -427,9 +_,20 @@
+ 
+    public abstract int m_7430_(FluidState p_164509_);
+ 
++   // NestWorld: THREAD_SAFETY_PASSES.md-class fix. `shapes` is one IdentityHashMap on the
++   // SINGLE server-wide Fluid instance (WATER/LAVA), touched via unguarded computeIfAbsent()
++   // from getShape() -- called from fluid ticking on ANY region thread, any dimension, any
++   // time. Same fix pattern A as the rest of this session's cross-region-map fixes (POI,
++   // ChunkAccess #12, etc.) -- a plain synchronized lock, since this is not hot enough
++   // per-call to need anything fancier (computeIfAbsent only actually computes once per
++   // distinct FluidState; the map has a small, bounded number of keys, so it warms up fast
++   // and steady-state calls are cheap synchronized get()s).
+    public VoxelShape m_7999_(FluidState p_76084_, BlockGetter p_76085_, BlockPos p_76086_) {
+-      return p_76084_.m_76186_() == 9 && m_76088_(p_76084_, p_76085_, p_76086_) ? Shapes.m_83144_() : this.f_75950_.computeIfAbsent(p_76084_, (p_76073_) -> {
+-         return Shapes.m_83048_(0.0D, 0.0D, 0.0D, 1.0D, (double)p_76073_.m_76155_(p_76085_, p_76086_), 1.0D);
+-      });
++      if (p_76084_.m_76186_() == 9 && m_76088_(p_76084_, p_76085_, p_76086_)) return Shapes.m_83144_();
++      synchronized (this.f_75950_) {
++         return this.f_75950_.computeIfAbsent(p_76084_, (p_76073_) -> {
++            return Shapes.m_83048_(0.0D, 0.0D, 0.0D, 1.0D, (double)p_76073_.m_76155_(p_76085_, p_76086_), 1.0D);
++         });
++      }
+    }
+ }

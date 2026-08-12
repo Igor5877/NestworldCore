@@ -1,16 +1,68 @@
 --- a/net/minecraft/world/level/storage/DimensionDataStorage.java
 +++ b/net/minecraft/world/level/storage/DimensionDataStorage.java
-@@ -49,9 +_,13 @@
-    @Nullable
-    public <T extends SavedData> T m_164858_(Function<CompoundTag, T> p_164859_, String p_164860_) {
-       SavedData saveddata = this.f_78144_.get(p_164860_);
-+      if (saveddata == net.minecraftforge.common.util.DummySavedData.DUMMY) return null;
-       if (saveddata == null && !this.f_78144_.containsKey(p_164860_)) {
-          saveddata = this.m_164868_(p_164859_, p_164860_);
-          this.f_78144_.put(p_164860_, saveddata);
-+      } else if (saveddata == null) {
-+         this.f_78144_.put(p_164860_, net.minecraftforge.common.util.DummySavedData.DUMMY);
-+         return null;
-       }
+@@ -47,14 +_,29 @@
+    }
  
-       return (T)saveddata;
+    @Nullable
++   // NestWorld: THREAD_SAFETY_PASSES.md-class fix. `cache` is a plain HashMap, one instance
++   // per dimension, reachable from any region thread that touches a SavedData type (maps,
++   // raids, scoreboard, etc.) -- get()'s check-miss-load-put shape is a genuine TOCTOU (two
++   // region threads racing the first request for the same key can both miss, both read from
++   // disk, and one put() clobbers the other or corrupts the HashMap mid-rehash). Same fix
++   // pattern A as the rest of this session's cross-region-map fixes -- lock the whole
++   // check-then-create sequence, not just individual map ops (a plain synchronized get()/put()
++   // pair would still TOCTOU-race). save()'s forEach is included since it iterates the same
++   // map and would otherwise throw/corrupt against a concurrent region-thread put().
+    public <T extends SavedData> T m_164858_(Function<CompoundTag, T> p_164859_, String p_164860_) {
+-      SavedData saveddata = this.f_78144_.get(p_164860_);
+-      if (saveddata == null && !this.f_78144_.containsKey(p_164860_)) {
+-         saveddata = this.m_164868_(p_164859_, p_164860_);
+-         this.f_78144_.put(p_164860_, saveddata);
+-      }
++      synchronized (this.f_78144_) {
++         SavedData saveddata = this.f_78144_.get(p_164860_);
++         if (saveddata == net.minecraftforge.common.util.DummySavedData.DUMMY) return null;
++         if (saveddata == null && !this.f_78144_.containsKey(p_164860_)) {
++            saveddata = this.m_164868_(p_164859_, p_164860_);
++            this.f_78144_.put(p_164860_, saveddata);
++         } else if (saveddata == null) {
++            this.f_78144_.put(p_164860_, net.minecraftforge.common.util.DummySavedData.DUMMY);
++            return null;
++         }
+ 
+-      return (T)saveddata;
++         return (T)saveddata;
++      }
+    }
+ 
+    @Nullable
+@@ -73,7 +_,9 @@
+    }
+ 
+    public void m_164855_(String p_164856_, SavedData p_164857_) {
+-      this.f_78144_.put(p_164856_, p_164857_);
++      synchronized (this.f_78144_) {
++         this.f_78144_.put(p_164856_, p_164857_);
++      }
+    }
+ 
+    public CompoundTag m_78158_(String p_78159_, int p_78160_) throws IOException {
+@@ -119,11 +_,13 @@
+    }
+ 
+    public void m_78151_() {
+-      this.f_78144_.forEach((p_164866_, p_164867_) -> {
+-         if (p_164867_ != null) {
+-            p_164867_.m_77757_(this.m_78156_(p_164866_));
+-         }
++      synchronized (this.f_78144_) {
++         this.f_78144_.forEach((p_164866_, p_164867_) -> {
++            if (p_164867_ != null) {
++               p_164867_.m_77757_(this.m_78156_(p_164866_));
++            }
+ 
+-      });
++         });
++      }
+    }
+ }
