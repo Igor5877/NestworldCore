@@ -1,10 +1,35 @@
 --- a/net/minecraft/server/level/ServerChunkCache.java
 +++ b/net/minecraft/server/level/ServerChunkCache.java
-@@ -109,6 +_,20 @@
+@@ -63,6 +_,24 @@
+    private final long[] f_8337_ = new long[4];
+    private final ChunkStatus[] f_8338_ = new ChunkStatus[4];
+    private final ChunkAccess[] f_8339_ = new ChunkAccess[4];
++
++   // NestWorld: NW-CHUNK-FASTPATH instrumentation (see docs/LOCAL_TICK_STAGE4.md). Main-thread
++   // getChunk() call accounting — cheap (a handful of incrementAndGet()s per call), left
++   // permanently on rather than flag-gated since the cost is negligible next to the work being
++   // measured. Reported via /nestworld chunkstats.
++   public final java.util.concurrent.atomic.AtomicLong nestworldChunkLookups = new java.util.concurrent.atomic.AtomicLong();
++   public final java.util.concurrent.atomic.AtomicLong nestworldFastPathHits = new java.util.concurrent.atomic.AtomicLong();
++   public final java.util.concurrent.atomic.AtomicLong nestworldBlockingCalls = new java.util.concurrent.atomic.AtomicLong();
++   public final java.util.concurrent.atomic.AtomicLong nestworldWaitNanos = new java.util.concurrent.atomic.AtomicLong();
++   public final java.util.concurrent.atomic.AtomicLong nestworldProxyCreations = new java.util.concurrent.atomic.AtomicLong();
++   // NestWorld: counts how many times a RegionThread's getChunk() wait hit the
++   // GETCHUNK_WAIT_TIMEOUT_MS bound instead of resolving — see the "RegionThread getChunk
++   // blocking crash" fix above. Non-zero readings mean the main thread was slow enough,
++   // for long enough, that this safety valve actually engaged — worth watching after a
++   // heavy event (mass chunk-gen, a mod's raycast into ungenerated terrain) even though
++   // the crash it prevents is rare.
++   public final java.util.concurrent.atomic.AtomicLong nestworldRegionGetChunkTimeouts = new java.util.concurrent.atomic.AtomicLong();
++
+    @Nullable
+    @VisibleForDebug
+    private NaturalSpawner.SpawnState f_8340_;
+@@ -109,6 +_,51 @@
     @Nullable
     public ChunkAccess m_7587_(int p_8360_, int p_8361_, ChunkStatus p_8362_, boolean p_8363_) {
        if (Thread.currentThread() != this.f_8330_) {
-+         if (Thread.currentThread() instanceof net.nestworld.region.RegionThread) {
++         if (Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt) {
 +            LevelChunk nestworldChunk = this.nestworldGetLoadedChunk(p_8360_, p_8361_);
 +            if (nestworldChunk != null) return nestworldChunk;
 +            // load=false: honour vanilla "null if absent" — callers null-check, so we
@@ -15,13 +40,82 @@
 +            // read. -Dnestworld.nonBlockingChunkReads=true opts into per-thread
 +            // void-air (faster, but entities see AIR at unloaded edges).
 +            if (net.nestworld.region.NestworldTuning.NONBLOCKING_CHUNK_READS) {
-+               return ((net.nestworld.region.RegionThread) Thread.currentThread()).nestworldEmptyChunk();
++               return nestworldRt.nestworldEmptyChunk();
++            }
++            // NestWorld: bound this region thread's wait — see docs/LOCAL_TICK_STAGE4.md,
++            // "RegionThread getChunk blocking crash". A real crash-report confirmed a region
++            // thread can get stuck here indefinitely (plain join() has no timeout) when the
++            // chunk genuinely isn't ready yet AND the main thread it depends on (this call is
++            // dispatched to run there) is itself saturated — e.g. a mod's raycast reaching
++            // ungenerated terrain during a heavy chunk-gen event. That single stuck region
++            // thread outlived both RegionThreadPool's 30s region-round abandon-wait and the
++            // 60s ServerWatchdog threshold, crashing the whole JVM. Reuses the same
++            // GETCHUNK_WAIT_TIMEOUT_MS budget the main-thread single-chunk timeout path
++            // already uses (see below) — on timeout, degrade to the same per-thread empty
++            // chunk NONBLOCKING_CHUNK_READS uses above, rather than block indefinitely. The
++            // dispatched task itself is NOT cancelled — it keeps running on main and (if it
++            // ever completes) its result is simply discarded; this only stops THIS caller
++            // from waiting on it past a safe bound.
++            if (net.nestworld.region.NestworldTuning.GETCHUNK_WAIT_TIMEOUT_MS > 0) {
++               CompletableFuture<ChunkAccess> nestworldFuture = CompletableFuture.supplyAsync(() -> {
++                  return this.m_7587_(p_8360_, p_8361_, p_8362_, p_8363_);
++               }, this.f_8332_);
++               try {
++                  return nestworldFuture.get(net.nestworld.region.NestworldTuning.GETCHUNK_WAIT_TIMEOUT_MS,
++                        java.util.concurrent.TimeUnit.MILLISECONDS);
++               } catch (java.util.concurrent.TimeoutException nestworldTimeout) {
++                  nestworldRegionGetChunkTimeouts.incrementAndGet();
++                  return nestworldRt.nestworldEmptyChunk();
++               } catch (InterruptedException nestworldInterrupted) {
++                  Thread.currentThread().interrupt();
++                  return nestworldRt.nestworldEmptyChunk();
++               } catch (java.util.concurrent.ExecutionException nestworldExecutionException) {
++                  throw new RuntimeException(nestworldExecutionException.getCause());
++               }
 +            }
 +         }
           return CompletableFuture.supplyAsync(() -> {
              return this.m_7587_(p_8360_, p_8361_, p_8362_, p_8363_);
           }, this.f_8332_).join();
-@@ -128,7 +_,43 @@
+@@ -117,6 +_,37 @@
+          profilerfiller.m_6174_("getChunk");
+          long i = ChunkPos.m_45589_(p_8360_, p_8361_);
+ 
++         // NestWorld: NW-CHUNK-FASTPATH. The 4-slot lastChunk cache below only survives a
++         // handful of DIFFERENT-chunk lookups between hits — a mod iterating a HashSet of
++         // block positions spanning dozens of chunks (e.g. a large explosion's neighbour-
++         // update pass) thrashes it on nearly every call, falling through to the blocking
++         // managedBlock()/getChunkFutureMainThread() path even though the chunk is already
++         // fully loaded and ticking (measured live: Draconic Evolution's reactor meltdown,
++         // ~1.6ms/tick average in ServerChunkCache.getChunk() this way). nestworldLoadedFull
++         // is the SAME lock-free snapshot region threads already read (see
++         // nestworldGetLoadedChunk) — reused here, not a new mechanism — refreshed once/tick
++         // by nestworldRefreshLoadedChunks(), called as literally the first line of
++         // NestworldRegionSystem.tickAllRegions(), i.e. always fresh (this tick's data) by
++         // the time any other tick-phase code (including Forge's onPreServerTick listeners,
++         // where this reactor code runs) executes. No memory-visibility subtlety: this is
++         // the MAIN thread reading a volatile field it (indirectly, via that same-thread
++         // call) just published — even safer than the already-shipped region-thread case,
++         // which crosses threads. Scoped to ChunkStatus.FULL + load=true, matching
++         // GETCHUNK_WAIT_TIMEOUT_MS's existing scoping precedent below — every OTHER call
++         // shape (other statuses, load=false probes, worldgen dependency resolution) is
++         // completely untouched, falling through to the unchanged vanilla path exactly as
++         // before. A miss here (chunk not yet FULL, or genuinely unloaded) costs one cheap
++         // hashmap lookup and then falls through normally — never a wrong answer, only
++         // "slow path taken" vs "fast path taken".
++         nestworldChunkLookups.incrementAndGet();
++         if (p_8362_ == ChunkStatus.f_62326_ && p_8363_) {
++            LevelChunk nestworldFast = this.nestworldLoadedFull.get(i);
++            if (nestworldFast != null) {
++               nestworldFastPathHits.incrementAndGet();
++               return nestworldFast;
++            }
++         }
++
+          for(int j = 0; j < 4; ++j) {
+             if (i == this.f_8337_[j] && p_8362_ == this.f_8338_[j]) {
+                ChunkAccess chunkaccess = this.f_8339_[j];
+@@ -128,7 +_,89 @@
  
           profilerfiller.m_6174_("getChunkCacheMiss");
           CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> completablefuture = this.m_8456_(p_8360_, p_8361_, p_8362_, p_8363_);
@@ -44,9 +138,52 @@
 +               }
 +               return nestworldProxy;
 +            }
-+            long nestworldDeadline = System.nanoTime() + net.nestworld.region.NestworldTuning.GETCHUNK_WAIT_TIMEOUT_MS * 1_000_000L;
++            // NestWorld: the hard invariant (docs/GEN_SPIKE.md, "Layer 10" — project owner's
++            // explicit direction, 2026-08-11): "MAIN THREAD НІКОЛИ НЕ МОЖЕ БЛОКУВАТИСЯ НА
++            // WORLDGEN" — not bounded, ZERO. GETCHUNK_ZERO_WAIT_MAIN_THREAD (default true)
++            // makes this the default: never even attempt the bounded wait below, degrade
++            // straight to a proxy immediately, same as if the burst budget were already
++            // exhausted (which is still checked too, so an operator who explicitly disables
++            // zero-wait mode keeps the previous bounded-tolerance behavior as a fallback —
++            // GETCHUNK_BURST_BUDGET_MS/GETCHUNK_WAIT_TIMEOUT_MS are NOT removed, just no
++            // longer consulted by default). Correct because the proxy path already handles
++            // "not resolved yet" transparently (chunk keeps generating in the background;
++            // the proxy resolves once it's ready) — this only changes WHEN that path is
++            // taken, reusing 100% of the existing machinery, not adding a new one.
++            if ((net.nestworld.region.NestworldTuning.GETCHUNK_ZERO_WAIT_MAIN_THREAD
++                    || this.nestworldBurstBudgetRemainingNanos <= 0) && !completablefuture.isDone()) {
++               nestworldProxyCreations.incrementAndGet();
++               net.minecraft.world.level.chunk.LevelChunk.NestworldProxyLevelChunk nestworldBurstProxy = new net.minecraft.world.level.chunk.LevelChunk.NestworldProxyLevelChunk(
++                     this.f_8329_, new ChunkPos(p_8360_, p_8361_),
++                     this.f_8329_.m_9598_().m_175515_(net.minecraft.core.registries.Registries.f_256952_)
++                           .m_246971_(net.minecraft.world.level.biome.Biomes.f_48202_));
++               this.nestworldPendingProxies.put(i, nestworldBurstProxy);
++               completablefuture.whenComplete((either, throwable) -> this.nestworldResolveProxy(i, nestworldBurstProxy, completablefuture));
++               return nestworldBurstProxy;
++            }
++            // NestWorld: cap THIS call's own wait by whichever is smaller, its individual
++            // GETCHUNK_WAIT_TIMEOUT_MS bound or the tick's remaining burst budget — found
++            // necessary after a real crash (2026-08-10, EvilCraft's WorldHelpers.foldArea via
++            // a Draconic Evolution reactor explosion): the burst-budget check above only
++            // gated calls AFTER the first, so a single genuinely-cold chunk could still burn
++            // up to the FULL per-call timeout (20s default) before the burst mechanism ever
++            // got a chance to act, and 2-3 such calls in the same tick (a foldArea scanning
++            // several distinct unloaded chunk positions) stacked past the 60s watchdog even
++            // though no individual call exceeded its own nominal bound. This closes that gap:
++            // now EVERY call in a tick, including the first, is bounded by whatever's left of
++            // the shared per-tick budget, not just its own standalone timeout.
++            long nestworldCallBudgetNanos = Math.min(
++                    net.nestworld.region.NestworldTuning.GETCHUNK_WAIT_TIMEOUT_MS * 1_000_000L,
++                    Math.max(this.nestworldBurstBudgetRemainingNanos, 0L));
++            long nestworldDeadline = System.nanoTime() + nestworldCallBudgetNanos;
++            long nestworldBlockStart = System.nanoTime();
++            nestworldBlockingCalls.incrementAndGet();
 +            this.f_8332_.m_18701_(() -> completablefuture.isDone() || System.nanoTime() >= nestworldDeadline);
++            long nestworldElapsed = System.nanoTime() - nestworldBlockStart;
++            nestworldWaitNanos.addAndGet(nestworldElapsed);
++            this.nestworldBurstBudgetRemainingNanos -= nestworldElapsed;
 +            if (!completablefuture.isDone()) {
++               nestworldProxyCreations.incrementAndGet();
 +               net.minecraft.world.level.chunk.LevelChunk.NestworldProxyLevelChunk proxy = new net.minecraft.world.level.chunk.LevelChunk.NestworldProxyLevelChunk(
 +                     this.f_8329_, new ChunkPos(p_8360_, p_8361_),
 +                     this.f_8329_.m_9598_().m_175515_(net.minecraft.core.registries.Registries.f_256952_)
@@ -61,7 +198,10 @@
 +            }
 +            // Completed within the deadline after all — fall through to the normal path below.
 +         } else {
++            long nestworldBlockStart = System.nanoTime();
++            nestworldBlockingCalls.incrementAndGet();
 +            this.f_8332_.m_18701_(completablefuture::isDone);
++            nestworldWaitNanos.addAndGet(System.nanoTime() - nestworldBlockStart);
 +         }
           ChunkAccess chunkaccess1 = completablefuture.join().map((p_8406_) -> {
              return p_8406_;
@@ -110,7 +250,7 @@
              Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure> either = chunkholder.m_140080_(ChunkStatus.f_62326_).getNow((Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>)null);
              if (either == null) {
                 return null;
-@@ -180,6 +_,66 @@
+@@ -180,6 +_,92 @@
        }
     }
  
@@ -159,11 +299,29 @@
 +         new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
 +   private boolean nestworldFullFlip;
 +
++   // NestWorld 2026-08-11 (live ATM9 incident investigation, distancemanager-tier1-volume-freeze.md
++   // follow-up): this method's own cost is O(chunkMap.getChunks().size()) -- ALL currently-tracked
++   // ChunkHolders (any status, not just loaded/FULL ones), not just a "pending" backlog -- and it
++   // runs unconditionally, first thing, every single tick. Adding matching timing telemetry to the
++   // existing nestworldTimedUpdateFutures pattern, so a repeat incident shows WHICH main-thread
++   // mechanism (this one, or DistanceManager's promotion path, or something else) actually dominates
++   // instead of requiring a fresh live jstack session to find out again.
++   public final java.util.concurrent.atomic.AtomicLong nestworldRefreshCalls = new java.util.concurrent.atomic.AtomicLong();
++   public final java.util.concurrent.atomic.AtomicLong nestworldRefreshTotalNanos = new java.util.concurrent.atomic.AtomicLong();
++   public volatile long nestworldRefreshLastNanos = 0L;
++   public volatile long nestworldRefreshLastSize = 0L;
++   public volatile long nestworldRefreshLastScanned = 0L;
++   public volatile long nestworldRefreshMaxNanos = 0L;
++   public volatile long nestworldRefreshMaxScanned = 0L;
++
 +   public void nestworldRefreshLoadedChunks() {
++      long nestworldStart = System.nanoTime();
 +      it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<LevelChunk> m =
 +            (nestworldFullFlip = !nestworldFullFlip) ? nestworldFullA : nestworldFullB;
 +      m.clear();
++      long nestworldScanned = 0L;
 +      for (ChunkHolder h : this.f_8325_.m_140416_()) {
++         nestworldScanned++;
 +         LevelChunk c = h.currentlyLoading;
 +         if (c == null) {
 +            Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure> e = h.m_140080_(ChunkStatus.f_62326_).getNow((Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>)null);
@@ -172,6 +330,14 @@
 +         if (c != null) m.put(c.m_7697_().m_45588_(), c);
 +      }
 +      this.nestworldLoadedFull = m;
++      long nestworldElapsed = System.nanoTime() - nestworldStart;
++      this.nestworldRefreshCalls.incrementAndGet();
++      this.nestworldRefreshTotalNanos.addAndGet(nestworldElapsed);
++      this.nestworldRefreshLastNanos = nestworldElapsed;
++      this.nestworldRefreshLastSize = m.size();
++      this.nestworldRefreshLastScanned = nestworldScanned;
++      if (nestworldElapsed > this.nestworldRefreshMaxNanos) this.nestworldRefreshMaxNanos = nestworldElapsed;
++      if (nestworldScanned > this.nestworldRefreshMaxScanned) this.nestworldRefreshMaxScanned = nestworldScanned;
 +   }
 +
     private void m_8488_() {
@@ -189,7 +355,7 @@
        ChunkPos chunkpos = new ChunkPos(p_8457_, p_8458_);
        long i = chunkpos.m_45588_();
        int j = ChunkLevel.m_287141_(p_8459_);
-@@ -265,6 +_,17 @@
+@@ -265,12 +_,35 @@
     }
  
     public boolean m_8466_() {
@@ -203,18 +369,88 @@
 +      // stranded forever during server startup (confirmed by testing: a fresh server
 +      // with the cap on hung indefinitely preparing the spawn area, 0% CPU, nothing
 +      // in flight anywhere).
++      // NestWorld P0.1: attribution audit, see PollTaskAttribution.
++      long nestworldT0 = System.nanoTime();
 +      this.f_8325_.nestworldDrainDeferredAdmissions();
++      net.nestworld.region.PollTaskAttribution.record(
++         net.nestworld.region.PollTaskAttribution.Category.ADMISSION_DRAIN, System.nanoTime() - nestworldT0);
        return this.f_8332_.m_7245_();
     }
  
-@@ -303,6 +_,7 @@
+    boolean m_8489_() {
++      // NestWorld P0.1: split the two DistanceManager/ChunkMap sub-steps for attribution.
++      long nestworldT0 = System.nanoTime();
+       boolean flag = this.f_8327_.m_140805_(this.f_8325_);
++      long nestworldT1 = System.nanoTime();
++      net.nestworld.region.PollTaskAttribution.record(
++         net.nestworld.region.PollTaskAttribution.Category.DISTANCE_MANAGER, nestworldT1 - nestworldT0);
+       boolean flag1 = this.f_8325_.m_140324_();
++      long nestworldT2 = System.nanoTime();
++      net.nestworld.region.PollTaskAttribution.record(
++         net.nestworld.region.PollTaskAttribution.Category.CHUNK_MAP_PROMOTE, nestworldT2 - nestworldT1);
+       if (!flag && !flag1) {
+          return false;
+       } else {
+@@ -302,19 +_,59 @@
+       this.f_8325_.close();
     }
  
++   // NW-CHUNKSOURCE-SUBPHASE: breaks down the "chunkSource" bucket (ServerLevel's
++   // vanilla sub-phase timer) into distanceManager/tickChunks/unload, to isolate
++   // whether DistanceManager.runAllUpdates() itself is the dominant cost inside
++   // it or whether tickChunks()'s natural-spawn/random-tick scan dominates instead.
++   private static final boolean NESTWORLD_CS_SUBPHASE_LOG =
++           !"false".equalsIgnoreCase(System.getProperty("nestworld.timingLog", "true"));
++   private static final int NESTWORLD_CS_SUBPHASE_LOG_INTERVAL = 200;
++   private static final long[] nestworldCsSubphaseNanos = new long[3];
++   private static int nestworldCsSubphaseTicks = 0;
++
++   /** NestWorld: remaining main-thread getChunk() FULL+load burst budget for THIS tick —
++    *  see NestworldTuning.GETCHUNK_BURST_BUDGET_MS. Reset every tick() call; only ever
++    *  read/written on the main thread (same as the rest of this class's mutable state). */
++   private long nestworldBurstBudgetRemainingNanos;
++
     public void m_201698_(BooleanSupplier p_201913_, boolean p_201914_) {
++      long nestworldCsT0 = System.nanoTime();
++      this.nestworldBurstBudgetRemainingNanos = net.nestworld.region.NestworldTuning.GETCHUNK_BURST_BUDGET_MS > 0
++            ? net.nestworld.region.NestworldTuning.GETCHUNK_BURST_BUDGET_MS * 1_000_000L : Long.MAX_VALUE;
 +      this.f_8327_.nestworldResetGenBudget(); // NestWorld: refresh per-tick chunk-promotion budget
        this.f_8329_.m_46473_().m_6180_("purge");
        this.f_8327_.m_140776_();
        this.m_8489_();
++      long nestworldCsT1 = System.nanoTime();
+       this.f_8329_.m_46473_().m_6182_("chunks");
+       if (p_201914_) {
+          this.m_8490_();
+       }
++      long nestworldCsT2 = System.nanoTime();
+ 
+       this.f_8329_.m_46473_().m_6182_("unload");
+       this.f_8325_.m_140280_(p_201913_);
+       this.f_8329_.m_46473_().m_7238_();
+       this.m_8488_();
++      long nestworldCsT3 = System.nanoTime();
++
++      if (this.f_8329_.m_46472_() == Level.f_46428_) {
++         nestworldCsSubphaseNanos[0] += nestworldCsT1 - nestworldCsT0; // purge + DistanceManager.runAllUpdates()
++         nestworldCsSubphaseNanos[1] += nestworldCsT2 - nestworldCsT1; // tickChunks (natural spawn scan, random tick, broadcast)
++         nestworldCsSubphaseNanos[2] += nestworldCsT3 - nestworldCsT2; // chunkMap.tick() (unload queue) + clearCache
++         if (++nestworldCsSubphaseTicks >= NESTWORLD_CS_SUBPHASE_LOG_INTERVAL) {
++            if (NESTWORLD_CS_SUBPHASE_LOG) {
++               org.slf4j.LoggerFactory.getLogger("NestWorld/ChunkSourceSubphase").info(
++                     "chunkSource sub-phases avg ms over {} ticks: distanceManager={} tickChunks={} unload={}",
++                     nestworldCsSubphaseTicks,
++                     String.format("%.2f", nestworldCsSubphaseNanos[0] / 1e6 / nestworldCsSubphaseTicks),
++                     String.format("%.2f", nestworldCsSubphaseNanos[1] / 1e6 / nestworldCsSubphaseTicks),
++                     String.format("%.2f", nestworldCsSubphaseNanos[2] / 1e6 / nestworldCsSubphaseTicks));
++            }
++            java.util.Arrays.fill(nestworldCsSubphaseNanos, 0L);
++            nestworldCsSubphaseTicks = 0;
++         }
++      }
+    }
+ 
+    private void m_8490_() {
 @@ -322,8 +_,16 @@
        long j = i - this.f_8334_;
        this.f_8334_ = i;
@@ -315,7 +551,28 @@
        this.f_8325_.m_140199_(p_8464_);
     }
  
-@@ -535,6 +_,11 @@
+@@ -531,14 +_,44 @@
+ 
+       protected void m_6367_(Runnable p_8502_) {
+          ServerChunkCache.this.f_8329_.m_46473_().m_6174_("runTask");
++         // NestWorld P0.1: this is the ONE place a generic queued task actually executes, so it's
++         // the natural O(1)-per-task hook for the "worldgen completion / region dispatch / other"
++         // sub-breakdown the audit asked for — classified by class name, timed individually, no scan.
++         long nestworldT0 = System.nanoTime();
+          super.m_6367_(p_8502_);
++         long nestworldElapsed = System.nanoTime() - nestworldT0;
++         String nestworldClassName = p_8502_.getClass().getName();
++         net.nestworld.region.PollTaskAttribution.Category nestworldCat =
++            net.nestworld.region.PollTaskAttribution.classifyGeneric(p_8502_);
++         net.nestworld.region.PollTaskAttribution.record(nestworldCat, nestworldElapsed);
++         if (nestworldCat == net.nestworld.region.PollTaskAttribution.Category.GENERIC_OTHER) {
++            net.nestworld.region.PollTaskAttribution.recordGenericOtherDetail(nestworldClassName, nestworldElapsed);
++         }
++         // P1.0 audit (docs/P1_WORLDGEN_MAINTHREAD_DECOUPLING_SPEC.md): worldgen/main-thread
++         // boundary classification, independent of the coarser Category above -- see
++         // classifyBoundary's javadoc for the heuristic and its caveats.
++         net.nestworld.region.PollTaskAttribution.recordBoundary(
++            net.nestworld.region.PollTaskAttribution.classifyBoundary(nestworldClassName), nestworldElapsed);
        }
  
        public boolean m_7245_() {
@@ -323,7 +580,19 @@
 +         // startup/tick wait loops) dispatches to THIS override directly, bypassing
 +         // ServerChunkCache's own pollTask() wrapper entirely — so the admit-budget
 +         // drain has to live here too, not just there, to cover every synchronous wait.
++         long nestworldT0 = System.nanoTime();
 +         ServerChunkCache.this.f_8325_.nestworldDrainDeferredAdmissions();
++         net.nestworld.region.PollTaskAttribution.record(
++            net.nestworld.region.PollTaskAttribution.Category.ADMISSION_DRAIN, System.nanoTime() - nestworldT0);
           if (ServerChunkCache.this.m_8489_()) {
              return true;
           } else {
++            long nestworldT1 = System.nanoTime();
+             ServerChunkCache.this.f_8331_.m_9409_();
++            net.nestworld.region.PollTaskAttribution.record(
++               net.nestworld.region.PollTaskAttribution.Category.LIGHTING, System.nanoTime() - nestworldT1);
++            // super.pollTask()'s own queue-drain time is captured per-task in doRunTask() above,
++            // not double-counted here.
+             return super.m_7245_();
+          }
+       }

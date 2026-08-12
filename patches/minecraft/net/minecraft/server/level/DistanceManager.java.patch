@@ -1,13 +1,278 @@
 --- a/net/minecraft/server/level/DistanceManager.java
 +++ b/net/minecraft/server/level/DistanceManager.java
-@@ -46,6 +_,10 @@
+@@ -45,7 +_,274 @@
+    private final DistanceManager.FixedPlayerDistanceChunkTracker f_140763_ = new DistanceManager.FixedPlayerDistanceChunkTracker(8);
     private final TickingTracker f_183901_ = new TickingTracker();
     private final DistanceManager.PlayerTicketTracker f_140764_ = new DistanceManager.PlayerTicketTracker(32);
-    final Set<ChunkHolder> f_140765_ = Sets.newHashSet();
+-   final Set<ChunkHolder> f_140765_ = Sets.newHashSet();
++   // NestWorld 2026-08-11 (distancemanager-tier1-volume-freeze.md, Gemini-reviewed twice):
++   // was a single Set<ChunkHolder>, reclassified by a full O(n) scan every tick in
++   // runAllUpdates() -- confirmed via live jstack (twice, 3s apart, both landed inside
++   // nestworldHasPlayerTicket during that scan) as the actual freeze mechanism once the
++   // pending backlog reached 170k+ during a fast-flight incident. Split into two
++   // persistently-classified sets, populated incrementally (see ChunkTicketTracker.setLevel
++   // below) so runAllUpdates() only ever iterates the (much smaller) player-ticketed subset
++   // to find Tier 1a/1b, never the full backlog. See nestworldRunValidatorBatch for the
++   // budgeted correctness backstop this relies on (setLevel doesn't fire for every
++   // ticket-composition change that leaves the numeric level unchanged -- Gemini-confirmed
++   // real gap, not closed by incremental classification alone).
++   final Set<ChunkHolder> chunksToUpdateFuturesPlayer = Sets.newHashSet();
++   final Set<ChunkHolder> chunksToUpdateFuturesBulk = Sets.newHashSet();
++
++   // NestWorld P0.4 (docs/P0_3_AUTONOMOUS_BASELINE_SPEC.md follow-up, project owner's explicit
++   // ТЗ 2026-08-12): TIER2_SELECT's top-N build used to scan chunksToUpdateFuturesBulk IN FULL
++   // every call (examine/select ratio live-measured 690 -> 1609.6 and growing with backlog size
++   // -- same "bounded output, unbounded scan" bug class as the validator, this instance NOT yet
++   // fixed until now). Fix: a persistent min-heap of {holder, levelAtPush} ordered by ticket
++   // level, pushed to incrementally at the SAME points chunksToUpdateFuturesBulk.add() already
++   // fires (setLevel()'s incremental classification, and the validator's repair swap) -- no new
++   // scan needed, since those are already the only 2 places a holder enters the bulk set (grep-
++   // confirmed, see the setLevel() and nestworldRunValidatorBatch() call sites below).
++   //
++   // Lazy deletion: chunksToUpdateFuturesBulk.remove() sites do NOT also pop the heap (that
++   // would just reintroduce an O(n) removal-by-reference on a plain PriorityQueue). Instead,
++   // TIER2_SELECT polls the heap and discards any entry that's stale -- either no longer a
++   // chunksToUpdateFuturesBulk member (already promoted/moved to Player), or whose CURRENT
++   // ticket level no longer matches levelAtPush (setLevel fired again since this entry was
++   // pushed, e.g. another ticket at a different level came or went while still queued -- the
++   // fresher push for the same holder is a separate heap entry; this stale one is simply
++   // discarded when reached). Every entry is pushed once (at a real Bulk-set add) and popped/
++   // discarded once (ever) -- so cost is amortized O(1) per add over the session, even though a
++   // single call can occasionally need to skip several stale entries in a row.
++   //
++   // Priority-order note: same acceptable imprecision the previous top-N build already had (its
++   // own comment: "ordering across ticks... is what matters, not within-tick exactness") -- a
++   // holder whose level worsened while queued keeps its OLD (better) position until its stale
++   // entry is discarded and it's naturally re-evaluated on its next setLevel() call, not
++   // re-sorted immediately. Not a worldgen-semantics change: which holder eventually gets
++   // selected and at what ticket level it's promoted is unchanged; only the INTRA-QUEUE ordering
++   // precision under level churn is slightly relaxed, same trade-off already accepted elsewhere
++   // in this exact method.
++   private record Tier2Candidate(ChunkHolder holder, int levelAtPush) {}
++   private final java.util.PriorityQueue<Tier2Candidate> nestworldTier2Ready = new java.util.PriorityQueue<>(
++         java.util.Comparator.<Tier2Candidate>comparingInt(c -> c.levelAtPush)
++               .thenComparingLong(c -> c.holder.m_140092_().m_45588_()));
++
++   /** Call at every chunksToUpdateFuturesBulk.add(holder) site -- see the field doc above. */
++   private void nestworldTier2Push(ChunkHolder holder) {
++      this.nestworldTier2Ready.add(new Tier2Candidate(holder, holder.m_140093_()));
++   }
++
 +   // NestWorld: per-tick budget of chunk-holder future updates (FULL/ticking promotions).
 +   // Reset at the start of each server tick; runAllUpdates decrements it and defers the
 +   // rest of a burst to the next tick. See NestworldTuning.CHUNK_GEN_BUDGET.
 +   private int nestworldFutureBudget = Integer.MAX_VALUE;
++
++   // NestWorld: chunk-promotion latency telemetry (docs/GEN_SPIKE.md, "Layer 11" —
++   // project owner's explicit request, 2026-08-11, following the zero-wait getChunk()
++   // work). Tracks EVERY updateFutures() call's own wall-clock cost (the main-thread
++   // "integration" work GEN_SPIKE.md's original finding named as the actual freeze
++   // mechanism — not generation itself, which stays on the worker pool). A fixed-size
++   // ring buffer of recent per-call samples for percentile computation, same shape as
++   // WorldRegion.tickDurationsNs/getPercentileTickMs — sized larger (2048, not 100)
++   // since individual updateFutures() calls happen far more often than region ticks.
++   private static final int NESTWORLD_PROMOTION_WINDOW = 2048;
++   private final long[] nestworldPromotionSamplesNanos = new long[NESTWORLD_PROMOTION_WINDOW];
++   private int nestworldPromotionSampleIdx = 0;
++   private int nestworldPromotionSampleCount = 0;
++   private long nestworldPromotionTotalApplied = 0;
++   private long nestworldPromotionTotalNanos = 0;
++
++   /** Main-thread-only (this whole class only mutates on the main thread) — wraps a
++    *  single updateFutures() call with timing and records the sample. */
++   private void nestworldTimedUpdateFutures(ChunkHolder holder, ChunkMap map) {
++      long start = System.nanoTime();
++      holder.m_143003_(map, this.f_140770_);
++      long elapsed = System.nanoTime() - start;
++      this.nestworldPromotionTotalApplied++;
++      this.nestworldPromotionTotalNanos += elapsed;
++      this.nestworldPromotionSamplesNanos[this.nestworldPromotionSampleIdx] = elapsed;
++      this.nestworldPromotionSampleIdx = (this.nestworldPromotionSampleIdx + 1) % NESTWORLD_PROMOTION_WINDOW;
++      if (this.nestworldPromotionSampleCount < NESTWORLD_PROMOTION_WINDOW) this.nestworldPromotionSampleCount++;
++   }
++
++   /** Current backlog — combined size of both classified sets at the moment of the call,
++    *  a live gauge (not averaged): how many chunk holders are waiting for their next
++    *  promotion pass right now. Safe from any thread as a read of two j.u.HashSet size
++    *  fields, though callers should expect this to only be MEANINGFULLY read from the
++    *  main thread (this whole class's real invariant). */
++   public int nestworldPromotionPending() {
++      return this.chunksToUpdateFuturesPlayer.size() + this.chunksToUpdateFuturesBulk.size();
++   }
++
++   public int nestworldPromotionPendingPlayer() { return this.chunksToUpdateFuturesPlayer.size(); }
++   public int nestworldPromotionPendingBulk() { return this.chunksToUpdateFuturesBulk.size(); }
++
++   // NestWorld 2026-08-11: budgeted correctness backstop for the incremental Player/Bulk
++   // classification above. setLevel() only fires when a position's NUMERIC ticket level
++   // changes; Gemini-confirmed real gap: two different ticket sources (e.g. a bulk request
++   // and a newly-arrived player) can resolve to the IDENTICAL numeric level at a position,
++   // so a BULK->PLAYER (or reverse) transition can occur with no setLevel call at all,
++   // leaving a holder classified stale. Rather than a full rescan (reintroducing the exact
++   // cost this whole fix removes) or a deep hook into PlayerTicketTracker's own internal
++   // ticket-add/remove propagation (bigger blast radius for a narrow edge case, per project
++   // owner's explicit call), this walks a snapshot of the combined backlog in small,
++   // constant-size batches across MANY ticks -- total validation cost is the same O(n) as
++   // before, but amortized/spread so no single tick pays for more than
++   // NESTWORLD_VALIDATOR_BATCH_SIZE reclassification checks, regardless of how large the
++   // backlog is. A snapshot is retaken (fresh O(n) copy, but only once per full pass, not
++   // once per tick) whenever the cursor reaches the end.
++   private static final int NESTWORLD_VALIDATOR_BATCH_SIZE = 2000;
++   // Gemini-reviewed 2026-08-11 (see project memory validator-rebuild-unbounded-scan): the
++   // snapshot REBUILD step used to be a single unconditional full copy of both live sets --
++   // confirmed via live jstack on ATM9 (pending=20,508) to cost 139.947ms in one tick, causing
++   // MSPT p99=670ms / TPS 18.1. Budgeted the same way the batch-walk below already was.
++   private static final long NESTWORLD_VALIDATOR_REBUILD_BUDGET_NANOS = 2_000_000L; // 2ms/tick
++   private ChunkHolder[] nestworldValidatorSnapshot = new ChunkHolder[0];
++   private int nestworldValidatorCursor = 0;
++   private long nestworldValidatorMismatches = 0;
++   private long nestworldValidatorRepairs = 0;
++   private long nestworldValidatorBatchMaxNanos = 0;
++   // Multi-tick snapshot-build state -- only meaningful while nestworldValidatorBuilding.
++   private boolean nestworldValidatorBuilding = false;
++   private java.util.ArrayList<ChunkHolder> nestworldValidatorBuildList = null;
++   private Iterator<ChunkHolder> nestworldValidatorBuildIter = null;
++   private boolean nestworldValidatorBuildPhaseBulk = false;
++   private long nestworldValidatorSnapshotBuildNanos = 0;
++   private int nestworldValidatorSnapshotBuildTicks = 0;
++   private long nestworldValidatorPartialRebuilds = 0;
++   // NestWorld P0.1 finding (docs/P0_REGIONTHREADPOOL_REDESIGN_SPEC.md follow-up, live-measured
++   // 2026-08-12): this validator's per-call cost IS correctly bounded (2ms rebuild budget /
++   // NESTWORLD_VALIDATOR_BATCH_SIZE=2000 walk), but nestworldRunValidatorBatch() is called from
++   // runAllUpdates(), which runs on EVERY pollTask() call -- and pollTask() is invoked far more
++   // than once per real game tick (RegionThreadPool.awaitLatch()'s busy-wait loop, plus every
++   // synchronous managedBlock() chunk wait) -- the exact multi-invoke pattern already documented
++   // in [[polltask-multi-invoke-per-tick-finding]]. Live reading: this one method alone was 97.5%
++   // of all runAllUpdates() time and ~88% of ALL main-thread pollTask() time over a session (703k
++   // calls, only ~1 real tick's worth of NEW ticket state existing between most of them). Gating
++   // to once per real tick (ticketTickCounter, incremented once/tick in purgeStaleTickets(),
++   // called once/tick from ServerChunkCache.tick()) restores the ORIGINAL "spread cost across
++   // many ticks" design intent -- not a semantic change, since re-validating the same/overlapping
++   // batch multiple times within one tick before any new ticket-state change could occur was pure
++   // waste, not extra correctness coverage.
++   private long nestworldValidatorLastTick = -1;
++
++   public long nestworldValidatorMismatches() { return this.nestworldValidatorMismatches; }
++   public double nestworldValidatorProgressPct() {
++      return this.nestworldValidatorSnapshot.length == 0 ? 100.0
++              : 100.0 * this.nestworldValidatorCursor / this.nestworldValidatorSnapshot.length;
++   }
++   public double nestworldValidatorBatchMaxMs() { return this.nestworldValidatorBatchMaxNanos / 1e6; }
++   public double nestworldValidatorSnapshotBuildMs() { return this.nestworldValidatorSnapshotBuildNanos / 1e6; }
++   public int nestworldValidatorSnapshotSize() {
++      return this.nestworldValidatorBuilding && this.nestworldValidatorBuildList != null
++              ? this.nestworldValidatorBuildList.size() : this.nestworldValidatorSnapshot.length;
++   }
++   public int nestworldValidatorSnapshotBuildTicks() { return this.nestworldValidatorSnapshotBuildTicks; }
++   public long nestworldValidatorPartialRebuilds() { return this.nestworldValidatorPartialRebuilds; }
++
++   private void nestworldRunValidatorBatch() {
++      // NestWorld P0.1 fix: at most one batch/build step per real game tick -- see the field
++      // doc comment on nestworldValidatorLastTick above for why this is correct, not lossy.
++      if (this.f_140771_ == this.nestworldValidatorLastTick) return;
++      this.nestworldValidatorLastTick = this.f_140771_;
++
++      if (this.nestworldValidatorCursor >= this.nestworldValidatorSnapshot.length
++              && !this.nestworldValidatorBuilding) {
++         int total = this.chunksToUpdateFuturesPlayer.size() + this.chunksToUpdateFuturesBulk.size();
++         if (total == 0) { this.nestworldValidatorSnapshot = new ChunkHolder[0]; this.nestworldValidatorCursor = 0; return; }
++         this.nestworldValidatorBuilding = true;
++         this.nestworldValidatorBuildList = new java.util.ArrayList<>(Math.min(total, NESTWORLD_VALIDATOR_BATCH_SIZE * 4));
++         this.nestworldValidatorBuildIter = this.chunksToUpdateFuturesPlayer.iterator();
++         this.nestworldValidatorBuildPhaseBulk = false;
++         this.nestworldValidatorSnapshotBuildNanos = 0;
++         this.nestworldValidatorSnapshotBuildTicks = 0;
++      }
++
++      if (this.nestworldValidatorBuilding) {
++         long nestworldBuildStart = System.nanoTime();
++         long nestworldDeadline = nestworldBuildStart + NESTWORLD_VALIDATOR_REBUILD_BUDGET_NANOS;
++         this.nestworldValidatorSnapshotBuildTicks++;
++         try {
++            while (System.nanoTime() < nestworldDeadline) {
++               if (!this.nestworldValidatorBuildIter.hasNext()) {
++                  if (!this.nestworldValidatorBuildPhaseBulk) {
++                     this.nestworldValidatorBuildPhaseBulk = true;
++                     this.nestworldValidatorBuildIter = this.chunksToUpdateFuturesBulk.iterator();
++                     continue;
++                  }
++                  this.nestworldValidatorSnapshot = this.nestworldValidatorBuildList.toArray(new ChunkHolder[0]);
++                  this.nestworldValidatorCursor = 0;
++                  this.nestworldValidatorBuilding = false;
++                  this.nestworldValidatorBuildList = null;
++                  this.nestworldValidatorBuildIter = null;
++                  break;
++               }
++               this.nestworldValidatorBuildList.add(this.nestworldValidatorBuildIter.next());
++            }
++         } catch (java.util.ConcurrentModificationException nestworldCme) {
++            // Safe to discard and restart next tick: the snapshot is only ever a "candidate
++            // list" -- entries are re-checked against live set membership at validate-time
++            // below, so losing partial build progress can't corrupt correctness, only delay
++            // this pass's completion under heavy setLevel() churn.
++            this.nestworldValidatorPartialRebuilds++;
++            this.nestworldValidatorBuilding = false;
++            this.nestworldValidatorBuildList = null;
++            this.nestworldValidatorBuildIter = null;
++         }
++         this.nestworldValidatorSnapshotBuildNanos += System.nanoTime() - nestworldBuildStart;
++         if (this.nestworldValidatorBuilding || this.nestworldValidatorSnapshot.length == 0) {
++            return; // still building (or just aborted this attempt) -- nothing to validate yet
++         }
++      }
++
++      long nestworldStart = System.nanoTime();
++      int end = Math.min(this.nestworldValidatorCursor + NESTWORLD_VALIDATOR_BATCH_SIZE, this.nestworldValidatorSnapshot.length);
++      for (int i = this.nestworldValidatorCursor; i < end; i++) {
++         ChunkHolder nestworldH = this.nestworldValidatorSnapshot[i];
++         boolean nestworldInPlayer = this.chunksToUpdateFuturesPlayer.contains(nestworldH);
++         boolean nestworldInBulk = this.chunksToUpdateFuturesBulk.contains(nestworldH);
++         if (!nestworldInPlayer && !nestworldInBulk) continue; // already fully processed/resolved
++         boolean nestworldIsPlayer = this.nestworldHasPlayerTicket(nestworldH.m_140092_().m_45588_());
++         if (nestworldIsPlayer && nestworldInBulk) {
++            this.chunksToUpdateFuturesBulk.remove(nestworldH);
++            this.chunksToUpdateFuturesPlayer.add(nestworldH);
++            this.nestworldValidatorMismatches++;
++            this.nestworldValidatorRepairs++;
++            f_140758_.warn("NestWorld: ticket classification mismatch chunk={} expected=PLAYER actual=BULK source=validator (repair #{})",
++                    nestworldH.m_140092_(), this.nestworldValidatorRepairs);
++         } else if (!nestworldIsPlayer && nestworldInPlayer) {
++            this.chunksToUpdateFuturesPlayer.remove(nestworldH);
++            this.chunksToUpdateFuturesBulk.add(nestworldH);
++            this.nestworldTier2Push(nestworldH); // P0.4: this Bulk add() needs a matching heap push, same as setLevel()'s
++            this.nestworldValidatorMismatches++;
++            this.nestworldValidatorRepairs++;
++            f_140758_.warn("NestWorld: ticket classification mismatch chunk={} expected=BULK actual=PLAYER source=validator (repair #{})",
++                    nestworldH.m_140092_(), this.nestworldValidatorRepairs);
++         }
++      }
++      this.nestworldValidatorCursor = end;
++      long nestworldElapsed = System.nanoTime() - nestworldStart;
++      if (nestworldElapsed > this.nestworldValidatorBatchMaxNanos) this.nestworldValidatorBatchMaxNanos = nestworldElapsed;
++   }
++
++   public long nestworldPromotionTotalApplied() { return this.nestworldPromotionTotalApplied; }
++
++   public double nestworldPromotionAvgMs() {
++      return this.nestworldPromotionTotalApplied == 0 ? 0.0
++              : this.nestworldPromotionTotalNanos / 1e6 / this.nestworldPromotionTotalApplied;
++   }
++
++   public double nestworldPromotionPercentileMs(double percentile) {
++      if (this.nestworldPromotionSampleCount == 0) return 0.0;
++      long[] sorted = java.util.Arrays.copyOf(this.nestworldPromotionSamplesNanos, this.nestworldPromotionSampleCount);
++      java.util.Arrays.sort(sorted);
++      int idx = (int) Math.floor(percentile * (sorted.length - 1));
++      return sorted[Math.max(0, Math.min(idx, sorted.length - 1))] / 1e6;
++   }
++
++   public double nestworldPromotionMaxMs() {
++      long max = 0;
++      for (int i = 0; i < this.nestworldPromotionSampleCount; i++) {
++         if (this.nestworldPromotionSamplesNanos[i] > max) max = this.nestworldPromotionSamplesNanos[i];
++      }
++      return max / 1e6;
++   }
     final ChunkTaskPriorityQueueSorter f_140766_;
     final ProcessorHandle<ChunkTaskPriorityQueueSorter.Message<Runnable>> f_140767_;
     final ProcessorHandle<ChunkTaskPriorityQueueSorter.Release> f_140768_;
@@ -20,21 +285,43 @@
     protected DistanceManager(Executor p_140774_, Executor p_140775_) {
        ProcessorHandle<Runnable> processorhandle = ProcessorHandle.m_18714_("player ticket throttler", p_140775_::execute);
        ChunkTaskPriorityQueueSorter chunktaskpriorityqueuesorter = new ChunkTaskPriorityQueueSorter(ImmutableList.of(processorhandle), p_140774_, 4);
-@@ -104,6 +_,13 @@
+@@ -104,22 +_,209 @@
     @Nullable
     protected abstract ChunkHolder m_7288_(long p_140780_, int p_140781_, @Nullable ChunkHolder p_140782_, int p_140783_);
  
 +   /** NestWorld: refresh the per-tick chunk-promotion budget. Called once per server
 +    *  tick; {@code CHUNK_GEN_BUDGET <= 0} disables the cap (vanilla: unlimited). */
 +   public void nestworldResetGenBudget() {
-+      this.nestworldFutureBudget = net.nestworld.region.NestworldTuning.CHUNK_GEN_BUDGET <= 0
-+            ? Integer.MAX_VALUE : net.nestworld.region.NestworldTuning.CHUNK_GEN_BUDGET;
++      // P0.5: NestworldLiveTuning.effectiveChunkGenBudget() defaults to this exact same
++      // NestworldTuning.CHUNK_GEN_BUDGET boot-time value unless explicitly overridden live via
++      // /nestworld setgenbudget -- see its javadoc for why (JIT-storm-safe sweep methodology).
++      int nestworldBudget = net.nestworld.region.NestworldLiveTuning.effectiveChunkGenBudget();
++      this.nestworldFutureBudget = nestworldBudget <= 0 ? Integer.MAX_VALUE : nestworldBudget;
 +   }
 +
     public boolean m_140805_(ChunkMap p_140806_) {
++      // NestWorld P0.1 follow-up (docs/P0_REGIONTHREADPOOL_REDESIGN_SPEC.md): this method was
++      // found to be 80.4% of all pollTask() time. It mixes vanilla ticket-propagation machinery
++      // with our own Tier 1a/1b/2 budget bookkeeping in the same body -- timing each existing
++      // block (no new O(n) scans, just wrapping what's already here) to find out which one.
++      long nestworldDmaT0 = System.nanoTime();
        this.f_140763_.m_6410_();
++      long nestworldDmaT1 = System.nanoTime();
++      net.nestworld.region.DistanceManagerAttribution.record(
++         net.nestworld.region.DistanceManagerAttribution.Category.SPAWN_TRACKER, nestworldDmaT1 - nestworldDmaT0);
        this.f_183901_.m_184145_();
-@@ -113,11 +_,65 @@
++      long nestworldDmaT2 = System.nanoTime();
++      net.nestworld.region.DistanceManagerAttribution.record(
++         net.nestworld.region.DistanceManagerAttribution.Category.TICKING_TRACKER, nestworldDmaT2 - nestworldDmaT1);
+       this.f_140764_.m_6410_();
++      long nestworldDmaT3 = System.nanoTime();
++      net.nestworld.region.DistanceManagerAttribution.record(
++         net.nestworld.region.DistanceManagerAttribution.Category.PLAYER_TICKET_TRACKER, nestworldDmaT3 - nestworldDmaT2);
+       int i = Integer.MAX_VALUE - this.f_140762_.m_140877_(Integer.MAX_VALUE);
++      long nestworldDmaT4 = System.nanoTime();
++      net.nestworld.region.DistanceManagerAttribution.record(
++         net.nestworld.region.DistanceManagerAttribution.Category.DISTANCE_PROPAGATION, nestworldDmaT4 - nestworldDmaT3);
+       boolean flag = i != 0;
        if (flag) {
        }
  
@@ -43,13 +330,33 @@
 -            p_183908_.m_143003_(p_140806_, this.f_140770_);
 -         });
 -         this.f_140765_.clear();
-+      if (!this.f_140765_.isEmpty() && this.nestworldFutureBudget > 0) {
++      // NestWorld: budgeted correctness backstop for the incremental classification below —
++      // spreads its O(n) validation cost across many ticks (constant work per tick regardless
++      // of backlog size). Runs every tick this method runs, independent of whether there's
++      // anything to promote this tick, so a stale classification gets caught/repaired even
++      // during a lull. See nestworldRunValidatorBatch's own doc comment for why this exists.
++      this.nestworldRunValidatorBatch();
++      long nestworldDmaT5 = System.nanoTime();
++      net.nestworld.region.DistanceManagerAttribution.record(
++         net.nestworld.region.DistanceManagerAttribution.Category.VALIDATOR_BATCH, nestworldDmaT5 - nestworldDmaT4);
++
++      if (!(this.chunksToUpdateFuturesPlayer.isEmpty() && this.chunksToUpdateFuturesBulk.isEmpty())
++            && this.nestworldFutureBudget > 0) {
 +         if (net.nestworld.region.NestworldTuning.CHUNK_GEN_BUDGET <= 0) {
-+            this.f_140765_.forEach((p_183908_) -> {
-+               p_183908_.m_143003_(p_140806_, this.f_140770_);
++            this.chunksToUpdateFuturesPlayer.forEach((p_183908_) -> {
++               this.nestworldTimedUpdateFutures(p_183908_, p_140806_);
 +            });
-+            this.f_140765_.clear();
++            this.chunksToUpdateFuturesPlayer.clear();
++            this.chunksToUpdateFuturesBulk.forEach((p_183908_) -> {
++               this.nestworldTimedUpdateFutures(p_183908_, p_140806_);
++            });
++            this.chunksToUpdateFuturesBulk.clear();
++            this.nestworldTier2Ready.clear(); // P0.4: keep the ready-heap from leaking entries in this (unused in production) path
++            net.nestworld.region.DistanceManagerAttribution.record(
++               net.nestworld.region.DistanceManagerAttribution.Category.UNLIMITED_PROMOTION,
++               System.nanoTime() - nestworldDmaT5);
 +         } else {
++            long nestworldDmaT6 = System.nanoTime();
 +            // NestWorld: TIERED cap (Gemini-validated). Player-driven chunks are NEVER
 +            // throttled — a chunk carrying a PLAYER ticket (the one a player stands in
 +            // or within its view distance) promotes immediately, every tick, so live
@@ -58,53 +365,150 @@
 +            // there is no deadlock. Only BULK gen (mass /forceload, distant/teleport
 +            // tickets — no PLAYER ticket) is paced by the per-tick budget, lowest ticket
 +            // level first; deferred bulk holders stay in the set and re-drive next tick.
-+            // NestWorld: single pass — classify each holder AND drop Tier-1 (player-ticket)
-+            // entries from chunksToUpdateFutures via the iterator, instead of a second full
-+            // removeIf() pass that re-runs nestworldHasPlayerTicket() for every entry again.
-+            // Live-measured (jstack, 30 samples over ~9s while flying on real ATM9 pack):
-+            // ~40-50% of main-thread busy samples landed in this block — the redundant pass
-+            // and the full sort below were the dominant main-thread cost, not region ticking.
-+            java.util.List<ChunkHolder> nestworldBulk = new java.util.ArrayList<>(this.f_140765_.size());
-+            java.util.Iterator<ChunkHolder> nestworldIt = this.f_140765_.iterator();
-+            while (nestworldIt.hasNext()) {
-+               ChunkHolder nestworldH = nestworldIt.next();
-+               if (this.nestworldHasPlayerTicket(nestworldH.m_140092_().m_45588_())) {
-+                  nestworldH.m_143003_(p_140806_, this.f_140770_); // Tier 1: never throttled
-+                  nestworldIt.remove();
-+               } else {
-+                  nestworldBulk.add(nestworldH); // Tier 2: budgeted below
-+               }
-+            }
-+            int nestworldN = Math.min(this.nestworldFutureBudget, nestworldBulk.size());
-+            // NestWorld: bounded top-N selection (O(n log N)) instead of sorting the whole
-+            // bulk list (O(n log n)) just to take the nestworldN smallest ticket levels —
-+            // nestworldFutureBudget is typically tiny (e.g. 2), while nestworldBulk can run
-+            // into the hundreds while a player is actively flying through fresh territory.
-+            // Which N holders get picked is unchanged; only the intra-tick processing order
-+            // among those N (all independent updateFutures() calls) is no longer guaranteed
-+            // ascending — inconsequential, since ordering across ticks (not within one) is
-+            // what the original "lowest ticket level first" comment actually guarantees.
-+            if (nestworldN > 0) {
-+               java.util.PriorityQueue<ChunkHolder> nestworldTopN = new java.util.PriorityQueue<>(
-+                     nestworldN, java.util.Comparator.comparingInt(ChunkHolder::m_140093_).reversed());
-+               for (ChunkHolder nestworldH : nestworldBulk) {
-+                  if (nestworldTopN.size() < nestworldN) {
-+                     nestworldTopN.add(nestworldH);
-+                  } else if (nestworldH.m_140093_() < nestworldTopN.peek().m_140093_()) {
-+                     nestworldTopN.poll();
-+                     nestworldTopN.add(nestworldH);
++            //
++            // NestWorld 2026-08-11 (live ATM9 incident -- distancemanager-tier1-volume-freeze.md,
++            // Gemini-reviewed TWICE): first pass split Tier 1 further by distance to the
++            // player's CURRENT position (Tier 1a = within PLAYER_URGENT_CHUNK_RADIUS, the
++            // actual fall-through-risk zone, still unconditional; Tier 1b = player-ticketed
++            // but farther out, own budget) -- fixed the unconditional-PROCESSING-volume half
++            // of the bug, but a live jstack retest (same incident, backlog now 170k+) found
++            // the CLASSIFICATION pass itself (deciding which tier each entry belongs to) was
++            // STILL a full scan of the whole backlog every tick, independent of how much got
++            // processed -- bounded output, unbounded scan, same bug class one level up.
++            // Second pass (this one): classification moved to ChunkTicketTracker.setLevel
++            // (incremental, at insertion time) -- chunksToUpdateFuturesPlayer/-Bulk are
++            // ALREADY separated by the time we get here, so this method only ever iterates
++            // chunksToUpdateFuturesPlayer (bounded by "how many distinct positions currently
++            // have an active player ticket and still need a promotion update", not the total
++            // backlog) to find Tier 1a/1b, and chunksToUpdateFuturesBulk for Tier 2 -- never
++            // the combined 170k+ backlog. nestworldRunValidatorBatch (called above,
++            // unconditionally, budgeted) is the correctness backstop for the one confirmed gap
++            // (Gemini): setLevel doesn't fire for every ticket-composition change that leaves
++            // the numeric level unchanged, so a stale classification is possible without it.
++            it.unimi.dsi.fastutil.longs.LongOpenHashSet nestworldUrgentChunks =
++                  new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
++            int nestworldRadius = net.nestworld.region.NestworldTuning.PLAYER_URGENT_CHUNK_RADIUS;
++            for (net.minecraft.server.level.ServerPlayer nestworldP : p_140806_.f_140133_.m_6907_()) {
++               int nestworldPcx = net.minecraft.util.Mth.m_14107_(nestworldP.m_20185_()) >> 4;
++               int nestworldPcz = net.minecraft.util.Mth.m_14107_(nestworldP.m_20189_()) >> 4;
++               for (int nestworldDx = -nestworldRadius; nestworldDx <= nestworldRadius; nestworldDx++) {
++                  for (int nestworldDz = -nestworldRadius; nestworldDz <= nestworldRadius; nestworldDz++) {
++                     nestworldUrgentChunks.add(ChunkPos.m_45589_(nestworldPcx + nestworldDx, nestworldPcz + nestworldDz));
 +                  }
 +               }
-+               for (ChunkHolder nestworldH : nestworldTopN) {
-+                  this.f_140765_.remove(nestworldH);
-+                  nestworldH.m_143003_(p_140806_, this.f_140770_);
++            }
++            long nestworldDmaT7 = System.nanoTime();
++            net.nestworld.region.DistanceManagerAttribution.record(
++               net.nestworld.region.DistanceManagerAttribution.Category.URGENT_SET_BUILD, nestworldDmaT7 - nestworldDmaT6);
++
++            java.util.List<ChunkHolder> nestworldTier1b = new java.util.ArrayList<>();
++            java.util.Iterator<ChunkHolder> nestworldPlayerIt = this.chunksToUpdateFuturesPlayer.iterator();
++            while (nestworldPlayerIt.hasNext()) {
++               ChunkHolder nestworldH = nestworldPlayerIt.next();
++               long nestworldPos = nestworldH.m_140092_().m_45588_();
++               if (nestworldUrgentChunks.contains(nestworldPos)) {
++                  this.nestworldTimedUpdateFutures(nestworldH, p_140806_); // Tier 1a: never throttled
++                  nestworldPlayerIt.remove();
++               } else {
++                  nestworldTier1b.add(nestworldH); // Tier 1b: own budget, below
 +               }
 +            }
-+            this.nestworldFutureBudget -= nestworldN;
++            long nestworldDmaT8 = System.nanoTime();
++            net.nestworld.region.DistanceManagerAttribution.record(
++               net.nestworld.region.DistanceManagerAttribution.Category.TIER1_CLASSIFY_PROMOTE, nestworldDmaT8 - nestworldDmaT7);
++
++            int nestworldTier1bN = Math.min(
++                  net.nestworld.region.NestworldTuning.CHUNK_GEN_TIER1B_BUDGET <= 0
++                        ? nestworldTier1b.size() : net.nestworld.region.NestworldTuning.CHUNK_GEN_TIER1B_BUDGET,
++                  nestworldTier1b.size());
++            if (nestworldTier1bN > 0) {
++               java.util.PriorityQueue<ChunkHolder> nestworldTier1bTopN = new java.util.PriorityQueue<>(
++                     nestworldTier1bN, java.util.Comparator.comparingInt(ChunkHolder::m_140093_).reversed());
++               for (ChunkHolder nestworldH : nestworldTier1b) {
++                  if (nestworldTier1bTopN.size() < nestworldTier1bN) {
++                     nestworldTier1bTopN.add(nestworldH);
++                  } else if (nestworldH.m_140093_() < nestworldTier1bTopN.peek().m_140093_()) {
++                     nestworldTier1bTopN.poll();
++                     nestworldTier1bTopN.add(nestworldH);
++                  }
++               }
++               for (ChunkHolder nestworldH : nestworldTier1bTopN) {
++                  this.chunksToUpdateFuturesPlayer.remove(nestworldH);
++                  this.nestworldTimedUpdateFutures(nestworldH, p_140806_);
++               }
++            }
++            // Any Tier 1b holder not selected this tick stays in chunksToUpdateFuturesPlayer
++            // (never removed from the iterator above) and re-drives next tick, same
++            // natural-redrive behavior Tier 2 already had.
++            long nestworldDmaT9 = System.nanoTime();
++            net.nestworld.region.DistanceManagerAttribution.record(
++               net.nestworld.region.DistanceManagerAttribution.Category.TIER1B_SELECT_PROMOTE, nestworldDmaT9 - nestworldDmaT8);
++
++            int nestworldN = Math.min(this.nestworldFutureBudget, this.chunksToUpdateFuturesBulk.size());
++            // NestWorld P0.4 (docs/P0_3_AUTONOMOUS_BASELINE_SPEC.md follow-up ТЗ, replaces the
++            // previous full-scan top-N build -- examine/select ratio was live-measured growing
++            // 690 -> 1609.6 with backlog size, same "bounded output, unbounded scan" class as the
++            // validator bug). Poll the persistent nestworldTier2Ready heap instead -- see its
++            // field doc (near chunksToUpdateFuturesBulk's declaration) for the full design and
++            // why lazy-deletion here is correct, not a semantics change. Which holders get
++            // selected and at what ticket level is unchanged; only HOW they're found changed.
++            long nestworldQueueSizeAtStart = this.chunksToUpdateFuturesBulk.size();
++            java.util.List<ChunkHolder> nestworldSelected =
++                  nestworldN > 0 ? new java.util.ArrayList<>(nestworldN) : java.util.List.of();
++            long nestworldExamined = 0;
++            if (nestworldN > 0) {
++               while (nestworldSelected.size() < nestworldN) {
++                  Tier2Candidate nestworldCand = this.nestworldTier2Ready.poll();
++                  if (nestworldCand == null) break; // heap exhausted -- see fallback below
++                  nestworldExamined++;
++                  ChunkHolder nestworldH = nestworldCand.holder();
++                  if (!this.chunksToUpdateFuturesBulk.contains(nestworldH)) continue; // stale: already handled elsewhere
++                  if (nestworldH.m_140093_() != nestworldCand.levelAtPush()) continue; // stale: a fresher entry exists
++                  nestworldSelected.add(nestworldH);
++               }
++               // Safety net, should not fire in practice: every chunksToUpdateFuturesBulk.add()
++               // site is paired with a nestworldTier2Push() call (grep-confirmed, see the field
++               // doc), so the heap should never run dry while real backlog remains. This exists
++               // purely so a desync (bug, or a future add-site nobody paired) degrades to the
++               // OLD O(shortfall) behavior for just the missing few, not a silent generation
++               // stall -- liveness over strict priority-order in this one rare fallback case.
++               if (nestworldSelected.size() < nestworldN && !this.chunksToUpdateFuturesBulk.isEmpty()) {
++                  f_140758_.warn("NestWorld: Tier2 ready-heap underflow (selected {}/{} target, bulk backlog={}) -- falling back to direct pick; should be rare, investigate if this recurs",
++                        nestworldSelected.size(), nestworldN, this.chunksToUpdateFuturesBulk.size());
++                  for (ChunkHolder nestworldH : this.chunksToUpdateFuturesBulk) {
++                     if (nestworldSelected.size() >= nestworldN) break;
++                     if (!nestworldSelected.contains(nestworldH)) nestworldSelected.add(nestworldH);
++                  }
++               }
++            }
++            net.nestworld.region.DistanceManagerAttribution.recordTier2Selection(
++                  nestworldQueueSizeAtStart, nestworldExamined, nestworldSelected.size());
++            long nestworldDmaT9b = System.nanoTime();
++            net.nestworld.region.DistanceManagerAttribution.record(
++               net.nestworld.region.DistanceManagerAttribution.Category.TIER2_SELECT, nestworldDmaT9b - nestworldDmaT9);
++            for (ChunkHolder nestworldH : nestworldSelected) {
++               this.chunksToUpdateFuturesBulk.remove(nestworldH);
++               this.nestworldTimedUpdateFutures(nestworldH, p_140806_);
++            }
++            this.nestworldFutureBudget -= nestworldSelected.size();
++            net.nestworld.region.DistanceManagerAttribution.record(
++               net.nestworld.region.DistanceManagerAttribution.Category.TIER2_PROMOTE, System.nanoTime() - nestworldDmaT9b);
 +         }
           return true;
        } else {
++         long nestworldDmaTRelease0 = System.nanoTime();
           if (!this.f_140769_.isEmpty()) {
+             LongIterator longiterator = this.f_140769_.iterator();
+ 
+@@ -145,6 +_,8 @@
+ 
+             this.f_140769_.clear();
+          }
++         net.nestworld.region.DistanceManagerAttribution.record(
++            net.nestworld.region.DistanceManagerAttribution.Category.TICKET_RELEASE, System.nanoTime() - nestworldDmaTRelease0);
+ 
+          return flag;
+       }
 @@ -159,6 +_,10 @@
           this.f_140762_.m_140715_(p_140785_, p_140786_.m_9433_(), true);
        }
@@ -153,7 +557,7 @@
        long i = p_140851_.m_45588_();
        this.m_140818_(i, ticket);
        this.f_183901_.m_184165_(i, ticket);
-@@ -202,6 +_,25 @@
+@@ -202,6 +_,58 @@
        });
     }
  
@@ -176,18 +580,80 @@
 +      return false;
 +   }
 +
++   // NestWorld DIAG (2026-08-12): investigating whether nestworldHasPlayerTicket's linear scan
++   // over a position's ticket set (not O(1) -- O(tickets-at-that-position)) is the source of the
++   // validator batch_max=106ms mystery. Read-only, no allocation beyond the returned diagnostic
++   // string; safe to call from RCON. See project memory: validator-batch-hasplayerticket-cost.
++   public String nestworldTicketDistribution(int topN) {
++      int total = 0, max = 0, over5 = 0, over20 = 0, over100 = 0;
++      long sumSizes = 0;
++      java.util.List<long[]> biggest = new java.util.ArrayList<>(); // [pos, size]
++      it.unimi.dsi.fastutil.objects.ObjectIterator<Long2ObjectMap.Entry<SortedArraySet<Ticket<?>>>> it =
++              this.f_140761_.long2ObjectEntrySet().fastIterator();
++      while (it.hasNext()) {
++         Long2ObjectMap.Entry<SortedArraySet<Ticket<?>>> entry = it.next();
++         int size = entry.getValue().size();
++         total++;
++         sumSizes += size;
++         if (size > max) max = size;
++         if (size > 5) over5++;
++         if (size > 20) over20++;
++         if (size > 100) over100++;
++         biggest.add(new long[]{entry.getLongKey(), size});
++      }
++      biggest.sort((a, b) -> Long.compare(b[1], a[1]));
++      StringBuilder sb = new StringBuilder();
++      sb.append(String.format("positions=%,d avg_tickets=%.2f max_tickets=%d over5=%,d over20=%,d over100=%,d",
++              total, total == 0 ? 0.0 : (double) sumSizes / total, max, over5, over20, over100));
++      for (int i = 0; i < Math.min(topN, biggest.size()); i++) {
++         long[] e = biggest.get(i);
++         net.minecraft.world.level.ChunkPos pos = new net.minecraft.world.level.ChunkPos(e[0]);
++         sb.append(String.format("%n  #%d chunk(%d,%d) tickets=%d", i + 1, pos.f_45578_, pos.f_45579_, e[1]));
++      }
++      return sb.toString();
++   }
++
     protected void m_140799_(ChunkPos p_140800_, boolean p_140801_) {
        Ticket<ChunkPos> ticket = new Ticket<>(TicketType.f_9445_, ChunkMap.f_143033_, p_140800_);
        long i = p_140800_.m_45588_();
-@@ -281,6 +_,11 @@
- 
-    public String m_140837_() {
+@@ -283,6 +_,11 @@
        return this.f_140766_.m_140558_();
-+   }
-+
+    }
+ 
 +   public boolean shouldForceTicks(long chunkPos) {
 +       SortedArraySet<Ticket<?>> tickets = forcedTickets.get(chunkPos);
 +       return tickets != null && !tickets.isEmpty();
-    }
- 
++   }
++
     private void m_143207_(String p_143208_) {
+       try (FileOutputStream fileoutputstream = new FileOutputStream(new File(p_143208_))) {
+          for(Long2ObjectMap.Entry<SortedArraySet<Ticket<?>>> entry : this.f_140761_.long2ObjectEntrySet()) {
+@@ -369,9 +_,26 @@
+          if (i != p_140881_) {
+             chunkholder = DistanceManager.this.m_7288_(p_140880_, p_140881_, chunkholder, i);
+             if (chunkholder != null) {
+-               DistanceManager.this.f_140765_.add(chunkholder);
++               // NestWorld: classify into the right set HERE, once, instead of leaving it in
++               // one big set that runAllUpdates() would otherwise have to fully rescan every
++               // tick to sort out (see nestworldRunValidatorBatch's doc comment for the known
++               // residual staleness gap this doesn't fully close on its own). Unconditional
++               // remove from BOTH sets first guarantees no double-membership regardless of
++               // how many times setLevel fires for this position or what it transitions from.
++               DistanceManager.this.chunksToUpdateFuturesPlayer.remove(chunkholder);
++               DistanceManager.this.chunksToUpdateFuturesBulk.remove(chunkholder);
++               if (DistanceManager.this.nestworldHasPlayerTicket(p_140880_)) {
++                  DistanceManager.this.chunksToUpdateFuturesPlayer.add(chunkholder);
++               } else {
++                  DistanceManager.this.chunksToUpdateFuturesBulk.add(chunkholder);
++                  DistanceManager.this.nestworldTier2Push(chunkholder); // P0.4: this is THE incremental push point (setLevel is the only other Bulk-add site)
++               }
+             }
+-
++            // Region-Owned Chunk Scheduler, Phase 2 -- SHADOW MODE ONLY, see
++            // net.nestworld.chunk.ChunkSchedulerShadow's class doc. This call does nothing but a
++            // ConcurrentLinkedQueue.add() (or returns instantly if shadow mode is off) -- the real
++            // work happens later, off this call stack, so it cannot add latency here.
++            net.nestworld.chunk.ChunkSchedulerShadow.observe(p_140880_, p_140881_);
+          }
+       }
+ 

@@ -514,6 +514,8 @@ public class NestworldRegionSystem {
     public void tickAllRegions(BooleanSupplier hasTime) {
         runAutosplitTest();
         runRandomTickTest();
+        pool.nestworldResetTickAccumulators();
+        long nestworldTickWallStart = System.nanoTime();
         long t0 = System.nanoTime();
         // Publish the loaded-FULL chunk snapshot for region threads to read
         // lock-free this tick (avoids missing already-loaded chunks off-main and
@@ -524,6 +526,13 @@ public class NestworldRegionSystem {
         // via runScheduledTicksPhase (ServerLevel patch calls back into us).
         overworld.tick(hasTime);
         long t1 = System.nanoTime();
+
+        // 1b. Region-Owned Chunk Scheduler, Phase 2 -- SHADOW MODE ONLY (docs/
+        // REGION_CHUNK_SCHEDULER_SPEC.md). Both calls are no-ops unless
+        // NestworldTuning.CHUNK_SCHEDULER_SHADOW_MODE is on; purely diagnostic, never
+        // influences real chunk loading. See net.nestworld.chunk.ChunkSchedulerShadow.
+        net.nestworld.chunk.ChunkSchedulerShadow.drainObservationsAndEnqueue(this);
+        net.nestworld.chunk.ChunkSchedulerShadow.drainForStats(this);
 
         // 2. Apply boundary redstone signals + wire updates whose network left
         // their region last tick (deferred by NestworldRedstone)
@@ -666,6 +675,71 @@ public class NestworldRegionSystem {
             int layout = grid.getLayoutVersion();
             if (layout != lastSavedLayoutVersion) saveLayout();
         }
+
+        // P0.1 per-tick correlation (docs/P0_REGIONTHREADPOOL_REDESIGN_SPEC.md follow-up):
+        // pollTask total / region tick total / actual latch wait / main-thread work outside
+        // pollTask, all for THIS tick's 5 awaitLatch() rounds combined. O(1) — a few subtractions
+        // on already-accumulated counters, no scan.
+        long nestworldTickWallNanos = System.nanoTime() - nestworldTickWallStart;
+        long[] nestworldTickAcc = pool.nestworldDrainTickAccumulators();
+        long nestworldDispatchTotal = nestworldTickAcc[0];
+        long nestworldWaitTotal = nestworldTickAcc[1];
+        long nestworldPollTotal = nestworldTickAcc[2];
+        long nestworldRegionMaxTotal = nestworldTickAcc[3];
+        long nestworldLatchWaitOnly = nestworldWaitTotal - nestworldPollTotal; // idle park portion
+        long nestworldOutsidePollTask = nestworldTickWallNanos - nestworldDispatchTotal - nestworldWaitTotal;
+        nestworldCorrelation.record(nestworldTickWallNanos, nestworldPollTotal, nestworldRegionMaxTotal,
+                nestworldLatchWaitOnly, nestworldOutsidePollTask);
+    }
+
+    /** P0.1 per-tick correlation accumulator (cumulative averages + max, main-thread-only). */
+    private final TickCorrelation nestworldCorrelation = new TickCorrelation();
+
+    static final class TickCorrelation {
+        long ticks = 0;
+        long tickWallSum = 0, tickWallMax = 0;
+        long pollSum = 0;
+        long regionMaxSum = 0;
+        long latchWaitSum = 0;
+        long outsideSum = 0, outsideMax = 0;
+
+        void record(long tickWall, long poll, long regionMax, long latchWait, long outside) {
+            ticks++;
+            tickWallSum += tickWall;
+            if (tickWall > tickWallMax) tickWallMax = tickWall;
+            pollSum += poll;
+            regionMaxSum += regionMax;
+            latchWaitSum += latchWait;
+            outsideSum += outside;
+            if (outside > outsideMax) outsideMax = outside;
+        }
+
+        String snapshot() {
+            if (ticks == 0) return "no ticks recorded yet";
+            return String.format(
+                "tick correlation over %,d ticks (avg ms, tick_wall max=%.3fms):%n" +
+                "  tick_wall=%.3f%n" +
+                "   +-- pollTask_total     =%.3f%n" +
+                "   +-- region_tick_total  =%.3f (max single region, summed across this tick's rounds)%n" +
+                "   +-- actual_latch_wait  =%.3f (idle park, NOT doing pollTask work)%n" +
+                "   +-- outside_pollTask   =%.3f (max=%.3fms) (ghostzones/splitmerge/entityXfer/vanilla-tick/etc.)%n",
+                ticks, tickWallMax / 1e6,
+                tickWallSum / 1e6 / ticks,
+                pollSum / 1e6 / ticks,
+                regionMaxSum / 1e6 / ticks,
+                latchWaitSum / 1e6 / ticks,
+                outsideSum / 1e6 / ticks, outsideMax / 1e6);
+        }
+    }
+
+    public String nestworldPollTaskReport() {
+        return net.nestworld.region.PollTaskAttribution.snapshot() + "\n" + nestworldCorrelation.snapshot()
+                + "\n" + net.nestworld.region.DistanceManagerAttribution.snapshot();
+    }
+
+    /** P1.0 audit (docs/P1_WORLDGEN_MAINTHREAD_DECOUPLING_SPEC.md): worldgen/main-thread boundary. */
+    public String nestworldWorldgenBoundaryReport() {
+        return net.nestworld.region.PollTaskAttribution.boundarySnapshot();
     }
 
     // -----------------------------------------------------------------------
@@ -722,6 +796,53 @@ public class NestworldRegionSystem {
         return main != null && main != Thread.currentThread();
     }
 
+    // NestWorld (2026-08-11, fix for the CONFIRMED race above -- see project memory
+    // leveticks-race-under-heavy-chunkgen "Update 3"): a free-running region's own
+    // thread calling vanilla's level.scheduleTick(...) (e.g. water rescheduling its own
+    // follow-up flow tick) used to land in LevelTicks.schedule() directly on that
+    // thread -- racing this exact phase's unsynchronized LevelTicks.tick() iteration.
+    // Confirmed live: 267 ownership-assertion violations in ~15-20min of real water
+    // flow inside a free-running region. Fix (Gemini-reviewed 2026-08-11, "proceed with
+    // this design"): LevelAccessor's 4 scheduleTick() default methods now redirect a
+    // free-running-region-thread caller here instead of calling .schedule() directly;
+    // drained on the OWNER thread (this phase, before LevelTicks.tick() runs) so a
+    // freshly-enqueued request gets registered same-tick when timing allows, next-tick
+    // at worst -- never lost (LevelTicks.tick() doesn't discard already-due entries).
+    private static final java.util.concurrent.ConcurrentLinkedQueue<Runnable> nestworldPendingMainThreadScheduleTicks =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    /** Called from LevelAccessor's scheduleTick() default methods. True only for a
+     * region thread whose region is currently free-running -- a normal barrier-synced
+     * region thread never calls vanilla block/fluid tick logic outside the main
+     * thread's own latch-waited work-round, so this deliberately does NOT redirect for
+     * those (would just add pointless queue overhead with no race to prevent there). */
+    public static boolean nestworldIsFreeRunningRegionThread() {
+        return NestworldTuning.FREE_RUNNING_REGIONS_ENABLED
+                && Thread.currentThread() instanceof RegionThread rt
+                && rt.getRegion().isFreeRunning();
+    }
+
+    /** Enqueues a LevelTicks.schedule(...) call to run on the main thread. `apply` must
+     * close over nothing but immutable values (the ScheduledTick itself, and the
+     * dimension-scoped LevelTickAccess reference) -- never a live WorldRegion/
+     * RegionThread reference, so this stays correct even if the originating region's
+     * free-running status or the queue's drain timing changes between enqueue and
+     * drain (see design notes in project memory). */
+    public static void nestworldEnqueueScheduleTick(Runnable apply) {
+        nestworldPendingMainThreadScheduleTicks.add(apply);
+    }
+
+    private void nestworldDrainPendingScheduleTicks() {
+        Runnable r;
+        while ((r = nestworldPendingMainThreadScheduleTicks.poll()) != null) {
+            try {
+                r.run();
+            } catch (Throwable t) {
+                LOGGER.warn("Deferred free-running scheduleTick apply failed: {}", t.toString());
+            }
+        }
+    }
+
     public void runScheduledTicksPhase(ServerLevel level, long gameTime) {
         NestworldTickOwnership.noteServerTick(gameTime);
         Thread nestworldHere = Thread.currentThread();
@@ -731,6 +852,8 @@ public class NestworldRegionSystem {
             LOGGER.error("NestWorld DIAG: runScheduledTicksPhase called from unexpected thread '{}' (expected '{}')",
                     nestworldHere.getName(), nestworldMainThreadIdentity.getName());
         }
+
+        nestworldDrainPendingScheduleTicks();
 
         java.util.Map<WorldRegion, java.util.List<Runnable>> buckets = new java.util.IdentityHashMap<>();
         java.util.List<Runnable> mainBucket = new java.util.ArrayList<>();
@@ -752,7 +875,7 @@ public class NestworldRegionSystem {
                 LOGGER.warn("Main-band scheduled tick failed: {}", t.toString());
             }
         }
-        pool.runWorkRound(buckets);
+        pool.runWorkRound(buckets, RegionPhase.SCHEDULED_TICK);
     }
 
     // -----------------------------------------------------------------------
@@ -788,7 +911,7 @@ public class NestworldRegionSystem {
     /** Runs the queued per-chunk random ticks on their region threads (parallel). */
     public void flushRandomTicksPhase() {
         if (randomTickBuckets.isEmpty()) return;
-        pool.runWorkRound(randomTickBuckets);
+        pool.runWorkRound(randomTickBuckets, RegionPhase.RANDOM_TICK);
         randomTickBuckets.clear();
     }
 
@@ -895,7 +1018,7 @@ public class NestworldRegionSystem {
             buckets.put(e.getKey(), runs);
         }
         int before = buckets.size();
-        pool.runWorkRoundDropIfBacklogged(buckets);
+        pool.runWorkRoundDropIfBacklogged(buckets, RegionPhase.BLOCK_ENTITY);
         if (logNow && buckets.size() != before) {
             LOGGER.info("BE phase: {} region bucket(s) dropped (backlog)", before - buckets.size());
         }
@@ -975,7 +1098,7 @@ public class NestworldRegionSystem {
                 LOGGER.warn("Main-band block event failed: {}", t.toString());
             }
         }
-        pool.runWorkRound(buckets);
+        pool.runWorkRound(buckets, RegionPhase.BLOCK_EVENT);
     }
 
     private void routeScheduledTick(net.minecraft.core.BlockPos pos, Runnable run,
@@ -1093,6 +1216,7 @@ public class NestworldRegionSystem {
      *  resolved through its region grid. */
     public ServerLevel getOverworld()                 { return overworld; }
     public WorldGrid getGrid()                        { return grid; }
+    public BoundaryManager getBoundaryManager()        { return boundaryManager; }
 
     /**
      * Step 3 (docs/LOCAL_TICK_STAGE4.md, "Step 3 — Single Free-Running Region", design

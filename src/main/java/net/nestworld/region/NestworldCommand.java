@@ -2,9 +2,15 @@ package net.nestworld.region;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.arguments.UuidArgument;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.levelgen.Heightmap;
 
 /**
  * Admin command for inspecting and driving the region sharding system.
@@ -19,6 +25,11 @@ import net.minecraft.network.chat.Component;
  *   /nestworld unpin &lt;type&gt;      — resume region-thread ticking for a type
  *   /nestworld pinmod &lt;ns&gt;       — pin every entity/BE from a mod namespace
  *   /nestworld unpinmod &lt;ns&gt;     — unpin a mod namespace
+ *   /nestworld hotspots           — NestWorld Inspector §4: top combined block-tick+entity hotspots
+ *   /nestworld goto hotspot &lt;id&gt; — teleport to a ranked hotspot from the last /nestworld hotspots
+ *   /nestworld goto region &lt;id&gt;  — teleport to a region's hottest spot (or a safe fallback)
+ *   /nestworld goto chunk &lt;x&gt; &lt;z&gt; — teleport to a chunk's center
+ *   /nestworld goto entity &lt;uuid&gt; — teleport to a live entity
  * </pre>
  */
 public final class NestworldCommand {
@@ -73,11 +84,22 @@ public final class NestworldCommand {
                                                         IntegerArgumentType.getInteger(ctx, "count")))))))
                 .then(Commands.literal("chunkstats").executes(ctx -> chunkStats(ctx.getSource())))
                 .then(Commands.literal("chunkpromotion").executes(ctx -> chunkPromotion(ctx.getSource())))
+                .then(Commands.literal("chunkscheduler").executes(ctx -> chunkScheduler(ctx.getSource())))
+                .then(Commands.literal("tickets").executes(ctx -> ticketDistribution(ctx.getSource())))
+                .then(Commands.literal("ghostzones").executes(ctx -> ghostZoneStats(ctx.getSource())))
+                .then(Commands.literal("regionpool").executes(ctx -> regionPoolStats(ctx.getSource())))
+                .then(Commands.literal("polltask").executes(ctx -> pollTaskStats(ctx.getSource())))
+                .then(Commands.literal("worldgenboundary").executes(ctx -> worldgenBoundaryStats(ctx.getSource())))
                 .then(Commands.literal("setgenconcurrency")
                         .then(Commands.argument("n", IntegerArgumentType.integer(0))
                                 .executes(ctx -> setGenConcurrency(ctx.getSource(),
                                         IntegerArgumentType.getInteger(ctx, "n")))))
                 .then(Commands.literal("genconcurrency").executes(ctx -> genConcurrency(ctx.getSource())))
+                .then(Commands.literal("setgenbudget")
+                        .then(Commands.argument("n", IntegerArgumentType.integer(-1))
+                                .executes(ctx -> setGenBudget(ctx.getSource(),
+                                        IntegerArgumentType.getInteger(ctx, "n")))))
+                .then(Commands.literal("genbudget").executes(ctx -> genBudget(ctx.getSource())))
                 .then(Commands.literal("mspt").executes(ctx -> msptPercentiles(ctx.getSource())))
                 .then(Commands.literal("stresschunks")
                         .then(Commands.argument("count", IntegerArgumentType.integer(1, 200000))
@@ -87,6 +109,18 @@ public final class NestworldCommand {
                                                         IntegerArgumentType.getInteger(ctx, "count"),
                                                         IntegerArgumentType.getInteger(ctx, "baseX"),
                                                         IntegerArgumentType.getInteger(ctx, "baseZ")))))))
+                .then(Commands.literal("gentest")
+                        .then(Commands.literal("start")
+                                .then(Commands.argument("count", IntegerArgumentType.integer(1, 200000))
+                                        .executes(ctx -> genTestStart(ctx.getSource(),
+                                                IntegerArgumentType.getInteger(ctx, "count"), 100000, 100000))
+                                        .then(Commands.argument("baseX", IntegerArgumentType.integer())
+                                                .then(Commands.argument("baseZ", IntegerArgumentType.integer())
+                                                        .executes(ctx -> genTestStart(ctx.getSource(),
+                                                                IntegerArgumentType.getInteger(ctx, "count"),
+                                                                IntegerArgumentType.getInteger(ctx, "baseX"),
+                                                                IntegerArgumentType.getInteger(ctx, "baseZ")))))))
+                        .then(Commands.literal("status").executes(ctx -> genTestStatus(ctx.getSource()))))
                 .then(Commands.literal("teststage3write")
                         .then(Commands.argument("x", IntegerArgumentType.integer())
                                 .then(Commands.argument("y", IntegerArgumentType.integer())
@@ -98,6 +132,27 @@ public final class NestworldCommand {
                 .then(Commands.literal("scheduler").executes(ctx -> scheduler(ctx.getSource())))
                 .then(Commands.literal("mailboxaudit").executes(ctx -> mailboxAudit(ctx.getSource())))
                 .then(Commands.literal("entityguard").executes(ctx -> entityGuard(ctx.getSource())))
+                .then(Commands.literal("entityrecheck").executes(ctx -> entityRecheck(ctx.getSource())))
+                .then(Commands.literal("hotspots").executes(ctx -> hotspots(ctx.getSource())))
+                .then(Commands.literal("goto")
+                        .then(Commands.literal("hotspot")
+                                .then(Commands.argument("id", IntegerArgumentType.integer(1))
+                                        .executes(ctx -> gotoHotspot(ctx.getSource(),
+                                                IntegerArgumentType.getInteger(ctx, "id")))))
+                        .then(Commands.literal("region")
+                                .then(Commands.argument("id", IntegerArgumentType.integer(0))
+                                        .executes(ctx -> gotoRegion(ctx.getSource(),
+                                                IntegerArgumentType.getInteger(ctx, "id")))))
+                        .then(Commands.literal("chunk")
+                                .then(Commands.argument("x", IntegerArgumentType.integer())
+                                        .then(Commands.argument("z", IntegerArgumentType.integer())
+                                                .executes(ctx -> gotoChunk(ctx.getSource(),
+                                                        IntegerArgumentType.getInteger(ctx, "x"),
+                                                        IntegerArgumentType.getInteger(ctx, "z"))))))
+                        .then(Commands.literal("entity")
+                                .then(Commands.argument("uuid", UuidArgument.uuid())
+                                        .executes(ctx -> gotoEntity(ctx.getSource(),
+                                                UuidArgument.getUuid(ctx, "uuid"))))))
                 .then(Commands.literal("freerun")
                         .then(Commands.argument("id", IntegerArgumentType.integer(0))
                                 .executes(ctx -> freeRun(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "id"))))));
@@ -186,6 +241,20 @@ public final class NestworldCommand {
                 ? "Entity ownership guard: 0 violations (NO_FOREIGN_ENTITY_MUTATION holds)"
                 : "Entity ownership guard: " + violations + " violation(s) — check log for NO_FOREIGN_ENTITY_MUTATION"), false);
         return (int) Math.min(violations, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Reports {@link EntityOwnershipRecheck}'s skip counter -- how many times a
+     * free-running region's tickEntities() pass found its snapshot was already
+     * stale for a given entity (ownership had moved to a neighbor mid-pass) and
+     * skipped ticking it, rather than racing the new owner. Always active (not
+     * gated like entityguard), so this reports even without NESTWORLD_ENTITY_GUARD.
+     */
+    private static int entityRecheck(CommandSourceStack src) {
+        long skips = EntityOwnershipRecheck.skips();
+        src.sendSuccess(() -> Component.literal(
+                "Entity ownership recheck: " + skips + " skip(s) (stale-snapshot ticks avoided)"), false);
+        return (int) Math.min(skips, Integer.MAX_VALUE);
     }
 
     /**
@@ -467,6 +536,23 @@ public final class NestworldCommand {
                 "  region-thread getChunk timeouts: %,d%s",
                 regionTimeouts,
                 regionTimeouts > 0 ? " (safety valve engaged — see RegionThread getChunk blocking crash fix)" : "")), false);
+
+        // NestWorld 2026-08-11 (distancemanager-tier1-volume-freeze.md follow-up): per-tick cost of
+        // rebuilding the FastPath snapshot itself -- O(all currently-tracked ChunkHolders), not just
+        // "pending" ones, unconditional every tick. Surfaced here to distinguish this from
+        // DistanceManager's own promotion-backlog cost (/nestworld chunkpromotion) during a live
+        // incident, instead of needing a fresh jstack session to tell them apart.
+        long refreshCalls = cache.nestworldRefreshCalls.get();
+        long refreshTotalNanos = cache.nestworldRefreshTotalNanos.get();
+        double refreshAvgMs = refreshCalls == 0 ? 0.0 : (refreshTotalNanos / 1_000_000.0) / refreshCalls;
+        src.sendSuccess(() -> Component.literal("NW FastPath refresh (nestworldRefreshLoadedChunks, cumulative)"), false);
+        src.sendSuccess(() -> Component.literal(String.format(
+                "  calls: %,d   avg: %.3f ms   last: %.3f ms (scanned=%,d loaded=%,d)",
+                refreshCalls, refreshAvgMs, cache.nestworldRefreshLastNanos / 1_000_000.0,
+                cache.nestworldRefreshLastScanned, cache.nestworldRefreshLastSize)), false);
+        src.sendSuccess(() -> Component.literal(String.format(
+                "  max: %.3f ms (scanned=%,d)",
+                cache.nestworldRefreshMaxNanos / 1_000_000.0, cache.nestworldRefreshMaxScanned)), false);
         return (int) lookups;
     }
 
@@ -497,7 +583,144 @@ public final class NestworldCommand {
                 "  pending: %,d   applied: %,d   avg: %.3f ms", pending, applied, avgMs)), false);
         src.sendSuccess(() -> Component.literal(String.format(
                 "  p95: %.3f ms   p99: %.3f ms   max: %.3f ms", p95, p99, maxMs)), false);
+        // NestWorld 2026-08-11 (distancemanager-tier1-volume-freeze.md, second pass): expose
+        // the player/bulk split directly, and the classification validator's health, so a
+        // repeat incident is diagnosable from this one command instead of a fresh jstack session.
+        src.sendSuccess(() -> Component.literal(String.format(
+                "  player: %,d   bulk: %,d   validator: %.1f%% mismatches=%,d batch_max=%.3fms",
+                dm.nestworldPromotionPendingPlayer(), dm.nestworldPromotionPendingBulk(),
+                dm.nestworldValidatorProgressPct(), dm.nestworldValidatorMismatches(),
+                dm.nestworldValidatorBatchMaxMs())), false);
+        // NestWorld 2026-08-11 (validator-rebuild-unbounded-scan fix): the snapshot rebuild
+        // itself is now multi-tick budgeted too -- surface its own health separately from the
+        // batch-walk above so a repeat 100k+-backlog incident is diagnosable without a fresh jstack.
+        src.sendSuccess(() -> Component.literal(String.format(
+                "  snapshot: size=%,d build=%.3fms build_ticks=%,d partial_rebuilds=%,d",
+                dm.nestworldValidatorSnapshotSize(), dm.nestworldValidatorSnapshotBuildMs(),
+                dm.nestworldValidatorSnapshotBuildTicks(), dm.nestworldValidatorPartialRebuilds())), false);
         return pending;
+    }
+
+    /**
+     * Region-Owned Chunk Scheduler, Phase 2 -- SHADOW MODE diagnostics (docs/
+     * REGION_CHUNK_SCHEDULER_SPEC.md). All numbers here are purely observational: nothing this
+     * command reports has any effect on real chunk loading. See
+     * net.nestworld.chunk.ChunkSchedulerShadow.
+     */
+    private static int chunkScheduler(CommandSourceStack src) {
+        boolean enabled = NestworldTuning.CHUNK_SCHEDULER_SHADOW_MODE;
+        src.sendSuccess(() -> Component.literal(enabled
+                ? "NW Chunk Scheduler (Phase 2 SHADOW MODE -- observation only, no real effect on chunk loading)"
+                : "NW Chunk Scheduler: shadow mode is OFF (-Dnestworld.chunkSchedulerShadowMode=true to enable)"), false);
+        if (!enabled) return 0;
+        long observed = net.nestworld.chunk.ChunkSchedulerShadow.observedCount();
+        long duplicates = net.nestworld.chunk.ChunkSchedulerShadow.duplicatesSkippedCount();
+        long misrouted = net.nestworld.chunk.ChunkSchedulerShadow.misroutedCount();
+        long drainedForStats = net.nestworld.chunk.ChunkSchedulerShadow.drainedForStatsCount();
+        double avgLatencyMs = net.nestworld.chunk.ChunkSchedulerShadow.avgLatencyMs();
+        double maxLatencyMs = net.nestworld.chunk.ChunkSchedulerShadow.maxLatencyMs();
+        src.sendSuccess(() -> Component.literal(String.format(
+                "  observed: %,d   duplicates_skipped: %,d   misrouted: %,d   drained: %,d",
+                observed, duplicates, misrouted, drainedForStats)), false);
+        StringBuilder tiers = new StringBuilder("  tiers ever-enqueued: ");
+        int currentlyQueued = 0;
+        for (net.nestworld.chunk.ChunkRequestPriority tier : net.nestworld.chunk.ChunkRequestPriority.values()) {
+            tiers.append(tier.name().toLowerCase(java.util.Locale.ROOT)).append('=')
+                    .append(net.nestworld.chunk.ChunkSchedulerShadow.tierEverEnqueuedCount(tier)).append(' ');
+        }
+        net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
+        for (net.nestworld.region.WorldRegion region : sys.getGrid().getAllRegions()) {
+            currentlyQueued += region.getChunkScheduler().totalQueueSize();
+        }
+        String tiersStr = tiers.toString();
+        int finalCurrentlyQueued = currentlyQueued;
+        src.sendSuccess(() -> Component.literal(tiersStr), false);
+        src.sendSuccess(() -> Component.literal(String.format(
+                "  currently queued (all regions): %,d   drain latency: avg=%.1fms max=%.1fms",
+                finalCurrentlyQueued, avgLatencyMs, maxLatencyMs)), false);
+        return (int) observed;
+    }
+
+    /**
+     * NestWorld DIAG 2026-08-12: investigating whether DistanceManager.nestworldHasPlayerTicket's
+     * linear scan over a position's ticket set explains the validator batch_max mystery -- see
+     * project memory validator-batch-hasplayerticket-cost. Read-only.
+     */
+    private static int ticketDistribution(CommandSourceStack src) {
+        net.minecraft.server.level.ServerChunkCache cache =
+                (net.minecraft.server.level.ServerChunkCache) src.getServer().overworld().getChunkSource();
+        net.minecraft.server.level.DistanceManager dm = cache.chunkMap.getDistanceManager();
+        String result = dm.nestworldTicketDistribution(15);
+        src.sendSuccess(() -> Component.literal("NW Ticket Distribution\n  " + result), false);
+        return 0;
+    }
+
+    /**
+     * NestWorld DIAG 2026-08-12: investigating whether BoundaryManager.syncGhostZones() (an
+     * unconditional, unbudgeted per-tick scan over all loaded FULL chunks + border-band block
+     * entity NBT serialization) is the same "unconditional O(n) scan" bug class found 3x already
+     * this session -- see project memory syncghostzones-unbounded-scan-investigation. Read-only.
+     */
+    private static int ghostZoneStats(CommandSourceStack src) {
+        net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
+        String result = sys.getBoundaryManager().nestworldGhostZoneStats();
+        src.sendSuccess(() -> Component.literal("NW Ghost Zone Sync: " + result), false);
+        return 0;
+    }
+
+    /**
+     * P0 RegionThreadPool redesign, Phase 1 baseline telemetry (docs/
+     * P0_REGIONTHREADPOOL_REDESIGN_SPEC.md). Read-only, no behavior change.
+     */
+    private static int regionPoolStats(CommandSourceStack src) {
+        net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
+        String result = sys.getPool().nestworldPhaseTelemetry();
+        src.sendSuccess(() -> Component.literal("NW RegionThreadPool per-phase telemetry:\n" + result), false);
+        return 0;
+    }
+
+    /**
+     * P0.1 pollTask() attribution audit (docs/P0_REGIONTHREADPOOL_REDESIGN_SPEC.md follow-up):
+     * breaks down where main-thread pollTask() time actually goes, plus a per-tick correlation
+     * view. Read-only, no behavior change.
+     */
+    private static int pollTaskStats(CommandSourceStack src) {
+        net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
+        String result = sys.nestworldPollTaskReport();
+        src.sendSuccess(() -> Component.literal("NW pollTask() attribution:\n" + result), false);
+        return 0;
+    }
+
+    /**
+     * P1.0 audit (docs/P1_WORLDGEN_MAINTHREAD_DECOUPLING_SPEC.md): worldgen vs main-thread-required
+     * boundary breakdown, read-only, no behavior change.
+     */
+    private static int worldgenBoundaryStats(CommandSourceStack src) {
+        net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
+        String result = sys.nestworldWorldgenBoundaryReport();
+        src.sendSuccess(() -> Component.literal("NW " + result), false);
+        return 0;
+    }
+
+    /**
+     * P0.3 ТЗ (docs/P0_3_AUTONOMOUS_BASELINE_SPEC.md): no-player autonomous chunk-gen benchmark.
+     * Dispatches `count` fresh-chunk tickets via a non-PLAYER, self-expiring ticket type -- see
+     * ChunkGenBenchmark's javadoc. Fire-and-forget; poll progress with /nestworld gentest status.
+     */
+    private static int genTestStart(CommandSourceStack src, int count, int baseX, int baseZ) {
+        ServerLevel level = src.getServer().overworld();
+        int baseChunkX = baseX >> 4, baseChunkZ = baseZ >> 4;
+        ChunkGenBenchmark.dispatch(level, count, baseChunkX, baseChunkZ);
+        src.sendSuccess(() -> Component.literal(String.format(
+                "NW gentest: dispatched %,d chunk tickets around chunk (%d,%d) -- poll with /nestworld gentest status",
+                count, baseChunkX, baseChunkZ)), true);
+        return count;
+    }
+
+    private static int genTestStatus(CommandSourceStack src) {
+        String result = ChunkGenBenchmark.status(src.getServer().overworld());
+        src.sendSuccess(() -> Component.literal("NW " + result), false);
+        return 0;
     }
 
     /**
@@ -515,6 +738,26 @@ public final class NestworldCommand {
         cache.chunkMap.nestworldSetGenConcurrency(n);
         src.sendSuccess(() -> Component.literal("NW gen-pool concurrency set to " + n), true);
         return n;
+    }
+
+    /**
+     * P0.5 (docs/P0_3_AUTONOMOUS_BASELINE_SPEC.md follow-up ТЗ): live chunkGenBudget override,
+     * same JIT-storm-safe one-warm-JVM sweep rationale as setGenConcurrency above -- see
+     * NestworldLiveTuning's javadoc. -1 restores the boot-time NestworldTuning.CHUNK_GEN_BUDGET.
+     */
+    private static int setGenBudget(CommandSourceStack src, int n) {
+        net.nestworld.region.NestworldLiveTuning.chunkGenBudgetOverride = n;
+        int effective = net.nestworld.region.NestworldLiveTuning.effectiveChunkGenBudget();
+        src.sendSuccess(() -> Component.literal("NW chunkGenBudget set to " + n + " (effective=" + effective + ")"), true);
+        return n;
+    }
+
+    private static int genBudget(CommandSourceStack src) {
+        int effective = net.nestworld.region.NestworldLiveTuning.effectiveChunkGenBudget();
+        int override = net.nestworld.region.NestworldLiveTuning.chunkGenBudgetOverride;
+        src.sendSuccess(() -> Component.literal("NW chunkGenBudget effective=" + effective
+                + " (override=" + override + ", boot-default=" + net.nestworld.region.NestworldTuning.CHUNK_GEN_BUDGET + ")"), false);
+        return effective;
     }
 
     /**
@@ -776,6 +1019,117 @@ public final class NestworldCommand {
         }
         src.sendSuccess(() -> Component.literal(
                 "Unpinned " + type.trim() + " (resumes region-thread ticking next boundary scan)."), true);
+        return 1;
+    }
+
+    /**
+     * NestWorld Inspector §4 (docs/NESTWORLD_INSPECTOR_SPEC.md): combined block/fluid-tick +
+     * entity-density hotspot ranking, computed fresh on every call (no continuous tracking cost
+     * between calls). Caches the result for {@code /nestworld goto hotspot <id>} to reference.
+     */
+    private static int hotspots(CommandSourceStack src) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        java.util.List<HotspotDetector.Hotspot> found = HotspotDetector.compute(NestworldRegionSystem.get(), 10);
+        if (found.isEmpty()) {
+            src.sendSuccess(() -> Component.literal("No hotspots detected right now — load is flat."), false);
+            return 1;
+        }
+        StringBuilder sb = new StringBuilder("TOP HOTSPOTS\n");
+        for (HotspotDetector.Hotspot h : found) {
+            sb.append(String.format("#%d region=#%s heat=%.1f (block/fluid=%.1f, entities=%.1f)\n",
+                    h.rank(), h.region() != null ? String.valueOf(h.region().getId()) : "?",
+                    h.totalHeat(), h.blockTickHeat(), h.entityHeat()));
+            if (!h.topEntityTypes().isEmpty()) {
+                StringBuilder types = new StringBuilder("   dominant: ");
+                boolean first = true;
+                for (var e : h.topEntityTypes()) {
+                    if (!first) types.append(", ");
+                    types.append(e.getKey()).append(" x").append(e.getValue());
+                    first = false;
+                }
+                sb.append(types).append('\n');
+            } else if (h.blockTickHeat() > 0) {
+                sb.append("   dominant: block/fluid ticks\n");
+            }
+            sb.append(String.format("   at (%d, %d, %d) — chunk (%d, %d)\n",
+                    h.position().getX(), h.position().getY(), h.position().getZ(),
+                    h.chunk().x, h.chunk().z));
+            if (h.region() != null) {
+                sb.append(String.format("   region avg cost: %.1fms\n", h.region().getAvgTickMs()));
+            }
+        }
+        String out = sb.toString();
+        src.sendSuccess(() -> Component.literal(out), false);
+        return found.size();
+    }
+
+    /** NestWorld Inspector §5: teleport the admin to a specific ranked hotspot from the most
+     *  recent {@code /nestworld hotspots} call. */
+    private static int gotoHotspot(CommandSourceStack src, int id) throws CommandSyntaxException {
+        HotspotDetector.Hotspot h = HotspotDetector.get(id);
+        if (h == null) {
+            src.sendFailure(Component.literal("No hotspot #" + id + " — run /nestworld hotspots first"));
+            return 0;
+        }
+        return teleportTo(src, h.position(), "hotspot #" + id);
+    }
+
+    /** NestWorld Inspector §5: teleport to the most interesting spot inside a region (its hottest
+     *  chunk right now, or a live entity, or a heightmap-safe geometric fallback). */
+    private static int gotoRegion(CommandSourceStack src, int id) throws CommandSyntaxException {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        NestworldRegionSystem sys = NestworldRegionSystem.get();
+        WorldRegion region = findRegion(sys, id);
+        if (region == null) {
+            src.sendFailure(Component.literal("No active region with id " + id));
+            return 0;
+        }
+        BlockPos pos = HotspotDetector.bestPositionInRegion(sys, region);
+        return teleportTo(src, pos, "region #" + id);
+    }
+
+    /** NestWorld Inspector §5: teleport to a chunk's center, landing on top of terrain. */
+    private static int gotoChunk(CommandSourceStack src, int x, int z) throws CommandSyntaxException {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        ServerLevel level = NestworldRegionSystem.get().getOverworld();
+        int bx = (x << 4) + 8, bz = (z << 4) + 8;
+        int by = level.getHeight(Heightmap.Types.MOTION_BLOCKING, bx, bz);
+        return teleportTo(src, new BlockPos(bx, by, bz), "chunk (" + x + ", " + z + ")");
+    }
+
+    /** NestWorld Inspector §5: teleport to a live entity's current position. Reads the entity's
+     *  position directly (not via a region's EntitySnapshot) since this targets an arbitrary,
+     *  admin-chosen UUID that may not be in any recently-computed hotspot's cached data — the same
+     *  category of live cross-thread read every vanilla entity-targeting command already performs
+     *  in this environment (command dispatch doesn't check region ownership), not a new hazard. */
+    private static int gotoEntity(CommandSourceStack src, java.util.UUID uuid) throws CommandSyntaxException {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        net.minecraft.world.entity.Entity target = NestworldRegionSystem.get().getOverworld().getEntity(uuid);
+        if (target == null) {
+            src.sendFailure(Component.literal("No live entity with UUID " + uuid));
+            return 0;
+        }
+        return teleportTo(src, target.blockPosition(), "entity " + uuid);
+    }
+
+    private static int teleportTo(CommandSourceStack src, BlockPos pos, String label) throws CommandSyntaxException {
+        ServerPlayer player = src.getPlayerOrException();
+        ServerLevel overworld = NestworldRegionSystem.get().getOverworld();
+        player.teleportTo(overworld, pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5,
+                player.getYRot(), player.getXRot());
+        src.sendSuccess(() -> Component.literal("Teleported to " + label + " at " + pos.toShortString()), true);
         return 1;
     }
 
