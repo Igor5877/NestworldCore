@@ -276,14 +276,36 @@ public class RegionSplitManager {
             if (children == null) return null; // at min size or not in tree
 
             pool.remove(region);
+
+            // Classify every entity by its last-published snapshot position (safe from
+            // any thread, up to one tick stale -- same contract BoundaryEntityTransfer
+            // already relies on) BEFORE either child thread is spawned. Chunk ownership
+            // already transferred atomically above (tree.split()); doing entity ownership
+            // eagerly here too closes the one-tick window where a child region's chunks
+            // and its owned-entity set used to disagree while both region threads tick in
+            // genuine parallel (see project memory: region-split-scheduletick-race.md).
+            // An entity with no snapshot yet (never ticked by the old region -- rare)
+            // falls back to child A, same as today, and self-heals via
+            // BoundaryEntityTransfer's regular scan next tick, same as any other
+            // not-yet-assigned entity already does elsewhere.
+            java.util.Map<java.util.UUID, WorldRegion.EntitySnapshot> snapshot =
+                    region.nestworldGetEntitySnapshot();
+            for (java.util.UUID uuid : region.getOwnedEntityIds()) {
+                WorldRegion.EntitySnapshot snap = snapshot.get(uuid);
+                WorldRegion owner = children[0];
+                if (snap != null && !snap.removed()) {
+                    int ecx = net.minecraft.util.Mth.floor(snap.x()) >> 4;
+                    int ecz = net.minecraft.util.Mth.floor(snap.z()) >> 4;
+                    if (ecx >= children[1].getMinChunkX() && ecx <= children[1].getMaxChunkX()
+                            && ecz >= children[1].getMinChunkZ() && ecz <= children[1].getMaxChunkZ()) {
+                        owner = children[1];
+                    }
+                }
+                owner.addEntity(uuid);
+            }
+
             pool.spawn(children[0]);
             pool.spawn(children[1]);
-
-            // Hand all entities to child A; BoundaryEntityTransfer reassigns any
-            // that actually live in child B on the next tick via the grid lookup.
-            for (java.util.UUID uuid : region.getOwnedEntityIds()) {
-                children[0].addEntity(uuid);
-            }
 
             LOGGER.info("Split {} -> [{}, {}]  (cost was {} ms; {} entities, heat {}; cut {} axis; hottest {})",
                     region, children[0], children[1], String.format("%.1f", region.getAvgTickMs()),

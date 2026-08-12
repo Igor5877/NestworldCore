@@ -27,6 +27,13 @@ public class WorldRegion {
     // Entity UUIDs whose ticking is owned by this region's thread
     private final Set<UUID> ownedEntityIds = ConcurrentHashMap.newKeySet();
 
+    // Region-Owned Chunk Scheduler, Phase 2 (docs/REGION_CHUNK_SCHEDULER_SPEC.md) -- SHADOW MODE
+    // ONLY: observes the same chunk requests DistanceManager already sees, does no real work.
+    // See net.nestworld.chunk.ChunkSchedulerShadow for the deferred observation hook.
+    private final net.nestworld.chunk.RegionChunkScheduler chunkScheduler = new net.nestworld.chunk.RegionChunkScheduler();
+
+    public net.nestworld.chunk.RegionChunkScheduler getChunkScheduler() { return this.chunkScheduler; }
+
     // Rolling TPS window: last 100 tick durations in nanoseconds
     private final long[] tickDurationsNs = new long[100];
     private int tickIndex = 0;

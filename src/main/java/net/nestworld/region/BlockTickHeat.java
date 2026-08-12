@@ -154,6 +154,12 @@ final class BlockTickHeat {
         }
     }
 
+    /** Defensive copy of the raw per-chunk heat map, world-wide (not region-scoped) — for
+     *  {@link HotspotDetector}'s combined ranking (NestWorld Inspector §4). Main thread only. */
+    Long2DoubleOpenHashMap snapshotCounts() {
+        return new Long2DoubleOpenHashMap(counts);
+    }
+
     /** {@code "(x,z)=h"} for the hottest {@code topN} chunks in a region — for diagnostics. */
     String hotspotSummary(WorldRegion r, int topN) {
         if (counts.isEmpty()) return "none";

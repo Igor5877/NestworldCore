@@ -250,6 +250,69 @@ public final class NestworldTuning {
             Integer.getInteger("nestworld.chunkGenBudget", 0);
 
     /**
+     * Chunk-radius (in chunks, Chebyshev/square, around a player's CURRENT chunk position)
+     * within which a pending chunk-holder promotion is "Tier 1a — urgent": processed
+     * unconditionally every tick, no budget, same guarantee the old undifferentiated Tier 1
+     * gave every player-ticketed chunk. Found necessary 2026-08-11 (live ATM9 incident,
+     * see project memory: distancemanager-tier1-volume-freeze.md): a player flying fast
+     * through ungenerated territory can grow the "currently pending, has a player ticket"
+     * population into the tens of thousands (everything in view distance, not just what's
+     * near them right now), and since that whole tier was unconditional, a single tick could
+     * end up calling {@code ChunkHolder.updateFutures()} tens of thousands of times back to
+     * back — individual calls are cheap (sub-ms typical) but the volume alone produced
+     * observed 18+ second main-thread freezes. Anything with a player ticket OUTSIDE this
+     * radius is "Tier 1b" instead (see {@link #CHUNK_GEN_TIER1B_BUDGET}) -- budgeted like
+     * bulk gen, trading a few ticks of pop-in at the edge of view distance (an unavoidable,
+     * normal cost of moving faster than generation can keep up, same as vanilla's own
+     * behavior under extreme movement speed) for a hard bound on worst-case per-tick cost.
+     * Gemini-reviewed: sized generously (not tied to one player-speed constant) specifically
+     * to survive the lag-spike-causes-effectively-larger-movement-per-observed-tick case this
+     * mechanism itself is trying to recover from.
+     */
+    public static final int PLAYER_URGENT_CHUNK_RADIUS =
+            Integer.getInteger("nestworld.playerUrgentChunkRadius", 3);
+
+    /**
+     * Region-Owned Chunk Scheduler, Phase 1 (docs/REGION_CHUNK_SCHEDULER_SPEC.md, section 5):
+     * distance-to-player thresholds (in chunks) mapping a chunk request to one of the 5 priority
+     * tiers ({@code net.nestworld.chunk.ChunkRequestPriority}). Distances 0..CRITICAL are
+     * CRITICAL, (CRITICAL..HIGH] are HIGH, (HIGH..NORMAL] are NORMAL, everything beyond NORMAL is
+     * LOW; BACKGROUND is assigned by request source (forceload/bulk), not distance, so it has no
+     * radius constant here. Not yet consumed anywhere -- Phase 1 is dark code (see
+     * {@code RegionChunkScheduler}'s class doc); reserved now so Phase 2's distance-classification
+     * call site doesn't need new tuning plumbing.
+     */
+    public static final int CHUNK_PRIORITY_CRITICAL_RADIUS =
+            Integer.getInteger("nestworld.chunkPriorityCriticalRadius", 2);
+    public static final int CHUNK_PRIORITY_HIGH_RADIUS =
+            Integer.getInteger("nestworld.chunkPriorityHighRadius", 6);
+    public static final int CHUNK_PRIORITY_NORMAL_RADIUS =
+            Integer.getInteger("nestworld.chunkPriorityNormalRadius", 12);
+
+    /**
+     * Region-Owned Chunk Scheduler, Phase 2: master on/off switch for the shadow-mode observation
+     * hook (docs/REGION_CHUNK_SCHEDULER_SPEC.md, section on shadow-mode validation before
+     * cutover). {@code false} by default (opt-in) -- even though the hook is deferred/queued and
+     * defensively try/catch-wrapped (Gemini-reviewed 2026-08-12), this flag lets it be disabled
+     * without a rebuild if anything unexpected shows up while gathering comparison data on a test
+     * server. Purely observational when enabled: zero effect on real chunk loading either way.
+     */
+    public static final boolean CHUNK_SCHEDULER_SHADOW_MODE =
+            Boolean.getBoolean("nestworld.chunkSchedulerShadowMode");
+
+    /**
+     * Per-tick cap on Tier 1b (player-ticketed, but outside {@link #PLAYER_URGENT_CHUNK_RADIUS})
+     * promotions applied — separate from {@link #CHUNK_GEN_BUDGET} (Tier 2, non-player bulk/
+     * forceload gen) per Gemini's explicit recommendation: player-visible pop-in resolution
+     * should not compete with (or be starved by) background bulk generation for the same
+     * budget slice. {@code 0} = unlimited (same as the old undifferentiated-Tier-1 behavior
+     * for this tier specifically — NOT recommended once a player can realistically produce a
+     * large Tier 1b population, which is exactly the incident this exists to prevent).
+     */
+    public static final int CHUNK_GEN_TIER1B_BUDGET =
+            Integer.getInteger("nestworld.chunkGenTier1bBudget", 64);
+
+    /**
      * Cap on how many BRAND-NEW top-level chunk-generation units (a {@code (ChunkHolder,
      * ChunkStatus)} pair that has never been scheduled before) are admitted into the
      * generation pipeline per server tick, for non-player-driven (bulk) requests.

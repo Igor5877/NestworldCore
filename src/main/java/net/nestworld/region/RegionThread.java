@@ -245,6 +245,7 @@ public class RegionThread extends Thread {
 
         java.util.List<Runnable> work = region.nestworldPollFreeRunningWork();
         if (work != null) {
+            RegionTimeCompatibility.noteWorkBatch(region, work.size(), level.getGameTime());
             runOneTick(null, work);
         }
 
@@ -338,6 +339,16 @@ public class RegionThread extends Thread {
      * skipped when null. Every other caller (the barrier-dispatched path) still always
      * passes a real latch, unchanged.
      */
+    // P0 RegionThreadPool redesign, Phase 1 (docs/P0_REGIONTHREADPOOL_REDESIGN_SPEC.md): wall-
+    // clock duration of THIS region thread's most recent dispatched round (whichever phase --
+    // entity or a work round), written in runOneTick()'s finally block BEFORE latch.countDown(),
+    // so the main thread reading it after awaitLatch() returns is safe (CountDownLatch's own
+    // happens-before guarantee covers this write). Lets RegionThreadPool distinguish "how long did
+    // the slowest region actually take" from "how long did the main thread wait" (which also
+    // includes dispatch overhead + opportunistic pollTask() work + OS scheduling latency).
+    private volatile long nestworldLastDispatchNanos = 0;
+    public long getLastDispatchNanos() { return nestworldLastDispatchNanos; }
+
     private void runOneTick(CountDownLatch latch, java.util.List<Runnable> work) {
         long tickStart = System.nanoTime();
         try {
@@ -395,6 +406,7 @@ public class RegionThread extends Thread {
                 region.nestworldAdvanceLocalTick();
                 workRoundNanos = 0;
             }
+            nestworldLastDispatchNanos = System.nanoTime() - tickStart;
             if (latch != null) latch.countDown();
         }
     }
@@ -487,7 +499,13 @@ public class RegionThread extends Thread {
             RegionMessage.EntityImpact impact = (RegionMessage.EntityImpact) msg.payload();
             try {
                 net.minecraft.world.entity.Entity entity = level.getEntity(impact.entityId());
-                if (entity != null && !entity.isRemoved()) {
+                // NestWorld: belt-and-braces live re-check -- this message was posted to
+                // `region` as the owner at post time, but a second reassignment could in
+                // principle have happened before this drain (same TOCTOU class as
+                // freerunning-neighbor-boundary-race.md, just a much narrower window).
+                // Zero Mixin risk here (this method, unlike Explosion.explode(), is
+                // entirely NestWorld's own code) so this check is cheap insurance.
+                if (entity != null && !entity.isRemoved() && EntityOwnershipRecheck.stillOwns(region, impact.entityId())) {
                     impact.explosion().nestworldApplyEntityImpact(entity);
                 }
             } catch (Throwable t) {
@@ -676,6 +694,14 @@ public class RegionThread extends Thread {
                 // Mirror vanilla: only tick entities inside entity-ticking chunks,
                 // otherwise idle mobs at the edge of loaded terrain burn CPU on AI.
                 if (!level.isPositionEntityTicking(entity.blockPosition())) continue;
+                // NestWorld: live re-check immediately before ticking -- the snapshot at
+                // the top of this method only decided who was a CANDIDATE for this pass;
+                // a free-running region's pass can run long enough for BoundaryEntityTransfer
+                // (main thread) to have handed this uuid to a neighbor in the meantime (see
+                // project memory: freerunning-neighbor-boundary-race.md). Skipping here is
+                // safe -- the new owner picks it up on its own next pass -- and cheap (one
+                // ConcurrentHashMap.contains).
+                if (!EntityOwnershipRecheck.stillOwns(region, uuid)) continue;
                 level.tickNonPassenger(entity);
                 ticked++;
                 // Phase 2: track this owned entity now (region phase). Skip if the tick removed it.

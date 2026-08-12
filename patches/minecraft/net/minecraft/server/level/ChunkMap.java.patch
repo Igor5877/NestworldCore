@@ -11,7 +11,7 @@
     private final ProcessorHandle<ChunkTaskPriorityQueueSorter.Message<Runnable>> f_140143_;
     private final ChunkProgressListener f_140144_;
     private final ChunkStatusUpdateListener f_143031_;
-@@ -143,6 +_,305 @@
+@@ -143,6 +_,345 @@
     private final Long2LongMap f_202981_ = new Long2LongOpenHashMap();
     private final Queue<Runnable> f_140125_ = Queues.newConcurrentLinkedQueue();
     int f_140126_;
@@ -219,10 +219,41 @@
 +    * SAME Runnable — must be exception-safe.
 +    */
 +   private static final class NestworldGenPool {
++      private int capacity;
 +      private int slotsFree;
 +      private final java.util.ArrayDeque<Runnable> pending = new java.util.ArrayDeque<>();
 +
-+      NestworldGenPool(int capacity) { this.slotsFree = capacity; }
++      NestworldGenPool(int capacity) { this.capacity = capacity; this.slotsFree = capacity; }
++
++      // NestWorld (Layer 13.1, 2026-08-11): live capacity change, no restart needed --
++      // built specifically to run a clean concurrency-scaling benchmark on one warmed-up
++      // JVM instead of restarting (and re-paying a JIT-compilation storm) before every
++      // data point. Shrinking just lets slotsFree go negative (self-corrects as running
++      // tasks release(); no in-flight work is touched). Growing immediately drains and
++      // dispatches as many pending tasks as the new headroom allows, off-thread for the
++      // same reason release() does -- see its comment.
++      void setCapacity(int newCapacity) {
++         newCapacity = Math.max(0, newCapacity);
++         java.util.List<Runnable> toRun = new java.util.ArrayList<>();
++         synchronized (this.pending) {
++            int delta = newCapacity - this.capacity;
++            this.capacity = newCapacity;
++            this.slotsFree += delta;
++            while (this.slotsFree > 0 && !this.pending.isEmpty()) {
++               this.slotsFree--;
++               toRun.add(this.pending.poll());
++            }
++         }
++         for (Runnable r : toRun) Util.m_183991_().execute(r);
++      }
++
++      int capacity() {
++         synchronized (this.pending) { return this.capacity; }
++      }
++
++      int pendingCount() {
++         synchronized (this.pending) { return this.pending.size(); }
++      }
 +
 +      CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> gate(
 +            java.util.function.Supplier<CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>>> real) {
@@ -297,6 +328,15 @@
 +   // safety mechanism.
 +   private final NestworldGenPool nestworldFeaturesPool =
 +         new NestworldGenPool(Math.max(0, net.nestworld.region.NestworldTuning.CHUNK_GEN_FEATURES_MAX_CONCURRENT));
++
++   // NestWorld (Layer 13.1): live concurrency-cap accessors for benchmarking without a
++   // restart. NestworldTuning.CHUNK_GEN_MAX_CONCURRENT's own value (read once at JVM
++   // start) only decides whether the shared pool gates at ALL (see
++   // nestworldGateGeneration's `<= 0` check) -- boot with any positive value (the lowest
++   // level you intend to test) and then drive the actual concurrency level live from here.
++   public void nestworldSetGenConcurrency(int n) { this.nestworldNoiseSurfaceCarversPool.setCapacity(n); }
++   public int nestworldGenConcurrency() { return this.nestworldNoiseSurfaceCarversPool.capacity(); }
++   public int nestworldGenPoolPending() { return this.nestworldNoiseSurfaceCarversPool.pendingCount(); }
 +
 +   /**
 +    * NestWorld: run {@code p_nw_real} (the real generate() call) now if {@code
@@ -396,10 +436,20 @@
        ProfilerFiller profilerfiller = this.f_140133_.m_46473_();
        profilerfiller.m_6180_("poi");
        this.f_140138_.m_6202_(p_140281_);
-@@ -503,6 +_,7 @@
+@@ -503,6 +_,17 @@
              if (this.f_140131_.remove(p_140182_, p_140183_) && p_203002_ != null) {
                 if (p_203002_ instanceof LevelChunk) {
                    ((LevelChunk)p_203002_).m_62913_(false);
++                  // NestWorld: fires Forgified Fabric API's ServerChunkEvents.CHUNK_UNLOAD
++                  // directly (source-level, not a Mixin) at the exact point
++                  // fabric-lifecycle-events-v1's own Mixin used to inject (confirmed via
++                  // its @At(INVOKE, target=LevelChunk.setLoaded(Z)V, shift=AFTER)) --
++                  // that Mixin targets this lambda by its vanilla compiler-assigned
++                  // ordinal (lambda$scheduleUnload$14 / SRG m_202998_), which NestWorld's
++                  // own earlier-declared lambdas shift to $16, permanently breaking the
++                  // Mixin's injection target. See NestworldFabricChunkEventsCompat and
++                  // project memory for the full trace. No-op when that mod isn't present.
++                  net.nestworld.region.NestworldFabricChunkEventsCompat.fireChunkUnload(this.f_140133_, (LevelChunk)p_203002_);
 +                  net.minecraftforge.common.MinecraftForge.EVENT_BUS.post(new net.minecraftforge.event.level.ChunkEvent.Unload(p_203002_));
                 }
  
@@ -501,13 +551,26 @@
                 }
  
                 this.f_140144_.m_5511_(chunkpos, p_140362_);
-@@ -713,8 +_,14 @@
+@@ -713,8 +_,27 @@
              levelchunk.m_62952_();
              if (this.f_140132_.add(chunkpos.m_45588_())) {
                 levelchunk.m_62913_(true);
 +               try {
 +               p_140384_.currentlyLoading = levelchunk; // Forge - bypass the future chain when getChunk is called, this prevents deadlocks.
                 levelchunk.m_156369_();
++               // NestWorld DIAG (2026-08-11, chasing the LevelTicks NPE -- see project memory
++               // leveticks-race-under-heavy-chunkgen): registerTickContainerInLevel is the
++               // leading suspect for mutating the shared per-level LevelTicks bookkeeping
++               // concurrently with NestworldRegionSystem.runScheduledTicksPhase's own
++               // iteration of it. Loud, diagnostic-only check -- no behaviour change.
++               boolean nestworldIterating = net.nestworld.region.NestworldRegionSystem.nestworldLevelTicksIterating;
++               boolean nestworldOffMain = net.nestworld.region.NestworldRegionSystem.nestworldIsOffMainThread();
++               if (nestworldIterating || nestworldOffMain) {
++                  org.apache.logging.log4j.LogManager.getLogger("NestWorld/DIAG").error(
++                        "registerTickContainerInLevel: iterating={} offMainThread={} thread='{}' chunk={}",
++                        nestworldIterating, nestworldOffMain, Thread.currentThread().getName(), chunkpos,
++                        new Throwable("NestWorld DIAG stack capture"));
++               }
                 levelchunk.m_187958_(this.f_140133_);
 +               net.minecraftforge.common.MinecraftForge.EVENT_BUS.post(new net.minecraftforge.event.level.ChunkEvent.Load(levelchunk, !(protochunk instanceof ImposterProtoChunk)));
 +               } finally {
@@ -606,7 +669,7 @@
           EntityType<?> entitytype = p_140200_.m_6095_();
           int i = entitytype.m_20681_() * 16;
           if (i != 0) {
-@@ -1175,28 +_,160 @@
+@@ -1175,28 +_,187 @@
  
     }
  
@@ -616,9 +679,18 @@
 +   // ordering fix in ServerChunkCache/NestworldRegionSystem) silently kept `skipped` at 0% for
 +   // every tick. Cheap (one atomic increment per candidate entity) and only active while
 +   // REGIONALIZED_TRACKER is on, so kept permanently rather than ripped out post-verification.
-+   static final java.util.concurrent.atomic.AtomicLong nestworldSkipDiagSkipped = new java.util.concurrent.atomic.AtomicLong();
-+   static final java.util.concurrent.atomic.AtomicLong nestworldSkipDiagTotal = new java.util.concurrent.atomic.AtomicLong();
-+   static int nestworldSkipDiagTickCounter = 0;
++   //
++   // Instance (NOT static) fields: each dimension has its own ChunkMap, and tick() is called
++   // once per dimension per real server tick (overworld via NestworldRegionSystem; nether/end
++   // via their own plain ServerLevel.tick()/ServerChunkCache.tickChunks() path — see
++   // docs/LOCAL_TICK_STAGE4.md's "Anatomy of a tick" §0). A shared static counter meant all
++   // active dimensions incremented the SAME tick-threshold, so the "every 200 ticks" log fired
++   // far more often than once per 200 REAL server ticks, and total/skipped mixed dimensions
++   // together — found live on ATM9 (lines every ~250-300ms instead of ~10s). Purely a
++   // diagnostic-accuracy fix — does not touch tracker scheduling, budget, or skip semantics.
++   final java.util.concurrent.atomic.AtomicLong nestworldSkipDiagSkipped = new java.util.concurrent.atomic.AtomicLong();
++   final java.util.concurrent.atomic.AtomicLong nestworldSkipDiagTotal = new java.util.concurrent.atomic.AtomicLong();
++   int nestworldSkipDiagTickCounter = 0;
 +
 +   // NestWorld: widened from protected to public so NestworldRegionSystem (different package)
 +   // can call this directly, relocated to run AFTER region threads finish their tick instead of
@@ -657,15 +729,27 @@
 +            nestworldSkipDiagTotal.incrementAndGet();
 +            if (nestworldTe.nestworldTrackedTick == nestworldCurTick) { nestworldSkipDiagSkipped.incrementAndGet(); return; } // region already tracked it
 +            Entity nestworldE = nestworldTe.f_140472_;
++            // NestWorld: Entity Safety Layer (docs/LOCAL_TICK_STAGE4.md) — this fallback
++            // means the entity's owning region did NOT track it this cycle (or it's
++            // unowned, e.g. a player). Reading getX()/xo/etc directly here assumes no
++            // region thread is concurrently moving it — true today only because the
++            // barrier parks every region thread first. Reads go through the owning
++            // region's own published EntitySnapshot instead (safe from any thread); a
++            // player/unowned entity has no region racing it, so a direct read stays
++            // correct there. Absent-from-snapshot (owned but not yet published this
++            // cycle — a brief startup transient) is treated as "no change this cycle",
++            // self-healing once that region's next snapshot publishes.
++            net.nestworld.region.WorldRegion.EntitySnapshot nestworldSnap = nestworldSafePosition(nestworldTe);
++            if (nestworldSnap == null) return;
 +            boolean nestworldStill2 = net.nestworld.region.NestworldTuning.TRACKER_SPATIAL_CULL
 +                  && !(nestworldE instanceof ServerPlayer)
-+                  && nestworldE.m_20185_() == nestworldE.f_19854_ && nestworldE.m_20186_() == nestworldE.f_19855_ && nestworldE.m_20189_() == nestworldE.f_19856_;
++                  && nestworldSnap.x() == nestworldSnap.xo() && nestworldSnap.y() == nestworldSnap.yo() && nestworldSnap.z() == nestworldSnap.zo();
 +            SectionPos nestworldSp;
 +            boolean nestworldFlag = false;
 +            if (nestworldStill2) {
 +               nestworldSp = nestworldTe.f_140474_;
 +            } else {
-+               nestworldSp = SectionPos.m_235861_(nestworldE);
++               nestworldSp = SectionPos.m_235863_(new Vec3(nestworldSnap.x(), nestworldSnap.y(), nestworldSnap.z()));
 +               nestworldFlag = !Objects.equals(nestworldTe.f_140474_, nestworldSp);
 +            }
 +            nestworldTe.nestworldTickSection = nestworldSp;
@@ -726,18 +810,24 @@
 +         // periodic tracker at high entity counts. An entity that did not move since its
 +         // last tick cannot have changed section, so reuse its stored lastSectionPos and
 +         // skip the recompute. Players always take the full path (few, and critical).
++         //
++         // NestWorld: Entity Safety Layer (docs/LOCAL_TICK_STAGE4.md) — same reasoning as
++         // the parallel-detection variant above: read via the owning region's published
++         // EntitySnapshot, not the live entity, unless unowned (player).
++         net.nestworld.region.WorldRegion.EntitySnapshot nestworldSnap = nestworldSafePosition(chunkmap$trackedentity);
++         if (nestworldSnap == null) continue;
 +         boolean nestworldStill = net.nestworld.region.NestworldTuning.TRACKER_SPATIAL_CULL
 +               && !(nestworldEntity instanceof ServerPlayer)
-+               && nestworldEntity.m_20185_() == nestworldEntity.f_19854_
-+               && nestworldEntity.m_20186_() == nestworldEntity.f_19855_
-+               && nestworldEntity.m_20189_() == nestworldEntity.f_19856_;
++               && nestworldSnap.x() == nestworldSnap.xo()
++               && nestworldSnap.y() == nestworldSnap.yo()
++               && nestworldSnap.z() == nestworldSnap.zo();
 +         boolean flag = false;
 +         SectionPos sectionpos1;
 +         if (nestworldStill) {
 +            sectionpos1 = chunkmap$trackedentity.f_140474_; // unchanged — no recompute
 +         } else {
 +            SectionPos sectionpos = chunkmap$trackedentity.f_140474_;
-+            sectionpos1 = SectionPos.m_235861_(nestworldEntity);
++            sectionpos1 = SectionPos.m_235863_(new Vec3(nestworldSnap.x(), nestworldSnap.y(), nestworldSnap.z()));
 +            flag = !Objects.equals(sectionpos, sectionpos1);
 +            if (flag) {
 +               chunkmap$trackedentity.m_140487_(list1);
@@ -785,7 +875,7 @@
  
        if (!list.isEmpty()) {
           for(ChunkMap.TrackedEntity chunkmap$trackedentity1 : this.f_140150_.values()) {
-@@ -1204,6 +_,60 @@
+@@ -1204,6 +_,90 @@
           }
        }
  
@@ -794,14 +884,22 @@
 +      // the time this runs); if `skipped` collapses back toward 0% with `total` still nonzero,
 +      // the phase-ordering fix (ServerChunkCache/NestworldRegionSystem) has regressed and every
 +      // owned entity is being tracked twice again.
-+      if (net.nestworld.region.NestworldTuning.REGIONALIZED_TRACKER && ++nestworldSkipDiagTickCounter >= 200) {
++      // NestWorld: this diagnostic is meaningful only for the overworld — nestworldTrackedTick
++      // is only ever SET by RegionThread.tickEntities()'s nestworldTrackOwned() call, which only
++      // ever runs for sharded-overworld regions. Nether/End entities' nestworldTrackedTick stays
++      // at its -1 default forever, so a per-dimension counter for them would always read
++      // total=X skipped=0 (0%) — not a regression, just "this mechanism doesn't apply here" —
++      // and would otherwise trip the below-5%-warns-regression check permanently and falsely.
++      if (net.nestworld.region.NestworldTuning.REGIONALIZED_TRACKER
++            && this.f_140133_.m_46472_() == net.minecraft.world.level.Level.f_46428_
++            && ++nestworldSkipDiagTickCounter >= 200) {
 +         nestworldSkipDiagTickCounter = 0;
 +         long total = nestworldSkipDiagTotal.getAndSet(0);
 +         long skipped = nestworldSkipDiagSkipped.getAndSet(0);
 +         double pct = total == 0 ? 0.0 : (100.0 * skipped / total);
 +         org.apache.logging.log4j.LogManager.getLogger("NestWorld/TrackerDiag").info(
-+               "REGIONALIZED_TRACKER skip-check over 200 ticks: total={} skipped={} ({}%)",
-+               total, skipped, pct);
++               "REGIONALIZED_TRACKER skip-check over 200 ticks: dimension={} total={} skipped={} ({}%)",
++               this.f_140133_.m_46472_().m_135782_(), total, skipped, pct);
 +         if (total > 0 && pct < 5.0) {
 +            org.apache.logging.log4j.LogManager.getLogger("NestWorld/TrackerDiag").warn(
 +                  "REGIONALIZED_TRACKER skip-check is near 0% ({}%) — the phase-ordering fix "
@@ -809,6 +907,28 @@
 +                  + "owned entities are likely being tracked twice per tick again.", pct);
 +         }
 +      }
++   }
++
++   /**
++    * NestWorld: Entity Safety Layer (docs/LOCAL_TICK_STAGE4.md) — safe position read for
++    * the {@code tick()} fallback path (an entity its owning region did NOT track this
++    * cycle, or one with no owning region at all). Owned entities read from that region's
++    * own published {@link net.nestworld.region.WorldRegion.EntitySnapshot} — never the
++    * live {@code Entity} object, which the owning region's thread could be concurrently
++    * mutating. Unowned entities (players; a type never region-owned) have no region
++    * thread racing them, so a direct live read stays correct. Returns null when owned but
++    * not yet present in this cycle's snapshot — a brief startup transient (a region that
++    * hasn't completed its first tick yet); callers treat that as "no change this cycle",
++    * self-healing once that region's next snapshot publishes.
++    */
++   private net.nestworld.region.WorldRegion.EntitySnapshot nestworldSafePosition(ChunkMap.TrackedEntity te) {
++      net.nestworld.region.WorldRegion owner = te.nestworldResolveOwner();
++      if (owner == null) {
++         Entity e = te.f_140472_;
++         return new net.nestworld.region.WorldRegion.EntitySnapshot(
++               e.m_20185_(), e.m_20186_(), e.m_20189_(), e.f_19854_, e.f_19855_, e.f_19856_, e.m_213877_());
++      }
++      return owner.nestworldGetEntitySnapshot().get(te.f_140472_.m_20148_());
 +   }
 +
 +   // NestWorld (REGIONALIZED_TRACKER): run the per-entity tracker step (section detection +
@@ -854,7 +974,7 @@
     }
  
     protected PoiManager m_140424_() {
-@@ -1321,7 +_,25 @@
+@@ -1321,7 +_,53 @@
        final Entity f_140472_;
        private final int f_140473_;
        SectionPos f_140474_;
@@ -877,6 +997,34 @@
 +      // stalls the tick. Re-evaluate at most once per tick (the periodic tick() and the
 +      // next move both pick up the remainder). -1 = never. See NestworldTuning.
 +      long nestworldLastMoveEvalTick = -1L;
++      // NestWorld: Entity Safety Layer (docs/LOCAL_TICK_STAGE4.md) — cached owning-region
++      // reference for the tick() fallback below, so the common case (ownership unchanged
++      // since last check) resolves in O(1) instead of an O(active-regions) scan every
++      // time. Cache-then-validate, not proactively updated on every ownership change: a
++      // stale reference is caught cheaply (WorldRegion.ownsEntity() is a HashSet contains
++      // check) and only THEN does a fresh scan run — self-correcting without needing to
++      // hook every ownership-changing code path (BoundaryEntityTransfer's transfer/
++      // pinned-unassign, RegionSplitManager's split/merge entity handoff, etc.), which
++      // would be easy to miss a spot on in exactly the way this path's past incidents
++      // (phase-ordering, "invisible items") already showed this class of bug likes to
++      // hide. May be stale/null between checks; always re-validated before trusted.
++      net.nestworld.region.WorldRegion nestworldCachedOwner;
++
++      /** NestWorld: Entity Safety Layer — resolves (and self-corrects) this entity's
++       *  owning region for the tick() fallback path. O(1) in the common case. Safe to
++       *  call concurrently from multiple threads (parallel-stream detection variant) —
++       *  WorldRegion.ownsEntity()/WorldGrid.findOwningRegion() are both safe for
++       *  concurrent reads; a benign race on the cache field itself just means two
++       *  threads independently resolve the same answer, not a correctness issue. */
++      net.nestworld.region.WorldRegion nestworldResolveOwner() {
++         net.nestworld.region.WorldRegion cached = this.nestworldCachedOwner;
++         if (cached != null && cached.ownsEntity(this.f_140472_.m_20148_())) return cached;
++         net.nestworld.region.WorldRegion fresh = net.nestworld.region.NestworldRegionSystem.isInitialised()
++               ? net.nestworld.region.NestworldRegionSystem.get().getGrid().findOwningRegion(this.f_140472_.m_20148_())
++               : null;
++         this.nestworldCachedOwner = fresh;
++         return fresh;
++      }
  
        public TrackedEntity(Entity p_140478_, int p_140479_, int p_140480_, boolean p_140481_) {
           this.f_140471_ = new ServerEntity(ChunkMap.this.f_140133_, p_140478_, p_140480_, p_140481_, this::m_140489_);

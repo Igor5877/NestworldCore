@@ -1,6 +1,35 @@
 --- a/net/minecraft/server/commands/ForceLoadCommand.java
 +++ b/net/minecraft/server/commands/ForceLoadCommand.java
-@@ -119,13 +_,90 @@
+@@ -29,6 +_,28 @@
+    private static final SimpleCommandExceptionType f_137670_ = new SimpleCommandExceptionType(Component.m_237115_("commands.forceload.added.failure"));
+    private static final SimpleCommandExceptionType f_137671_ = new SimpleCommandExceptionType(Component.m_237115_("commands.forceload.removed.failure"));
+ 
++   // NestWorld Layer 12: shared cross-call burst budget for /forceload's own blocking wait.
++   // Same bug class + same fix shape as ServerChunkCache.getChunk()'s burst-budget-first-call
++   // gap (NestworldTuning.GETCHUNK_BURST_BUDGET_MS): FORCELOAD_WAIT_TIMEOUT_MS alone bounds a
++   // SINGLE call, but several calls issued back to back each independently get their own full
++   // allowance and can still stack past the 60s watchdog. Rolling wall-clock window (not
++   // per-tick: forceload is infrequent/administrative, and one call's own wait can itself span
++   // many ticks) -- see NestworldTuning.FORCELOAD_BURST_BUDGET_MS / FORCELOAD_BURST_WINDOW_MS.
++   // Main-thread-only (forceload always runs on the server thread), so plain static fields
++   // are safe -- no synchronization needed.
++   private static long nestworldForceloadBudgetWindowStartNanos = 0L;
++   private static long nestworldForceloadBudgetRemainingNanos = 0L;
++
++   private static long nestworldForceloadCallBudgetNanos() {
++      long now = System.nanoTime();
++      long windowNanos = net.nestworld.region.NestworldTuning.FORCELOAD_BURST_WINDOW_MS * 1_000_000L;
++      if (nestworldForceloadBudgetWindowStartNanos == 0L || now - nestworldForceloadBudgetWindowStartNanos > windowNanos) {
++         nestworldForceloadBudgetWindowStartNanos = now;
++         nestworldForceloadBudgetRemainingNanos = net.nestworld.region.NestworldTuning.FORCELOAD_BURST_BUDGET_MS * 1_000_000L;
++      }
++      return Math.max(0L, nestworldForceloadBudgetRemainingNanos);
++   }
++
+    public static void m_137676_(CommandDispatcher<CommandSourceStack> p_137677_) {
+       p_137677_.register(Commands.m_82127_("forceload").requires((p_137703_) -> {
+          return p_137703_.m_6761_(2);
+@@ -119,13 +_,103 @@
              ChunkPos chunkpos = null;
              int j2 = 0;
  
@@ -65,10 +94,23 @@
 +                  // (commit 31d84d667) by decoupling the standing cap into its own independently
 +                  // configured NestworldTuning.CHUNK_GEN_ADMIT_INFLIGHT_CAP (default unlimited).
 +                  // This deadline check remains valuable as defense in depth regardless.
++                  //
++                  // Layer 12 (2026-08-11): the check above stopped ONE call from blocking past
++                  // FORCELOAD_WAIT_TIMEOUT_MS, but said nothing about SEVERAL calls issued back
++                  // to back -- each independently got its own full allowance. Live-crashed a
++                  // real ATM9 server (4-call, 1024-chunk batch, Watchdog kill at 60s) despite
++                  // this per-call bound already being in place. Now every call's own deadline is
++                  // capped to whichever is smaller: its per-call timeout, or what's left of the
++                  // shared rolling-window burst budget -- mirrors ServerChunkCache.getChunk()'s
++                  // Math.min(perCallTimeout, remainingBudget) fix exactly.
 +                  if (net.nestworld.region.NestworldTuning.FORCELOAD_WAIT_TIMEOUT_MS > 0) {
-+                     long nestworldDeadline = System.nanoTime()
-+                           + net.nestworld.region.NestworldTuning.FORCELOAD_WAIT_TIMEOUT_MS * 1_000_000L;
++                     long nestworldCallBudgetNanos = Math.min(
++                           net.nestworld.region.NestworldTuning.FORCELOAD_WAIT_TIMEOUT_MS * 1_000_000L,
++                           nestworldForceloadCallBudgetNanos());
++                     long nestworldWaitStart = System.nanoTime();
++                     long nestworldDeadline = nestworldWaitStart + nestworldCallBudgetNanos;
 +                     p_137686_.m_81377_().m_18701_(() -> nestworldAll.isDone() || System.nanoTime() >= nestworldDeadline);
++                     nestworldForceloadBudgetRemainingNanos -= (System.nanoTime() - nestworldWaitStart);
 +                     if (!nestworldAll.isDone()) {
 +                        // The forced-chunk registration above already happened unconditionally
 +                        // before this wait started; timing out here does not undo it —

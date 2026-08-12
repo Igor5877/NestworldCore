@@ -51,17 +51,44 @@ public final class NestworldTickOwnership {
      */
     public static void assertOwnerThread(String operation, Object context) {
         Thread current = Thread.currentThread();
+        // Gemini-reviewed 2026-08-11 (false-positive analysis, see project memory
+        // leveticks-nonfreerunning-falsepositive): a non-free-running RegionThread's
+        // scheduleTick() calls are safe by construction. RegionThreadPool.runWorkRound
+        // fully joins (CountDownLatch) every such thread's dispatched work -- including
+        // any scheduleTick() calls made during it -- before the main thread can advance
+        // to the next tick phase, so these calls can never overlap LevelTicks.tick()'s
+        // own unsynchronized iteration on the main thread, even though the calling
+        // Thread object differs from the captured owner. Free-running regions are the
+        // one case that genuinely can race (self-paced, never latch-joined) -- already
+        // routed around this entirely via the scheduleTick mailbox (see
+        // nestworldIsFreeRunningRegionThread), so they never reach here at all.
+        if (current instanceof RegionThread rt && !rt.getRegion().isFreeRunning()) {
+            return;
+        }
         Thread expected = ownerThread;
         if (expected == null) {
             ownerThread = current;
             return;
         }
         if (expected != current) {
+            // Diagnostic-only enrichment (no behavior change): region.getId() is globally
+            // unique and monotonically increasing across every split/merge (grid.nextId()
+            // never reuses an id), so it doubles as a de-facto epoch -- lets a future
+            // occurrence be correlated against exactly which region instance made the call,
+            // whether it was free-running, and how far its own local tick had drifted from
+            // the server tick this violation was logged against. See project memory:
+            // region-split-scheduletick-race.md for why this was added instead of a fix.
+            String callerRegionInfo = "n/a";
+            if (current instanceof RegionThread rt) {
+                WorldRegion r = rt.getRegion();
+                callerRegionInfo = String.format("region=%d isFreeRunning=%b localTick=%d",
+                        r.getId(), r.isFreeRunning(), r.getLocalTickCount());
+            }
             String message = String.format(
                     "LevelTicks OWNERSHIP VIOLATION: operation=%s context=%s thread='%s' (id=%d) "
-                            + "expectedOwnerThread='%s' (id=%d) lastKnownServerTick=%d",
+                            + "expectedOwnerThread='%s' (id=%d) lastKnownServerTick=%d callerRegion=[%s]",
                     operation, context, current.getName(), current.getId(),
-                    expected.getName(), expected.getId(), lastKnownServerTick);
+                    expected.getName(), expected.getId(), lastKnownServerTick, callerRegionInfo);
             RuntimeException violation = new RuntimeException(message);
             LOGGER.error(message, violation);
             throw violation;

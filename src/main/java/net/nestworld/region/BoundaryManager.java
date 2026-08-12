@@ -55,19 +55,50 @@ public class BoundaryManager {
      * snapshot region threads already use for chunk reads — no new scan mechanism
      * introduced), grouping ghost-zone chunks' block entities by owning region.
      */
+    // NestWorld DIAG 2026-08-12: instrumentation added while investigating whether this method
+    // is the same "unconditional per-tick O(n) scan with real per-element cost" bug class found
+    // 3x already this session (see project memory syncghostzones-unbounded-scan-investigation).
+    // Splits into: outer-loop chunk count (nestworldGhostChunksScanned), border-band chunks that
+    // actually needed NBT work (nestworldGhostChunksSerialized), and total NBT-serialization time
+    // specifically (nestworldGhostNbtNanos) separate from the outer scan's own overhead.
+    private long nestworldGhostTotalNanos = 0;
+    private long nestworldGhostNbtNanos = 0;
+    private long nestworldGhostMaxNanos = 0;
+    private int nestworldGhostChunksScanned = 0;
+    private int nestworldGhostChunksSerialized = 0;
+    private int nestworldGhostBlockEntitiesSerialized = 0;
+    private long nestworldGhostCalls = 0;
+
+    public String nestworldGhostZoneStats() {
+        return String.format(
+                "calls=%,d avg=%.3fms max=%.3fms nbt_avg=%.3fms last_scanned=%,d last_serialized_chunks=%,d last_serialized_bes=%,d",
+                nestworldGhostCalls,
+                nestworldGhostCalls == 0 ? 0.0 : (nestworldGhostTotalNanos / 1e6) / nestworldGhostCalls,
+                nestworldGhostMaxNanos / 1e6,
+                nestworldGhostCalls == 0 ? 0.0 : (nestworldGhostNbtNanos / 1e6) / nestworldGhostCalls,
+                nestworldGhostChunksScanned, nestworldGhostChunksSerialized, nestworldGhostBlockEntitiesSerialized);
+    }
+
     public void syncGhostZones() {
+        long nestworldStart = System.nanoTime();
+        long nestworldNbtNanos = 0;
+        int nestworldScanned = 0, nestworldSerializedChunks = 0, nestworldSerializedBes = 0;
         java.util.Map<WorldRegion, java.util.Map<Long, net.minecraft.nbt.CompoundTag>> perRegion =
                 new java.util.IdentityHashMap<>();
         for (LevelChunk chunk : level.getChunkSource().nestworldLoadedFull.values()) {
+            nestworldScanned++;
             if (chunk.getBlockEntities().isEmpty()) continue;
             net.minecraft.world.level.ChunkPos pos = chunk.getPos();
             WorldRegion owner = grid.getRegionForChunk(pos.x, pos.z);
             if (owner == null || !withinGhostDepth(owner, pos.x, pos.z)) continue;
+            nestworldSerializedChunks++;
             java.util.Map<Long, net.minecraft.nbt.CompoundTag> snapshot =
                     perRegion.computeIfAbsent(owner, r -> new java.util.HashMap<>());
             for (java.util.Map.Entry<BlockPos, BlockEntity> e : chunk.getBlockEntities().entrySet()) {
+                long nestworldNbtStart = System.nanoTime();
                 try {
                     snapshot.put(e.getKey().asLong(), e.getValue().saveWithFullMetadata());
+                    nestworldSerializedBes++;
                 } catch (Throwable t) {
                     // A misbehaving mod's BE serialization must not break every other
                     // region's ghost-zone reads this tick — skip just this one entry.
@@ -80,6 +111,8 @@ public class BoundaryManager {
                     if (prev != null) snapshot.put(e.getKey().asLong(), prev);
                     LOGGER.warn("Ghost-zone snapshot: failed to save block entity at {}: {}",
                             e.getKey(), t.toString());
+                } finally {
+                    nestworldNbtNanos += System.nanoTime() - nestworldNbtStart;
                 }
             }
         }
@@ -87,6 +120,14 @@ public class BoundaryManager {
             region.nestworldPublishGhostSnapshot(
                     perRegion.getOrDefault(region, java.util.Map.of()));
         }
+        long nestworldElapsed = System.nanoTime() - nestworldStart;
+        nestworldGhostCalls++;
+        nestworldGhostTotalNanos += nestworldElapsed;
+        nestworldGhostNbtNanos += nestworldNbtNanos;
+        if (nestworldElapsed > nestworldGhostMaxNanos) nestworldGhostMaxNanos = nestworldElapsed;
+        nestworldGhostChunksScanned = nestworldScanned;
+        nestworldGhostChunksSerialized = nestworldSerializedChunks;
+        nestworldGhostBlockEntitiesSerialized = nestworldSerializedBes;
     }
 
     /**
