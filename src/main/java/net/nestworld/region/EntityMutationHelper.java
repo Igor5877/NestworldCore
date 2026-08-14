@@ -31,7 +31,7 @@ public final class EntityMutationHelper {
         if (owner == null || owner == selfRegion) {
             return false;
         }
-        owner.nestworldPostMessage(RegionMessage.entityMutate(selfRegion, owner,
+        selfRegion.nestworldSendOrQueue(owner, RegionMessage.entityMutate(selfRegion, owner,
                 self.level().getServer().getTickCount(),
                 new RegionMessage.EntityMutate(target.getUUID(), op)));
         return true;

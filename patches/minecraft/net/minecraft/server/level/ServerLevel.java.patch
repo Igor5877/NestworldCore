@@ -76,7 +76,7 @@
     }
  
     /** @deprecated */
-@@ -265,8 +_,20 @@
+@@ -265,8 +_,26 @@
        return this.f_214997_;
     }
  
@@ -90,6 +90,12 @@
 +   private static final int NESTWORLD_SUBPHASE_LOG_INTERVAL = 200;
 +   private static final long[] nestworldSubphaseNanos = new long[5];
 +   private static int nestworldSubphaseTicks = 0;
++   // Unlike nestworldSubphaseNanos (200-tick rolling average, resets on log), this holds
++   // THIS tick's own 5 sub-phase deltas, overwritten every tick -- lets a single-tick spike
++   // (NestworldRegionSystem's spike log, tick_wall > threshold) attribute itself down to
++   // which vanilla sub-phase actually caused it, instead of a spike being invisible inside
++   // a 200-tick average that also contains 199 normal ticks.
++   public static final long[] nestworldLastSubphaseNanos = new long[5];
 +
     public void m_8793_(BooleanSupplier p_8794_) {
        ProfilerFiller profilerfiller = this.m_46473_();
@@ -165,7 +171,7 @@
                       profilerfiller.m_7238_();
                    }
                 }
-@@ -346,10 +_,38 @@
+@@ -346,10 +_,43 @@
           profilerfiller.m_7238_();
           this.m_46463_();
        }
@@ -186,6 +192,11 @@
 +      nestworldSubphaseNanos[2] += nestworldTs3 - nestworldTs2; // blockEvents
 +      nestworldSubphaseNanos[3] += nestworldTs4 - nestworldTs3; // entities loop (non-overworld) + tickBlockEntities
 +      nestworldSubphaseNanos[4] += nestworldTs5 - nestworldTs4; // entityManagement
++      nestworldLastSubphaseNanos[0] = nestworldTs1 - nestworldTs0;
++      nestworldLastSubphaseNanos[1] = nestworldTs2 - nestworldTs1;
++      nestworldLastSubphaseNanos[2] = nestworldTs3 - nestworldTs2;
++      nestworldLastSubphaseNanos[3] = nestworldTs4 - nestworldTs3;
++      nestworldLastSubphaseNanos[4] = nestworldTs5 - nestworldTs4;
 +      if (++nestworldSubphaseTicks >= NESTWORLD_SUBPHASE_LOG_INTERVAL) {
 +         if (NESTWORLD_SUBPHASE_LOG) {
 +            org.slf4j.LoggerFactory.getLogger("NestWorld/VanillaSubphase").info(

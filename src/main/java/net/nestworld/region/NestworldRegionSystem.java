@@ -478,6 +478,14 @@ public class NestworldRegionSystem {
     private static final int TIMING_LOG_INTERVAL = 200;
     private final long[] phaseNanos = new long[6];
     private int timedTicks = 0;
+    // Cumulative-since-boot mirror of the above (never reset), for live on-demand reading
+    // via /nestworld tickphases -- the windowed phaseNanos[]/timedTicks above only ever
+    // reach players through the every-200-tick LOG line, gated behind TIMING_LOG. Added
+    // 2026-08-12 to finally sub-attribute the tick-correlation telemetry's "outside_pollTask"
+    // residual (ghostzones/splitmerge/entityXfer/vanilla-tick, previously only a single
+    // undifferentiated number -- see project memory).
+    private final long[] phaseNanosCumulative = new long[6];
+    private long timedTicksCumulative = 0;
 
     // Self-test driven by env var NESTWORLD_AUTOSPLIT=<tick>: forces a split at
     // that tick and a merge back 600 ticks later, exercising the full lifecycle.
@@ -655,6 +663,13 @@ public class NestworldRegionSystem {
         phaseNanos[3] += t4 - t3;
         phaseNanos[4] += t5 - t4;
         phaseNanos[5] += t6 - t5;
+        phaseNanosCumulative[0] += t1 - t0;
+        phaseNanosCumulative[1] += t2 - t1;
+        phaseNanosCumulative[2] += t3 - t2;
+        phaseNanosCumulative[3] += t4 - t3;
+        phaseNanosCumulative[4] += t5 - t4;
+        phaseNanosCumulative[5] += t6 - t5;
+        timedTicksCumulative++;
         if (++timedTicks >= TIMING_LOG_INTERVAL) {
             if (TIMING_LOG) {
                 LOGGER.info("Tick phases avg ms over {} ticks: vanilla={} signals={} entityXfer={} regionPool={} ghostZones={} splitMerge={}",
@@ -690,6 +705,75 @@ public class NestworldRegionSystem {
         long nestworldOutsidePollTask = nestworldTickWallNanos - nestworldDispatchTotal - nestworldWaitTotal;
         nestworldCorrelation.record(nestworldTickWallNanos, nestworldPollTotal, nestworldRegionMaxTotal,
                 nestworldLatchWaitOnly, nestworldOutsidePollTask);
+
+        // Spike log (NestworldTuning.SPIKE_LOG_THRESHOLD_NANOS): index WHEN + which phase
+        // dominated, for correlating against the continuous spark profile SparkBridge is
+        // already recording -- see that constant's javadoc. Cheap comparison on the
+        // already-computed tick_wall; the logging/allocation below only runs on an actual
+        // spike, never on the hot path otherwise.
+        if (NestworldTuning.SPIKE_LOG_THRESHOLD_NANOS > 0
+                && nestworldTickWallNanos >= NestworldTuning.SPIKE_LOG_THRESHOLD_NANOS) {
+            nestworldLogSpike(nestworldTickWallNanos, t0, t1, t2, t3, t4, t5, t6);
+        }
+    }
+
+    private static final String[] NESTWORLD_PHASE_NAMES =
+            {"vanilla(+3-pool-phases)", "signals", "entityXfer", "regionPool(entity)", "ghostZones+tracker", "splitMerge"};
+
+    /** Appends one line to {@code spark-spikes.txt} (same append-only convention as
+     *  {@code spark-history.txt}) and logs a WARN: timestamp, tick_wall ms, and the
+     *  dominant phase by cost -- so a spike found live in chat/log can be matched to the
+     *  right moment in the continuous spark profile without guessing. */
+    private void nestworldLogSpike(long tickWallNanos, long t0, long t1, long t2, long t3, long t4, long t5, long t6) {
+        long[] phaseNs = {t1 - t0, t2 - t1, t3 - t2, t4 - t3, t5 - t4, t6 - t5};
+        int dominant = 0;
+        for (int i = 1; i < phaseNs.length; i++) if (phaseNs[i] > phaseNs[dominant]) dominant = i;
+        double tickWallMs = tickWallNanos / 1e6;
+        double dominantMs = phaseNs[dominant] / 1e6;
+        double dominantPct = tickWallMs > 0 ? dominantMs / tickWallMs * 100.0 : 0.0;
+        String stamp = java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"));
+        String line = String.format("%s  tick_wall=%.1fms  dominant=%s(%.1fms,%.0f%%)  regions=%d",
+                stamp, tickWallMs, NESTWORLD_PHASE_NAMES[dominant], dominantMs, dominantPct,
+                grid.getAllRegions().size());
+        // Drill into ServerLevel's own THIS-TICK vanilla sub-phase snapshot when "vanilla"
+        // is the dominant phase -- otherwise "dominant=vanilla" alone doesn't say whether
+        // it was e.g. chunkSource (autosave/chunk I/O/gen) vs entityManagement vs blockEvents,
+        // and those have completely different fixes. See ServerLevel.nestworldLastSubphaseNanos.
+        if (dominant == 0) {
+            long[] sub = net.minecraft.server.level.ServerLevel.nestworldLastSubphaseNanos;
+            line += String.format("  [preChunkSource=%.1fms chunkSource=%.1fms blockEvents=%.1fms entitiesAndBE=%.1fms entityMgmt=%.1fms]",
+                    sub[0] / 1e6, sub[1] / 1e6, sub[2] / 1e6, sub[3] / 1e6, sub[4] / 1e6);
+        }
+        LOGGER.warn("NestWorld tick spike: {}", line);
+        try {
+            java.nio.file.Files.writeString(java.nio.file.Path.of("spark-spikes.txt"),
+                    line + System.lineSeparator(),
+                    java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        } catch (Throwable t) {
+            LOGGER.warn("spike log: failed to write spark-spikes.txt", t);
+        }
+    }
+
+    /** Cumulative-since-boot breakdown of the 6 sequential tick phases (vanilla/signals/
+     *  entityXfer/regionPool/ghostZones/splitMerge) -- sub-attributes the tick-correlation
+     *  telemetry's undifferentiated "outside_pollTask" residual. Zero behaviour change,
+     *  same discipline as every other /nestworld read-only stat command. */
+    public String nestworldTickPhaseReport() {
+        if (timedTicksCumulative == 0) return "NW tick phases: no ticks recorded yet";
+        double n = timedTicksCumulative;
+        double totalMs = 0;
+        for (long v : phaseNanosCumulative) totalMs += v / 1e6;
+        String[] names = {"vanilla(+3-pool-phases)", "signals", "entityXfer", "regionPool(entity)", "ghostZones+tracker", "splitMerge"};
+        StringBuilder sb = new StringBuilder(String.format(
+                "NW tick phases (cumulative since boot, %,d ticks, avg tick_wall=%.3fms):%n",
+                timedTicksCumulative, totalMs / n));
+        for (int i = 0; i < 6; i++) {
+            double avgMs = phaseNanosCumulative[i] / 1e6 / n;
+            double pct = totalMs > 0 ? (phaseNanosCumulative[i] / 1e6) / totalMs * 100.0 : 0.0;
+            sb.append(String.format("  %-24s avg=%.4fms (%.1f%%)%n", names[i], avgMs, pct));
+        }
+        return sb.toString();
     }
 
     /** P0.1 per-tick correlation accumulator (cumulative averages + max, main-thread-only). */
@@ -740,6 +824,27 @@ public class NestworldRegionSystem {
     /** P1.0 audit (docs/P1_WORLDGEN_MAINTHREAD_DECOUPLING_SPEC.md): worldgen/main-thread boundary. */
     public String nestworldWorldgenBoundaryReport() {
         return net.nestworld.region.PollTaskAttribution.boundarySnapshot();
+    }
+
+    /**
+     * P1.2/P1.4: combined A (vanilla main-thread glue) + B (our Tier bookkeeping, already
+     * instrumented by DistanceManagerAttribution + DistanceManager's own promotion counters) + C
+     * (chunk-finalize work, confirmed already main-thread) report.
+     */
+    public String nestworldWorldgenGlueReport() {
+        net.minecraft.server.level.ServerChunkCache cache =
+                (net.minecraft.server.level.ServerChunkCache) overworld.getChunkSource();
+        net.minecraft.server.level.DistanceManager dm = cache.chunkMap.getDistanceManager();
+        StringBuilder sb = new StringBuilder();
+        sb.append(net.nestworld.region.WorldgenGlueAttribution.snapshot());
+        sb.append(String.format(
+                "  B tier_update (from DistanceManagerAttribution TIER1*/TIER2*/VALIDATOR_BATCH -- see /nestworld polltask)%n"));
+        sb.append(String.format(
+                "  B promotion (updateFutures) applied=%,d avg=%.4fms p50=%.4fms p95=%.4fms p99=%.4fms max=%.4fms%n",
+                dm.nestworldPromotionTotalApplied(), dm.nestworldPromotionAvgMs(),
+                dm.nestworldPromotionPercentileMs(0.50), dm.nestworldPromotionPercentileMs(0.95),
+                dm.nestworldPromotionPercentileMs(0.99), dm.nestworldPromotionMaxMs()));
+        return sb.toString();
     }
 
     // -----------------------------------------------------------------------
@@ -820,6 +925,27 @@ public class NestworldRegionSystem {
         return NestworldTuning.FREE_RUNNING_REGIONS_ENABLED
                 && Thread.currentThread() instanceof RegionThread rt
                 && rt.getRegion().isFreeRunning();
+    }
+
+    // NestWorld (2026-08-12): broadened the above fix after a SECOND, distinct LevelTicks
+    // race was confirmed live under real multi-player load with free-running regions OFF
+    // (crash-2026-08-12_22.20.39-server.txt -- NPE in Long2LongOpenHashMap$MapIterator
+    // during runScheduledTicksPhase's LevelTicks.tick() iteration, Thread: Server thread).
+    // The assumption above -- "a normal barrier-synced region thread never calls vanilla
+    // block/fluid tick logic outside the main thread's own latch-waited work-round" -- does
+    // NOT hold: the P2 barrier audit (docs/P2_AUDIT_RESULTS.md, Q6) separately confirmed
+    // awaitLatch() has no cancellation on its 30s timeout and the pool has no busy-check
+    // before re-dispatching, so a region thread can still be executing (and therefore still
+    // able to call scheduleTick() -> LevelTicks.schedule() directly) after the main thread
+    // has already moved on into a LATER tick's runScheduledTicksPhase() call, racing that
+    // call's LevelTicks.tick() iteration on the SAME underlying map. Under severe real-play
+    // lag (observed live: region tick costs up to 967ms, MSPT up to 231ms) this window is
+    // real, not theoretical. Fix: redirect EVERY region thread's scheduleTick() call through
+    // the same already-proven-safe deferred queue, not just free-running ones -- strictly a
+    // superset of the shipped fix, same mechanism, same "never lost, next-tick at worst"
+    // guarantee documented on nestworldEnqueueScheduleTick below.
+    public static boolean nestworldIsRegionThread() {
+        return Thread.currentThread() instanceof RegionThread;
     }
 
     /** Enqueues a LevelTicks.schedule(...) call to run on the main thread. `apply` must
@@ -1284,7 +1410,7 @@ public class NestworldRegionSystem {
             net.minecraft.core.BlockPos pos, net.minecraft.world.level.block.state.BlockState newState,
             int flags, int recursionLeft) {
         boolean nestworldWouldChange = !overworld.getBlockState(pos).equals(newState);
-        destination.nestworldPostMessage(RegionMessage.blockWrite(source, destination, server.getTickCount(),
+        source.nestworldSendOrQueue(destination, RegionMessage.blockWrite(source, destination, server.getTickCount(),
                 new RegionMessage.BlockWrite(pos.immutable(), newState, flags, recursionLeft)));
         return nestworldWouldChange;
     }

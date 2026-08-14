@@ -39,7 +39,8 @@ public final class NestworldCommand {
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("nestworld")
                 .requires(src -> src.hasPermission(2))
-                .then(Commands.literal("status").executes(ctx -> status(ctx.getSource())))
+                .then(Commands.literal("status").executes(ctx -> status(ctx.getSource(), false))
+                        .then(Commands.literal("full").executes(ctx -> status(ctx.getSource(), true))))
                 .then(Commands.literal("lag").executes(ctx -> lag(ctx.getSource())))
                 .then(Commands.literal("borders").executes(ctx -> toggleBorders(ctx.getSource())))
                 .then(Commands.literal("split")
@@ -88,8 +89,13 @@ public final class NestworldCommand {
                 .then(Commands.literal("tickets").executes(ctx -> ticketDistribution(ctx.getSource())))
                 .then(Commands.literal("ghostzones").executes(ctx -> ghostZoneStats(ctx.getSource())))
                 .then(Commands.literal("regionpool").executes(ctx -> regionPoolStats(ctx.getSource())))
+                .then(Commands.literal("regionslow").executes(ctx -> regionSlowStats(ctx.getSource())))
                 .then(Commands.literal("polltask").executes(ctx -> pollTaskStats(ctx.getSource())))
                 .then(Commands.literal("worldgenboundary").executes(ctx -> worldgenBoundaryStats(ctx.getSource())))
+                .then(Commands.literal("worldgenglue").executes(ctx -> worldgenGlueStats(ctx.getSource())))
+                .then(Commands.literal("featurefails").executes(ctx -> featureFails(ctx.getSource())))
+                .then(Commands.literal("tickphases").executes(ctx -> tickPhases(ctx.getSource())))
+                .then(Commands.literal("leveticksownership").executes(ctx -> levelTicksOwnership(ctx.getSource())))
                 .then(Commands.literal("setgenconcurrency")
                         .then(Commands.argument("n", IntegerArgumentType.integer(0))
                                 .executes(ctx -> setGenConcurrency(ctx.getSource(),
@@ -281,8 +287,23 @@ public final class NestworldCommand {
         }
         boolean newState = !region.isFreeRunning();
         region.nestworldSetFreeRunning(newState);
+        String warning = "";
+        if (newState) {
+            int cap = Math.max(0, Runtime.getRuntime().availableProcessors()
+                    - NestworldTuning.FREE_RUNNING_RESERVED_CORES);
+            long freeRunningNow = sys.getGrid().getAllRegions().stream()
+                    .filter(WorldRegion::isFreeRunning).count();
+            if (freeRunningNow > cap) {
+                warning = " -- WARNING: " + freeRunningNow + " free-running region(s) now active, "
+                        + "above the advisory safe cap of " + cap + " for this box's "
+                        + Runtime.getRuntime().availableProcessors() + " visible core(s) "
+                        + "(2026-08-13 scaling test: free-running oversubscribes and LOSES to the "
+                        + "barrier model on constrained CPU -- fine on 8+ cores, not recommended here)";
+            }
+        }
+        final String warningMsg = warning;
         src.sendSuccess(() -> Component.literal(
-                "Region #" + id + " free-running: " + (newState ? "ON" : "OFF")), true);
+                "Region #" + id + " free-running: " + (newState ? "ON" : "OFF") + warningMsg), true);
         return 1;
     }
 
@@ -387,7 +408,15 @@ public final class NestworldCommand {
         return on ? 1 : 0;
     }
 
-    private static int status(CommandSourceStack src) {
+    /** NestWorld (2026-08-13, in-game readability feedback): {@code /nestworld status} used
+     *  to dump every active region unconditionally -- unreadable in the in-game chat overlay
+     *  once past ~15-20 regions (a common count under real multi-player load). Default is now
+     *  a compact view: header + the top {@link #STATUS_COMPACT_TOP_N} regions by cost, plus a
+     *  one-line "N more" trailer. {@code /nestworld status full} keeps the old unconditional
+     *  per-region dump for when you actually need everything (e.g. scripted polling). */
+    private static final int STATUS_COMPACT_TOP_N = 5;
+
+    private static int status(CommandSourceStack src, boolean full) {
         if (!NestworldRegionSystem.isInitialised()) {
             src.sendFailure(Component.literal("NestWorld region system is not active"));
             return 0;
@@ -402,7 +431,15 @@ public final class NestworldCommand {
                 "NestWorld: %d active region(s), server %.1f ms/tick (%.1f TPS)",
                 regions.size(), serverMspt, Math.min(20.0, 1000.0 / Math.max(serverMspt, 0.001)))), false);
         BlockTickHeat heat = sys.getBlockTickHeat();
-        for (WorldRegion r : regions) {
+        var shown = regions;
+        int hidden = 0;
+        if (!full && regions.size() > STATUS_COMPACT_TOP_N) {
+            shown = new java.util.ArrayList<>(regions);
+            shown.sort((a, b) -> Double.compare(b.getAvgTickMs(), a.getAvgTickMs()));
+            hidden = shown.size() - STATUS_COMPACT_TOP_N;
+            shown = shown.subList(0, STATUS_COMPACT_TOP_N);
+        }
+        for (WorldRegion r : shown) {
             RegionThread thread = r.owningThread;
             int deferred = thread != null ? thread.getLastDeferredCount() : 0;
             int workDeferred = thread != null ? thread.getLastWorkDeferred() : 0;
@@ -418,13 +455,20 @@ public final class NestworldCommand {
             // hit its time budget) is only expected under a genuine flood; 0 the rest of
             // the time, so shown only when non-zero instead of every tick.
             int mailboxDepth = r.nestworldMailboxSize();
+            // Stage 5.3 v3 Fix 3 (docs/LOCAL_TICK_STAGE4.md, "backpressure without message
+            // loss"): messages THIS region wanted to send but held back at its own side
+            // because the destination was over MAILBOX_BACKPRESSURE_THRESHOLD — 0 the
+            // overwhelming rest of the time, same "shown only when non-zero" convention
+            // as mailbox= above; a nonzero pending= is the live signal that backpressure
+            // is actively engaged, not just designed-for.
+            int pendingDepth = r.nestworldOutboundPendingSize();
             // Step 3 (docs/LOCAL_TICK_STAGE4.md): a free-running region's localTickCount
             // diverging from server.tickCount is expected and exactly what to watch —
             // shown only for regions actually toggled free-running, zero-cost otherwise.
             boolean freeRunning = r.isFreeRunning();
             long tickDelta = freeRunning ? r.getLocalTickCount() - src.getServer().getTickCount() : 0;
             src.sendSuccess(() -> Component.literal(String.format(
-                    "  #%d chunks(%d,%d)-(%d,%d) cost=%.1fms%s entities=%d%s%s%s%s%s",
+                    "  #%d chunks(%d,%d)-(%d,%d) cost=%.1fms%s entities=%d%s%s%s%s%s%s",
                     r.getId(), r.getMinChunkX(), r.getMinChunkZ(),
                     r.getMaxChunkX(), r.getMaxChunkZ(),
                     avgMs, showP95 ? String.format(" p95=%.1fms", p95Ms) : "",
@@ -432,10 +476,17 @@ public final class NestworldCommand {
                     deferred > 0 ? " deferred=" + deferred : "",
                     workDeferred > 0 ? " workDeferred=" + workDeferred : "",
                     mailboxDepth > 0 ? " mailbox=" + mailboxDepth : "",
+                    pendingDepth > 0 ? " pending=" + pendingDepth : "",
                     regionHeat >= 1.0
                             ? String.format(" heat=%.0f[%s]", regionHeat, heat.hotspotSummary(r, 3))
                             : "",
-                    freeRunning ? String.format(" FREE-RUNNING localTick=%d (%+d)", r.getLocalTickCount(), tickDelta) : "")), false);
+                    freeRunning ? String.format(" FREE-RUNNING%s localTick=%d (%+d)",
+                            r.autoFreeRunning ? "(auto)" : "", r.getLocalTickCount(), tickDelta) : "")), false);
+        }
+        if (hidden > 0) {
+            int hiddenFinal = hidden;
+            src.sendSuccess(() -> Component.literal(String.format(
+                    "  ... and %,d more region(s) (sorted by cost) -- /nestworld status full for all", hiddenFinal)), false);
         }
         return regions.size();
     }
@@ -680,6 +731,17 @@ public final class NestworldCommand {
     }
 
     /**
+     * P2 audit (docs/P2_REGIONTHREADPOOL_BARRIER_AUDIT.md) Q3/Q4: per-region-id "how often is
+     * THIS region the slowest in its round" ranking. Read-only, no behavior change.
+     */
+    private static int regionSlowStats(CommandSourceStack src) {
+        net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
+        String result = sys.getPool().nestworldRegionSlowTelemetry();
+        src.sendSuccess(() -> Component.literal("NW per-region slowest-in-round ranking:\n" + result), false);
+        return 0;
+    }
+
+    /**
      * P0.1 pollTask() attribution audit (docs/P0_REGIONTHREADPOOL_REDESIGN_SPEC.md follow-up):
      * breaks down where main-thread pollTask() time actually goes, plus a per-tick correlation
      * view. Read-only, no behavior change.
@@ -699,6 +761,52 @@ public final class NestworldCommand {
         net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
         String result = sys.nestworldWorldgenBoundaryReport();
         src.sendSuccess(() -> Component.literal("NW " + result), false);
+        return 0;
+    }
+
+    /** P1.2/P1.4: exact-hook A/B/C worldgen main-thread glue attribution, read-only. */
+    private static int worldgenGlueStats(CommandSourceStack src) {
+        net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
+        String result = sys.nestworldWorldgenGlueReport();
+        src.sendSuccess(() -> Component.literal("NW " + result), false);
+        return 0;
+    }
+
+    /**
+     * Visibility for {@link NestworldTuning#RESILIENT_FEATURE_PLACEMENT}: which worldgen
+     * features/structures have been skipped (instead of crashing the server) since boot, and how
+     * many times each.
+     */
+    private static int featureFails(CommandSourceStack src) {
+        String result = FeaturePlacementResilience.summary();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 0;
+    }
+
+    /** Sub-attributes the tick-correlation telemetry's "outside_pollTask" residual into
+     *  the 6 sequential main-thread tick phases (see NestworldRegionSystem.nestworldTickPhaseReport). */
+    /** Acceptance-criterion check for the LevelTicks ownership fix: violation count must
+     *  reach exactly 0 under sustained heavy multi-region load before this race is
+     *  considered closed. Also reports MailboxAudit's sent/applied/pending/duplicates/
+     *  misrouted, the other half of the same soak-test acceptance criteria. */
+    private static int levelTicksOwnership(CommandSourceStack src) {
+        long violations = net.nestworld.region.NestworldTickOwnership.getViolationCount();
+        boolean strict = net.nestworld.region.NestworldTuning.LEVELTICKS_OWNERSHIP_STRICT;
+        String result = String.format(
+                "NW LevelTicks ownership: violations=%,d mode=%s | mailbox: %s",
+                violations, strict ? "STRICT" : "DIAGNOSTIC",
+                net.nestworld.region.MailboxAudit.summary());
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 0;
+    }
+
+    private static int tickPhases(CommandSourceStack src) {
+        if (!net.nestworld.region.NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        String result = net.nestworld.region.NestworldRegionSystem.get().nestworldTickPhaseReport();
+        src.sendSuccess(() -> Component.literal(result), false);
         return 0;
     }
 

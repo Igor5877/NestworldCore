@@ -202,6 +202,68 @@ public final class NestworldTuning {
             Integer.getInteger("nestworld.freeRunningSaveRendezvousTimeoutMs", 2000) * 1_000_000L;
 
     /**
+     * Advisory cap on simultaneously free-running regions: {@code availableProcessors() -
+     * this many} reserved for the main thread + RegionThreadPool bookkeeping. Free-running
+     * regions each self-schedule on their own thread with zero coordination between them
+     * (RegionThread.runFreeRunningTick()) -- with spare cores this is a clean win (2026-08-13
+     * scaling test Run B beat Run A at every region count), but on a small core count the
+     * uncoordinated threads oversubscribe and contend, making it a net LOSS (same session's
+     * Run D was consistently worse than Run C's barrier model at matched region counts,
+     * ghostZones+tracker alone ballooning to 29% of tick cost). Per the resulting hardware-
+     * priority decision, weak CPUs are a "don't break" floor, not a scaling target -- so this
+     * is advisory (warns in /nestworld freerun's response), not a hard refusal: an operator
+     * deliberately testing free-running behavior (as this exact scaling test did) should not
+     * be blocked by their own diagnostic tooling.
+     */
+    public static final int FREE_RUNNING_RESERVED_CORES =
+            Integer.getInteger("nestworld.freeRunningReservedCores", 2);
+
+    /**
+     * Step 5 (docs/LOCAL_TICK_STAGE4.md, "Step 5 — N free-running regions"): automatic
+     * free-running promotion/demotion policy, built on top of Step 3's manual {@code
+     * /nestworld freerun} toggle (see {@link RegionSplitManager#evaluateAutoFreeRunning}).
+     * Off by default — ships the capability without silently changing live server
+     * behavior on deploy; an operator opts in explicitly once ready to trust the policy
+     * on their hardware. Hard-capped by {@link #FREE_RUNNING_RESERVED_CORES} (unlike the
+     * manual command's advisory warning, this is a real refusal to promote past the cap)
+     * — on a weak-CPU box the cap evaluates to 0 or near it, so enabling this flag there
+     * is a safe near-no-op, matching the target-hardware-priority decision (2-4 cores is
+     * a "must not break" compatibility floor, not a scaling target this policy needs to
+     * help with). Requires {@link #FREE_RUNNING_REGIONS_ENABLED} to have any effect.
+     */
+    public static final boolean AUTO_FREE_RUNNING_ENABLED =
+            Boolean.parseBoolean(System.getProperty("nestworld.autoFreeRunning", "false"));
+
+    /**
+     * Stage 5.3 v3, Fix 3 (docs/LOCAL_TICK_STAGE4.md, "backpressure without message
+     * loss"): the destination-mailbox depth ({@link WorldRegion#nestworldMailboxDepthFast})
+     * above which a SENDER holds new messages to that destination at its own side instead
+     * of posting (see {@link WorldRegion#nestworldSendOrQueue}) — reopened 2026-08-14 after
+     * Step 5 (many simultaneous uncoordinated free-running regions) produced the first-ever
+     * observed unbounded mailbox growth (43,821 -> 51,250 -> 139,541 in ~80s, crashing via
+     * ServerHangWatchdog while the main thread's drain/apply loop tried to work through it).
+     * Started at 2000 (headroom below the tens-of-thousands the original crash reached);
+     * empirical re-test under the SAME continuous-flood reproduction showed 2000 was still
+     * high enough to let a slower-building version of the same MSPT death-spiral occur
+     * (mailbox growing ~2,000/round, TPS 17.6 -> 3.4 over ~5 minutes before the crash) --
+     * tightened to 300 after that finding, alongside shrinking {@link
+     * WorldRegion#nestworldDrainMailboxBudgeted}'s per-call deadline-check granularity
+     * (16 -> 4 applies) so a single region's unconditional "floor" of work before its
+     * first clock check costs less even when every one of those applies is contending on
+     * {@link WorldRegion#getChunkLock()}. High enough that ordinary bursts (a single big
+     * explosion's foreign-region batch, tonight's 13,175-block cube test) never engage it,
+     * low enough to keep the apply-side cost that caused the crash from compounding.
+     */
+    public static final int MAILBOX_BACKPRESSURE_THRESHOLD =
+            Integer.getInteger("nestworld.mailboxBackpressureThreshold", 300);
+
+    /** Max backpressure-deferred sends one region retries per own local tick (same
+     *  budgeted-work-slice idiom as every other per-tick cap in this codebase) — bounds
+     *  the flush's own cost so it can never itself become a source of tick-budget blowout. */
+    public static final int MAILBOX_BACKPRESSURE_FLUSH_BUDGET =
+            Integer.getInteger("nestworld.mailboxBackpressureFlushBudget", 64);
+
+    /**
      * Weight of one unit of block-tick heat relative to one owned entity when
      * the split scorer scores candidate cut lines (see {@link BlockTickHeat}).
      * Block-tick heat is a decayed per-second count, so a busy redstone column
@@ -680,6 +742,51 @@ public final class NestworldTuning {
             Boolean.getBoolean("nestworld.cacheExplosionExposure");
 
     /**
+     * Resilient feature placement (default ON). Vanilla's {@code ChunkGenerator.applyBiomeDecoration}
+     * deliberately re-throws any exception from an individual feature/structure placement as a fatal
+     * {@code ReportedException}, crashing the ENTIRE server over ONE broken feature — confirmed live
+     * 2026-08-12 on ATM9: a third-party mod ({@code ars_elemental}) shipped a tree feature that tries
+     * to set a leaf-decay {@code distance} blockstate property on its own log block, which doesn't
+     * define that property. That is a mod/datapack content bug, not a NestWorld or vanilla core issue
+     * — but vanilla's fail-fast design means any such bug, anywhere in the loaded modpack, is a
+     * standing whole-server crash risk that only surfaces when worldgen happens to walk into it.
+     *
+     * <p>With this on, the offending feature/structure placement is caught, logged (once per
+     * feature key in full, then counted — see {@code /nestworld featurefails}), and skipped: that one
+     * feature doesn't get placed at that chunk, and generation continues normally for everything else
+     * (bit-identical except for the omission of the broken feature's output). Set {@code
+     * -Dnestworld.resilientFeaturePlacement=false} to restore vanilla's crash-on-error behaviour,
+     * e.g. to let a broken feature surface loudly during modpack development rather than silently
+     * degrading terrain.
+     */
+    public static final boolean RESILIENT_FEATURE_PLACEMENT =
+            Boolean.parseBoolean(System.getProperty("nestworld.resilientFeaturePlacement", "true"));
+
+    /**
+     * STRICT vs DIAGNOSTIC mode for {@link NestworldTickOwnership} (default DIAGNOSTIC =
+     * false). Found live 2026-08-12: the ownership assertion had a blind spot -- it
+     * auto-exempted any non-free-running region thread from the check entirely, based on
+     * an assumption ({@code RegionThreadPool.runWorkRound} always fully joins before the
+     * next phase) that P2 barrier audit (docs/P2_AUDIT_RESULTS.md, Q6) independently
+     * disproved (no cancellation on awaitLatch()'s 30s timeout, no busy-check on
+     * re-dispatch). That blind spot is why a real LevelTicks race surfaced as a raw
+     * {@code NullPointerException} in fastutil internals instead of a clear, immediately-
+     * located ownership violation. The exemption is removed; every call now goes through
+     * the same check.
+     *
+     * <p>DIAGNOSTIC (default): a violation is logged with full NestWorld context (see
+     * {@code NestworldTickOwnership.Violation}) and counted, but does NOT throw -- safe
+     * for production, since throwing on every violation risks turning a rare race into a
+     * guaranteed crash instead of the graceful degradation vanilla's own map would
+     * otherwise usually survive. STRICT (set {@code -Dnestworld.levelTicksOwnershipStrict=true}):
+     * throws immediately on the first violation -- for validation soak tests specifically
+     * targeting this race (acceptance criterion: violations must reach exactly 0 under
+     * sustained heavy multi-region load before this is considered closed).
+     */
+    public static final boolean LEVELTICKS_OWNERSHIP_STRICT =
+            Boolean.parseBoolean(System.getProperty("nestworld.levelTicksOwnershipStrict", "false"));
+
+    /**
      * Phase 2 / Folia step — regionalise the entity tracker (EXPERIMENTAL, default off). Instead of
      * the serial 'vanilla'-phase {@code ChunkMap.tick} doing detection + broadcast for every entity
      * on the main thread, each region thread tracks the entities it OWNS during its own tick
@@ -706,6 +813,24 @@ public final class NestworldTuning {
      */
     public static final boolean AUTO_SPARK =
             Boolean.parseBoolean(System.getProperty("nestworld.autoSpark", "true"));
+
+    /**
+     * Spike log threshold, in ms: {@link NestworldRegionSystem} already measures a full
+     * per-phase breakdown (vanilla/signals/entityXfer/regionPool/ghostZones/splitMerge) of
+     * every single tick's wall time -- this just adds a cheap comparison against that
+     * already-computed number, and only when it's crossed does any logging/allocation
+     * happen. The continuous all-threads spark profile ({@link #AUTO_SPARK}) already
+     * captures every spike's actual sampled stack data from boot onward; this doesn't
+     * replace that -- it gives an INDEX of exactly when + which phase dominated, appended to
+     * {@code spark-spikes.txt} next to the server (same append-only pattern as
+     * {@code spark-history.txt}), so a multi-hour flamegraph doesn't need to be eyeballed
+     * blind to find the moment that matters. Default 50ms — half the 20 TPS tick budget,
+     * i.e. "this tick alone burned at least half the budget." Disable with
+     * {@code -Dnestworld.spikeLogThresholdMs=0} (a <=0 threshold disables the check
+     * entirely, never fires).
+     */
+    public static final long SPIKE_LOG_THRESHOLD_NANOS =
+            Integer.getInteger("nestworld.spikeLogThresholdMs", 50) * 1_000_000L;
 
     /**
      * Cap on how long {@code /forceload add} blocks the main thread waiting for the

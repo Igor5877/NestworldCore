@@ -367,6 +367,7 @@ public class RegionThread extends Thread {
                     applyPendingEntityImpacts();
                     applyPendingEntityPushes();
                     applyPendingEntityMutations();
+                    region.nestworldFlushOutboundPending(NestworldTuning.MAILBOX_BACKPRESSURE_FLUSH_BUDGET);
                     long e0 = System.nanoTime();
                     tickEntities();
                     entNanos += System.nanoTime() - e0;
@@ -532,7 +533,17 @@ public class RegionThread extends Thread {
             RegionMessage.EntityPush push = (RegionMessage.EntityPush) msg.payload();
             try {
                 net.minecraft.world.entity.Entity entity = level.getEntity(push.entityId());
-                if (entity != null && !entity.isRemoved() && !entity.isVehicle() && entity.isPushable()) {
+                // NestWorld (2026-08-13, found live via EntityOwnershipGuard during the
+                // LevelTicks soak test): belt-and-braces live re-check, same TOCTOU class
+                // and same fix as applyPendingEntityImpacts() above -- this message was
+                // posted to `region` as the owner at post time, but a reassignment can
+                // happen before this drain (free-running regions especially -- no barrier
+                // pause guarantees BoundaryEntityTransfer's scan ran in between). Missing
+                // here was the actual live bug: two confirmed violations, region thread
+                // calling entity.push() -> setDeltaMovement() on an entity another region
+                // now owns.
+                if (entity != null && !entity.isRemoved() && !entity.isVehicle() && entity.isPushable()
+                        && EntityOwnershipRecheck.stillOwns(region, push.entityId())) {
                     entity.push(push.dx(), push.dy(), push.dz());
                 }
             } catch (Throwable t) {

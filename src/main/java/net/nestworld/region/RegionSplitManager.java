@@ -227,7 +227,122 @@ public class RegionSplitManager {
         // Drop candidates that are no longer active leaves (already merged/split)
         mergeCandidates.retainAll(active);
 
+        evaluateAutoFreeRunning(active);
+
         applyPending();
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 5 (docs/LOCAL_TICK_STAGE4.md, "Step 5 — N free-running regions"):
+    // automatic free-running promotion/demotion, built on Step 3's manual
+    // /nestworld freerun toggle. Off by default (NestworldTuning.AUTO_FREE_RUNNING_ENABLED).
+    // Only ever promotes/demotes regions THIS policy itself promoted
+    // (WorldRegion.autoFreeRunning) -- never touches a manually-toggled region, so it
+    // can't fight or silently undo an operator's explicit choice.
+    //
+    // Hard-capped by availableProcessors() - FREE_RUNNING_RESERVED_CORES (2026-08-13
+    // scaling test: free-running is a clean win with spare cores, a net LOSS when
+    // uncoordinated free-running threads oversubscribe a small core count -- see
+    // project memory target-hardware-priority-tiers.md). On a weak-CPU box this
+    // evaluates the cap to 0 (or near it), so this policy safely promotes little/nothing
+    // there -- matches the "must not break, needn't scale" floor for that tier.
+    // -----------------------------------------------------------------------
+
+    private static final int FREE_RUN_PROMOTE_CHECKS_REQUIRED =
+            Integer.getInteger("nestworld.freeRunPromoteChecks", 5);   // ~5s sustained top-K busy
+    private static final int FREE_RUN_DEMOTE_IDLE_CHECKS_REQUIRED =
+            Integer.getInteger("nestworld.freeRunDemoteIdleChecks", 5); // ~5s idle/over-cap -> demote
+    private static final double FREE_RUN_DEMOTE_MS_THRESHOLD =
+            Double.parseDouble(System.getProperty("nestworld.freeRunDemoteMs", "2.0"));
+    private static final int FREE_RUN_DEMOTE_QUIET_CHECKS_REQUIRED =
+            Integer.getInteger("nestworld.freeRunDemoteQuietChecks", 20); // ~20s sustained low cost
+
+    /**
+     * Demotes first (idle or over the current cap, then sustained-quiet), so a
+     * shrinking cap or a now-idle region frees headroom THIS SAME evaluation before
+     * promotion considers anyone else for it. Promotes the busiest currently-barrier
+     * regions first (biggest barrier-wait contributors — same "hottest first" idiom
+     * {@link #onTick}'s fill-cores split logic already uses above), up to whatever
+     * headroom remains under the cap. No structural mutation here (unlike split/merge,
+     * toggling free-running is just a volatile flag flip + a thread wake — see {@link
+     * WorldRegion#nestworldSetFreeRunning}), so this runs directly, not via {@link
+     * #applyPending()}.
+     */
+    private void evaluateAutoFreeRunning(List<WorldRegion> active) {
+        if (!NestworldTuning.FREE_RUNNING_REGIONS_ENABLED || !NestworldTuning.AUTO_FREE_RUNNING_ENABLED) {
+            return;
+        }
+
+        int cap = Math.max(0, Runtime.getRuntime().availableProcessors()
+                - NestworldTuning.FREE_RUNNING_RESERVED_CORES);
+
+        long freeRunningNow = 0;
+        for (WorldRegion region : active) {
+            if (!region.isFreeRunning()) continue;
+            freeRunningNow++;
+            if (!region.autoFreeRunning) continue; // never touch a manual toggle
+
+            boolean idle = region.getOwnedEntityIds().isEmpty();
+            boolean overCap = freeRunningNow > cap;
+            boolean quiet = region.getAvgTickMs() < FREE_RUN_DEMOTE_MS_THRESHOLD;
+
+            if (idle || overCap) {
+                if (++region.freeRunDemoteChecks >= FREE_RUN_DEMOTE_IDLE_CHECKS_REQUIRED) {
+                    demoteFreeRunning(region);
+                    freeRunningNow--;
+                }
+            } else if (quiet) {
+                if (++region.freeRunDemoteChecks >= FREE_RUN_DEMOTE_QUIET_CHECKS_REQUIRED) {
+                    demoteFreeRunning(region);
+                    freeRunningNow--;
+                }
+            } else {
+                region.freeRunDemoteChecks = 0;
+            }
+        }
+
+        if (cap <= 0 || freeRunningNow >= cap) return;
+
+        List<WorldRegion> candidates = new ArrayList<>();
+        for (WorldRegion region : active) {
+            if (region.isFreeRunning()) continue;
+            if (region.getOwnedEntityIds().isEmpty()) {
+                region.freeRunPromoteChecks = 0;
+                continue;
+            }
+            candidates.add(region);
+        }
+        candidates.sort((a, b) -> Double.compare(b.getAvgTickMs(), a.getAvgTickMs()));
+
+        long headroom = cap - freeRunningNow;
+        for (WorldRegion region : candidates) {
+            if (headroom <= 0) {
+                region.freeRunPromoteChecks = 0;
+                continue;
+            }
+            if (++region.freeRunPromoteChecks >= FREE_RUN_PROMOTE_CHECKS_REQUIRED) {
+                promoteFreeRunning(region);
+                headroom--;
+            }
+        }
+    }
+
+    private void promoteFreeRunning(WorldRegion region) {
+        region.autoFreeRunning = true;
+        region.freeRunPromoteChecks = 0;
+        region.freeRunDemoteChecks = 0;
+        region.nestworldSetFreeRunning(true);
+        LOGGER.info("Auto-promoted {} to free-running (cost {} ms)",
+                region, String.format("%.1f", region.getAvgTickMs()));
+    }
+
+    private void demoteFreeRunning(WorldRegion region) {
+        region.autoFreeRunning = false;
+        region.freeRunPromoteChecks = 0;
+        region.freeRunDemoteChecks = 0;
+        region.nestworldSetFreeRunning(false);
+        LOGGER.info("Auto-demoted {} from free-running (cost {} ms)",
+                region, String.format("%.1f", region.getAvgTickMs()));
     }
 
     // -----------------------------------------------------------------------

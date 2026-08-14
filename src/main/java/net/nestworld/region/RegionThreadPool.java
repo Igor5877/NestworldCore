@@ -308,11 +308,21 @@ public class RegionThreadPool {
         stats.pollTaskNanos += pollTaskNanos;
         stats.workerCountAccum += workers.size();
         long roundMax = 0;
+        RegionThread roundSlowest = null;
         for (RegionThread t : workers) {
             long d = t.getLastDispatchNanos();
             stats.regionTickNanosSum += d;
             if (d > stats.regionTickNanosMax) stats.regionTickNanosMax = d;
-            if (d > roundMax) roundMax = d;
+            if (d > roundMax) { roundMax = d; roundSlowest = t; }
+
+            RegionSlowStats rs = nestworldRegionSlowStats.computeIfAbsent(
+                    t.region.getId(), k -> new RegionSlowStats());
+            rs.tickNanosSum += d;
+            rs.tickCount++;
+            if (d > rs.tickNanosMax) rs.tickNanosMax = d;
+        }
+        if (roundSlowest != null) {
+            nestworldRegionSlowStats.get(roundSlowest.region.getId()).timesSlowestInRound++;
         }
         if (timedOut) {
             stats.timeoutCount++;
@@ -329,6 +339,37 @@ public class RegionThreadPool {
         nestworldTickWaitNanos += waitNanos;
         nestworldTickPollNanos += pollTaskNanos;
         nestworldTickRegionMaxNanos += roundMax;
+    }
+
+    // P2 audit (docs/P2_REGIONTHREADPOOL_BARRIER_AUDIT.md), Q3/Q4: per-region-id "how often is
+    // THIS region the slowest in its round, and what's its own avg/max tick time" -- the existing
+    // PhaseStats above is aggregate across all regions, can't answer "which region." Diagnostic
+    // only, zero behavior change -- same discipline as the rest of this file's telemetry.
+    static final class RegionSlowStats {
+        long tickNanosSum = 0;
+        long tickNanosMax = 0;
+        long tickCount = 0;
+        long timesSlowestInRound = 0;
+    }
+    private final java.util.Map<Integer, RegionSlowStats> nestworldRegionSlowStats =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Read-only snapshot for /nestworld regionslow -- see NestworldCommand. */
+    public String nestworldRegionSlowTelemetry() {
+        if (nestworldRegionSlowStats.isEmpty()) return "  no rounds yet";
+        java.util.List<java.util.Map.Entry<Integer, RegionSlowStats>> entries =
+                new java.util.ArrayList<>(nestworldRegionSlowStats.entrySet());
+        entries.sort((a, b) -> Long.compare(b.getValue().timesSlowestInRound, a.getValue().timesSlowestInRound));
+        StringBuilder sb = new StringBuilder();
+        for (java.util.Map.Entry<Integer, RegionSlowStats> e : entries) {
+            RegionSlowStats s = e.getValue();
+            sb.append(String.format(
+                    "  region #%d: slowest_in_round=%,d ticks=%,d avg=%.3fms max=%.3fms%n",
+                    e.getKey(), s.timesSlowestInRound, s.tickCount,
+                    s.tickCount == 0 ? 0.0 : s.tickNanosSum / 1e6 / s.tickCount,
+                    s.tickNanosMax / 1e6));
+        }
+        return sb.toString();
     }
 
     private long nestworldTickDispatchNanos = 0;

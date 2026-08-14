@@ -445,7 +445,7 @@
 +                  // fabric-lifecycle-events-v1's own Mixin used to inject (confirmed via
 +                  // its @At(INVOKE, target=LevelChunk.setLoaded(Z)V, shift=AFTER)) --
 +                  // that Mixin targets this lambda by its vanilla compiler-assigned
-+                  // ordinal (lambda$scheduleUnload$14 / SRG m_202998_), which NestWorld's
++                  // ordinal (lambda$scheduleUnload$14 / SRG lambda$scheduleUnload$14), which NestWorld's
 +                  // own earlier-declared lambdas shift to $16, permanently breaking the
 +                  // Mixin's injection target. See NestworldFabricChunkEventsCompat and
 +                  // project memory for the full trace. No-op when that mod isn't present.
@@ -551,7 +551,22 @@
                 }
  
                 this.f_140144_.m_5511_(chunkpos, p_140362_);
-@@ -713,8 +_,27 @@
+@@ -693,6 +_,14 @@
+    private CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> m_140383_(ChunkHolder p_140384_) {
+       CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> completablefuture = p_140384_.m_140047_(ChunkStatus.f_62326_.m_62482_());
+       return completablefuture.thenApplyAsync((p_287363_) -> {
++         // NestWorld P1.2/P1.4: this whole lambda body is the "chunk finalize" bucket-C work
++         // (ProtoChunk->LevelChunk conversion, entitiesInLevel/LevelTicks registration, Forge
++         // ChunkEvent.Load) -- see project memory p1-1-protochunktofullchunk-commonpool-finding
++         // for why this already runs on the main thread (via mainThreadMailbox, NOT
++         // ForkJoinPool.commonPool() as originally misread). try/finally guarantees the timer
++         // records on every exit path (the early UNLOADED_CHUNK return included). O(1), no scan.
++         long nestworldT0 = System.nanoTime();
++         try {
+          ChunkStatus chunkstatus = ChunkLevel.m_287158_(p_140384_.m_140093_());
+          return !chunkstatus.m_62427_(ChunkStatus.f_62326_) ? ChunkHolder.f_139995_ : p_287363_.mapLeft((p_214856_) -> {
+             ChunkPos chunkpos = p_140384_.m_140092_();
+@@ -713,12 +_,34 @@
              levelchunk.m_62952_();
              if (this.f_140132_.add(chunkpos.m_45588_())) {
                 levelchunk.m_62913_(true);
@@ -579,6 +594,13 @@
              }
  
              return levelchunk;
+          });
++         } finally {
++            net.nestworld.region.WorldgenGlueAttribution.recordChunkFinalize(System.nanoTime() - nestworldT0);
++         }
+       }, (p_214951_) -> {
+          this.f_140143_.m_6937_(ChunkTaskPriorityQueueSorter.m_140624_(p_214951_, p_140384_.m_140092_().m_45588_(), p_140384_::m_140093_));
+       });
 @@ -819,6 +_,7 @@
  
              this.f_140133_.m_46473_().m_6174_("chunkSave");
@@ -974,6 +996,21 @@
     }
  
     protected PoiManager m_140424_() {
+@@ -1293,7 +_,14 @@
+    }
+ 
+    void m_287285_(ChunkPos p_287612_, FullChunkStatus p_287685_) {
++      // NestWorld P1.2/P1.4 (docs/P1_WORLDGEN_MAINTHREAD_DECOUPLING_SPEC.md): a direct, precise
++      // hook for bucket A ("справді необхідна main-thread робота") -- this is vanilla's own
++      // deliberate main-thread commit point for a chunk's full-status transition, called via
++      // thenRunAsync(..., mainThreadExecutor) elsewhere in this class. Audit-only, no behavior
++      // change; O(1) per call, no scan.
++      long nestworldT0 = System.nanoTime();
+       this.f_143031_.m_156794_(p_287612_, p_287685_);
++      net.nestworld.region.WorldgenGlueAttribution.recordMainGlue(System.nanoTime() - nestworldT0);
+    }
+ 
+    class DistanceManager extends net.minecraft.server.level.DistanceManager {
 @@ -1321,7 +_,53 @@
        final Entity f_140472_;
        private final int f_140473_;

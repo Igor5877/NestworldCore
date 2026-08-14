@@ -591,7 +591,7 @@
 +               if (!this.m_20160_() && this.m_6094_()) {
 +                  this.m_5997_(nestworldD0, 0.0D, nestworldD1);
 +               }
-+               nestworldOwner.nestworldPostMessage(net.nestworld.region.RegionMessage.entityPush(
++               nestworldRt.getRegion().nestworldSendOrQueue(nestworldOwner, net.nestworld.region.RegionMessage.entityPush(
 +                       nestworldRt.getRegion(), nestworldOwner, this.m_9236_().m_7654_().m_129921_(),
 +                       new net.nestworld.region.RegionMessage.EntityPush(
 +                               p_20971_.m_20148_(), -nestworldD0, 0.0D, -nestworldD1)));

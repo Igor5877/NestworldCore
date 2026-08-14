@@ -180,7 +180,7 @@
 +               net.nestworld.region.WorldRegion nestworldOwner = net.nestworld.region.NestworldRegionSystem.get()
 +                       .getGrid().findOwningRegion(entity.m_20148_());
 +               if (nestworldOwner != null && nestworldOwner != nestworldRt.getRegion()) {
-+                  nestworldOwner.nestworldPostMessage(net.nestworld.region.RegionMessage.entityImpact(
++                  nestworldRt.getRegion().nestworldSendOrQueue(nestworldOwner, net.nestworld.region.RegionMessage.entityImpact(
 +                          nestworldRt.getRegion(), nestworldOwner, this.f_46012_.m_7654_().m_129921_(),
 +                          new net.nestworld.region.RegionMessage.EntityImpact(this, entity.m_20148_())));
 +                  continue;
@@ -213,7 +213,7 @@
 +                     net.nestworld.region.WorldRegion nestworldOwner2 = net.nestworld.region.NestworldRegionSystem.get()
 +                             .getGrid().findOwningRegion(entity.m_20148_());
 +                     if (nestworldOwner2 != null && nestworldOwner2 != nestworldRt.getRegion()) {
-+                        nestworldOwner2.nestworldPostMessage(net.nestworld.region.RegionMessage.entityImpact(
++                        nestworldRt.getRegion().nestworldSendOrQueue(nestworldOwner2, net.nestworld.region.RegionMessage.entityImpact(
 +                                nestworldRt.getRegion(), nestworldOwner2, this.f_46012_.m_7654_().m_129921_(),
 +                                new net.nestworld.region.RegionMessage.EntityImpact(this, entity.m_20148_())));
 +                        continue;
@@ -307,7 +307,7 @@
 +         if (!nestworldForeign.isEmpty()) {
 +            long nestworldTick = this.f_46012_.m_7654_().m_129921_();
 +            for (var nestworldEntry : nestworldForeign.entrySet()) {
-+               nestworldEntry.getKey().nestworldPostMessage(net.nestworld.region.RegionMessage.explosionApply(
++               nestworldRt.getRegion().nestworldSendOrQueue(nestworldEntry.getKey(), net.nestworld.region.RegionMessage.explosionApply(
 +                       nestworldRt.getRegion(), nestworldEntry.getKey(), nestworldTick,
 +                       new NestworldExplosionBatch(this, nestworldEntry.getValue(), flag)));
 +            }

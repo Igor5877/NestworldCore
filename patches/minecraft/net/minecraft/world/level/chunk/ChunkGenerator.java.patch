@@ -1,0 +1,36 @@
+--- a/net/minecraft/world/level/chunk/ChunkGenerator.java
++++ b/net/minecraft/world/level/chunk/ChunkGenerator.java
+@@ -308,9 +_,13 @@
+                            p_223086_.m_226850_(p_223087_, p_223089_, this, worldgenrandom, m_187717_(p_223088_), chunkpos);
+                         });
+                      } catch (Exception exception) {
+-                        CrashReport crashreport1 = CrashReport.m_127521_(exception, "Feature placement");
+-                        crashreport1.m_127514_("Feature").m_128165_("Description", supplier::get);
+-                        throw new ReportedException(crashreport1);
++                        if (net.nestworld.region.NestworldTuning.RESILIENT_FEATURE_PLACEMENT) {
++                           net.nestworld.region.FeaturePlacementResilience.recordSkipped(supplier.get(), chunkpos.f_45578_, chunkpos.f_45579_, exception);
++                        } else {
++                           CrashReport crashreport1 = CrashReport.m_127521_(exception, "Feature placement");
++                           crashreport1.m_127514_("Feature").m_128165_("Description", supplier::get);
++                           throw new ReportedException(crashreport1);
++                        }
+                      }
+ 
+                      ++l;
+@@ -348,9 +_,13 @@
+                         p_223087_.m_143497_(supplier1);
+                         placedfeature.m_226377_(p_223087_, this, worldgenrandom, blockpos);
+                      } catch (Exception exception1) {
+-                        CrashReport crashreport2 = CrashReport.m_127521_(exception1, "Feature placement");
+-                        crashreport2.m_127514_("Feature").m_128165_("Description", supplier1::get);
+-                        throw new ReportedException(crashreport2);
++                        if (net.nestworld.region.NestworldTuning.RESILIENT_FEATURE_PLACEMENT) {
++                           net.nestworld.region.FeaturePlacementResilience.recordSkipped(supplier1.get(), chunkpos.f_45578_, chunkpos.f_45579_, exception1);
++                        } else {
++                           CrashReport crashreport2 = CrashReport.m_127521_(exception1, "Feature placement");
++                           crashreport2.m_127514_("Feature").m_128165_("Description", supplier1::get);
++                           throw new ReportedException(crashreport2);
++                        }
+                      }
+                   }
+                }

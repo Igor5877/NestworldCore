@@ -70,6 +70,23 @@ public class WorldRegion {
     public boolean isFreeRunning() { return freeRunning; }
 
     /**
+     * Step 5 (docs/LOCAL_TICK_STAGE4.md, "Step 5 — N free-running regions"): true only
+     * when the automatic promotion policy (RegionSplitManager.evaluateAutoFreeRunning)
+     * itself turned free-running on for this region — never set by a manual
+     * {@code /nestworld freerun} toggle. Lets automatic demotion touch only what it
+     * itself promoted, so it can never fight or silently undo an operator's explicit
+     * choice. Guarded by RegionSplitManager's own single-threaded main-thread
+     * evaluation, same as {@link #splitPressureChecks}/{@link #mergePressureChecks}.
+     */
+    volatile boolean autoFreeRunning = false;
+
+    /** Consecutive once-per-second evaluations this region has qualified for automatic
+     *  free-running promotion/demotion — see {@link #splitPressureChecks} for the same
+     *  hysteresis idiom applied to split/merge. */
+    int freeRunPromoteChecks = 0;
+    int freeRunDemoteChecks = 0;
+
+    /**
      * Only called from the main thread via the /nestworld freerun command. Wakes the
      * owning thread if it's currently blocked in its old barrier-dispatch wait — found
      * necessary live during Step 3's first test: once a region is free-running, the
@@ -244,6 +261,7 @@ public class WorldRegion {
     public void nestworldPostMessage(RegionMessage<?> message) {
         MailboxAudit.recordSent(message.auditId(), message.sourceRegion(), this, message.messageType());
         nestworldMailbox.add(message);
+        nestworldMailboxDepth.incrementAndGet();
     }
 
     /** Re-queues a message this region already accepted once (its "sent" event was
@@ -253,6 +271,7 @@ public class WorldRegion {
      *  correctly tracked as pending until it's actually applied. */
     public void nestworldRequeueMessage(RegionMessage<?> message) {
         nestworldMailbox.add(message);
+        nestworldMailboxDepth.incrementAndGet();
     }
 
     /** Drains and returns every currently-queued message of the given type, leaving
@@ -267,6 +286,7 @@ public class WorldRegion {
             if (m.messageType() == type) {
                 drained.add(m);
                 it.remove();
+                nestworldMailboxDepth.decrementAndGet();
             }
         }
         return drained;
@@ -283,19 +303,36 @@ public class WorldRegion {
      * before this loop checks the clock again. Deadline is shared across a whole
      * barrier pass (all regions, both mailbox-draining message types) by the caller,
      * so it only ever tightens — never resets — as the pass progresses.
+     *
+     * <p>Stage 5.3 v3 Fix 3 correction (2026-08-14): the caller iterates every region
+     * for both message types, and this method used to apply AT LEAST 16 messages
+     * unconditionally before its first clock check (the {@code applied & 15} check
+     * only fires AFTER 16 applies) — a fixed per-call floor that was harmless under
+     * the old barrier model (this apply was always uncontended, so 16 applies cost
+     * microseconds) but, once Step 5 made {@link
+     * NestworldRegionSystem#nestworldApplyWithCascadeGuard}'s lock acquisition
+     * genuinely contended, meant EVERY region got its own ~16-message floor of
+     * possibly-slow work regardless of the shared deadline already being blown by an
+     * earlier region in the same pass — the actual root cause of a real
+     * ServerHangWatchdog crash (mailbox growing 43,821 -> 139,541 while MSPT spiralled
+     * 42 -> 424ms across a soak). Checking the deadline HERE, before touching this
+     * region's queue at all, caps the real worst case at "one region's floor," not
+     * "region-count times the floor."
      */
     public void nestworldDrainMailboxBudgeted(RegionMessage.Type type, long deadlineNanos,
                                                java.util.function.Consumer<RegionMessage<?>> applier) {
         if (nestworldMailbox.isEmpty()) return;
+        if (System.nanoTime() >= deadlineNanos) return;
         java.util.Iterator<RegionMessage<?>> it = nestworldMailbox.iterator();
         int applied = 0;
         while (it.hasNext()) {
             RegionMessage<?> m = it.next();
             if (m.messageType() != type) continue;
             it.remove();
+            nestworldMailboxDepth.decrementAndGet();
             applier.accept(m);
             applied++;
-            if ((applied & 15) == 0 && System.nanoTime() >= deadlineNanos) break;
+            if ((applied & 3) == 0 && System.nanoTime() >= deadlineNanos) break;
         }
     }
 
@@ -305,6 +342,88 @@ public class WorldRegion {
      *  expected under a genuine flood exceeding {@link NestworldTuning#MAILBOX_DRAIN_BUDGET_NANOS}. */
     public int nestworldMailboxSize() {
         return nestworldMailbox.size();
+    }
+
+    // -----------------------------------------------------------------------
+    // Stage 5.3 v3, Fix 3 (docs/LOCAL_TICK_STAGE4.md, "backpressure without message
+    // loss"): sender-side scheduler pause. O(1) depth counter (NOT nestworldMailboxSize(),
+    // which is an O(n) queue walk -- calling that per send attempt would turn exactly the
+    // overload scenario this exists to prevent into an O(n^2) death spiral) tracked
+    // alongside every mailbox mutation, checked by every SENDER before posting. Reused by
+    // the manual sender path (nestworldSendOrQueue) as well as this region's own
+    // outbound-pending retry queue below.
+    // -----------------------------------------------------------------------
+
+    private final java.util.concurrent.atomic.AtomicInteger nestworldMailboxDepth =
+            new java.util.concurrent.atomic.AtomicInteger(0);
+
+    /** O(1) approximation of current mailbox depth for hot-path backpressure checks —
+     *  see {@link #nestworldMailboxSize()} for the exact (but O(n)) diagnostic version. */
+    public int nestworldMailboxDepthFast() {
+        return nestworldMailboxDepth.get();
+    }
+
+    /** A message this region wanted to send but couldn't yet because the destination was
+     *  over the backpressure threshold — held here (at the SENDER) instead of being lost
+     *  or forced onto the destination. Retried from {@link #nestworldFlushOutboundPending}. */
+    private record NestworldPendingSend(WorldRegion destination, RegionMessage<?> message) {}
+
+    private final java.util.Queue<NestworldPendingSend> nestworldOutboundPending =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    /** Number of this region's own outbound sends currently held back by backpressure —
+     *  0 in the overwhelmingly common case; diagnostic use only (e.g. {@code /nestworld
+     *  status}'s {@code pending=N}), same O(n) caveat as {@link #nestworldMailboxSize()}. */
+    public int nestworldOutboundPendingSize() {
+        return nestworldOutboundPending.size();
+    }
+
+    /**
+     * Stage 5.3 v3 Fix 3: the gated send path every cross-region message producer should
+     * use instead of calling {@code destination.nestworldPostMessage()} directly. Fast
+     * path (destination healthy): identical to a direct post, zero extra cost. Slow path
+     * (destination over {@link NestworldTuning#MAILBOX_BACKPRESSURE_THRESHOLD}): the
+     * message is NOT dropped and NOT forced onto the destination — it is held on THIS
+     * (the sender's) side and retried on this region's own next local tick via {@link
+     * #nestworldFlushOutboundPending}, exactly the "skip producing new outbound messages
+     * to that destination until its depth drops" design from docs/LOCAL_TICK_STAGE4.md.
+     * Safe to call from any thread (mirrors {@link #nestworldPostMessage}); the audit
+     * "sent" event is recorded exactly once here regardless of which path is taken, so a
+     * message that spends several ticks pending before actually being delivered is not
+     * double-counted when {@link #nestworldFlushOutboundPending} later hands it off via
+     * {@link #nestworldRequeueMessage}.
+     */
+    public void nestworldSendOrQueue(WorldRegion destination, RegionMessage<?> message) {
+        if (destination.nestworldMailboxDepthFast() < NestworldTuning.MAILBOX_BACKPRESSURE_THRESHOLD) {
+            destination.nestworldPostMessage(message);
+        } else {
+            MailboxAudit.recordSent(message.auditId(), message.sourceRegion(), destination, message.messageType());
+            nestworldOutboundPending.add(new NestworldPendingSend(destination, message));
+        }
+    }
+
+    /**
+     * Retries this region's own backlog of backpressure-deferred sends, up to {@code
+     * maxAttempts} entries per call (same budgeted-work-slice idiom as {@link
+     * #nestworldDrainMailboxBudgeted} and the entity round's other per-tick budgets) —
+     * called once per own local tick (both barrier and free-running) from {@link
+     * RegionThread#runOneTick}. A pending send whose destination is still over threshold
+     * is left in place (not lost, not reordered ahead of anything) and re-attempted next
+     * time this runs; one that succeeds is handed to the destination via {@link
+     * #nestworldRequeueMessage} (already-recorded "sent", so no double count).
+     */
+    public void nestworldFlushOutboundPending(int maxAttempts) {
+        if (nestworldOutboundPending.isEmpty()) return;
+        java.util.Iterator<NestworldPendingSend> it = nestworldOutboundPending.iterator();
+        int attempts = 0;
+        while (it.hasNext() && attempts < maxAttempts) {
+            NestworldPendingSend pending = it.next();
+            attempts++;
+            if (pending.destination().nestworldMailboxDepthFast() < NestworldTuning.MAILBOX_BACKPRESSURE_THRESHOLD) {
+                it.remove();
+                pending.destination().nestworldRequeueMessage(pending.message());
+            }
+        }
     }
 
     public WorldRegion(int id, int minChunkX, int minChunkZ, int maxChunkX, int maxChunkZ) {

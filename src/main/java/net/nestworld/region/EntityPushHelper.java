@@ -57,7 +57,7 @@ public final class EntityPushHelper {
             if (!self.isVehicle() && self.isPushable()) {
                 self.push(d0, 0.0D, d1);
             }
-            owner.nestworldPostMessage(RegionMessage.entityPush(selfRegion, owner,
+            selfRegion.nestworldSendOrQueue(owner, RegionMessage.entityPush(selfRegion, owner,
                     self.level().getServer().getTickCount(),
                     new RegionMessage.EntityPush(other.getUUID(), -d0, 0.0D, -d1)));
         }

@@ -1527,6 +1527,142 @@ originally recommended, or continue watching `mailbox=` in production
 under organic (non-synthetic) load for enough real ticks to decide whether
 Fix 3's backpressure mechanism is worth implementing at all.
 
+## Step 5 -- N free-running regions (automatic promotion) -- implemented, PARTIALLY validated (2026-08-14)
+
+Builds on Step 3 (manual `/nestworld freerun <id>` toggle, already implemented and
+extensively soak-tested). Automates the promotion decision: `RegionSplitManager
+.evaluateAutoFreeRunning()`, called from the same once-per-second gate as the existing
+split/merge evaluation, hard-caps simultaneously-free-running regions to
+`availableProcessors() - NestworldTuning.FREE_RUNNING_RESERVED_CORES` (same constant the
+manual command's advisory cap already uses), promotes the busiest non-free-running busy
+regions first (5 consecutive ~1s evaluations to confirm sustained load), demotes idle/
+over-cap regions fast (5 evaluations) or sustained-quiet ones slower (20 evaluations) --
+but ONLY regions it itself promoted (`WorldRegion.autoFreeRunning`), never a manually-
+toggled one. New flag `NestworldTuning.AUTO_FREE_RUNNING_ENABLED`
+(`-Dnestworld.autoFreeRunning`, default **false**) -- requires `FREE_RUNNING_REGIONS_ENABLED`
+too. Design reviewed by Gemini (gemini-2.5-flash) before implementation: confirmed sound,
+specifically verified the merge/split-vs-free-running-tick race concern is already closed
+by the existing `WorldRegion.chunkLock` write-lock (both `RegionThread.runOneTick()` and
+`RegionSplitManager.nestworldWithRegionLocks()` acquire it, serializing a region's own tick
+against any split/merge touching it) -- no new locking needed, split/merge already handles
+free-running regions safely by construction (children/merged results always start fresh,
+`freeRunning=false`).
+
+**Validation, round 1 (FAILED -- real finding, not a false alarm):** adversarial soak on
+gen-spike-repro (fresh boot, `freeRunningRegions=true autoFreeRunning=true entityGuard=true`,
+~19-29 regions, 14-18 auto-promoted) with a CONTINUOUS TNT-flood pattern (small cluster every
+~8s, no gaps, plus unbounded cow-entity growth) crashed the server via `ServerHangWatchdog`
+(60s single-tick hang) TWICE in a row -- once with no entity cleanup at all, once again after
+adding periodic entity culling (which ruled out entity count as the cause). Both times the
+hung main thread's stack was in `WorldRegion.nestworldDrainMailboxBudgeted` ->
+`NestworldRegionSystem.nestworldApplyWithCascadeGuard`, and `/nestworld status`'s `mailbox=`
+field (only shown when non-zero) was exploding across samples: 43,821 -> 51,250 -> 139,541
+in three ~40s-apart readings, right before the second crash.
+
+**Interpretation:** this directly re-opens [[Fix 3 (backpressure)]] above, which was closed
+tonight specifically because `mailbox=` never fired ONCE across an entire night of adversarial
+testing -- but every one of that night's tests used the barrier model (or a single manually-
+toggled free-running region). With Step 5 able to auto-promote MANY regions (14-18 here)
+simultaneously, each ticking on its own independent, uncoordinated schedule
+(`RegionThread.runFreeRunningTick()`, no shared pacing), a sustained explosion flood that
+crosses many of those regions' borders can apparently generate `EXPLOSION_APPLY`/
+`BLOCK_WRITE` cascade-guard messages faster than the main thread's `MAILBOX_DRAIN_BUDGET_NANOS`
+(5ms/tick, sized for the old barrier-synchronized generation rate) can drain them -- exactly
+the "backlog grows unboundedly" failure mode Fix 3's sender-side-pause design was built to
+prevent, now with real evidence it can happen, gated behind Step 5 specifically.
+
+**Validation, round 2 (PASSED):** same setup, MODERATE adversarial load (light TNT cluster
+every OTHER round, per-round entity culling, no forceload spam) -- 60 rounds / ~8 minutes
+clean: `mailbox=0` throughout, 0 `leveticksownership`/`entityguard` violations, TPS steady
+20.0, MSPT 2-4ms, auto-freerun count fluctuating healthily (12-18) as load shifted. So Step 5
+is NOT broken in general -- it holds up fine under realistic-to-heavy load; the failure mode
+specifically needs a sustained, continuous, many-region-spanning explosion flood, a genuinely
+extreme adversarial pattern.
+
+**Status:** implementation complete, Gemini-reviewed, deployed to ATM9 with
+`AUTO_FREE_RUNNING_ENABLED` left at its default (**false** -- verified not present in ATM9's
+`user_jvm_args.txt`, so this deploy is behavior-neutral, confirmed via a clean post-deploy
+restart with 0 players). **Do NOT enable `-Dnestworld.autoFreeRunning=true` in production
+until Fix 3 (backpressure) is actually implemented** -- the continuous-explosion-flood crash
+is real and reproducible, even though it needs an unusually sustained adversarial pattern to
+trigger. Task #38/Fix 3 should be reopened with this as the concrete motivating case.
+
+## Fix 3 (backpressure) -- initially closed not-implemented, reopened by Step 5, then IMPLEMENTED (2026-08-14)
+
+First closed the same night specifically because `mailbox=N` (shown on `/nestworld status`
+only when non-zero) never appeared once across a full night of adversarial load on ATM9:
+TNT/forceload soaks, the LevelTicks ownership adversarial soak, both EntityOwnershipGuard
+validation rounds, and the region-count scaling test. Reopened hours later when Step 5
+(automatic promotion of MANY simultaneously free-running, uncoordinated regions -- see
+"Step 5" section above) produced the first real observed case: a continuous adversarial
+TNT flood with 14-18 auto-promoted regions grew `mailbox=` from 43,821 to 139,541 in ~80s
+and crashed via `ServerHangWatchdog`. None of the earlier night's tests had that many
+simultaneously free-running regions, which is what actually creates the precondition this
+fix's design was built to guard against.
+
+**Implemented** the sender-side pause exactly as designed above: `WorldRegion
+.nestworldSendOrQueue(destination, message)` -- the gated send path now used at every
+region-thread-initiated cross-region message site (`Explosion`'s two entity-impact checks
+and its foreign-block-batch send, the generic block-write guard, `EntityMutationHelper`,
+`EntityPushHelper`, `LivingEntity`/`Ravager`'s direct push sites) -- checks the
+destination's mailbox depth via a new O(1) `AtomicInteger` counter (`nestworldMailboxDepth`,
+maintained alongside every post/requeue/drain -- deliberately NOT the existing O(n)
+`nestworldMailboxSize()`, which would turn the overload case this exists to prevent into an
+O(n^2) death spiral if checked on every send). Below `NestworldTuning
+.MAILBOX_BACKPRESSURE_THRESHOLD` (300): posts directly, identical cost to before. At or
+above it: the message is held at the SENDER's own `nestworldOutboundPending` queue instead
+(not dropped, not forced onto the destination) and retried from `nestworldFlushOutboundPending`
+once per this region's own local tick (both barrier and free-running paths, via
+`RegionThread.runOneTick()`) -- exactly "skip producing new outbound messages to that
+destination until its depth drops." `ENTITY_TRANSFER` (`BoundaryEntityTransfer`) was
+deliberately left on the old direct-post path: it's main-thread-orchestrated reassignment,
+not a region-thread's own send decision, and wasn't implicated in the crash.
+
+**A second, more fundamental bug found during validation, not just tuning.** The first
+implementation (threshold 2000) did NOT stop the crash -- re-running the exact failing
+reproduction still grew `mailbox=` to 351,237 and crashed. Root cause was NOT the new
+backpressure code: `nestworldDrainMailboxBudgeted`'s existing deadline check only fires
+AFTER 16 applies (`(applied & 15) == 0`), so it unconditionally applies at least 16 messages
+before ever checking the clock -- harmless under the old barrier model (this apply was
+always uncontended, so 16 applies costs microseconds) but, once Step 5 made
+`nestworldApplyWithCascadeGuard`'s lock acquisition genuinely contended, means EVERY region
+in `grid.getAllRegions()`'s loop gets its own ~16-message floor of possibly-slow work
+regardless of whether the SHARED deadline was already blown by an earlier region in the
+same pass. Fixed by checking the deadline BEFORE touching a region's queue at all, and
+tightening the per-call check granularity from 16 to 4 applies. Re-tested: the exact same
+continuous-flood reproduction survived roughly 2.5-3x longer with a much more gradual,
+proportional MSPT/TPS decline instead of an instant explosion, before still eventually
+crashing under this SPECIFIC deliberately-extreme pattern (continuous, no recovery gaps).
+
+**Validated clean under realistic load.** The MODERATE adversarial pattern (light TNT every
+other round, per-round entity culling -- the same pattern Step 5's own validation already
+characterized as "realistic-to-heavy") ran its full 20-minute soak with the combined fix:
+`mailbox=0` essentially throughout (one momentary blip to 65), 0 `leveticksownership`/
+`entityguard` violations, TPS steady 20.0, MSPT 2-4ms start to finish.
+
+**Honest status**: the combined fix (send-side backpressure + the deadline-check
+correction) is a real, measured improvement -- not a full elimination of every
+adversarial case. The MOST extreme synthetic pattern (continuous, no-gap explosion flood,
+deliberately worse than anything real gameplay produces) still eventually death-spirals,
+just far more slowly and gracefully than before. Per [[target-hardware-priority-tiers]]'s
+own framing (regression bar = "no catastrophic degradation under realistic load," not "wins
+every adversarial stress test"), this clears the bar that matters. The remaining gap's root
+cause is understood (main-thread apply-side cost, dominated by `nestworldApplyWithCascadeGuard`'s
+lock acquisition, scales with region count once locks are genuinely contended under Step 5) --
+a full structural fix would mean rate-limiting or re-architecting that apply path itself, not
+further backpressure tuning (confirmed empirically: tightening the threshold 2000 -> 300 barely
+moved the crash time). Left as a documented next step, not pursued further this session.
+
+**Deploy**: same recipe as every other pure-NestWorld-class change this session (universal
+jar rebuilt via `installerJar --rerun-tasks`, copied to both `mods/` and the matching
+`libraries/forge/<version>/` path, verified via `strings` before restart). Deployed to ATM9
+with 0 players online; `AUTO_FREE_RUNNING_ENABLED` stays at its default false there (absent
+from `user_jvm_args.txt`), so this deploy is behavior-neutral in production regardless of
+the residual extreme-case gap above. **Task #38 (Fix 3) is now implemented**, not merely
+closed-negative -- kept open as a task only in the sense that the extreme-case root cause
+above is a legitimate, documented follow-up if `-Dnestworld.autoFreeRunning=true` is ever
+enabled in production and organic play somehow reproduces a comparably extreme pattern.
+
 ## Blocker 3 (border-band under independent local time) — reconsidered, partially closed (2026-08-10, same session)
 
 User asked to keep working. Re-scoped Blocker 3 by tracing the ACTUAL

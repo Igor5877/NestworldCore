@@ -73,6 +73,65 @@
              this.m_146870_();
           }
  
+@@ -179,12 +_,37 @@
+       this.m_20334_(vec3.f_82479_ * (double)0.95F, vec3.f_82480_ + (double)(vec3.f_82480_ < (double)0.06F ? 5.0E-4F : 0.0F), vec3.f_82481_ * (double)0.95F);
+    }
+ 
++   // NestWorld (2026-08-13, found live via EntityOwnershipGuard during the LevelTicks
++   // soak test): mergeWithNeighbours() is called from this ItemEntity's OWN tick(), so
++   // `this` is always safe (guaranteed same-thread as its owning region) -- but the
++   // neighbour-scan's AABB query has no region awareness at all, and tryToMerge()/merge()
++   // mutate (shrink, and potentially discard() via setRemoved()) whichever of the two
++   // stacks is smaller -- which can be the FOREIGN neighbour, not `this`. Confirmed live:
++   // region thread calling setRemoved(DISCARDED) on an ItemEntity owned by a different
++   // region, right at a region border under heavy item-drop load (TNT debris). Same
++   // "owner applies" principle as everywhere else in this codebase, but a full mailbox-
++   // based two-entity merge protocol is unwarranted here -- skipping cross-region merge
++   // candidates entirely is a safe, low-risk fix: an item sitting exactly on a region
++   // border merges with same-region neighbours as before, just not across the border
++   // (it will still merge once it or the neighbour moves, or via a future tick after a
++   // region boundary shift) -- not a case any player is likely to ever notice.
++   private boolean nestworldSameRegionOrUnsharded(ItemEntity other) {
++      if (!(Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt)
++              || !net.nestworld.region.NestworldRegionSystem.isInitialised()
++              || this.m_9236_() != net.nestworld.region.NestworldRegionSystem.get().getOverworld()) {
++         return true;
++      }
++      net.nestworld.region.WorldRegion nestworldOwner = net.nestworld.region.NestworldRegionSystem.get()
++              .getGrid().findOwningRegion(other.m_20148_());
++      return nestworldOwner == null || nestworldOwner == nestworldRt.getRegion();
++   }
++
+    private void m_32069_() {
+       if (this.m_32070_()) {
+          for(ItemEntity itementity : this.m_9236_().m_6443_(ItemEntity.class, this.m_20191_().m_82377_(0.5D, 0.0D, 0.5D), (p_186268_) -> {
+             return p_186268_ != this && p_186268_.m_32070_();
+          })) {
+-            if (itementity.m_32070_()) {
++            if (itementity.m_32070_() && this.nestworldSameRegionOrUnsharded(itementity)) {
+                this.m_32015_(itementity);
+                if (this.m_213877_()) {
+                   break;
+@@ -201,6 +_,19 @@
+    }
+ 
+    private void m_32015_(ItemEntity p_32016_) {
++      // NestWorld (2026-08-13, follow-up validation soak found this narrower residual
++      // race): late re-check immediately before the actual mutation, same pattern as
++      // Explosion.explode()'s second ownership check right before its first mutating
++      // call. The neighbour-scan filter in mergeWithNeighbours() already checked
++      // ownership once, but a freshly-spawned entity's region assignment can settle
++      // (from "unowned" to a specific region) in the gap between that filter check and
++      // this method actually running -- validated live: 2 violations, both within the
++      // same tick as a 40-entity spawn burst, zero recurrence afterward once ownership
++      // had stabilized. Re-checking here closes that gap without needing to touch the
++      // filter's own (correct, steady-state) logic.
++      if (!this.nestworldSameRegionOrUnsharded(p_32016_)) {
++         return;
++      }
+       ItemStack itemstack = this.m_32055_();
+       ItemStack itemstack1 = p_32016_.m_32055_();
+       if (Objects.equals(this.f_265881_, p_32016_.f_265881_) && m_32026_(itemstack, itemstack1)) {
 @@ -220,6 +_,8 @@
           return false;
        } else if (p_32028_.m_41782_() ^ p_32027_.m_41782_()) {

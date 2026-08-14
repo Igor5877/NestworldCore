@@ -50,7 +50,7 @@
 +         net.nestworld.region.WorldRegion nestworldOwner = net.nestworld.region.NestworldRegionSystem.get()
 +                 .getGrid().findOwningRegion(p_33340_.m_20148_());
 +         if (nestworldOwner != null && nestworldOwner != nestworldRt.getRegion()) {
-+            nestworldOwner.nestworldPostMessage(net.nestworld.region.RegionMessage.entityPush(
++            nestworldRt.getRegion().nestworldSendOrQueue(nestworldOwner, net.nestworld.region.RegionMessage.entityPush(
 +                    nestworldRt.getRegion(), nestworldOwner, this.m_9236_().m_7654_().m_129921_(),
 +                    new net.nestworld.region.RegionMessage.EntityPush(
 +                            p_33340_.m_20148_(), nestworldDx, nestworldDy, nestworldDz)));
