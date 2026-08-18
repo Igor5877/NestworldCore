@@ -48,8 +48,12 @@ public final class EntityOwnershipRecheck {
 
     private static void recordSkip(WorldRegion region, UUID uuid) {
         long n = skipTotal.incrementAndGet();
-        WorldRegion currentOwner = NestworldRegionSystem.isInitialised()
-                ? NestworldRegionSystem.get().getGrid().findOwningRegion(uuid) : null;
+        // Stage 1a: WorldRegion now carries its own dimension key directly (region IDs restart
+        // at 0 per-dimension, so "region #N" alone is ambiguous once >1 dimension is managed) --
+        // resolve the region-system's map by that key, no Level/ServerLevel reference needed.
+        NestworldDimensionRegion dr = NestworldRegionSystem.isInitialised()
+                ? NestworldRegionSystem.get().getDimensionRegionByKey(region.getDimension()) : null;
+        WorldRegion currentOwner = dr != null ? dr.getGrid().findOwningRegion(uuid) : null;
         String msg = String.format(
                 "ENTITY_OWNERSHIP_RECHECK_SKIP region=%d entity=%s previousOwner=%d currentOwner=%s localTick=%d (skip #%d)",
                 region.getId(), uuid, region.getId(),

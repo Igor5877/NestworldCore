@@ -46,13 +46,17 @@ final class HotspotDetector {
     private HotspotDetector() {}
 
     static List<Hotspot> compute(NestworldRegionSystem sys, int topN) {
-        Long2DoubleOpenHashMap blockOnly = sys.getBlockTickHeat().snapshotCounts();
+        // Stage 1 (region-sharding for Nether/End plan): §4/§5 diagnostics stay Overworld-scoped
+        // for now, matching NestworldCommand's own deliberate choice (see its overworldRegion()
+        // javadoc) — a per-dimension Inspector surface is a legitimate follow-up, not required here.
+        NestworldDimensionRegion dr = sys.getDimensionRegion(sys.getOverworld());
+        Long2DoubleOpenHashMap blockOnly = dr.getBlockTickHeat().snapshotCounts();
 
         Long2DoubleOpenHashMap entityOnly = new Long2DoubleOpenHashMap();
         entityOnly.defaultReturnValue(0.0);
         Map<Long, List<UUID>> entitiesByChunk = new HashMap<>();
         Map<UUID, WorldRegion> ownerOf = new HashMap<>();
-        for (WorldRegion r : sys.getGrid().getAllRegions()) {
+        for (WorldRegion r : dr.getGrid().getAllRegions()) {
             for (Map.Entry<UUID, WorldRegion.EntitySnapshot> entry : r.nestworldGetEntitySnapshot().entrySet()) {
                 WorldRegion.EntitySnapshot snap = entry.getValue();
                 if (snap.removed()) continue;
@@ -89,7 +93,7 @@ final class HotspotDetector {
             double total = combined.get(key);
             double bHeat = blockOnly.get(key);
             double eHeat = entityOnly.get(key);
-            WorldRegion owner = sys.getGrid().getRegionForChunk(cx, cz);
+            WorldRegion owner = dr.getGrid().getRegionForChunk(cx, cz);
 
             List<UUID> ids = entitiesByChunk.getOrDefault(key, List.of());
             Map<String, Integer> typeCounts = new HashMap<>();
@@ -131,7 +135,7 @@ final class HotspotDetector {
      *  entity heat combined), or the geometric center (heightmap-safe) if it has no measurable
      *  activity right now — used by {@code /nestworld goto region <id>} (spec §5). */
     static BlockPos bestPositionInRegion(NestworldRegionSystem sys, WorldRegion region) {
-        Long2DoubleOpenHashMap blockOnly = sys.getBlockTickHeat().snapshotCounts();
+        Long2DoubleOpenHashMap blockOnly = sys.getDimensionRegion(sys.getOverworld()).getBlockTickHeat().snapshotCounts();
         ServerLevel level = sys.getOverworld();
 
         long bestKey = Long.MIN_VALUE;

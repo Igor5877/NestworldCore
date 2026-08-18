@@ -2,7 +2,7 @@ package net.nestworld.chunk;
 
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.ChunkPos;
-import net.nestworld.region.NestworldRegionSystem;
+import net.nestworld.region.NestworldDimensionRegion;
 import net.nestworld.region.NestworldTuning;
 import net.nestworld.region.WorldRegion;
 
@@ -22,10 +22,11 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>Gemini-reviewed 2026-08-12: {@link #observe(long, int)} (called synchronously from the
  * performance-sensitive {@code setLevel()} path) does nothing but a single {@code
  * ConcurrentLinkedQueue.add()} -- the real region lookup, priority classification, and scheduler
- * enqueue all happen later, in {@link #drainObservationsAndEnqueue(NestworldRegionSystem)}, called
- * once per tick from the main tick loop (same thread as {@code setLevel()}, but NOT on its call
- * stack), so shadow-mode observation can never add measurable latency to real chunk-ticket
- * classification.
+ * enqueue all happen later, in {@link #drainObservationsAndEnqueue(NestworldDimensionRegion)},
+ * called once per tick from the main tick loop (same thread as {@code setLevel()}, but NOT on its
+ * call stack), so shadow-mode observation can never add measurable latency to real chunk-ticket
+ * classification. Stage 1: takes the per-dimension {@link NestworldDimensionRegion} rather than
+ * the singleton system, matching {@code NestworldDimensionRegion.tick()}'s own per-dimension call.
  */
 public final class ChunkSchedulerShadow {
     private ChunkSchedulerShadow() {}
@@ -62,16 +63,16 @@ public final class ChunkSchedulerShadow {
 
     /** Called once per tick. Does the region lookup + priority classification + scheduler enqueue
      *  that {@code setLevel()} itself must never do synchronously. */
-    public static void drainObservationsAndEnqueue(NestworldRegionSystem sys) {
+    public static void drainObservationsAndEnqueue(NestworldDimensionRegion dr) {
         if (!NestworldTuning.CHUNK_SCHEDULER_SHADOW_MODE) return;
-        List<ServerPlayer> players = sys.getOverworld().players();
+        List<ServerPlayer> players = dr.getLevel().players();
         int processed = 0;
         ObservedLevelChange ev;
         while (processed < OBSERVE_DRAIN_BUDGET && (ev = PENDING.poll()) != null) {
             processed++;
             try {
                 ChunkPos pos = new ChunkPos(ev.pos());
-                WorldRegion region = sys.getGrid().getRegionForChunk(pos.x, pos.z);
+                WorldRegion region = dr.getGrid().getRegionForChunk(pos.x, pos.z);
                 if (region == null) continue;
                 ChunkRequestPriority tier = classify(pos, players);
                 observed.incrementAndGet();
@@ -103,10 +104,10 @@ public final class ChunkSchedulerShadow {
     /** Called once per tick, AFTER {@link #drainObservationsAndEnqueue}: drains a budgeted number
      *  of entries back OUT of each region's scheduler purely to record stats (latency proxy,
      *  misroute check) -- never acts on them, never influences real chunk loading. */
-    public static void drainForStats(NestworldRegionSystem sys) {
+    public static void drainForStats(NestworldDimensionRegion dr) {
         if (!NestworldTuning.CHUNK_SCHEDULER_SHADOW_MODE) return;
         int processed = 0;
-        for (WorldRegion region : sys.getGrid().getAllRegions()) {
+        for (WorldRegion region : dr.getGrid().getAllRegions()) {
             if (processed >= STATS_DRAIN_BUDGET) break;
             while (processed < STATS_DRAIN_BUDGET) {
                 ChunkRequest req = region.getChunkScheduler().pollNext();
@@ -117,7 +118,7 @@ public final class ChunkSchedulerShadow {
                     long latency = System.nanoTime() - req.enqueuedAtNanos();
                     latencySumNanos.addAndGet(latency);
                     if (latency > latencyMaxNanos) latencyMaxNanos = latency;
-                    WorldRegion nowOwner = sys.getGrid().getRegionForChunk(req.pos().x, req.pos().z);
+                    WorldRegion nowOwner = dr.getGrid().getRegionForChunk(req.pos().x, req.pos().z);
                     if (nowOwner != region) misrouted.incrementAndGet();
                 } catch (Throwable t) {
                     // never let stats collection break anything

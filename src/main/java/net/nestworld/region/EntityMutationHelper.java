@@ -23,11 +23,11 @@ public final class EntityMutationHelper {
     public static boolean redirectIfForeign(Entity self, Entity target, EntityMutationOp op) {
         if (!NestworldRegionSystem.isInitialised()
                 || !(Thread.currentThread() instanceof RegionThread rt)
-                || self.level() != NestworldRegionSystem.get().getOverworld()) {
+                || !NestworldRegionSystem.get().isManagedLevel(self.level())) {
             return false;
         }
         WorldRegion selfRegion = rt.getRegion();
-        WorldRegion owner = NestworldRegionSystem.get().getGrid().findOwningRegion(target.getUUID());
+        WorldRegion owner = NestworldRegionSystem.get().getDimensionRegion(self.level()).getGrid().findOwningRegion(target.getUUID());
         if (owner == null || owner == selfRegion) {
             return false;
         }

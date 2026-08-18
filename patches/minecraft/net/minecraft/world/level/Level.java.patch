@@ -69,9 +69,9 @@
 +            boolean nestworldOutOfBounds = !nestworldCallingRegion.containsChunk(nestworldCx, nestworldCz);
 +            if ((nestworldOutOfBounds || nestworldCallingRegion.isInBorderBand(nestworldCx, nestworldCz))
 +                  && net.nestworld.region.NestworldRegionSystem.isInitialised()
-+                  && this == net.nestworld.region.NestworldRegionSystem.get().getOverworld()) {
++                  && net.nestworld.region.NestworldRegionSystem.get().isManagedLevel(this)) {
 +               net.nestworld.region.WorldRegion nestworldOwner = nestworldOutOfBounds
-+                     ? net.nestworld.region.NestworldRegionSystem.get().getGrid().getRegionForChunk(nestworldCx, nestworldCz)
++                     ? net.nestworld.region.NestworldRegionSystem.get().getDimensionRegion(this).getGrid().getRegionForChunk(nestworldCx, nestworldCz)
 +                     : nestworldCallingRegion;
 +               if (nestworldOwner != null) {
 +                  return net.nestworld.region.NestworldRegionSystem.get().nestworldDeferForeignBlockWrite(
@@ -151,7 +151,7 @@
     }
  
     public int m_6924_(Heightmap.Types p_46571_, int p_46572_, int p_46573_) {
-@@ -395,27 +_,60 @@
+@@ -395,41 +_,96 @@
     }
  
     public void m_151525_(TickingBlockEntity p_151526_) {
@@ -214,21 +214,41 @@
        }
  
        this.f_151504_ = false;
-@@ -424,12 +_,19 @@
+       profilerfiller.m_7238_();
+    }
  
++   // NestWorld: overworld entities are protected from a single bad tick taking down the
++   // whole server by RegionThread.tickEntities()'s own catch(Throwable) (see RegionThread.java).
++   // This vanilla method is the ONLY per-entity guard for Nether/End (and single-player/
++   // non-region-sharded worlds in general) -- those dimensions are not region-sharded and
++   // still run this exact loop (see ServerLevel.java's entity-tick loop, guarded to skip only
++   // for the overworld once NestworldRegionSystem is initialised). Vanilla+Forge's default here
++   // is to rethrow as a ReportedException whenever removeErroringEntities (a Forge config the
++   // server owner must remember to set) is false -- which crashes the ENTIRE server for a single
++   // misbehaving entity (confirmed live: a StackOverflowError from a recursive SlabBlock/
++   // DirectionalPlaceContext canSurvive<->getStateForPlacement loop in the_end, 2026-08-17).
++   // Recover unconditionally instead, mirroring RegionThread's own resilience so every
++   // dimension gets the same guarantee regardless of that config flag.
++   private static final java.util.concurrent.atomic.AtomicInteger NESTWORLD_ENTITY_TICK_ERROR_STACKS = new java.util.concurrent.atomic.AtomicInteger();
++
     public <T extends Entity> void m_46653_(Consumer<T> p_46654_, T p_46655_) {
        try {
 +         net.minecraftforge.server.timings.TimeTracker.ENTITY_UPDATE.trackStart(p_46655_);
           p_46654_.accept(p_46655_);
        } catch (Throwable throwable) {
-          CrashReport crashreport = CrashReport.m_127521_(throwable, "Ticking entity");
-          CrashReportCategory crashreportcategory = crashreport.m_127514_("Entity being ticked");
-          p_46655_.m_7976_(crashreportcategory);
-+         if (net.minecraftforge.common.ForgeConfig.SERVER.removeErroringEntities.get()) {
-+            com.mojang.logging.LogUtils.getLogger().error("{}", crashreport.m_127526_());
-+            p_46655_.m_146870_();
-+         } else
-          throw new ReportedException(crashreport);
+-         CrashReport crashreport = CrashReport.m_127521_(throwable, "Ticking entity");
+-         CrashReportCategory crashreportcategory = crashreport.m_127514_("Entity being ticked");
+-         p_46655_.m_7976_(crashreportcategory);
+-         throw new ReportedException(crashreport);
++         if (NESTWORLD_ENTITY_TICK_ERROR_STACKS.getAndIncrement() < 10) {
++            com.mojang.logging.LogUtils.getLogger().warn("[NestWorld] Entity {} ({}) tick error (full stack), discarding entity",
++                  p_46655_.m_20148_(), p_46655_.m_6095_().m_20675_(), throwable);
++         } else {
++            com.mojang.logging.LogUtils.getLogger().warn("[NestWorld] Entity {} ({}) tick error: {}: {}, discarding entity",
++                  p_46655_.m_20148_(), p_46655_.m_6095_().m_20675_(),
++                  throwable.getClass().getSimpleName(), throwable.getMessage());
++         }
++         p_46655_.m_146870_();
 +      } finally {
 +         net.minecraftforge.server.timings.TimeTracker.ENTITY_UPDATE.trackEnd(p_46655_);
        }
@@ -264,8 +284,8 @@
 +         // locked-read protection instead of an unguarded live read.
 +         if (Thread.currentThread() instanceof net.nestworld.region.RegionThread
 +                 && net.nestworld.region.NestworldRegionSystem.isInitialised()
-+                 && this == net.nestworld.region.NestworldRegionSystem.get().getOverworld()) {
-+            return net.nestworld.region.NestworldRegionSystem.get().getChunkView()
++                 && net.nestworld.region.NestworldRegionSystem.get().isManagedLevel(this)) {
++            return net.nestworld.region.NestworldRegionSystem.get().getDimensionRegion(this).getChunkView()
 +                    .getBlockEntity((net.minecraft.server.level.ServerLevel) this, p_46716_);
 +         }
 +         return this.nestworldGetBlockEntityRaw(p_46716_);

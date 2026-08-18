@@ -162,6 +162,52 @@ public final class NestworldTuning {
             Integer.getInteger("nestworld.deferredSpawnBudgetMs", 5) * 1_000_000L;
 
     /**
+     * Stage 0.5 (region-sharding for Nether/End plan): same anti-grief shape as
+     * {@link #DEFERRED_SPAWN_QUEUE_CAP}/{@link #MAX_DEFERRED_SPAWNS_PER_TICK}, but for
+     * entities arriving via a dimension portal while the source level is being ticked by a
+     * region thread ({@code ServerLevel.addDuringTeleport}). Portal crossings are far rarer
+     * than ordinary spawns in normal play, but a deliberate portal-spam flood (repeatedly
+     * shoving one or many entities back and forth through a portal) must still be bounded
+     * the same way. Kept as separate constants (not reusing the spawn ones) since the two
+     * queues are keyed and drained independently, per destination dimension.
+     */
+    public static final int MAX_PORTAL_ARRIVALS_PER_TICK =
+            Integer.getInteger("nestworld.maxPortalArrivalsPerTick", 1000);
+    public static final int PORTAL_ARRIVAL_QUEUE_CAP =
+            Integer.getInteger("nestworld.portalArrivalQueueCap", 50_000);
+
+    /**
+     * Stage 0.5 follow-up (region-sharding for Nether/End plan): live-crash-reproduced fix.
+     * Guarding only the final entity-add ({@link #PORTAL_ARRIVAL_QUEUE_CAP} and friends) was NOT
+     * sufficient — a region thread calling {@code Entity.changeDimension} synchronously also runs
+     * the portal SEARCH/CREATE step first ({@code PortalForcer.findPortalAround}/{@code
+     * createPortal}), which touches the DESTINATION dimension's chunk source. Reproduced live: a
+     * mob walking into a portal while ticked by a region thread called {@code
+     * ServerChunkCache.getChunk()} on the (unmanaged, unprotected) Nether chunk source and blocked
+     * indefinitely on a chunk-load future the main thread needed to drive to completion — while
+     * the main thread was itself blocked at the region barrier waiting for that same region
+     * thread. Classic deadlock; killed by the watchdog after 60s. Fix: defer the ENTIRE {@code
+     * changeDimension} call (not just the add) to the main thread when reached from a region
+     * thread. Unlike the arrival queue, this work is heavy (chunk gen, portal search) — process
+     * only up to this many per tick so a portal-spam flood degrades gracefully (spreads over
+     * several ticks) instead of stalling one tick for an arbitrarily long time; the rest stay
+     * queued for the following tick(s), same shape as {@link #MAX_DEFERRED_SPAWNS_PER_TICK}.
+     */
+    public static final int MAX_DEFERRED_DIMENSION_CHANGES_PER_TICK =
+            Integer.getInteger("nestworld.maxDeferredDimensionChangesPerTick", 50);
+
+    /**
+     * Stage 1 (region-sharding for Nether/End plan): dark-launch flag. Comma-separated
+     * dimension ids (e.g. {@code "minecraft:the_end"}) to shard IN ADDITION to the
+     * always-managed Overworld. Default empty — Overworld-only, today's behavior, unchanged.
+     * The Overworld is never controlled by this property (see {@code
+     * NestworldRegionSystem.resolveManagedDimensionKeys}'s javadoc) — it can only ADD
+     * dimensions, never disable the one that's always on.
+     */
+    public static final String SHARDED_DIMENSIONS_RAW =
+            System.getProperty("nestworld.shardedDimensions", "");
+
+    /**
      * Stage 5.3 design v3 (docs/LOCAL_TICK_STAGE4.md): time budget (ms), shared
      * across all regions, for applying deferred cross-region mailbox messages
      * (EXPLOSION_APPLY, BLOCK_WRITE) at the post-region-tick barrier point. Same

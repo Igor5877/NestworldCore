@@ -1,0 +1,94 @@
+--- a/net/minecraft/world/level/block/entity/TheEndGatewayBlockEntity.java
++++ b/net/minecraft/world/level/block/entity/TheEndGatewayBlockEntity.java
+@@ -154,39 +_,64 @@
+    public static void m_155828_(Level p_155829_, BlockPos p_155830_, BlockState p_155831_, Entity p_155832_, TheEndGatewayBlockEntity p_155833_) {
+       if (p_155829_ instanceof ServerLevel serverlevel && !p_155833_.m_59972_()) {
+          p_155833_.f_59927_ = 100;
+-         if (p_155833_.f_59928_ == null && p_155829_.m_46472_() == Level.f_46430_) {
+-            BlockPos blockpos = m_155818_(serverlevel, p_155830_);
+-            blockpos = blockpos.m_6630_(10);
+-            f_59925_.debug("Creating portal at {}", (Object)blockpos);
+-            m_155821_(serverlevel, blockpos, EndGatewayConfiguration.m_67650_(p_155830_, false));
+-            p_155833_.f_59928_ = blockpos;
++         // NestWorld Stage 1g (region-sharding for Nether/End plan): the exit-portal search/
++         // creation below (findOrCreateValidTeleportPos -> getChunk) can trigger SYNCHRONOUS
++         // chunk generation -- the exact same hazard class Stage 0.5 found and fixed for
++         // Entity.changeDimension's portal search, just same-dimension here instead of
++         // cross-dimension (a gateway block entity ticking in one region's interior can touch a
++         // chunk far outside that region's own bounds, wherever the gateway's exit lands). Once
++         // End is a managed dimension this ticker runs on a region thread for any gateway in a
++         // region's interior -- defer the WHOLE search+teleport to main, same "region threads are
++         // idle at the barrier" safety argument as every other deferred queue in this codebase.
++         // teleportCooldown is already set above (a plain same-region-owned field write, safe on
++         // the calling thread) so a re-touch next tick can't queue a duplicate while this is
++         // pending.
++         if (net.nestworld.region.NestworldRegionSystem.isInitialised()
++               && Thread.currentThread() instanceof net.nestworld.region.RegionThread) {
++            net.nestworld.region.NestworldRegionSystem.get().queueGatewayTeleport(serverlevel, p_155830_, p_155831_, p_155832_, p_155833_);
++            return;
+          }
+-
+-         if (p_155833_.f_59928_ != null) {
+-            BlockPos blockpos1 = p_155833_.f_59929_ ? p_155833_.f_59928_ : m_155825_(p_155829_, p_155833_.f_59928_);
+-            Entity entity;
+-            if (p_155832_ instanceof ThrownEnderpearl) {
+-               Entity entity1 = ((ThrownEnderpearl)p_155832_).m_19749_();
+-               if (entity1 instanceof ServerPlayer) {
+-                  CriteriaTriggers.f_10570_.m_31269_((ServerPlayer)entity1, p_155831_);
+-               }
+-
+-               if (entity1 != null) {
+-                  entity = entity1;
+-                  p_155832_.m_146870_();
+-               } else {
+-                  entity = p_155832_;
+-               }
++         nestworldDoTeleportEntity(serverlevel, p_155830_, p_155831_, p_155832_, p_155833_);
++      }
++   }
++
++   // NestWorld Stage 1g: the original teleportEntity() body below the cooldown-set, extracted
++   // verbatim so it can run either inline (main thread) or from the deferred drain above --
++   // does NOT re-check isCoolingDown()/re-set teleportCooldown, since the caller (either branch)
++   // already did that before deciding whether to defer.
++   public static void nestworldDoTeleportEntity(ServerLevel p_155829_, BlockPos p_155830_, BlockState p_155831_, Entity p_155832_, TheEndGatewayBlockEntity p_155833_) {
++      if (p_155833_.f_59928_ == null && p_155829_.m_46472_() == Level.f_46430_) {
++         BlockPos blockpos = m_155818_(p_155829_, p_155830_);
++         blockpos = blockpos.m_6630_(10);
++         f_59925_.debug("Creating portal at {}", (Object)blockpos);
++         m_155821_(p_155829_, blockpos, EndGatewayConfiguration.m_67650_(p_155830_, false));
++         p_155833_.f_59928_ = blockpos;
++      }
++
++      if (p_155833_.f_59928_ != null) {
++         BlockPos blockpos1 = p_155833_.f_59929_ ? p_155833_.f_59928_ : m_155825_(p_155829_, p_155833_.f_59928_);
++         Entity entity;
++         if (p_155832_ instanceof ThrownEnderpearl) {
++            Entity entity1 = ((ThrownEnderpearl)p_155832_).m_19749_();
++            if (entity1 instanceof ServerPlayer) {
++               CriteriaTriggers.f_10570_.m_31269_((ServerPlayer)entity1, p_155831_);
++            }
++
++            if (entity1 != null) {
++               entity = entity1;
++               p_155832_.m_146870_();
+             } else {
+-               entity = p_155832_.m_20201_();
++               entity = p_155832_;
+             }
+-
+-            entity.m_20091_();
+-            entity.m_20324_((double)blockpos1.m_123341_() + 0.5D, (double)blockpos1.m_123342_(), (double)blockpos1.m_123343_() + 0.5D);
++         } else {
++            entity = p_155832_.m_20201_();
+          }
+ 
+-         m_155849_(p_155829_, p_155830_, p_155831_, p_155833_);
++         entity.m_20091_();
++         entity.m_20324_((double)blockpos1.m_123341_() + 0.5D, (double)blockpos1.m_123342_(), (double)blockpos1.m_123343_() + 0.5D);
+       }
++
++      m_155849_(p_155829_, p_155830_, p_155831_, p_155833_);
+    }
+ 
+    private static BlockPos m_155825_(Level p_155826_, BlockPos p_155827_) {

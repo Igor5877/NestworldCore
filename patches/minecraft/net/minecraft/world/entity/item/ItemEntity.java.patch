@@ -94,11 +94,11 @@
 +   private boolean nestworldSameRegionOrUnsharded(ItemEntity other) {
 +      if (!(Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt)
 +              || !net.nestworld.region.NestworldRegionSystem.isInitialised()
-+              || this.m_9236_() != net.nestworld.region.NestworldRegionSystem.get().getOverworld()) {
++              || !net.nestworld.region.NestworldRegionSystem.get().isManagedLevel(this.m_9236_())) {
 +         return true;
 +      }
 +      net.nestworld.region.WorldRegion nestworldOwner = net.nestworld.region.NestworldRegionSystem.get()
-+              .getGrid().findOwningRegion(other.m_20148_());
++              .getDimensionRegion(this.m_9236_()).getGrid().findOwningRegion(other.m_20148_());
 +      return nestworldOwner == null || nestworldOwner == nestworldRt.getRegion();
 +   }
 +

@@ -36,82 +36,107 @@ public class NestworldRegionSystem {
      * Half-span of the initial single region in chunks. Covers the entire
      * playable world (world border is ±30,000,000 blocks = ±1,875,000 chunks)
      * so every entity always belongs to some region; splits subdivide from here.
+     * Package-private: also used by {@link NestworldDimensionRegion}'s constructor.
      */
-    private static final int INITIAL_REGION_HALF_SPAN = 1_875_000;
+    static final int INITIAL_REGION_HALF_SPAN = 1_875_000;
 
     private static NestworldRegionSystem INSTANCE;
 
-    // --- Subsystems ---
-    private WorldGrid grid;
-    private RegionTree tree;
-    private RegionThreadPool pool;
-    private RegionSplitManager splitManager;
-    private BoundaryManager boundaryManager;
-    private BoundarySignalQueue signalQueue;
-    private BoundaryEntityTransfer entityTransfer;
-    private CrossRegionCapabilityBus capabilityBus;
-    private RegionChunkView chunkView;
-
-    /** Per-chunk block-tick load signal, feeding the load-aware split scorer. */
-    private final BlockTickHeat blockTickHeat = new BlockTickHeat();
-
-    /** Entity types pinned to main-thread ticking (mod-compat escape hatch). */
+    /** Entity types pinned to main-thread ticking (mod-compat escape hatch). Shared across
+     *  every managed dimension — an operator pinning a type means it everywhere, not per-world
+     *  (see {@link NestworldDimensionRegion}'s constructor javadoc for the full reasoning). */
     private final NestworldPins pins = new NestworldPins();
-
-    /** Layer 3: pre-generate the frontier ahead of moving players (default off). */
-    private final PredictiveChunkGen predictiveGen = new PredictiveChunkGen();
-
-    /** Entities spawned by region threads (off-main addFreshEntity), drained on
-     *  main each tick so ChunkMap entity tracking is never mutated concurrently.
-     *  Bounded (anti-grief spawn-flood cap) — offer() refuses atomically when full,
-     *  so there is no separate counter to fall out of sync with the queue. */
-    private final java.util.concurrent.LinkedBlockingQueue<net.minecraft.world.entity.Entity> deferredSpawns =
-            new java.util.concurrent.LinkedBlockingQueue<>(NestworldTuning.DEFERRED_SPAWN_QUEUE_CAP);
-
-    /** Entity-tracking removals queued by region threads (off-main discard, e.g.
-     *  TNT consumed by an explosion), drained on main each tick so ChunkMap's
-     *  non-thread-safe entityMap is never mutated concurrently with its own tick
-     *  iteration. Symmetric with {@link #deferredSpawns}; bounded by the live
-     *  entity count, so no cap is needed (you cannot remove more than exist). */
-    private final java.util.Queue<net.minecraft.world.entity.Entity> deferredRemovals =
-            new java.util.concurrent.ConcurrentLinkedQueue<>();
-
-    /** Entity-tracking ADDS queued by region threads: a section-move visibility transition
-     *  (entity walks/teleports into an entity-ticking section during a region tick) calls
-     *  ServerChunkCache.addEntity off-main, which must not touch ChunkMap's entityMap.
-     *  Drained on main AFTER {@link #deferredRemovals}, so a leave+re-enter within one tick
-     *  resolves to the correct final tracked state. Bounded by the live entity count. */
-    private final java.util.Queue<net.minecraft.world.entity.Entity> deferredTrackingAdds =
-            new java.util.concurrent.ConcurrentLinkedQueue<>();
 
     private ServerLevel overworld;
     private MinecraftServer server;
 
-    /** Cached plains biome holder for the per-call empty chunks (lazy). */
-    private volatile net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome> emptyChunkBiome;
+    // Region-sharding for Nether/End: identity+state map of every dimension NestWorld manages
+    // (see plan doc referenced from project memory, "Region-Sharding for Nether & End"). Stage
+    // 0a held exactly one entry (overworld) with NestworldDimensionRegion as identity-only;
+    // Stage 1 physically moved grid/pool/tree/etc. onto NestworldDimensionRegion itself (see that
+    // class's own javadoc) so this map can hold more than one real managed dimension. Entries are
+    // added only in init() (never removed at runtime), and each is assigned before any of its
+    // RegionThreads are spawned, so a plain (non-concurrent) Map is safe for lock-free reads from
+    // any thread afterward. Prefer isManagedLevel()/getDimensionRegion() over comparing against
+    // getOverworld() directly in new code -- the former keeps working unchanged as dimensions are
+    // added; the latter would not.
+    private final java.util.Map<net.minecraft.resources.ResourceKey<Level>, NestworldDimensionRegion> dimensions =
+            new java.util.HashMap<>();
+
+    /** Stage 0.5 (Nether/End sharding plan): entities that arrived via a dimension portal
+     *  while the SOURCE level was being ticked by a region thread ({@code
+     *  ServerLevel.addDuringTeleport}, reached from {@code Entity.changeDimension}). Keyed by
+     *  DESTINATION level rather than a single field like {@link #deferredSpawns} — the portal
+     *  target can be any registered dimension (today always Nether/End, since only the
+     *  overworld is sharded so far), not just {@link #overworld}. Drained from {@code
+     *  MinecraftServer.tickChildren()}'s own per-level loop, dimension-agnostically, so this
+     *  works whether the destination is itself region-managed or still plain vanilla-ticked.
+     *  Bounded per destination (anti-grief portal-spam cap), same reasoning as {@link
+     *  #deferredSpawns}. A plain {@link java.util.concurrent.ConcurrentHashMap} of the outer map
+     *  is safe: entries are only ever added via {@code computeIfAbsent} and never removed, and
+     *  each value is itself a thread-safe bounded queue. */
+    private final java.util.Map<ServerLevel, java.util.concurrent.LinkedBlockingQueue<net.minecraft.world.entity.Entity>> pendingPortalArrivals =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Stage 0.5 follow-up (see {@link NestworldTuning#MAX_DEFERRED_DIMENSION_CHANGES_PER_TICK}'s
+     *  javadoc for the live-reproduced crash this fixes): entity dimension-change requests
+     *  ({@code Entity.changeDimension}) made from a region thread, deferred in their ENTIRETY
+     *  (not just the final add — the portal search/creation step itself touches the destination
+     *  dimension's chunk source and must not run off-main either) to the main thread. Drained
+     *  during the overworld's own post-region-round barrier window, alongside {@link
+     *  #deferredSpawns}/{@link #deferredRemovals} — same "region threads are idle here" safety
+     *  argument. Unbounded queue: unlike the entity-add queues, a flood here is naturally capped
+     *  by how many entities region threads can tick per tick (already bounded elsewhere), and the
+     *  PROCESSING side is what needs throttling (see the tuning constant), not the queue depth. */
+    private final java.util.Queue<PendingDimensionChange> pendingDimensionChanges =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    /** Tuple for {@link #pendingDimensionChanges}. */
+    private static final class PendingDimensionChange {
+        final net.minecraft.world.entity.Entity entity;
+        final ServerLevel destination;
+        final net.minecraftforge.common.util.ITeleporter teleporter;
+        PendingDimensionChange(net.minecraft.world.entity.Entity entity, ServerLevel destination,
+                                net.minecraftforge.common.util.ITeleporter teleporter) {
+            this.entity = entity;
+            this.destination = destination;
+            this.teleporter = teleporter;
+        }
+    }
+
+    /** Stage 1g (region-sharding for Nether/End plan): same hazard shape as {@link
+     *  #pendingDimensionChanges} — {@code TheEndGatewayBlockEntity.teleportEntity()}'s
+     *  exit-portal search/creation ({@code findOrCreateValidTeleportPos} -> {@code getChunk})
+     *  can trigger synchronous chunk generation, and this ticker runs on a region thread once
+     *  End is a managed dimension (unlike Stage 0.5, this is a SAME-dimension hazard — a gateway
+     *  BE ticking in one region's interior touching a chunk possibly far outside that region's
+     *  own bounds, not a cross-dimension one). Deferred in its ENTIRETY (not just the chunk
+     *  touch) to the main thread, same "region threads are idle here" barrier-window drain as
+     *  every other deferred queue. Unbounded for the same reason {@link #pendingDimensionChanges}
+     *  is: naturally capped by how many gateway BEs a region can tick per tick already. */
+    private final java.util.Queue<PendingGatewayTeleport> pendingGatewayTeleports =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    /** Tuple for {@link #pendingGatewayTeleports}. */
+    private static final class PendingGatewayTeleport {
+        final ServerLevel level;
+        final net.minecraft.core.BlockPos pos;
+        final net.minecraft.world.level.block.state.BlockState state;
+        final net.minecraft.world.entity.Entity entity;
+        final net.minecraft.world.level.block.entity.TheEndGatewayBlockEntity blockEntity;
+        PendingGatewayTeleport(ServerLevel level, net.minecraft.core.BlockPos pos,
+                                net.minecraft.world.level.block.state.BlockState state,
+                                net.minecraft.world.entity.Entity entity,
+                                net.minecraft.world.level.block.entity.TheEndGatewayBlockEntity blockEntity) {
+            this.level = level;
+            this.pos = pos;
+            this.state = state;
+            this.entity = entity;
+            this.blockEntity = blockEntity;
+        }
+    }
 
     private NestworldRegionSystem() {}
-
-    /**
-     * Returns a FRESH empty (void-air) chunk at (x, z) for a region thread
-     * reading an unloaded chunk, so it never synchronously loads + blocks on
-     * main. Gated by {@link NestworldTuning#NONBLOCKING_CHUNK_READS}; called from
-     * the patched ServerChunkCache. A new instance per call — a single shared one
-     * races on LevelChunk's inherited mutable arrays (heightmaps/sections) when
-     * several region threads read it at once (observed AIOOBE). Only the biome
-     * holder is cached.
-     */
-    public net.minecraft.world.level.chunk.LevelChunk nestworldEmptyChunk(int x, int z) {
-        net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome> biome = this.emptyChunkBiome;
-        if (biome == null) {
-            biome = overworld.registryAccess()
-                    .registryOrThrow(net.minecraft.core.registries.Registries.BIOME)
-                    .getHolderOrThrow(net.minecraft.world.level.biome.Biomes.PLAINS);
-            this.emptyChunkBiome = biome;
-        }
-        return new net.minecraft.world.level.chunk.EmptyLevelChunk(
-                overworld, new net.minecraft.world.level.ChunkPos(x, z), biome);
-    }
 
     public static NestworldRegionSystem get() {
         if (INSTANCE == null) throw new IllegalStateException("NestworldRegionSystem not initialised");
@@ -129,10 +154,9 @@ public class NestworldRegionSystem {
      */
     public static void markOwnershipDirty(net.minecraft.world.entity.Entity entity) {
         NestworldRegionSystem sys = INSTANCE;
-        if (sys != null && sys.entityTransfer != null && entity != null
-                && entity.level() == sys.overworld) {
-            sys.entityTransfer.markDirty(entity);
-        }
+        if (sys == null || entity == null) return;
+        NestworldDimensionRegion dr = sys.getDimensionRegion(entity.level());
+        if (dr != null) dr.getEntityTransfer().markDirty(entity);
     }
 
     // -----------------------------------------------------------------------
@@ -217,37 +241,24 @@ public class NestworldRegionSystem {
             return;
         }
 
-        grid           = new WorldGrid();
-        pool           = new RegionThreadPool(overworld);
-
-        // Boot straight into the saved layout if there is one; otherwise start
-        // with a single whole-world region and let adaptive splits grow it.
-        // The tree only registers regions in the grid here — threads are
-        // spawned below, after every subsystem a RegionThread tick may touch
-        // (boundary/ghost zones, entity transfer) has been constructed.
-        CompoundTag saved = loadSavedLayout();
-        boolean restored = saved != null;
-        if (restored) {
-            tree = new RegionTree(grid, saved);
-        } else {
-            int r = INITIAL_REGION_HALF_SPAN;
-            tree = new RegionTree(grid, new WorldRegion(grid.nextId(), -r, -r, r, r));
-        }
-
         pins.load(pinsFile());
         pins.loadBe(bePinsFile());
         pins.loadMods(pinnedModsFile());
         pins.loadCascadeSafeBe(cascadeSafeBeFile());
 
-        boundaryManager = new BoundaryManager(overworld, grid);
-        signalQueue    = new BoundarySignalQueue(overworld);
-        entityTransfer = new BoundaryEntityTransfer(overworld, grid, pins);
-        capabilityBus  = new CrossRegionCapabilityBus(overworld, grid, boundaryManager);
-        chunkView      = new RegionChunkView(grid, boundaryManager);
-        splitManager   = new RegionSplitManager(tree, pool, blockTickHeat);
-
-        java.util.List<WorldRegion> regions = tree.getActiveRegions();
-        for (WorldRegion region : regions) pool.spawn(region);
+        // Stage 1: managed dimensions = Overworld (always) + whatever the dark-launch flag
+        // adds (see NestworldTuning.SHARDED_DIMENSIONS_RAW's javadoc). Each gets its own
+        // NestworldDimensionRegion — grid/pool/tree/etc. now live there, not here (see that
+        // class's own javadoc for why the physical migration waited until this stage).
+        for (net.minecraft.resources.ResourceKey<Level> key : resolveManagedDimensionKeys()) {
+            ServerLevel level = server.getLevel(key);
+            if (level == null) {
+                LOGGER.warn("Managed dimension {} not available — skipping", key.location());
+                continue;
+            }
+            CompoundTag saved = NestworldDimensionRegion.loadSavedLayout(level, key);
+            dimensions.put(key, new NestworldDimensionRegion(level, pins, saved));
+        }
 
         if (System.getenv("NESTWORLD_CUT_TEST") != null
                 || Boolean.getBoolean("nestworld.cutTest")) {
@@ -269,49 +280,32 @@ public class NestworldRegionSystem {
                 || Boolean.getBoolean("nestworld.marginTest")) {
             WorldGrid.selfTest();
         }
-
-        if (restored) {
-            LOGGER.info("NestWorld restored saved layout — {} region(s): {}",
-                    regions.size(), regions);
-        } else {
-            LOGGER.info("NestWorld started — initial region: {}", regions.get(0));
-        }
     }
 
-    /**
-     * Ticks every loaded entity whose type is pinned, on the main thread.
-     * Mirrors the region-thread gate (skip removed/passengers, despawn check,
-     * ticking-chunk gate) so a pinned entity behaves identically to vanilla —
-     * just without the parallelism. Called only when pins are non-empty.
-     */
-    private void tickPinnedEntitiesOnMain() {
-        // Snapshot: ticking can spawn/remove entities, mutating the live view.
-        java.util.List<net.minecraft.world.entity.Entity> snapshot = new java.util.ArrayList<>();
-        for (net.minecraft.world.entity.Entity e : overworld.getAllEntities()) snapshot.add(e);
-        for (net.minecraft.world.entity.Entity entity : snapshot) {
-            if (entity.isRemoved() || entity.isPassenger()) continue;
-            if (!pins.isPinned(entity.getType())) continue;
-            try {
-                entity.checkDespawn();
-                if (entity.isRemoved()) continue;
-                if (!overworld.isPositionEntityTicking(entity.blockPosition())) continue;
-                overworld.tickNonPassenger(entity);
-            } catch (Throwable t) {
-                LOGGER.warn("Pinned entity {} tick error: {}",
-                        entity.getType().getDescriptionId(), t.toString());
+    /** Stage 1 dark-launch flag (see {@link NestworldTuning#SHARDED_DIMENSIONS_RAW}'s javadoc):
+     *  the Overworld is always managed first (so the flag can only ever ADD dimensions, never
+     *  accidentally disable it), followed by every valid, non-duplicate dimension id it lists. */
+    private static java.util.List<net.minecraft.resources.ResourceKey<Level>> resolveManagedDimensionKeys() {
+        java.util.List<net.minecraft.resources.ResourceKey<Level>> targets = new java.util.ArrayList<>();
+        targets.add(Level.OVERWORLD);
+        for (String token : NestworldTuning.SHARDED_DIMENSIONS_RAW.split(",")) {
+            token = token.trim();
+            if (token.isEmpty()) continue;
+            net.minecraft.resources.ResourceLocation loc = net.minecraft.resources.ResourceLocation.tryParse(token);
+            if (loc == null) {
+                LOGGER.warn("Invalid nestworld.shardedDimensions entry: {}", token);
+                continue;
             }
+            net.minecraft.resources.ResourceKey<Level> key =
+                    net.minecraft.resources.ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION, loc);
+            if (!targets.contains(key)) targets.add(key);
         }
+        return targets;
     }
 
     // -----------------------------------------------------------------------
-    // Persistent region layout
+    // Persistent region layout / pin files
     // -----------------------------------------------------------------------
-
-    /** NBT file holding the saved BSP layout, under the world's data folder. */
-    private Path layoutFile() {
-        return server.getWorldPath(LevelResource.ROOT)
-                .resolve("data").resolve("nestworld-regions.dat");
-    }
 
     /** Text file listing entity-type ids pinned to main-thread ticking. */
     private Path pinsFile() {
@@ -340,117 +334,126 @@ public class NestworldRegionSystem {
 
     public NestworldPins getPins() { return pins; }
 
-    /** Called from a region thread's addFreshEntity (overworld): queue the spawn
-     *  for main-thread registration instead of mutating ChunkMap off-main. */
-    public boolean queueEntitySpawn(net.minecraft.world.entity.Entity e) {
-        // Anti-grief: the bounded queue drops spawns past the cap so a flood
-        // (mass breeding, skeleton volleys) cannot exhaust memory.
-        return deferredSpawns.offer(e);
+    /** Called from a region thread's {@code Entity.changeDimension}: queue the WHOLE
+     *  cross-dimension teleport (not just the final add) for the main thread to actually
+     *  perform, since the portal search/creation step also touches the destination's chunk
+     *  source and is not safe off-main. See {@link NestworldTuning#MAX_DEFERRED_DIMENSION_CHANGES_PER_TICK}'s
+     *  javadoc for the live-reproduced deadlock this replaces. */
+    public void queueDimensionChange(net.minecraft.world.entity.Entity entity, ServerLevel destination,
+                                      net.minecraftforge.common.util.ITeleporter teleporter) {
+        pendingDimensionChanges.add(new PendingDimensionChange(entity, destination, teleporter));
+        LOGGER.info("Deferred dimension change queued: {} -> {} (from region thread)",
+                entity, destination.dimension().location());
     }
 
-    /** Main-thread: register entities region threads spawned, up to a per-tick
-     *  budget so a deliberate flood throttles over several ticks instead of
-     *  freezing the main thread draining the whole queue at once. */
-    private void drainDeferredSpawns() {
-        // NestWorld: stop at whichever limit — entity count or wall-clock time —
-        // is hit first. The count alone doesn't bound tick-time cost predictably
-        // (see NestworldTuning.DEFERRED_SPAWN_BUDGET_NANOS's javadoc); the time
-        // check only runs every 16 entities (via the bitmask), not after every
-        // single one, since System.nanoTime() itself has real per-call cost.
+    /** Main-thread: actually perform dimension changes region threads requested, up to a
+     *  per-tick budget (this work is heavy — chunk gen, portal search — unlike the other
+     *  deferred queues). Left in the queue simply means "handled next tick", not lost. */
+    void drainDeferredDimensionChanges() {
+        int nestworldProcessed = 0;
+        PendingDimensionChange pending;
+        while (nestworldProcessed < NestworldTuning.MAX_DEFERRED_DIMENSION_CHANGES_PER_TICK
+                && (pending = pendingDimensionChanges.poll()) != null) {
+            try {
+                if (!pending.entity.isRemoved()) {
+                    pending.entity.changeDimension(pending.destination, pending.teleporter);
+                }
+            } catch (Throwable t) {
+                LOGGER.warn("Deferred dimension change failed: {}", t.toString());
+            }
+            nestworldProcessed++;
+        }
+    }
+
+    /** Called from a region thread's {@code TheEndGatewayBlockEntity.teleportEntity}: queue the
+     *  WHOLE exit-portal search/creation + actual teleport for the main thread, since the search
+     *  step touches (and may synchronously generate) a possibly-unloaded chunk. See {@link
+     *  #pendingGatewayTeleports}'s javadoc. The caller sets {@code teleportCooldown} itself
+     *  BEFORE deferring (a plain same-region-owned field write, safe on the calling thread) so a
+     *  re-entrant touch of the same gateway next tick doesn't queue a duplicate. */
+    public void queueGatewayTeleport(ServerLevel level, net.minecraft.core.BlockPos pos,
+            net.minecraft.world.level.block.state.BlockState state, net.minecraft.world.entity.Entity entity,
+            net.minecraft.world.level.block.entity.TheEndGatewayBlockEntity blockEntity) {
+        pendingGatewayTeleports.add(new PendingGatewayTeleport(level, pos, state, entity, blockEntity));
+        LOGGER.info("Deferred gateway teleport queued: {} at {} (from region thread)", entity, pos);
+    }
+
+    /** Main-thread: actually perform gateway teleports region threads requested. Unbudgeted
+     *  (like {@link #drainDeferredDimensionChanges} it's heavy per-call, but gateway activations
+     *  are rare enough in practice that a per-tick cap isn't worth the complexity yet — revisit
+     *  if a soak shows otherwise). */
+    void drainDeferredGatewayTeleports() {
+        PendingGatewayTeleport pending;
+        while ((pending = pendingGatewayTeleports.poll()) != null) {
+            try {
+                if (!pending.entity.isRemoved() && !pending.blockEntity.isRemoved()) {
+                    net.minecraft.world.level.block.entity.TheEndGatewayBlockEntity.nestworldDoTeleportEntity(
+                            pending.level, pending.pos, pending.state, pending.entity, pending.blockEntity);
+                }
+            } catch (Throwable t) {
+                LOGGER.warn("Deferred gateway teleport failed: {}", t.toString());
+            }
+        }
+    }
+
+    /** Called from a region thread's addFreshEntity: resolve the entity's own dimension and
+     *  queue the spawn there for main-thread registration instead of mutating ChunkMap off-main. */
+    public boolean queueEntitySpawn(net.minecraft.world.entity.Entity e) {
+        NestworldDimensionRegion dr = getDimensionRegion(e.level());
+        return dr != null && dr.queueEntitySpawn(e);
+    }
+
+    /** Called from a region thread's {@code ServerLevel.addDuringTeleport} (portal arrival):
+     *  queue the entity for registration on the DESTINATION level's own next tick, instead of
+     *  mutating its (possibly still plain-vanilla, unmanaged) entity tracking off-main. Safe
+     *  regardless of whether {@code destination} is itself region-managed — the hazard is the
+     *  calling thread being a region thread at all, not the destination's own status; see the
+     *  guard in {@code ServerLevel.addDuringTeleport}'s patch. */
+    public boolean queuePortalArrival(ServerLevel destination, net.minecraft.world.entity.Entity e) {
+        return pendingPortalArrivals
+                .computeIfAbsent(destination, d -> new java.util.concurrent.LinkedBlockingQueue<>(
+                        NestworldTuning.PORTAL_ARRIVAL_QUEUE_CAP))
+                .offer(e);
+    }
+
+    /** Called once per server tick, from {@code MinecraftServer.tickChildren()}'s per-level
+     *  loop, for EVERY level (managed or not) right before that level's own tick dispatch —
+     *  so a portal arrival queued while the source was on a region thread gets registered on
+     *  the destination's own tick, whichever dimension that is. No-op (cheap map lookup) for
+     *  the overwhelming majority of ticks where nothing queued anything for this level. */
+    public void drainPortalArrivals(ServerLevel level) {
+        java.util.concurrent.LinkedBlockingQueue<net.minecraft.world.entity.Entity> queue =
+                pendingPortalArrivals.get(level);
+        if (queue == null || queue.isEmpty()) return;
         long deadlineNanos = System.nanoTime() + NestworldTuning.DEFERRED_SPAWN_BUDGET_NANOS;
         net.minecraft.world.entity.Entity e;
         int nestworldProcessed = 0;
-        while ((e = deferredSpawns.poll()) != null) {
+        while ((e = queue.poll()) != null) {
             try {
-                overworld.addFreshEntity(e);
+                level.addDuringTeleport(e);
             } catch (Throwable t) {
-                LOGGER.warn("Deferred entity spawn failed: {}", t.toString());
+                LOGGER.warn("Deferred portal arrival failed: {}", t.toString());
             }
             nestworldProcessed++;
-            if (nestworldProcessed >= NestworldTuning.MAX_DEFERRED_SPAWNS_PER_TICK) break;
+            if (nestworldProcessed >= NestworldTuning.MAX_PORTAL_ARRIVALS_PER_TICK) break;
             if ((nestworldProcessed & 15) == 0 && System.nanoTime() >= deadlineNanos) break;
         }
     }
 
-    /** Called from a region thread's ServerChunkCache.removeEntity: queue the
-     *  tracking removal for main instead of mutating ChunkMap's entityMap off-main. */
+    /** Called from a region thread's ServerChunkCache.removeEntity: resolve the entity's own
+     *  dimension (it's still a valid reference — removal is deferred, not yet applied) and
+     *  queue the tracking removal there for main instead of mutating ChunkMap off-main. */
     public void queueEntityRemoval(net.minecraft.world.entity.Entity e) {
-        deferredRemovals.add(e);
-    }
-
-    /** Main-thread: process the entity-tracking removals region threads queued
-     *  this tick. Drained fully (not budgeted) — removals are bounded by the live
-     *  entity count and must not lag, or a removed entity keeps being tracked. */
-    private void drainDeferredRemovals() {
-        net.minecraft.world.entity.Entity e;
-        while ((e = deferredRemovals.poll()) != null) {
-            try {
-                overworld.getChunkSource().removeEntity(e);
-            } catch (Throwable t) {
-                LOGGER.warn("Deferred entity removal failed: {}", t.toString());
-            }
-        }
+        NestworldDimensionRegion dr = getDimensionRegion(e.level());
+        if (dr != null) dr.queueEntityRemoval(e);
     }
 
     /** Called from a region thread's ServerChunkCache.addEntity (a section-move visibility
      *  transition during the region tick): queue the tracking add for main instead of mutating
      *  ChunkMap's entityMap off-main. */
     public void queueEntityTrackingAdd(net.minecraft.world.entity.Entity e) {
-        deferredTrackingAdds.add(e);
-    }
-
-    /** Main-thread: process the entity-tracking adds region threads queued this tick. Runs
-     *  AFTER {@link #drainDeferredRemovals} so a leave+re-enter sequence lands tracked. An
-     *  entity that is already tracked (e.g. its queued removal was superseded) or died since
-     *  queueing is skipped — ChunkMap.addEntity would throw on the former. */
-    private void drainDeferredTrackingAdds() {
-        net.minecraft.world.entity.Entity e;
-        while ((e = deferredTrackingAdds.poll()) != null) {
-            if (e.isRemoved()) continue;
-            try {
-                overworld.getChunkSource().addEntity(e);
-            } catch (IllegalStateException dup) {
-                // "Entity is already tracked!" — the add was superseded (never untracked);
-                // the tracker is already in the desired state, so this is benign.
-                LOGGER.debug("Deferred tracking add skipped (already tracked): {}", e.getUUID());
-            } catch (Throwable t) {
-                LOGGER.warn("Deferred entity tracking add failed: {}", t.toString());
-            }
-        }
-    }
-
-    /**
-     * Reads the saved layout, or returns null if there is none / it is
-     * unreadable (first boot, or a world that predates persistence). A corrupt
-     * file must never block startup — we just fall back to a single region.
-     */
-    private CompoundTag loadSavedLayout() {
-        File file = layoutFile().toFile();
-        if (!file.isFile()) return null;
-        try {
-            CompoundTag tag = NbtIo.read(file);
-            return (tag != null && tag.contains("root")) ? tag : null;
-        } catch (Throwable t) {
-            LOGGER.warn("Could not read saved region layout ({}) — starting fresh",
-                    t.toString());
-            return null;
-        }
-    }
-
-    /** Writes the current BSP layout so the next boot starts already sharded. */
-    private void saveLayout() {
-        if (tree == null) return;
-        try {
-            File file = layoutFile().toFile();
-            File parent = file.getParentFile();
-            if (parent != null) parent.mkdirs();
-            NbtIo.write(tree.writeNbt(), file);
-            lastSavedLayoutVersion = grid.getLayoutVersion();
-            LOGGER.info("Saved region layout ({} region(s))",
-                    tree.getActiveRegions().size());
-        } catch (Throwable t) {
-            LOGGER.warn("Could not save region layout: {}", t.toString());
-        }
+        NestworldDimensionRegion dr = getDimensionRegion(e.level());
+        if (dr != null) dr.queueEntityTrackingAdd(e);
     }
 
     // -----------------------------------------------------------------------
@@ -459,366 +462,16 @@ public class NestworldRegionSystem {
 
     /**
      * Replaces the vanilla {@code serverlevel.tick(hasTime)} call inside
-     * {@code MinecraftServer.tickChildren()}.
-     *
-     * Execution order each game tick:
-     *  1. Run overworld.tick() for global state (time, weather, chunk loading).
-     *     Entity/block-entity ticking is skipped by the ServerLevel patch.
-     *  2. Flush cross-boundary redstone signals from last tick.
-     *  3. Reassign entities that crossed region boundaries.
-     *  4. Parallel-tick all regions (region threads + barrier sync).
-     *  5. Sync ghost zones for next tick's cross-region reads.
-     *  6. Evaluate TPS and apply any pending split / merge operations.
+     * {@code MinecraftServer.tickChildren()} for {@code level} — dispatches to that
+     * dimension's own {@link NestworldDimensionRegion#tick}. See that method's javadoc for
+     * the 7-phase execution order (unchanged from the pre-Stage-1 single-dimension version).
      */
-    // Phase timing accumulators (ns), logged every TIMING_LOG_INTERVAL ticks.
-    // On by default (used for live dev profiling); set -Dnestworld.timingLog=false
-    // to silence the every-10-s line in production.
-    private static final boolean TIMING_LOG =
-            !"false".equalsIgnoreCase(System.getProperty("nestworld.timingLog", "true"));
-    private static final int TIMING_LOG_INTERVAL = 200;
-    private final long[] phaseNanos = new long[6];
-    private int timedTicks = 0;
-    // Cumulative-since-boot mirror of the above (never reset), for live on-demand reading
-    // via /nestworld tickphases -- the windowed phaseNanos[]/timedTicks above only ever
-    // reach players through the every-200-tick LOG line, gated behind TIMING_LOG. Added
-    // 2026-08-12 to finally sub-attribute the tick-correlation telemetry's "outside_pollTask"
-    // residual (ghostzones/splitmerge/entityXfer/vanilla-tick, previously only a single
-    // undifferentiated number -- see project memory).
-    private final long[] phaseNanosCumulative = new long[6];
-    private long timedTicksCumulative = 0;
-
-    // Self-test driven by env var NESTWORLD_AUTOSPLIT=<tick>: forces a split at
-    // that tick and a merge back 600 ticks later, exercising the full lifecycle.
-    private static final int AUTOSPLIT_AT_TICK =
-            Integer.parseInt(System.getenv().getOrDefault("NESTWORLD_AUTOSPLIT", "-1"));
-    private long totalTicks = 0;
-    private WorldRegion[] autosplitChildren = null;
-
-    // Periodic layout save: shutdown is the primary save point, but a crash
-    // between shutdowns would lose the topology and bring back the cold-start
-    // freeze. Re-save every interval, but only when the layout actually changed
-    // since the last write (a tiny NBT file, so the I/O is negligible).
-    private static final long LAYOUT_SAVE_INTERVAL_TICKS =
-            Long.getLong("nestworld.layoutSaveIntervalTicks", 6000L); // ~5 min
-    private long layoutSaveTickCounter = 0;
-    private int lastSavedLayoutVersion = -1;
-
-    // Self-test driven by env var NESTWORLD_RANDOMTICK_TEST=<speed>: every tick
-    // queues chunk (0,0) for random ticking through the exact production path
-    // (queueRandomTicksFor -> bucket -> region thread). Vanilla only random-
-    // ticks chunks near a player, so headless verification needs this hook.
-    private static final int RANDOMTICK_TEST_SPEED =
-            Integer.parseInt(System.getenv().getOrDefault("NESTWORLD_RANDOMTICK_TEST", "-1"));
-
-    private void runRandomTickTest() {
-        if (RANDOMTICK_TEST_SPEED <= 0) return;
-        net.minecraft.world.level.chunk.LevelChunk chunk =
-                overworld.getChunkSource().getChunkNow(0, 0);
-        if (chunk != null && queueRandomTicksFor(overworld, chunk, RANDOMTICK_TEST_SPEED)) {
-            flushRandomTicksPhase();
+    public void tickAllRegions(ServerLevel level, BooleanSupplier hasTime) {
+        NestworldDimensionRegion dr = getDimensionRegion(level);
+        if (dr == null) {
+            throw new IllegalStateException("tickAllRegions called for unmanaged level " + level.dimension().location());
         }
-    }
-
-    public void tickAllRegions(BooleanSupplier hasTime) {
-        runAutosplitTest();
-        runRandomTickTest();
-        pool.nestworldResetTickAccumulators();
-        long nestworldTickWallStart = System.nanoTime();
-        long t0 = System.nanoTime();
-        // Publish the loaded-FULL chunk snapshot for region threads to read
-        // lock-free this tick (avoids missing already-loaded chunks off-main and
-        // the getChunk park/unpark herd that dominated the main thread under load).
-        overworld.getChunkSource().nestworldRefreshLoadedChunks();
-        // 1. Vanilla global tick (time, weather, chunk I/O) — entity tick skipped by
-        // patch; due scheduled block/fluid ticks are parallelized from within it
-        // via runScheduledTicksPhase (ServerLevel patch calls back into us).
-        overworld.tick(hasTime);
-        long t1 = System.nanoTime();
-
-        // 1b. Region-Owned Chunk Scheduler, Phase 2 -- SHADOW MODE ONLY (docs/
-        // REGION_CHUNK_SCHEDULER_SPEC.md). Both calls are no-ops unless
-        // NestworldTuning.CHUNK_SCHEDULER_SHADOW_MODE is on; purely diagnostic, never
-        // influences real chunk loading. See net.nestworld.chunk.ChunkSchedulerShadow.
-        net.nestworld.chunk.ChunkSchedulerShadow.drainObservationsAndEnqueue(this);
-        net.nestworld.chunk.ChunkSchedulerShadow.drainForStats(this);
-
-        // 2. Apply boundary redstone signals + wire updates whose network left
-        // their region last tick (deferred by NestworldRedstone)
-        signalQueue.flush();
-        RegionMessage<net.minecraft.core.BlockPos> wireMsg;
-        while ((wireMsg = deferredWireUpdates.poll()) != null) {
-            try {
-                overworld.nestworldWireHandler.onWireUpdated(wireMsg.payload());
-            } catch (Throwable t) {
-                LOGGER.warn("Deferred wire update at {} failed: {}", wireMsg.payload(), t.toString());
-            }
-        }
-        long t2 = System.nanoTime();
-
-        // 3. Reassign entities that moved between regions
-        entityTransfer.checkAndReassign();
-
-        // 3b. Tick players on the main thread — their state is shared with the
-        // network thread, so region-thread ticking races on position and causes
-        // rubber-banding. Passengers are ticked by their vehicle's region.
-        // (copy — ticking can mutate the list via dimension change/disconnect)
-        for (net.minecraft.server.level.ServerPlayer player : java.util.List.copyOf(overworld.players())) {
-            if (player.isRemoved() || player.isPassenger()) continue;
-            try {
-                overworld.tickNonPassenger(player);
-            } catch (Throwable t) {
-                LOGGER.warn("Player {} tick error: {}", player.getGameProfile().getName(), t.getMessage());
-            }
-        }
-        // 3c. Tick pinned entity types on the main thread (mod-compat escape
-        // hatch). They are never assigned to a region, so no region thread
-        // touches them — the main thread ticks them here exactly as vanilla
-        // would. Zero cost when nothing is pinned.
-        if (!pins.isEmpty()) tickPinnedEntitiesOnMain();
-
-        // 3d. Predictive frontier: request generation of chunks ahead of moving
-        // players so terrain is ready before they arrive (no-op unless enabled).
-        // Additive — only adds expiring region tickets; the tiered budget paces them.
-        predictiveGen.tick(overworld);
-        long t3 = System.nanoTime();
-
-        // 4. Parallel tick — blocks until all region threads finish
-        pool.tickAllRegions();
-        long t4 = System.nanoTime();
-
-        // 4b. Stage 3 (docs/LOCAL_TICK_STAGE4.md, "entity-triggered block-write race"):
-        // apply explosion batches posted THIS tick by regions whose explosions reached
-        // into a neighbouring region's territory. Must run here — after the region-tick
-        // round (explosions happen during step 4, so nothing existed to apply before it)
-        // but before ghost-zone sync (5) below, so the freshly-destroyed blocks/removed
-        // block entities are reflected in this tick's ghost-zone snapshot instead of
-        // lagging an extra tick. Every region thread is parked here, same as every other
-        // main-thread-only phase in this method.
-        // Stage 5.3 design v3 (docs/LOCAL_TICK_STAGE4.md, "budgeted drain" fix): one
-        // deadline shared across every region and both message types in this pass —
-        // a flood targeting any single region (e.g. a chain-reaction explosion whose
-        // blast crosses a boundary) cannot stall the main thread past this budget.
-        // Anything left queued once the deadline hits is picked up on a LATER tick's
-        // pass instead — extends, not violates, these message types' existing Tier 2
-        // "eventually applied" contract.
-        long nestworldMailboxDeadline = System.nanoTime() + NestworldTuning.MAILBOX_DRAIN_BUDGET_NANOS;
-        for (WorldRegion region : grid.getAllRegions()) {
-            region.nestworldDrainMailboxBudgeted(RegionMessage.Type.EXPLOSION_APPLY, nestworldMailboxDeadline, msg -> {
-                try {
-                    net.minecraft.world.level.Explosion.NestworldExplosionBatch batch =
-                            (net.minecraft.world.level.Explosion.NestworldExplosionBatch) msg.payload();
-                    nestworldApplyWithCascadeGuard(region, msg, batch.positions(),
-                            () -> net.minecraft.world.level.Explosion.nestworldApplyBatch(batch));
-                } catch (Throwable t) {
-                    LOGGER.warn("Deferred explosion batch apply failed: {}", t.toString());
-                }
-            });
-            // 4c. Stage 3 EXTENSION (docs/LOCAL_TICK_STAGE4.md): generic Level.setBlock()
-            // calls (mob-AI, mod code — e.g. Draconic Evolution's reactor, EnderDragon/
-            // WitherBoss) deferred by Level.setBlock()'s guard when made from a region
-            // thread for a position outside its own bounds. Same barrier-safe point as
-            // EXPLOSION_APPLY above, applied on main so it is always safe to write anywhere.
-            region.nestworldDrainMailboxBudgeted(RegionMessage.Type.BLOCK_WRITE, nestworldMailboxDeadline, msg -> {
-                try {
-                    RegionMessage.BlockWrite write = (RegionMessage.BlockWrite) msg.payload();
-                    nestworldApplyWithCascadeGuard(region, msg, java.util.List.of(write.pos()),
-                            () -> overworld.setBlock(write.pos(), write.newState(), write.flags(), write.recursionLeft()));
-                } catch (Throwable t) {
-                    LOGGER.warn("Deferred block write at {} failed: {}", msg, t.toString());
-                }
-            });
-        }
-
-        // 5. Refresh ghost zones (runs while region threads are paused at barrier)
-        boundaryManager.syncGhostZones();
-        // 5b. Register/unregister entities that region threads spawned or removed
-        // this tick (queued to avoid corrupting ChunkMap's non-thread-safe entity
-        // tracking while the main thread ran it during overworld.tick). Region
-        // threads are idle at the barrier here, so this is the safe point on main.
-        drainDeferredRemovals();
-        drainDeferredTrackingAdds();
-        drainDeferredSpawns();
-        // 5c. Vanilla visibility/broadcast tracker (ChunkMap.tick()), deferred from its normal
-        // position (ServerChunkCache.tickChunks(), phase 1 — see the guard there) to HERE,
-        // strictly after region threads finish their tick: REGIONALIZED_TRACKER's skip-check
-        // (nestworldTrackedTick == this tick's number) can only ever succeed if it runs after
-        // regions have set that stamp for owned entities, which happens above in step 4. Also
-        // means players/unowned entities are tracked/broadcast with THIS tick's fresh position
-        // instead of last tick's (one tick less latency) — an intentional, understood side
-        // effect, not a bug. Region threads are fully parked outside the step-4 window, so no
-        // race is possible on the seenBy/lastSectionPos state this call writes.
-        overworld.getChunkSource().chunkMap.tick();
-        long t5 = System.nanoTime();
-
-        // 6. Adaptive split / merge
-        splitManager.onTick();
-        long t6 = System.nanoTime();
-
-        // 7. Optional border visualisation for players
-        renderBorderParticles();
-
-        phaseNanos[0] += t1 - t0;
-        phaseNanos[1] += t2 - t1;
-        phaseNanos[2] += t3 - t2;
-        phaseNanos[3] += t4 - t3;
-        phaseNanos[4] += t5 - t4;
-        phaseNanos[5] += t6 - t5;
-        phaseNanosCumulative[0] += t1 - t0;
-        phaseNanosCumulative[1] += t2 - t1;
-        phaseNanosCumulative[2] += t3 - t2;
-        phaseNanosCumulative[3] += t4 - t3;
-        phaseNanosCumulative[4] += t5 - t4;
-        phaseNanosCumulative[5] += t6 - t5;
-        timedTicksCumulative++;
-        if (++timedTicks >= TIMING_LOG_INTERVAL) {
-            if (TIMING_LOG) {
-                LOGGER.info("Tick phases avg ms over {} ticks: vanilla={} signals={} entityXfer={} regionPool={} ghostZones={} splitMerge={}",
-                        timedTicks,
-                        String.format("%.2f", phaseNanos[0] / 1e6 / timedTicks),
-                        String.format("%.2f", phaseNanos[1] / 1e6 / timedTicks),
-                        String.format("%.2f", phaseNanos[2] / 1e6 / timedTicks),
-                        String.format("%.2f", phaseNanos[3] / 1e6 / timedTicks),
-                        String.format("%.2f", phaseNanos[4] / 1e6 / timedTicks),
-                        String.format("%.2f", phaseNanos[5] / 1e6 / timedTicks));
-            }
-            java.util.Arrays.fill(phaseNanos, 0L);
-            timedTicks = 0;
-        }
-
-        if (++layoutSaveTickCounter >= LAYOUT_SAVE_INTERVAL_TICKS) {
-            layoutSaveTickCounter = 0;
-            int layout = grid.getLayoutVersion();
-            if (layout != lastSavedLayoutVersion) saveLayout();
-        }
-
-        // P0.1 per-tick correlation (docs/P0_REGIONTHREADPOOL_REDESIGN_SPEC.md follow-up):
-        // pollTask total / region tick total / actual latch wait / main-thread work outside
-        // pollTask, all for THIS tick's 5 awaitLatch() rounds combined. O(1) — a few subtractions
-        // on already-accumulated counters, no scan.
-        long nestworldTickWallNanos = System.nanoTime() - nestworldTickWallStart;
-        long[] nestworldTickAcc = pool.nestworldDrainTickAccumulators();
-        long nestworldDispatchTotal = nestworldTickAcc[0];
-        long nestworldWaitTotal = nestworldTickAcc[1];
-        long nestworldPollTotal = nestworldTickAcc[2];
-        long nestworldRegionMaxTotal = nestworldTickAcc[3];
-        long nestworldLatchWaitOnly = nestworldWaitTotal - nestworldPollTotal; // idle park portion
-        long nestworldOutsidePollTask = nestworldTickWallNanos - nestworldDispatchTotal - nestworldWaitTotal;
-        nestworldCorrelation.record(nestworldTickWallNanos, nestworldPollTotal, nestworldRegionMaxTotal,
-                nestworldLatchWaitOnly, nestworldOutsidePollTask);
-
-        // Spike log (NestworldTuning.SPIKE_LOG_THRESHOLD_NANOS): index WHEN + which phase
-        // dominated, for correlating against the continuous spark profile SparkBridge is
-        // already recording -- see that constant's javadoc. Cheap comparison on the
-        // already-computed tick_wall; the logging/allocation below only runs on an actual
-        // spike, never on the hot path otherwise.
-        if (NestworldTuning.SPIKE_LOG_THRESHOLD_NANOS > 0
-                && nestworldTickWallNanos >= NestworldTuning.SPIKE_LOG_THRESHOLD_NANOS) {
-            nestworldLogSpike(nestworldTickWallNanos, t0, t1, t2, t3, t4, t5, t6);
-        }
-    }
-
-    private static final String[] NESTWORLD_PHASE_NAMES =
-            {"vanilla(+3-pool-phases)", "signals", "entityXfer", "regionPool(entity)", "ghostZones+tracker", "splitMerge"};
-
-    /** Appends one line to {@code spark-spikes.txt} (same append-only convention as
-     *  {@code spark-history.txt}) and logs a WARN: timestamp, tick_wall ms, and the
-     *  dominant phase by cost -- so a spike found live in chat/log can be matched to the
-     *  right moment in the continuous spark profile without guessing. */
-    private void nestworldLogSpike(long tickWallNanos, long t0, long t1, long t2, long t3, long t4, long t5, long t6) {
-        long[] phaseNs = {t1 - t0, t2 - t1, t3 - t2, t4 - t3, t5 - t4, t6 - t5};
-        int dominant = 0;
-        for (int i = 1; i < phaseNs.length; i++) if (phaseNs[i] > phaseNs[dominant]) dominant = i;
-        double tickWallMs = tickWallNanos / 1e6;
-        double dominantMs = phaseNs[dominant] / 1e6;
-        double dominantPct = tickWallMs > 0 ? dominantMs / tickWallMs * 100.0 : 0.0;
-        String stamp = java.time.LocalDateTime.now()
-                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"));
-        String line = String.format("%s  tick_wall=%.1fms  dominant=%s(%.1fms,%.0f%%)  regions=%d",
-                stamp, tickWallMs, NESTWORLD_PHASE_NAMES[dominant], dominantMs, dominantPct,
-                grid.getAllRegions().size());
-        // Drill into ServerLevel's own THIS-TICK vanilla sub-phase snapshot when "vanilla"
-        // is the dominant phase -- otherwise "dominant=vanilla" alone doesn't say whether
-        // it was e.g. chunkSource (autosave/chunk I/O/gen) vs entityManagement vs blockEvents,
-        // and those have completely different fixes. See ServerLevel.nestworldLastSubphaseNanos.
-        if (dominant == 0) {
-            long[] sub = net.minecraft.server.level.ServerLevel.nestworldLastSubphaseNanos;
-            line += String.format("  [preChunkSource=%.1fms chunkSource=%.1fms blockEvents=%.1fms entitiesAndBE=%.1fms entityMgmt=%.1fms]",
-                    sub[0] / 1e6, sub[1] / 1e6, sub[2] / 1e6, sub[3] / 1e6, sub[4] / 1e6);
-        }
-        LOGGER.warn("NestWorld tick spike: {}", line);
-        try {
-            java.nio.file.Files.writeString(java.nio.file.Path.of("spark-spikes.txt"),
-                    line + System.lineSeparator(),
-                    java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
-        } catch (Throwable t) {
-            LOGGER.warn("spike log: failed to write spark-spikes.txt", t);
-        }
-    }
-
-    /** Cumulative-since-boot breakdown of the 6 sequential tick phases (vanilla/signals/
-     *  entityXfer/regionPool/ghostZones/splitMerge) -- sub-attributes the tick-correlation
-     *  telemetry's undifferentiated "outside_pollTask" residual. Zero behaviour change,
-     *  same discipline as every other /nestworld read-only stat command. */
-    public String nestworldTickPhaseReport() {
-        if (timedTicksCumulative == 0) return "NW tick phases: no ticks recorded yet";
-        double n = timedTicksCumulative;
-        double totalMs = 0;
-        for (long v : phaseNanosCumulative) totalMs += v / 1e6;
-        String[] names = {"vanilla(+3-pool-phases)", "signals", "entityXfer", "regionPool(entity)", "ghostZones+tracker", "splitMerge"};
-        StringBuilder sb = new StringBuilder(String.format(
-                "NW tick phases (cumulative since boot, %,d ticks, avg tick_wall=%.3fms):%n",
-                timedTicksCumulative, totalMs / n));
-        for (int i = 0; i < 6; i++) {
-            double avgMs = phaseNanosCumulative[i] / 1e6 / n;
-            double pct = totalMs > 0 ? (phaseNanosCumulative[i] / 1e6) / totalMs * 100.0 : 0.0;
-            sb.append(String.format("  %-24s avg=%.4fms (%.1f%%)%n", names[i], avgMs, pct));
-        }
-        return sb.toString();
-    }
-
-    /** P0.1 per-tick correlation accumulator (cumulative averages + max, main-thread-only). */
-    private final TickCorrelation nestworldCorrelation = new TickCorrelation();
-
-    static final class TickCorrelation {
-        long ticks = 0;
-        long tickWallSum = 0, tickWallMax = 0;
-        long pollSum = 0;
-        long regionMaxSum = 0;
-        long latchWaitSum = 0;
-        long outsideSum = 0, outsideMax = 0;
-
-        void record(long tickWall, long poll, long regionMax, long latchWait, long outside) {
-            ticks++;
-            tickWallSum += tickWall;
-            if (tickWall > tickWallMax) tickWallMax = tickWall;
-            pollSum += poll;
-            regionMaxSum += regionMax;
-            latchWaitSum += latchWait;
-            outsideSum += outside;
-            if (outside > outsideMax) outsideMax = outside;
-        }
-
-        String snapshot() {
-            if (ticks == 0) return "no ticks recorded yet";
-            return String.format(
-                "tick correlation over %,d ticks (avg ms, tick_wall max=%.3fms):%n" +
-                "  tick_wall=%.3f%n" +
-                "   +-- pollTask_total     =%.3f%n" +
-                "   +-- region_tick_total  =%.3f (max single region, summed across this tick's rounds)%n" +
-                "   +-- actual_latch_wait  =%.3f (idle park, NOT doing pollTask work)%n" +
-                "   +-- outside_pollTask   =%.3f (max=%.3fms) (ghostzones/splitmerge/entityXfer/vanilla-tick/etc.)%n",
-                ticks, tickWallMax / 1e6,
-                tickWallSum / 1e6 / ticks,
-                pollSum / 1e6 / ticks,
-                regionMaxSum / 1e6 / ticks,
-                latchWaitSum / 1e6 / ticks,
-                outsideSum / 1e6 / ticks, outsideMax / 1e6);
-        }
-    }
-
-    public String nestworldPollTaskReport() {
-        return net.nestworld.region.PollTaskAttribution.snapshot() + "\n" + nestworldCorrelation.snapshot()
-                + "\n" + net.nestworld.region.DistanceManagerAttribution.snapshot();
+        dr.tick(pins, hasTime);
     }
 
     /** P1.0 audit (docs/P1_WORLDGEN_MAINTHREAD_DECOUPLING_SPEC.md): worldgen/main-thread boundary. */
@@ -861,17 +514,15 @@ public class NestworldRegionSystem {
      * See {@link NestworldTuning#BORDER_BAND_CHUNKS} (single source of truth,
      * shared with {@link RegionSplitManager}'s split-veto scoring).
      */
-    private static final int BORDER_BAND_CHUNKS = NestworldTuning.BORDER_BAND_CHUNKS;
-
     /** Wire updates whose network left its region; re-run on main next tick. Stage 2
      *  (docs/LOCAL_TICK_STAGE4.md): wrapped in the tagged RegionMessage shape — this is
      *  the ACTUALLY-WIRED "Deferred" tier precedent (BoundarySignalQueue, despite its
-     *  javadoc, is dead code — enqueue() is never called anywhere in the repo). */
-    private final java.util.Queue<RegionMessage<net.minecraft.core.BlockPos>> deferredWireUpdates =
-            new java.util.concurrent.ConcurrentLinkedQueue<>();
-
+     *  javadoc, is dead code — enqueue() is never called anywhere in the repo). {@code
+     *  sourceRegion} now carries its own dimension (Stage 1a) so this resolves the right
+     *  {@link NestworldDimensionRegion} without needing a level parameter threaded through. */
     public void deferWireUpdate(WorldRegion sourceRegion, net.minecraft.core.BlockPos pos) {
-        deferredWireUpdates.add(RegionMessage.wireUpdate(sourceRegion, server.getTickCount(), pos.immutable()));
+        NestworldDimensionRegion dr = dimensions.get(sourceRegion.getDimension());
+        if (dr != null) dr.deferWireUpdate(sourceRegion, pos);
     }
 
     /**
@@ -970,6 +621,8 @@ public class NestworldRegionSystem {
     }
 
     public void runScheduledTicksPhase(ServerLevel level, long gameTime) {
+        NestworldDimensionRegion dr = getDimensionRegion(level);
+        if (dr == null) return;
         NestworldTickOwnership.noteServerTick(gameTime);
         Thread nestworldHere = Thread.currentThread();
         if (nestworldMainThreadIdentity == null) {
@@ -980,28 +633,7 @@ public class NestworldRegionSystem {
         }
 
         nestworldDrainPendingScheduleTicks();
-
-        java.util.Map<WorldRegion, java.util.List<Runnable>> buckets = new java.util.IdentityHashMap<>();
-        java.util.List<Runnable> mainBucket = new java.util.ArrayList<>();
-
-        nestworldLevelTicksIterating = true;
-        try {
-            level.getBlockTicks().tick(gameTime, 65536, (pos, block) ->
-                    routeScheduledTick(pos, () -> level.nestworldRunBlockTick(pos, block), buckets, mainBucket));
-            level.getFluidTicks().tick(gameTime, 65536, (pos, fluid) ->
-                    routeScheduledTick(pos, () -> level.nestworldRunFluidTick(pos, fluid), buckets, mainBucket));
-        } finally {
-            nestworldLevelTicksIterating = false;
-        }
-
-        for (Runnable r : mainBucket) {
-            try {
-                r.run();
-            } catch (Throwable t) {
-                LOGGER.warn("Main-band scheduled tick failed: {}", t.toString());
-            }
-        }
-        pool.runWorkRound(buckets, RegionPhase.SCHEDULED_TICK);
+        dr.runScheduledTicksPhase(gameTime);
     }
 
     // -----------------------------------------------------------------------
@@ -1012,33 +644,24 @@ public class NestworldRegionSystem {
     // return false and tick inline on main, exactly like scheduled ticks.
     // -----------------------------------------------------------------------
 
-    private final java.util.Map<WorldRegion, java.util.List<Runnable>> randomTickBuckets =
-            new java.util.IdentityHashMap<>();
-
     /** Called from the patched ServerLevel.tickChunk. True = queued for a region thread. */
     public static boolean queueRandomTicksFor(ServerLevel level,
                                               net.minecraft.world.level.chunk.LevelChunk chunk,
                                               int randomTickSpeed) {
         if (!isInitialised()) return false;
-        NestworldRegionSystem sys = get();
-        if (level != sys.overworld) return false;
+        NestworldDimensionRegion dr = get().getDimensionRegion(level);
+        if (dr == null) return false;
         net.minecraft.world.level.ChunkPos pos = chunk.getPos();
-        WorldRegion region = sys.grid.getRegionForChunk(pos.x, pos.z);
-        if (region == null
-                || pos.x < region.getMinChunkX() + BORDER_BAND_CHUNKS || pos.x > region.getMaxChunkX() - BORDER_BAND_CHUNKS
-                || pos.z < region.getMinChunkZ() + BORDER_BAND_CHUNKS || pos.z > region.getMaxChunkZ() - BORDER_BAND_CHUNKS) {
-            return false;
-        }
-        sys.randomTickBuckets.computeIfAbsent(region, r -> new java.util.ArrayList<>())
-                .add(() -> level.nestworldRandomTickChunk(chunk, randomTickSpeed));
+        WorldRegion region = dr.interiorRegionFor(pos.x, pos.z);
+        if (region == null) return false;
+        dr.queueRandomTick(region, () -> level.nestworldRandomTickChunk(chunk, randomTickSpeed));
         return true;
     }
 
     /** Runs the queued per-chunk random ticks on their region threads (parallel). */
-    public void flushRandomTicksPhase() {
-        if (randomTickBuckets.isEmpty()) return;
-        pool.runWorkRound(randomTickBuckets, RegionPhase.RANDOM_TICK);
-        randomTickBuckets.clear();
+    public void flushRandomTicksPhase(ServerLevel level) {
+        NestworldDimensionRegion dr = getDimensionRegion(level);
+        if (dr != null) dr.flushRandomTicksPhase();
     }
 
     // -----------------------------------------------------------------------
@@ -1055,136 +678,15 @@ public class NestworldRegionSystem {
     public static java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity> beginBlockEntityPhase(net.minecraft.world.level.Level level) {
         if (!isInitialised()) return null;
         NestworldRegionSystem sys = get();
-        if (level != sys.overworld) return null;
+        if (!sys.isManagedLevel(level)) return null;
         return new java.util.ArrayList<>();
     }
-
-    private int bePhaseLogCountdown = 0;
-
-    /** Debug: -Dnestworld.beTracePos=x,y,z logs that ticker's routing every BE phase. */
-    private static final net.minecraft.core.BlockPos BE_TRACE_POS;
-    static {
-        String s = System.getProperty("nestworld.beTracePos");
-        net.minecraft.core.BlockPos p = null;
-        if (s != null) {
-            String[] parts = s.split(",");
-            p = new net.minecraft.core.BlockPos(Integer.parseInt(parts[0].trim()),
-                    Integer.parseInt(parts[1].trim()), Integer.parseInt(parts[2].trim()));
-        }
-        BE_TRACE_POS = p;
-    }
-    private int beTraceCountdown = 0;
 
     /** Buckets and runs the tickers collected by the patched tickBlockEntities. */
     public void runBlockEntityPhase(ServerLevel level,
                                     java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity> due) {
-        // E5: bucket the TickingBlockEntity objects themselves and submit ONE composite Runnable
-        // per region (was: a Runnable per BE — 5k BEs → 200k transient lambdas/s — plus an
-        // auto-pin wrapper lambda each). Per-BE isolation is preserved inside tickBlockEntityList
-        // (per-BE try/catch + auto-pin error note), so one broken BE still cannot kill the round.
-        java.util.Map<WorldRegion, java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity>> beBuckets =
-                new java.util.IdentityHashMap<>();
-        java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity> mainBes = new java.util.ArrayList<>();
-        boolean traced = false;
-        for (net.minecraft.world.level.block.entity.TickingBlockEntity ticker : due) {
-            net.minecraft.core.BlockPos pos = ticker.getPos();
-            if (BE_TRACE_POS != null && BE_TRACE_POS.equals(pos)) traced = true;
-            int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
-            String typeId = ticker.getType();
-            // Pinned BE types always tick on main (mod compat), regardless of position —
-            // takes priority over cascade-safe. Cascade-safe types (operator-asserted: never
-            // write a neighbouring block, never trigger redstone/piston) skip the border-band
-            // inset check entirely and go straight to their true owning region, even inside
-            // another region's border band; everything else keeps the conservative check.
-            boolean pinned = !pins.isBeEmpty() && pins.isBePinned(typeId);
-            boolean cascadeSafe = !pinned && !pins.isCascadeSafeBeEmpty() && pins.isCascadeSafeBe(typeId);
-            // Heat is recorded either way (real load, informs cut position); only load that
-            // still needs border-band protection counts toward the split veto.
-            if (pinned || cascadeSafe) {
-                blockTickHeat.record(cx, cz);
-            } else {
-                blockTickHeat.recordVetoable(cx, cz);
-            }
-            WorldRegion region = pinned ? null
-                    : cascadeSafe ? grid.getRegionForChunk(cx, cz)
-                    : interiorRegionFor(cx, cz);
-            if (region == null) {
-                mainBes.add(ticker);
-            } else {
-                beBuckets.computeIfAbsent(region, r -> new java.util.ArrayList<>()).add(ticker);
-            }
-        }
-        if (BE_TRACE_POS != null && !traced && ++beTraceCountdown >= 40) {
-            beTraceCountdown = 0;
-            LOGGER.info("BE trace {}: NOT in due list (not collected on main)", BE_TRACE_POS);
-        }
-        boolean logNow = ++bePhaseLogCountdown >= 200;
-        if (logNow) {
-            bePhaseLogCountdown = 0;
-            StringBuilder sb = new StringBuilder();
-            for (var e : beBuckets.entrySet()) {
-                sb.append(" #").append(e.getKey().getId()).append('=').append(e.getValue().size());
-            }
-            LOGGER.info("BE phase: due={} main={} buckets:{}", due.size(), mainBes.size(), sb);
-        }
-        tickBlockEntityList(level, mainBes);
-        // Batches of 32 keep the work-round budget granular (runWorkBudgeted checks its deadline
-        // between runnables and defers the remainder) while still cutting the per-BE lambda churn
-        // ~32×. One giant composite per region would run unbudgeted.
-        final int nestworldBeBatch = 32;
-        java.util.Map<WorldRegion, java.util.List<Runnable>> buckets = new java.util.IdentityHashMap<>();
-        for (var e : beBuckets.entrySet()) {
-            final java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity> list = e.getValue();
-            java.util.List<Runnable> runs = new java.util.ArrayList<>((list.size() + nestworldBeBatch - 1) / nestworldBeBatch);
-            for (int i = 0; i < list.size(); i += nestworldBeBatch) {
-                final java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity> slice =
-                        list.subList(i, Math.min(i + nestworldBeBatch, list.size()));
-                runs.add(() -> tickBlockEntityList(level, slice));
-            }
-            buckets.put(e.getKey(), runs);
-        }
-        int before = buckets.size();
-        pool.runWorkRoundDropIfBacklogged(buckets, RegionPhase.BLOCK_ENTITY);
-        if (logNow && buckets.size() != before) {
-            LOGGER.info("BE phase: {} region bucket(s) dropped (backlog)", before - buckets.size());
-        }
-    }
-
-    /** Ticks a bucket of block entities with per-BE isolation: a throwing BE is logged (and fed
-     *  to the auto-pin detector) and the rest of the bucket still runs — same semantics as the
-     *  former one-Runnable-per-BE dispatch, without the per-BE lambda churn. */
-    private void tickBlockEntityList(ServerLevel level,
-                                     java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity> list) {
-        for (net.minecraft.world.level.block.entity.TickingBlockEntity ticker : list) {
-            if (BE_TRACE_POS != null && BE_TRACE_POS.equals(ticker.getPos())) {
-                net.minecraft.core.BlockPos pos = ticker.getPos();
-                int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
-                net.minecraft.world.level.chunk.LevelChunk c = level.getChunkSource().getChunkNow(cx, cz);
-                LOGGER.info("BE trace exec {} on [{}]: removed={} fullStatus={} entitiesLoaded={}",
-                        pos, Thread.currentThread().getName(), ticker.isRemoved(),
-                        c == null ? "NO_CHUNK" : c.getFullStatus(),
-                        level.areEntitiesLoaded(net.minecraft.world.level.ChunkPos.asLong(cx, cz)));
-            }
-            try {
-                ticker.tick();
-            } catch (Throwable err) {
-                if (pins.isAutoPinEnabled()) pins.noteBlockEntityTickError(ticker.getType());
-                LOGGER.warn("Block entity tick failed at {}: {}", ticker.getPos(), err.toString());
-            }
-        }
-    }
-
-    /** The region owning chunk (cx,cz) if the chunk sits strictly inside its interior (outside
-     *  the border band); null routes the work to the main-thread bucket. Shared routing rule of
-     *  the parallel work rounds (see routeScheduledTick). */
-    private WorldRegion interiorRegionFor(int cx, int cz) {
-        WorldRegion region = grid.getRegionForChunk(cx, cz);
-        if (region != null
-                && cx >= region.getMinChunkX() + BORDER_BAND_CHUNKS && cx <= region.getMaxChunkX() - BORDER_BAND_CHUNKS
-                && cz >= region.getMinChunkZ() + BORDER_BAND_CHUNKS && cz <= region.getMaxChunkZ() - BORDER_BAND_CHUNKS) {
-            return region;
-        }
-        return null;
+        NestworldDimensionRegion dr = getDimensionRegion(level);
+        if (dr != null) dr.runBlockEntityPhase(pins, due);
     }
 
     // -----------------------------------------------------------------------
@@ -1199,123 +701,18 @@ public class NestworldRegionSystem {
 
     /** Drains and runs the level's block-event queue, bucketed per region. */
     public void runBlockEventsPhase(ServerLevel level) {
-        java.util.List<net.minecraft.world.level.BlockEventData> due =
-                level.nestworldDrainBlockEvents();
-        if (due.isEmpty()) return;
-
-        java.util.Map<WorldRegion, java.util.List<Runnable>> buckets = new java.util.IdentityHashMap<>();
-        java.util.List<Runnable> mainBucket = new java.util.ArrayList<>();
-        for (net.minecraft.world.level.BlockEventData e : due) {
-            Runnable run = () -> {
-                if (level.nestworldShouldTickBlocksAt(e.pos())) {
-                    if (level.nestworldDoBlockEvent(e)) {
-                        level.nestworldBroadcastBlockEvent(e);
-                    }
-                } else {
-                    level.nestworldRescheduleBlockEvent(e);
-                }
-            };
-            routeScheduledTick(e.pos(), run, buckets, mainBucket);
-        }
-        for (Runnable r : mainBucket) {
-            try {
-                r.run();
-            } catch (Throwable t) {
-                LOGGER.warn("Main-band block event failed: {}", t.toString());
-            }
-        }
-        pool.runWorkRound(buckets, RegionPhase.BLOCK_EVENT);
-    }
-
-    private void routeScheduledTick(net.minecraft.core.BlockPos pos, Runnable run,
-                                    java.util.Map<WorldRegion, java.util.List<Runnable>> buckets,
-                                    java.util.List<Runnable> mainBucket) {
-        int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
-        // Record block-tick load for the split scorer regardless of which side
-        // of the band it lands on — a hot column currently stuck in the band is
-        // exactly what we want the next split to see and route into an interior.
-        // Scheduled ticks/fluid ticks/block events always need border-band
-        // protection (no cascade-safe concept applies here), so this always
-        // counts toward the split veto.
-        blockTickHeat.recordVetoable(cx, cz);
-        WorldRegion region = interiorRegionFor(cx, cz);
-        if (region != null) {
-            buckets.computeIfAbsent(region, r -> new java.util.ArrayList<>()).add(run);
-        } else {
-            mainBucket.add(run);
-        }
+        NestworldDimensionRegion dr = getDimensionRegion(level);
+        if (dr != null) dr.runBlockEventsPhase();
     }
 
     // -----------------------------------------------------------------------
     // Region border visualisation (/nestworld borders)
     // -----------------------------------------------------------------------
 
-    /** When true, region borders near players are outlined with particles. */
+    /** When true, region borders near players are outlined with particles. Shared across every
+     *  managed dimension (an operator toggling this means "show borders everywhere", matching
+     *  the toggle's own single admin command). */
     public static volatile boolean showBorders = false;
-    private static final int BORDER_VIEW_RANGE = 96;   // blocks
-    private int borderParticleTimer = 0;
-
-    private void renderBorderParticles() {
-        if (!showBorders || (++borderParticleTimer % 10) != 0) return;
-
-        for (net.minecraft.server.level.ServerPlayer player : overworld.players()) {
-            int px = player.getBlockX(), py = player.getBlockY(), pz = player.getBlockZ();
-
-            for (WorldRegion r : grid.getAllRegions()) {
-                // Block-space edges of the region (east/south edges are exclusive)
-                int west = r.getMinChunkX() << 4;
-                int east = (r.getMaxChunkX() + 1) << 4;
-                int north = r.getMinChunkZ() << 4;
-                int south = (r.getMaxChunkZ() + 1) << 4;
-
-                drawBorderPlaneX(player, west,  north, south, px, py, pz);
-                drawBorderPlaneX(player, east,  north, south, px, py, pz);
-                drawBorderPlaneZ(player, north, west,  east,  px, py, pz);
-                drawBorderPlaneZ(player, south, west,  east,  px, py, pz);
-            }
-        }
-    }
-
-    private void drawBorderPlaneX(net.minecraft.server.level.ServerPlayer player,
-                                  int x, int zMin, int zMax, int px, int py, int pz) {
-        if (Math.abs(px - x) > BORDER_VIEW_RANGE) return;
-        int from = Math.max(zMin, pz - BORDER_VIEW_RANGE);
-        int to   = Math.min(zMax, pz + BORDER_VIEW_RANGE);
-        for (int z = from; z <= to; z += 2) {
-            for (int y = py - 8; y <= py + 12; y += 4) {
-                overworld.sendParticles(player, net.minecraft.core.particles.ParticleTypes.END_ROD,
-                        false, x + 0.0, y + 0.5, z + 0.5, 1, 0, 0, 0, 0);
-            }
-        }
-    }
-
-    private void drawBorderPlaneZ(net.minecraft.server.level.ServerPlayer player,
-                                  int z, int xMin, int xMax, int px, int py, int pz) {
-        if (Math.abs(pz - z) > BORDER_VIEW_RANGE) return;
-        int from = Math.max(xMin, px - BORDER_VIEW_RANGE);
-        int to   = Math.min(xMax, px + BORDER_VIEW_RANGE);
-        for (int x = from; x <= to; x += 2) {
-            for (int y = py - 8; y <= py + 12; y += 4) {
-                overworld.sendParticles(player, net.minecraft.core.particles.ParticleTypes.END_ROD,
-                        false, x + 0.5, y + 0.5, z + 0.0, 1, 0, 0, 0, 0);
-            }
-        }
-    }
-
-    private void runAutosplitTest() {
-        if (AUTOSPLIT_AT_TICK < 0) return;
-        totalTicks++;
-        if (totalTicks == AUTOSPLIT_AT_TICK) {
-            WorldRegion target = tree.getActiveRegions().get(0);
-            LOGGER.info("[AUTOSPLIT TEST] forcing split of {}", target);
-            autosplitChildren = splitManager.doSplit(target);
-            LOGGER.info("[AUTOSPLIT TEST] split result: {}", (Object) autosplitChildren);
-        } else if (totalTicks == AUTOSPLIT_AT_TICK + 600 && autosplitChildren != null) {
-            LOGGER.info("[AUTOSPLIT TEST] forcing merge of {} + {}", autosplitChildren[0], autosplitChildren[1]);
-            WorldRegion merged = splitManager.doMerge(autosplitChildren[0], autosplitChildren[1]);
-            LOGGER.info("[AUTOSPLIT TEST] merge result: {}", merged);
-        }
-    }
 
     // -----------------------------------------------------------------------
     // Shutdown
@@ -1323,11 +720,11 @@ public class NestworldRegionSystem {
 
     private void shutdown() {
         LOGGER.info("Shutting down NestWorld region threads…");
-        // Persist the layout before tearing threads down so the next boot skips
-        // the cold-start freeze (whole world on one thread until splits catch up).
-        saveLayout();
-        for (RegionThread t : pool.getThreads()) {
-            t.shutdown();
+        // Persist each managed dimension's layout before tearing its threads down so the
+        // next boot skips the cold-start freeze (whole world on one thread until splits
+        // catch up).
+        for (NestworldDimensionRegion dr : dimensions.values()) {
+            dr.shutdown();
         }
         LOGGER.info("NestWorld region system stopped");
     }
@@ -1341,8 +738,36 @@ public class NestworldRegionSystem {
      *  chunk coordinates can numerically collide with the overworld's but must never be
      *  resolved through its region grid. */
     public ServerLevel getOverworld()                 { return overworld; }
-    public WorldGrid getGrid()                        { return grid; }
-    public BoundaryManager getBoundaryManager()        { return boundaryManager; }
+
+    /** Region-sharding for Nether/End, Stage 0a: true if {@code level} is one of the
+     *  dimensions NestWorld manages (today, always just the overworld — see {@link
+     *  #dimensions}'s javadoc). Prefer this over comparing against {@link #getOverworld()}
+     *  directly in new code. Accepts {@link Level} (not {@link ServerLevel}) to match how
+     *  existing call sites are typed (e.g. {@code Entity.level()}). */
+    public boolean isManagedLevel(Level level) {
+        return level instanceof ServerLevel sl && dimensions.containsKey(sl.dimension());
+    }
+
+    /** Same as {@link #isManagedLevel(Level)} but from a dimension key directly, for call
+     *  sites that already have one (e.g. {@code ServerLevel.dimension()}) without needing
+     *  to resolve the actual {@link ServerLevel} instance first. */
+    public boolean isManagedDimension(net.minecraft.resources.ResourceKey<Level> key) {
+        return dimensions.containsKey(key);
+    }
+
+    /** Region-sharding for Nether/End, Stage 0a: the {@link NestworldDimensionRegion} for
+     *  {@code level}, or null if it isn't managed. Null-safe on non-{@link ServerLevel}
+     *  input (matches {@link #isManagedLevel(Level)}'s guard). */
+    public NestworldDimensionRegion getDimensionRegion(Level level) {
+        return level instanceof ServerLevel sl ? dimensions.get(sl.dimension()) : null;
+    }
+
+    /** Same as {@link #getDimensionRegion(Level)} but from a dimension key directly, for call
+     *  sites that only have a {@link WorldRegion} (which carries its own key, Stage 1a) and no
+     *  separate {@link Level}/{@link ServerLevel} reference in scope. */
+    public NestworldDimensionRegion getDimensionRegionByKey(net.minecraft.resources.ResourceKey<Level> key) {
+        return dimensions.get(key);
+    }
 
     /**
      * Step 3 (docs/LOCAL_TICK_STAGE4.md, "Step 3 — Single Free-Running Region", design
@@ -1360,13 +785,14 @@ public class NestworldRegionSystem {
      * @return the paused regions, to hand back to {@link #nestworldResumeFreeRunningRegionsAfterSave}
      */
     public static java.util.List<WorldRegion> nestworldPauseFreeRunningRegionsForSave(ServerLevel level) {
-        if (!NestworldTuning.FREE_RUNNING_REGIONS_ENABLED || !isInitialised()
-                || level != INSTANCE.overworld) {
+        NestworldDimensionRegion dr = !NestworldTuning.FREE_RUNNING_REGIONS_ENABLED || !isInitialised()
+                ? null : INSTANCE.getDimensionRegion(level);
+        if (dr == null) {
             return java.util.List.of();
         }
         java.util.List<WorldRegion> freeRunning = new java.util.ArrayList<>();
         java.util.List<java.util.concurrent.CountDownLatch> paused = new java.util.ArrayList<>();
-        for (WorldRegion region : INSTANCE.grid.getAllRegions()) {
+        for (WorldRegion region : dr.getGrid().getAllRegions()) {
             if (region.isFreeRunning()) {
                 freeRunning.add(region);
                 paused.add(region.nestworldRequestSaveRendezvous());
@@ -1409,79 +835,7 @@ public class NestworldRegionSystem {
     public boolean nestworldDeferForeignBlockWrite(WorldRegion source, WorldRegion destination,
             net.minecraft.core.BlockPos pos, net.minecraft.world.level.block.state.BlockState newState,
             int flags, int recursionLeft) {
-        boolean nestworldWouldChange = !overworld.getBlockState(pos).equals(newState);
-        source.nestworldSendOrQueue(destination, RegionMessage.blockWrite(source, destination, server.getTickCount(),
-                new RegionMessage.BlockWrite(pos.immutable(), newState, flags, recursionLeft)));
-        return nestworldWouldChange;
+        NestworldDimensionRegion dr = dimensions.get(source.getDimension());
+        return dr != null && dr.deferForeignBlockWrite(source, destination, pos, newState, flags, recursionLeft);
     }
-
-    /**
-     * Stage 5 tick-scheduler architecture, Part 3 (docs/LOCAL_TICK_STAGE4.md, "Stage 5
-     * tick-scheduler architecture — DECIDED", Blocker 3 read-side). Applies {@code
-     * applyWork} only after acquiring the {@code chunkLock} of every region within
-     * {@link NestworldTuning#CASCADE_SAFETY_MARGIN_BLOCKS} of every position in {@code
-     * positions} — the set whose territory a piston push or redstone cascade triggered
-     * by this write could plausibly reach. Locks are acquired in ascending region-ID
-     * order (deadlock avoidance, same rule any future multi-region lock acquisition in
-     * this codebase must follow) with a bounded timeout ({@link
-     * NestworldTuning#CASCADE_LOCK_TIMEOUT_NANOS}). On timeout: does NOT apply — re-posts
-     * {@code msg} to {@code destination}'s own mailbox so it is retried on a later pass,
-     * the same "eventually applied" Tier 2 contract every other deferred write already
-     * uses, not a new failure mode.
-     *
-     * <p>Under today's still-barrier-synchronized model this is always uncontended —
-     * every region thread is already parked at the point this runs (step 4b/4c, after
-     * {@code pool.tickAllRegions()}'s barrier) — so lock acquisition here always succeeds
-     * immediately. It becomes load-bearing only once regions go free-running (Part 5),
-     * at which point a border-band-deferred write's cascade could otherwise race a
-     * neighbouring region's own concurrent tick. Deliberately built and tested now, while
-     * harmless, rather than deferred until Part 5 needs it for the first time.
-     */
-    private void nestworldApplyWithCascadeGuard(WorldRegion destination, RegionMessage<?> msg,
-            java.util.Collection<net.minecraft.core.BlockPos> positions, Runnable applyWork) {
-        java.util.TreeSet<WorldRegion> toLock = new java.util.TreeSet<>(
-                java.util.Comparator.comparingInt(WorldRegion::getId));
-        for (net.minecraft.core.BlockPos pos : positions) {
-            toLock.addAll(grid.getRegionsWithinMargin(pos, NestworldTuning.CASCADE_SAFETY_MARGIN_BLOCKS));
-        }
-        java.util.List<WorldRegion> locked = new java.util.ArrayList<>(toLock.size());
-        java.util.List<Long> stamps = new java.util.ArrayList<>(toLock.size());
-        long deadline = System.nanoTime() + NestworldTuning.CASCADE_LOCK_TIMEOUT_NANOS;
-        try {
-            for (WorldRegion r : toLock) {
-                long remainingNanos = deadline - System.nanoTime();
-                long stamp = 0L;
-                if (remainingNanos > 0) {
-                    try {
-                        stamp = r.getChunkLock().tryWriteLock(remainingNanos, java.util.concurrent.TimeUnit.NANOSECONDS);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                }
-                if (stamp == 0L) {
-                    LOGGER.warn("Cascade guard: timed out locking region {} for a deferred write near {} "
-                            + "— re-queued for a later pass", r.getId(), positions);
-                    destination.nestworldRequeueMessage(msg); // NOT a new "sent" — same message, still pending
-                    return;
-                }
-                locked.add(r);
-                stamps.add(stamp);
-            }
-            applyWork.run();
-            MailboxAudit.recordApplied(msg.auditId(), destination, msg.messageType());
-        } finally {
-            for (int i = locked.size() - 1; i >= 0; i--) {
-                locked.get(i).getChunkLock().unlockWrite(stamps.get(i));
-            }
-        }
-    }
-
-    public RegionTree getTree()                       { return tree; }
-    public RegionThreadPool getPool()                 { return pool; }
-    public RegionSplitManager getSplitManager()       { return splitManager; }
-    BlockTickHeat getBlockTickHeat()                  { return blockTickHeat; }
-    public BoundarySignalQueue getSignalQueue()       { return signalQueue; }
-    public BoundaryEntityTransfer getEntityTransfer() { return entityTransfer; }
-    public CrossRegionCapabilityBus getCapabilityBus(){ return capabilityBus; }
-    public RegionChunkView getChunkView()             { return chunkView; }
 }

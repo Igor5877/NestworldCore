@@ -62,7 +62,9 @@ public final class EntityOwnershipGuard {
         WorldRegion self = rt.getRegion();
         if (self.ownsEntity(entity.getUUID())) return;
         if (!NestworldRegionSystem.isInitialised()) return;
-        WorldRegion actualOwner = NestworldRegionSystem.get().getGrid().findOwningRegion(entity.getUUID());
+        NestworldDimensionRegion dr = NestworldRegionSystem.get().getDimensionRegion(entity.level());
+        if (dr == null) return;
+        WorldRegion actualOwner = dr.getGrid().findOwningRegion(entity.getUUID());
         if (actualOwner == null || actualOwner == self) return;
 
         long n = violationTotal.incrementAndGet();

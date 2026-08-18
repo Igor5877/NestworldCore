@@ -103,13 +103,13 @@ public class RegionTree {
             if (axis == SplitAxis.X) {
                 int mid = cut == Integer.MIN_VALUE ? (minX + maxX) / 2
                         : Math.max(minX, Math.min(cut, maxX - 1));
-                childA = new WorldRegion(grid.nextId(), minX,   minZ, mid,  maxZ);
-                childB = new WorldRegion(grid.nextId(), mid + 1, minZ, maxX, maxZ);
+                childA = new WorldRegion(grid.nextId(), grid.getDimension(), minX,   minZ, mid,  maxZ);
+                childB = new WorldRegion(grid.nextId(), grid.getDimension(), mid + 1, minZ, maxX, maxZ);
             } else {
                 int mid = cut == Integer.MIN_VALUE ? (minZ + maxZ) / 2
                         : Math.max(minZ, Math.min(cut, maxZ - 1));
-                childA = new WorldRegion(grid.nextId(), minX, minZ,   maxX, mid);
-                childB = new WorldRegion(grid.nextId(), minX, mid + 1, maxX, maxZ);
+                childA = new WorldRegion(grid.nextId(), grid.getDimension(), minX, minZ,   maxX, mid);
+                childB = new WorldRegion(grid.nextId(), grid.getDimension(), minX, mid + 1, maxX, maxZ);
             }
 
             grid.unregister(region);
@@ -144,7 +144,7 @@ public class RegionTree {
             int maxX = Math.max(a.getMaxChunkX(), b.getMaxChunkX());
             int maxZ = Math.max(a.getMaxChunkZ(), b.getMaxChunkZ());
 
-            WorldRegion merged = new WorldRegion(grid.nextId(), minX, minZ, maxX, maxZ);
+            WorldRegion merged = new WorldRegion(grid.nextId(), grid.getDimension(), minX, minZ, maxX, maxZ);
             grid.unregister(a);
             grid.unregister(b);
             grid.register(merged);
@@ -244,7 +244,7 @@ public class RegionTree {
             Node right = readNode(t.getCompound("right"));
             return new Branch(axis, left, right);
         }
-        WorldRegion r = new WorldRegion(grid.nextId(),
+        WorldRegion r = new WorldRegion(grid.nextId(), grid.getDimension(),
                 t.getInt("minX"), t.getInt("minZ"), t.getInt("maxX"), t.getInt("maxZ"));
         r.pinned = t.getBoolean("pinned");
         grid.register(r);
@@ -264,11 +264,11 @@ public class RegionTree {
                 org.apache.logging.log4j.LogManager.getLogger("NestWorld/RegionTree");
 
         // Case 1: single split -> reload -> the two leaves still merge (nesting).
-        WorldGrid g1 = new WorldGrid();
-        WorldRegion root1 = new WorldRegion(g1.nextId(), -100, -100, 100, 100);
+        WorldGrid g1 = new WorldGrid(net.minecraft.world.level.Level.OVERWORLD);
+        WorldRegion root1 = new WorldRegion(g1.nextId(), g1.getDimension(), -100, -100, 100, 100);
         RegionTree t1 = new RegionTree(g1, root1);
         t1.split(root1, SplitAxis.X, 0);
-        WorldGrid g1b = new WorldGrid();
+        WorldGrid g1b = new WorldGrid(net.minecraft.world.level.Level.OVERWORLD);
         RegionTree t1b = new RegionTree(g1b, t1.writeNbt());
         List<WorldRegion> leaves1 = t1b.getActiveRegions();
         boolean twoLeaves = leaves1.size() == 2;
@@ -278,24 +278,24 @@ public class RegionTree {
                 && merged.getMinChunkZ() == -100 && merged.getMaxChunkZ() == 100;
 
         // Case 2: two-level tree -> reload -> identical leaf rectangle set.
-        WorldGrid g2 = new WorldGrid();
-        WorldRegion root2 = new WorldRegion(g2.nextId(), -100, -100, 100, 100);
+        WorldGrid g2 = new WorldGrid(net.minecraft.world.level.Level.OVERWORLD);
+        WorldRegion root2 = new WorldRegion(g2.nextId(), g2.getDimension(), -100, -100, 100, 100);
         RegionTree t2 = new RegionTree(g2, root2);
         WorldRegion[] kids = t2.split(root2, SplitAxis.X, 0);
         t2.split(kids[0], SplitAxis.Z, 0);
         java.util.Set<String> before = rectSet(t2.getActiveRegions());
-        WorldGrid g2b = new WorldGrid();
+        WorldGrid g2b = new WorldGrid(net.minecraft.world.level.Level.OVERWORLD);
         RegionTree t2b = new RegionTree(g2b, t2.writeNbt());
         java.util.Set<String> after = rectSet(t2b.getActiveRegions());
         boolean rectsMatch = before.size() == 3 && before.equals(after);
 
         // Case 3: pinned flag survives the round-trip.
-        WorldGrid g3 = new WorldGrid();
-        WorldRegion root3 = new WorldRegion(g3.nextId(), -50, -50, 50, 50);
+        WorldGrid g3 = new WorldGrid(net.minecraft.world.level.Level.OVERWORLD);
+        WorldRegion root3 = new WorldRegion(g3.nextId(), g3.getDimension(), -50, -50, 50, 50);
         RegionTree t3 = new RegionTree(g3, root3);
         WorldRegion[] k3 = t3.split(root3, SplitAxis.X, 0);
         k3[0].pinned = true;
-        RegionTree t3b = new RegionTree(new WorldGrid(), t3.writeNbt());
+        RegionTree t3b = new RegionTree(new WorldGrid(net.minecraft.world.level.Level.OVERWORLD), t3.writeNbt());
         boolean pinnedKept = t3b.getActiveRegions().stream().filter(r -> r.pinned).count() == 1;
 
         boolean ok = twoLeaves && mergeRestoresRoot && rectsMatch && pinnedKept;

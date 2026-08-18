@@ -347,7 +347,7 @@
     }
  
     public boolean m_7306_(Entity p_20356_) {
-@@ -2410,14 +_,20 @@
+@@ -2410,14 +_,38 @@
  
     @Nullable
     public Entity m_5489_(ServerLevel p_20118_) {
@@ -355,6 +355,24 @@
 +   }
 +   @Nullable
 +   public Entity changeDimension(ServerLevel p_20118_, net.minecraftforge.common.util.ITeleporter teleporter) {
++      // NestWorld Stage 0.5 (region-sharding for Nether/End plan): live-reproduced deadlock fix.
++      // The portal SEARCH/CREATE step below (teleporter.getPortalInfo -> findDimensionEntryPoint
++      // -> getExitPortal -> PortalForcer.findPortalAround/createPortal) touches the DESTINATION
++      // dimension's chunk source -- which, if that dimension isn't region-managed (true for
++      // Nether/End today), has none of NestWorld's nonblocking-read fast path. Reproduced live: a
++      // region thread calling this off-main blocked in ServerChunkCache.getChunk() waiting on a
++      // chunk-load future the main thread needed to drive, while the main thread was itself
++      // blocked at the region barrier waiting for that same region thread -- a deadlock, killed
++      // by the watchdog after 60s. Guarding only the final entity-add (see
++      // ServerLevel.addDuringTeleport's patch) is NOT sufficient; the whole call must move to
++      // main. Callers of this method already treat its result as @Nullable for other reasons (no
++      // portal found, ForgeHooks.onTravelToDimension cancelling it) -- deferring and returning
++      // null here is the same contract, not a new one.
++      if (net.nestworld.region.NestworldRegionSystem.isInitialised()
++            && Thread.currentThread() instanceof net.nestworld.region.RegionThread) {
++         net.nestworld.region.NestworldRegionSystem.get().queueDimensionChange(this, p_20118_, teleporter);
++         return null;
++      }
 +      if (!net.minecraftforge.common.ForgeHooks.onTravelToDimension(this, p_20118_.m_46472_())) return null;
        if (this.m_9236_() instanceof ServerLevel && !this.m_213877_()) {
           this.m_9236_().m_46473_().m_6180_("changeDimension");

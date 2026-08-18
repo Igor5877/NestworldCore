@@ -121,7 +121,7 @@
 -         this.f_8553_.m_193225_(k, 65536, this::m_184112_);
 -         profilerfiller.m_6182_("fluidTicks");
 -         this.f_184047_.m_193225_(k, 65536, this::m_184076_);
-+         if (net.nestworld.region.NestworldRegionSystem.isInitialised() && this.m_46472_() == net.minecraft.world.level.Level.f_46428_) {
++         if (net.nestworld.region.NestworldRegionSystem.isInitialised() && net.nestworld.region.NestworldRegionSystem.get().isManagedLevel(this)) {
 +            net.nestworld.region.NestworldRegionSystem.get().runScheduledTicksPhase(this, k);
 +         } else {
 +            this.f_8553_.m_193225_(k, 65536, this::m_184112_);
@@ -139,7 +139,7 @@
 +      long nestworldTs2 = System.nanoTime();
        profilerfiller.m_6182_("blockEvents");
 -      this.m_8807_();
-+      if (net.nestworld.region.NestworldRegionSystem.isInitialised() && this.m_46472_() == net.minecraft.world.level.Level.f_46428_) {
++      if (net.nestworld.region.NestworldRegionSystem.isInitialised() && net.nestworld.region.NestworldRegionSystem.get().isManagedLevel(this)) {
 +         net.nestworld.region.NestworldRegionSystem.get().runBlockEventsPhase(this);
 +      } else {
 +         this.m_8807_();
@@ -156,7 +156,7 @@
              profilerfiller.m_7238_();
           }
  
-+         if (!(net.nestworld.region.NestworldRegionSystem.isInitialised() && this.m_46472_() == net.minecraft.world.level.Level.f_46428_))
++         if (!(net.nestworld.region.NestworldRegionSystem.isInitialised() && net.nestworld.region.NestworldRegionSystem.get().isManagedLevel(this)))
           this.f_143243_.m_156910_((p_184065_) -> {
              if (!p_184065_.m_213877_()) {
                 if (this.m_143342_(p_184065_)) {
@@ -171,7 +171,7 @@
                       profilerfiller.m_7238_();
                    }
                 }
-@@ -346,10 +_,43 @@
+@@ -346,10 +_,53 @@
           profilerfiller.m_7238_();
           this.m_46463_();
        }
@@ -186,6 +186,16 @@
 +      // dimension, but the outer "vanilla" phase in NestworldRegionSystem only
 +      // measures the overworld.tick(hasTime) call — mixing in nether/end here
 +      // would make this breakdown not sum back to that number.
++      // Region-sharding for Nether/End, Stage 0b: deliberately NOT migrated to
++      // isManagedLevel() like the other gates in this file. This array's whole
++      // purpose is to sub-attribute NestworldRegionSystem.tickAllRegions()'s own
++      // "vanilla" phase timer, and that method is still hardcoded to the single
++      // `overworld` field (see NestworldDimensionRegion's javadoc) — it only ever
++      // wraps overworld's tick() call, so this stays a raw overworld check until
++      // Stage 1 makes tickAllRegions() itself dimension-aware; migrating this one
++      // alone first would make a second managed dimension's subphase timings
++      // silently mix into overworld's numbers, corrupting the very invariant this
++      // comment describes.
 +      if (this.m_46472_() == net.minecraft.world.level.Level.f_46428_) {
 +      nestworldSubphaseNanos[0] += nestworldTs1 - nestworldTs0; // border/weather/sleep/time/blockTicks-dispatch
 +      nestworldSubphaseNanos[1] += nestworldTs2 - nestworldTs1; // raid + chunkSource.tick() (DistanceManager, chunk-gen, unload)
@@ -350,10 +360,35 @@
     }
  
     public boolean m_7967_(Entity p_8837_) {
-+      if (net.nestworld.region.NestworldRegionSystem.isInitialised() && this.m_46472_() == net.minecraft.world.level.Level.f_46428_ && Thread.currentThread() instanceof net.nestworld.region.RegionThread) {
++      if (net.nestworld.region.NestworldRegionSystem.isInitialised() && net.nestworld.region.NestworldRegionSystem.get().isManagedLevel(this) && Thread.currentThread() instanceof net.nestworld.region.RegionThread) {
 +         return net.nestworld.region.NestworldRegionSystem.get().queueEntitySpawn(p_8837_);
 +      }
        return this.m_8872_(p_8837_);
+    }
+ 
+@@ -808,6 +_,24 @@
+    }
+ 
+    public void m_143334_(Entity p_143335_) {
++      // NestWorld Stage 0.5 (region-sharding for Nether/End plan): a mob crossing a dimension
++      // portal while its SOURCE level is being ticked by a region thread reaches here via
++      // Entity.changeDimension -> ITeleporter.placeEntity's reload callback, targeting the
++      // DESTINATION level -- which may be a different ServerLevel object than the one the
++      // calling region thread owns, and is not necessarily region-managed itself. Either way,
++      // calling addEntity() directly here would mutate that level's entity tracking off its own
++      // main thread -- the same hazard class already guarded for addFreshEntity, just reachable
++      // through vanilla portal machinery instead. The destination's own managed-or-not status
++      // doesn't matter (unlike addFreshEntity's guard): the hazard is the CALLING thread being a
++      // region thread at all, since two different region threads (or a region thread racing the
++      // main thread) could both target the same destination's entity tracking concurrently.
++      // Players never reach this overload off-main (always main-thread-ticked), so no exemption
++      // is needed here the way NestworldPins exempts pinned types elsewhere.
++      if (net.nestworld.region.NestworldRegionSystem.isInitialised()
++            && Thread.currentThread() instanceof net.nestworld.region.RegionThread) {
++         net.nestworld.region.NestworldRegionSystem.get().queuePortalArrival(this, p_143335_);
++         return;
++      }
+       this.m_8872_(p_143335_);
     }
  
 @@ -828,6 +_,7 @@

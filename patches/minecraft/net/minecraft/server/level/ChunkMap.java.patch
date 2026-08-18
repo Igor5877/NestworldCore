@@ -897,7 +897,7 @@
  
        if (!list.isEmpty()) {
           for(ChunkMap.TrackedEntity chunkmap$trackedentity1 : this.f_140150_.values()) {
-@@ -1204,6 +_,90 @@
+@@ -1204,6 +_,99 @@
           }
        }
  
@@ -906,14 +906,23 @@
 +      // the time this runs); if `skipped` collapses back toward 0% with `total` still nonzero,
 +      // the phase-ordering fix (ServerChunkCache/NestworldRegionSystem) has regressed and every
 +      // owned entity is being tracked twice again.
-+      // NestWorld: this diagnostic is meaningful only for the overworld — nestworldTrackedTick
-+      // is only ever SET by RegionThread.tickEntities()'s nestworldTrackOwned() call, which only
-+      // ever runs for sharded-overworld regions. Nether/End entities' nestworldTrackedTick stays
-+      // at its -1 default forever, so a per-dimension counter for them would always read
-+      // total=X skipped=0 (0%) — not a regression, just "this mechanism doesn't apply here" —
-+      // and would otherwise trip the below-5%-warns-regression check permanently and falsely.
++      // NestWorld: this diagnostic is meaningful only for a MANAGED dimension —
++      // nestworldTrackedTick is only ever SET by RegionThread.tickEntities()'s
++      // nestworldTrackOwned() call, which only ever runs for a dimension with its own region
++      // threads. An unmanaged dimension's entities' nestworldTrackedTick stays at its -1
++      // default forever, so a counter for them would always read total=X skipped=0 (0%) —
++      // not a regression, just "this mechanism doesn't apply here" — and would otherwise trip
++      // the below-5%-warns-regression check permanently and falsely.
++      // Region-sharding for Nether/End, Stage 0b: was a raw overworld check. Safe (and, unlike
++      // the subphase-timing gates elsewhere, actually CORRECT) to migrate to isManagedLevel()
++      // now — this diagnostic's real coupling is "does this dimension have region threads
++      // setting nestworldTrackedTick", which isManagedLevel() answers precisely, not "is this
++      // specifically the overworld". Identical behavior today (one managed dimension); becomes
++      // meaningful for a second dimension automatically once Stage 1 lands, no further change
++      // needed here.
 +      if (net.nestworld.region.NestworldTuning.REGIONALIZED_TRACKER
-+            && this.f_140133_.m_46472_() == net.minecraft.world.level.Level.f_46428_
++            && net.nestworld.region.NestworldRegionSystem.isInitialised()
++            && net.nestworld.region.NestworldRegionSystem.get().isManagedLevel(this.f_140133_)
 +            && ++nestworldSkipDiagTickCounter >= 200) {
 +         nestworldSkipDiagTickCounter = 0;
 +         long total = nestworldSkipDiagTotal.getAndSet(0);
@@ -1011,7 +1020,7 @@
     }
  
     class DistanceManager extends net.minecraft.server.level.DistanceManager {
-@@ -1321,7 +_,53 @@
+@@ -1321,7 +_,65 @@
        final Entity f_140472_;
        private final int f_140473_;
        SectionPos f_140474_;
@@ -1056,8 +1065,20 @@
 +      net.nestworld.region.WorldRegion nestworldResolveOwner() {
 +         net.nestworld.region.WorldRegion cached = this.nestworldCachedOwner;
 +         if (cached != null && cached.ownsEntity(this.f_140472_.m_20148_())) return cached;
-+         net.nestworld.region.WorldRegion fresh = net.nestworld.region.NestworldRegionSystem.isInitialised()
-+               ? net.nestworld.region.NestworldRegionSystem.get().getGrid().findOwningRegion(this.f_140472_.m_20148_())
++         // NestWorld: was gated on isInitialised() alone, unconditionally consulting "the" grid
++         // for ANY tracked entity regardless of which dimension owns it -- this ChunkMap instance
++         // (and therefore this TrackedEntity) can belong to Nether/End just as easily as the
++         // overworld. Correct only by luck today: a non-overworld entity's UUID is never IN the
++         // overworld grid's ownedEntityIds (nothing ever adds it there), so the lookup always
++         // misses and returns null -- the same externally-visible answer a dimension check would
++         // produce. Region-sharding for Nether/End, Stage 0a: gate explicitly on the entity's own
++         // level, so this is correct for the right reason, not by coincidence, and is ready for
++         // isManagedLevel()/getDimensionRegion() to cover more than one dimension later.
++         net.nestworld.region.NestworldRegionSystem nestworldSys =
++               net.nestworld.region.NestworldRegionSystem.isInitialised()
++                     ? net.nestworld.region.NestworldRegionSystem.get() : null;
++         net.nestworld.region.WorldRegion fresh = (nestworldSys != null && nestworldSys.isManagedLevel(this.f_140472_.m_9236_()))
++               ? nestworldSys.getDimensionRegion(this.f_140472_.m_9236_()).getGrid().findOwningRegion(this.f_140472_.m_20148_())
 +               : null;
 +         this.nestworldCachedOwner = fresh;
 +         return fresh;

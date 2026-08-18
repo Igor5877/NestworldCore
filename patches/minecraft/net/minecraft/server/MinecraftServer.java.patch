@@ -134,15 +134,36 @@
           this.f_129754_.m_6521_(() -> {
              return serverlevel + " " + serverlevel.m_46472_().m_135782_();
           });
-@@ -862,24 +_,31 @@
+@@ -862,24 +_,52 @@
           }
  
           this.f_129754_.m_6180_("tick");
 +         net.minecraftforge.event.ForgeEventFactory.onPreLevelTick(serverlevel, p_129954_);
  
           try {
-+            if (net.nestworld.region.NestworldRegionSystem.isInitialised() && serverlevel.m_46472_() == net.minecraft.world.level.Level.f_46428_) {
-+               net.nestworld.region.NestworldRegionSystem.get().tickAllRegions(p_129954_);
++            // NestWorld Stage 0.5 (region-sharding for Nether/End plan): drain any entities that
++            // arrived at THIS level via a dimension portal while their source level was being
++            // ticked by a region thread (ServerLevel.addDuringTeleport's guard). Must run here,
++            // dimension-agnostically for every level every tick, not only inside
++            // tickAllRegions()/serverlevel.tick() below -- a managed dimension never calls
++            // serverlevel.tick() at all (see the if/else just below), and an unmanaged one never
++            // calls tickAllRegions(), so neither branch alone would drain for every possible
++            // destination. This loop already visits every registered ServerLevel exactly once
++            // per server tick regardless of managed status, which is exactly the "destination
++            // dimension's own next barrier-safe window" the fix needs. Cheap no-op (one map
++            // lookup) on the overwhelming majority of ticks where nothing queued anything.
++            if (net.nestworld.region.NestworldRegionSystem.isInitialised()) {
++               net.nestworld.region.NestworldRegionSystem.get().drainPortalArrivals(serverlevel);
++            }
++            // Region-sharding for Nether/End: was dimension() == Level.OVERWORLD (Stage 0b),
++            // then isManagedDimension() with a single-entry managed set (also Stage 0b). Stage 1
++            // physically moved grid/pool/tree/etc. onto NestworldDimensionRegion (one instance
++            // per managed dimension, see that class's javadoc) and made tickAllRegions() take the
++            // ticking level explicitly, so this gate now correctly dispatches any number of
++            // managed dimensions to their own independent tick machinery.
++            if (net.nestworld.region.NestworldRegionSystem.isInitialised()
++                  && net.nestworld.region.NestworldRegionSystem.get().isManagedDimension(serverlevel.m_46472_())) {
++               net.nestworld.region.NestworldRegionSystem.get().tickAllRegions(serverlevel, p_129954_);
 +            } else {
              serverlevel.m_8793_(p_129954_);
 +            }

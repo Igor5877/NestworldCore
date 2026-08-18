@@ -36,6 +36,16 @@ public final class NestworldCommand {
 
     private NestworldCommand() {}
 
+    /** Stage 1 (region-sharding for Nether/End plan): every admin command in this class
+     *  operates on the Overworld's own {@link NestworldDimensionRegion} — an explicit, documented
+     *  choice (not an accident) matching this project's precedent for diagnostic-only surfaces
+     *  during a staged rollout (see {@code ForceLoadCommand}'s deliberately-global budget). A
+     *  per-dimension command surface is a legitimate follow-up once Nether/End are actually
+     *  enabled and operators need it, not required for Stage 1 itself. */
+    private static NestworldDimensionRegion overworldRegion(NestworldRegionSystem sys) {
+        return sys.getDimensionRegion(sys.getOverworld());
+    }
+
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("nestworld")
                 .requires(src -> src.hasPermission(2))
@@ -189,8 +199,9 @@ public final class NestworldCommand {
             return 0;
         }
         NestworldRegionSystem sys = NestworldRegionSystem.get();
+        NestworldDimensionRegion dr = overworldRegion(sys);
         java.util.List<RegionScheduler.Classification> classes =
-                RegionScheduler.classifyAll(sys.getPool());
+                RegionScheduler.classifyAll(overworldRegion(sys).getPool());
         java.util.Map<RegionScheduler.State, Integer> counts = new java.util.EnumMap<>(RegionScheduler.State.class);
         for (RegionScheduler.Classification c : classes) {
             counts.merge(c.state(), 1, Integer::sum);
@@ -280,6 +291,7 @@ public final class NestworldCommand {
             return 0;
         }
         NestworldRegionSystem sys = NestworldRegionSystem.get();
+        NestworldDimensionRegion dr = overworldRegion(sys);
         WorldRegion region = findRegion(sys, id);
         if (region == null) {
             src.sendFailure(Component.literal("No active region with id " + id));
@@ -291,7 +303,7 @@ public final class NestworldCommand {
         if (newState) {
             int cap = Math.max(0, Runtime.getRuntime().availableProcessors()
                     - NestworldTuning.FREE_RUNNING_RESERVED_CORES);
-            long freeRunningNow = sys.getGrid().getAllRegions().stream()
+            long freeRunningNow = dr.getGrid().getAllRegions().stream()
                     .filter(WorldRegion::isFreeRunning).count();
             if (freeRunningNow > cap) {
                 warning = " -- WARNING: " + freeRunningNow + " free-running region(s) now active, "
@@ -320,7 +332,8 @@ public final class NestworldCommand {
             return 0;
         }
         NestworldRegionSystem sys = NestworldRegionSystem.get();
-        var regions = sys.getTree().getActiveRegions();
+        NestworldDimensionRegion dr = overworldRegion(sys);
+        var regions = dr.getTree().getActiveRegions();
         double serverMspt = src.getServer().getAverageTickTime();
         double tps = Math.min(20.0, 1000.0 / Math.max(serverMspt, 0.001));
         src.sendSuccess(() -> Component.literal(String.format(
@@ -378,7 +391,7 @@ public final class NestworldCommand {
                 .forEach(en -> src.sendSuccess(() -> Component.literal(
                         String.format("    %s ×%d", en.getKey(), en.getValue())), false));
 
-        BlockTickHeat heat = sys.getBlockTickHeat();
+        BlockTickHeat heat = dr.getBlockTickHeat();
         double regionHeat = heat.totalInRegion(hot);
         if (regionHeat >= 1.0) {
             src.sendSuccess(() -> Component.literal(String.format(
@@ -422,7 +435,8 @@ public final class NestworldCommand {
             return 0;
         }
         NestworldRegionSystem sys = NestworldRegionSystem.get();
-        var regions = sys.getTree().getActiveRegions();
+        NestworldDimensionRegion dr = overworldRegion(sys);
+        var regions = dr.getTree().getActiveRegions();
         // Server-wide MSPT so the per-region costs can be read against the
         // actual tick health (region cost alone says nothing about redstone
         // and other main-thread work).
@@ -430,7 +444,7 @@ public final class NestworldCommand {
         src.sendSuccess(() -> Component.literal(String.format(
                 "NestWorld: %d active region(s), server %.1f ms/tick (%.1f TPS)",
                 regions.size(), serverMspt, Math.min(20.0, 1000.0 / Math.max(serverMspt, 0.001)))), false);
-        BlockTickHeat heat = sys.getBlockTickHeat();
+        BlockTickHeat heat = dr.getBlockTickHeat();
         var shown = regions;
         int hidden = 0;
         if (!full && regions.size() > STATUS_COMPACT_TOP_N) {
@@ -680,7 +694,8 @@ public final class NestworldCommand {
                     .append(net.nestworld.chunk.ChunkSchedulerShadow.tierEverEnqueuedCount(tier)).append(' ');
         }
         net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
-        for (net.nestworld.region.WorldRegion region : sys.getGrid().getAllRegions()) {
+        net.nestworld.region.NestworldDimensionRegion dr = overworldRegion(sys);
+        for (net.nestworld.region.WorldRegion region : dr.getGrid().getAllRegions()) {
             currentlyQueued += region.getChunkScheduler().totalQueueSize();
         }
         String tiersStr = tiers.toString();
@@ -714,7 +729,8 @@ public final class NestworldCommand {
      */
     private static int ghostZoneStats(CommandSourceStack src) {
         net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
-        String result = sys.getBoundaryManager().nestworldGhostZoneStats();
+        net.nestworld.region.NestworldDimensionRegion dr = overworldRegion(sys);
+        String result = dr.getBoundaryManager().nestworldGhostZoneStats();
         src.sendSuccess(() -> Component.literal("NW Ghost Zone Sync: " + result), false);
         return 0;
     }
@@ -725,7 +741,8 @@ public final class NestworldCommand {
      */
     private static int regionPoolStats(CommandSourceStack src) {
         net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
-        String result = sys.getPool().nestworldPhaseTelemetry();
+        net.nestworld.region.NestworldDimensionRegion dr = overworldRegion(sys);
+        String result = dr.getPool().nestworldPhaseTelemetry();
         src.sendSuccess(() -> Component.literal("NW RegionThreadPool per-phase telemetry:\n" + result), false);
         return 0;
     }
@@ -736,7 +753,8 @@ public final class NestworldCommand {
      */
     private static int regionSlowStats(CommandSourceStack src) {
         net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
-        String result = sys.getPool().nestworldRegionSlowTelemetry();
+        net.nestworld.region.NestworldDimensionRegion dr = overworldRegion(sys);
+        String result = dr.getPool().nestworldRegionSlowTelemetry();
         src.sendSuccess(() -> Component.literal("NW per-region slowest-in-round ranking:\n" + result), false);
         return 0;
     }
@@ -748,7 +766,8 @@ public final class NestworldCommand {
      */
     private static int pollTaskStats(CommandSourceStack src) {
         net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
-        String result = sys.nestworldPollTaskReport();
+        net.nestworld.region.NestworldDimensionRegion dr = overworldRegion(sys);
+        String result = dr.pollTaskReport();
         src.sendSuccess(() -> Component.literal("NW pollTask() attribution:\n" + result), false);
         return 0;
     }
@@ -759,6 +778,7 @@ public final class NestworldCommand {
      */
     private static int worldgenBoundaryStats(CommandSourceStack src) {
         net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
+        net.nestworld.region.NestworldDimensionRegion dr = overworldRegion(sys);
         String result = sys.nestworldWorldgenBoundaryReport();
         src.sendSuccess(() -> Component.literal("NW " + result), false);
         return 0;
@@ -767,6 +787,7 @@ public final class NestworldCommand {
     /** P1.2/P1.4: exact-hook A/B/C worldgen main-thread glue attribution, read-only. */
     private static int worldgenGlueStats(CommandSourceStack src) {
         net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
+        net.nestworld.region.NestworldDimensionRegion dr = overworldRegion(sys);
         String result = sys.nestworldWorldgenGlueReport();
         src.sendSuccess(() -> Component.literal("NW " + result), false);
         return 0;
@@ -805,7 +826,8 @@ public final class NestworldCommand {
             src.sendFailure(Component.literal("NestWorld region system is not active"));
             return 0;
         }
-        String result = net.nestworld.region.NestworldRegionSystem.get().nestworldTickPhaseReport();
+        net.nestworld.region.NestworldRegionSystem sys0 = net.nestworld.region.NestworldRegionSystem.get();
+        String result = overworldRegion(sys0).tickPhaseReport();
         src.sendSuccess(() -> Component.literal(result), false);
         return 0;
     }
@@ -967,14 +989,15 @@ public final class NestworldCommand {
             return 0;
         }
         NestworldRegionSystem sys = NestworldRegionSystem.get();
+        NestworldDimensionRegion dr = overworldRegion(sys);
         net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(x, y, z);
-        WorldRegion destination = sys.getGrid().getRegionForChunk(x >> 4, z >> 4);
+        WorldRegion destination = dr.getGrid().getRegionForChunk(x >> 4, z >> 4);
         if (destination == null) {
             src.sendFailure(Component.literal("No region owns chunk (" + (x >> 4) + "," + (z >> 4) + ")"));
             return 0;
         }
         WorldRegion source = null;
-        for (WorldRegion r : sys.getGrid().getAllRegions()) {
+        for (WorldRegion r : dr.getGrid().getAllRegions()) {
             if (r != destination) { source = r; break; }
         }
         if (source == null) {
@@ -998,12 +1021,13 @@ public final class NestworldCommand {
             return 0;
         }
         NestworldRegionSystem sys = NestworldRegionSystem.get();
+        NestworldDimensionRegion dr = overworldRegion(sys);
         WorldRegion region = findRegion(sys, id);
         if (region == null) {
             src.sendFailure(Component.literal("No active region with id " + id));
             return 0;
         }
-        WorldRegion[] children = sys.getSplitManager().doSplit(region);
+        WorldRegion[] children = dr.getSplitManager().doSplit(region);
         if (children == null) {
             src.sendFailure(Component.literal("Region " + id + " cannot be split (already 1x1?)"));
             return 0;
@@ -1024,13 +1048,14 @@ public final class NestworldCommand {
             return 0;
         }
         NestworldRegionSystem sys = NestworldRegionSystem.get();
+        NestworldDimensionRegion dr = overworldRegion(sys);
         WorldRegion a = findRegion(sys, idA);
         WorldRegion b = findRegion(sys, idB);
         if (a == null || b == null) {
             src.sendFailure(Component.literal("Region not found: " + (a == null ? idA : idB)));
             return 0;
         }
-        WorldRegion merged = sys.getSplitManager().doMerge(a, b);
+        WorldRegion merged = dr.getSplitManager().doMerge(a, b);
         if (merged == null) {
             src.sendFailure(Component.literal(
                     "Regions " + idA + " and " + idB + " are not siblings in the BSP tree"));
@@ -1193,6 +1218,7 @@ public final class NestworldCommand {
             return 0;
         }
         NestworldRegionSystem sys = NestworldRegionSystem.get();
+        NestworldDimensionRegion dr = overworldRegion(sys);
         WorldRegion region = findRegion(sys, id);
         if (region == null) {
             src.sendFailure(Component.literal("No active region with id " + id));
@@ -1242,7 +1268,7 @@ public final class NestworldCommand {
     }
 
     private static WorldRegion findRegion(NestworldRegionSystem sys, int id) {
-        for (WorldRegion r : sys.getTree().getActiveRegions()) {
+        for (WorldRegion r : overworldRegion(sys).getTree().getActiveRegions()) {
             if (r.getId() == id) return r;
         }
         return null;

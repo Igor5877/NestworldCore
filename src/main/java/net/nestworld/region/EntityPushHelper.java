@@ -29,11 +29,11 @@ public final class EntityPushHelper {
     public static boolean redirectIfForeign(Entity self, Entity other) {
         if (!NestworldRegionSystem.isInitialised()
                 || !(Thread.currentThread() instanceof RegionThread rt)
-                || self.level() != NestworldRegionSystem.get().getOverworld()) {
+                || !NestworldRegionSystem.get().isManagedLevel(self.level())) {
             return false;
         }
         WorldRegion selfRegion = rt.getRegion();
-        WorldRegion owner = NestworldRegionSystem.get().getGrid().findOwningRegion(other.getUUID());
+        WorldRegion owner = NestworldRegionSystem.get().getDimensionRegion(self.level()).getGrid().findOwningRegion(other.getUUID());
         if (owner == null || owner == selfRegion) {
             return false;
         }

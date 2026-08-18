@@ -28,14 +28,14 @@ public final class EntityBoundsHelper {
         AABB live = entity.getBoundingBox();
         if (!NestworldRegionSystem.isInitialised()
                 || !(Thread.currentThread() instanceof RegionThread rt)
-                || entity.level() != NestworldRegionSystem.get().getOverworld()) {
+                || !NestworldRegionSystem.get().isManagedLevel(entity.level())) {
             return live;
         }
         WorldRegion self = rt.getRegion();
         if (self.ownsEntity(entity.getUUID())) {
             return live;
         }
-        WorldRegion owner = NestworldRegionSystem.get().getGrid().findOwningRegion(entity.getUUID());
+        WorldRegion owner = NestworldRegionSystem.get().getDimensionRegion(entity.level()).getGrid().findOwningRegion(entity.getUUID());
         if (owner == null || owner == self) {
             return live;
         }

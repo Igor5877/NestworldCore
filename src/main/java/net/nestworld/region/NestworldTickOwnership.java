@@ -122,6 +122,18 @@ public final class NestworldTickOwnership {
         sb.append("Mailbox audit (sent/applied/pending/duplicates/misrouted): ")
                 .append(MailboxAudit.summary()).append('\n');
         sb.append("Total ownership violations this run: ").append(violationCount.get()).append('\n');
+        // 2026-08-19: added after region-split-scheduletick-race.md's LevelTicks half sat
+        // "root cause NOT yet pinned to an exact line" for a week -- every known caller of
+        // LevelTicks.schedule()/addContainer()/removeContainer() in vanilla+patched source
+        // is already redirect-guarded (LevelAccessor's 4 wrapper methods), so the leading
+        // hypothesis is now a mod calling a LevelTickAccess method directly. A stack trace
+        // is the only way to confirm or rule that out without guessing further.
+        sb.append("Caller stack trace:\n");
+        StackTraceElement[] trace = current.getStackTrace();
+        int limit = Math.min(trace.length, 25);
+        for (int i = 0; i < limit; i++) {
+            sb.append("    at ").append(trace[i]).append('\n');
+        }
         sb.append("------------------------------------------\n");
         return sb.toString();
     }

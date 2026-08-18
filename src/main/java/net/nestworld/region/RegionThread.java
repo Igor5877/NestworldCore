@@ -106,8 +106,23 @@ public class RegionThread extends Thread {
         return c;
     }
 
+    /** Stage 1 (region-sharding for Nether/End plan): region IDs restart at 0 per-{@link
+     *  WorldGrid}, so once a second dimension is managed, "region #0" can exist in more than
+     *  one dimension at once — collide-able thread names would break the exact "grep the thread
+     *  name in a crash dump" technique this project relies on (see the Stage 0.5 deadlock fix,
+     *  found via {@code NestWorld-Region-0}'s stack trace in a Watchdog crash report). The
+     *  Overworld's own name stays byte-for-byte unchanged (zero-behavior-change bar for a
+     *  single-dimension setup, and any existing log-scraping/dashboard tooling keeps working) —
+     *  only a second, non-overworld dimension gets a disambiguating suffix. */
+    private static String nestworldThreadName(WorldRegion region) {
+        net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dim = region.getDimension();
+        String base = "NestWorld-Region-" + region.getId();
+        return dim == net.minecraft.world.level.Level.OVERWORLD
+                ? base : base + "-" + dim.location().getPath();
+    }
+
     public RegionThread(WorldRegion region, ServerLevel level) {
-        super("NestWorld-Region-" + region.getId());
+        super(nestworldThreadName(region));
         setDaemon(true);
         this.region = region;
         this.level = level;

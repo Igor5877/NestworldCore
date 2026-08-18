@@ -39,7 +39,7 @@ public final class ProjectileImpactGuard {
         }
         if (!NestworldRegionSystem.isInitialised()
                 || !(Thread.currentThread() instanceof RegionThread rt)
-                || projectile.level() != NestworldRegionSystem.get().getOverworld()) {
+                || !NestworldRegionSystem.get().isManagedLevel(projectile.level())) {
             return false;
         }
         WorldRegion self = rt.getRegion();
@@ -47,7 +47,7 @@ public final class ProjectileImpactGuard {
         if (self.ownsEntity(target.getUUID())) {
             return false;
         }
-        WorldRegion owner = NestworldRegionSystem.get().getGrid().findOwningRegion(target.getUUID());
+        WorldRegion owner = NestworldRegionSystem.get().getDimensionRegion(projectile.level()).getGrid().findOwningRegion(target.getUUID());
         return owner != null && owner != self;
     }
 }

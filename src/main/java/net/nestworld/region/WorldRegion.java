@@ -17,6 +17,13 @@ import java.util.concurrent.locks.StampedLock;
 public class WorldRegion {
 
     private final int id;
+    /** Stage 1 (region-sharding for Nether/End plan): the dimension this region belongs to,
+     *  copied from its owning {@link WorldGrid} at construction. Region IDs are per-grid
+     *  (each {@code WorldGrid} restarts its counter at 0), so once a second dimension is
+     *  managed, "region #0" can legitimately exist in more than one dimension at once — this
+     *  field is what lets callers holding only a {@code WorldRegion} (no separate level
+     *  reference in scope, e.g. {@link EntityOwnershipRecheck}) disambiguate. */
+    private final net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension;
     private final int minChunkX;
     private final int minChunkZ;
     private final int maxChunkX; // inclusive
@@ -310,7 +317,7 @@ public class WorldRegion {
      * only fires AFTER 16 applies) — a fixed per-call floor that was harmless under
      * the old barrier model (this apply was always uncontended, so 16 applies cost
      * microseconds) but, once Step 5 made {@link
-     * NestworldRegionSystem#nestworldApplyWithCascadeGuard}'s lock acquisition
+     * NestworldDimensionRegion#applyWithCascadeGuard}'s lock acquisition
      * genuinely contended, meant EVERY region got its own ~16-message floor of
      * possibly-slow work regardless of the shared deadline already being blown by an
      * earlier region in the same pass — the actual root cause of a real
@@ -426,12 +433,18 @@ public class WorldRegion {
         }
     }
 
-    public WorldRegion(int id, int minChunkX, int minChunkZ, int maxChunkX, int maxChunkZ) {
+    public WorldRegion(int id, net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension,
+                        int minChunkX, int minChunkZ, int maxChunkX, int maxChunkZ) {
         this.id = id;
+        this.dimension = dimension;
         this.minChunkX = minChunkX;
         this.minChunkZ = minChunkZ;
         this.maxChunkX = maxChunkX;
         this.maxChunkZ = maxChunkZ;
+    }
+
+    public net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> getDimension() {
+        return dimension;
     }
 
     // --- Spatial queries ---

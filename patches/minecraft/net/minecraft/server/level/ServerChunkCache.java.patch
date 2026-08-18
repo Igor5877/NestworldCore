@@ -391,7 +391,7 @@
        if (!flag && !flag1) {
           return false;
        } else {
-@@ -302,19 +_,59 @@
+@@ -302,19 +_,63 @@
        this.f_8325_.close();
     }
  
@@ -431,6 +431,10 @@
        this.m_8488_();
 +      long nestworldCsT3 = System.nanoTime();
 +
++      // Region-sharding for Nether/End, Stage 0b: deliberately a raw overworld check, NOT
++      // isManagedLevel() — same reasoning as ServerLevel.tick()'s equivalent subphase-timing
++      // gate (see that comment). This sub-attributes NestworldRegionSystem.tickAllRegions()'s
++      // own outer measurement, which is still hardcoded to the single `overworld` field.
 +      if (this.f_8329_.m_46472_() == Level.f_46428_) {
 +         nestworldCsSubphaseNanos[0] += nestworldCsT1 - nestworldCsT0; // purge + DistanceManager.runAllUpdates()
 +         nestworldCsSubphaseNanos[1] += nestworldCsT2 - nestworldCsT1; // tickChunks (natural spawn scan, random tick, broadcast)
@@ -451,7 +455,7 @@
     }
  
     private void m_8490_() {
-@@ -322,8 +_,16 @@
+@@ -322,8 +_,21 @@
        long j = i - this.f_8334_;
        this.f_8334_ = i;
        boolean flag = this.f_8329_.m_46659_();
@@ -461,6 +465,11 @@
 +      // and every owned entity was tracked twice (once here, once by its region). Defer to
 +      // NestworldRegionSystem.tickAllRegions(), which calls chunkMap.tick() itself once region
 +      // threads have finished for this tick.
++      // Region-sharding for Nether/End, Stage 0b: deliberately a raw overworld check, NOT
++      // isManagedLevel() — tickAllRegions() only ever calls overworld.getChunkSource().chunkMap
++      // .tick() (hardcoded), so deferring here for any OTHER managed dimension would mean
++      // NOBODY calls that dimension's chunkMap.tick() at all. Migrate together with
++      // tickAllRegions() itself in Stage 1, not independently.
 +      boolean nestworldDeferTrackerTick = net.nestworld.region.NestworldRegionSystem.isInitialised()
 +            && this.f_8329_.m_46472_() == Level.f_46428_;
        if (flag) {
@@ -478,12 +487,21 @@
                 levelchunk1.m_187632_(j);
                 if (flag2 && (this.f_8335_ || this.f_8336_) && this.f_8329_.m_6857_().m_61927_(chunkpos)) {
                    NaturalSpawner.m_47029_(this.f_8329_, levelchunk1, naturalspawner$spawnstate, this.f_8336_, this.f_8335_, flag1);
-@@ -363,6 +_,10 @@
+@@ -363,6 +_,19 @@
              }
           }
  
-+         if (net.nestworld.region.NestworldRegionSystem.isInitialised()) {
-+            net.nestworld.region.NestworldRegionSystem.get().flushRandomTicksPhase();
++         // NestWorld: was gated on isInitialised() alone -- called for EVERY dimension's
++         // tickChunks(), not just the managed one(s). Currently harmless in practice
++         // (queueRandomTicksFor already refuses to bucket anything for an unmanaged level, so
++         // randomTickBuckets is always empty here for e.g. Nether/End today, and
++         // flushRandomTicksPhase() no-ops on an empty map) -- but it was correct only by luck of
++         // an upstream check, not by its own logic. Region-sharding for Nether/End, Stage 0a:
++         // gate explicitly, so this stays correct once isManagedLevel() covers more than one
++         // dimension (see NestworldRegionSystem.dimensions' javadoc).
++         if (net.nestworld.region.NestworldRegionSystem.isInitialised()
++               && net.nestworld.region.NestworldRegionSystem.get().isManagedLevel(this.f_8329_)) {
++            net.nestworld.region.NestworldRegionSystem.get().flushRandomTicksPhase(this.f_8329_);
 +         }
 +
           profilerfiller.m_6182_("customSpawners");
@@ -527,7 +545,7 @@
 +      // main thread iterates it in ChunkMap.tick. Queue the tracking removal for
 +      // main (drained at the region barrier), symmetric with off-main spawns.
 +      if (net.nestworld.region.NestworldRegionSystem.isInitialised()
-+            && this.f_8329_.m_46472_() == net.minecraft.world.level.Level.f_46428_
++            && net.nestworld.region.NestworldRegionSystem.get().isManagedLevel(this.f_8329_)
 +            && Thread.currentThread() instanceof net.nestworld.region.RegionThread) {
 +         net.nestworld.region.NestworldRegionSystem.get().queueEntityRemoval(p_8444_);
 +         return;
@@ -543,7 +561,7 @@
 +      // main-thread drain at the region barrier (drained after removals, so a leave+re-enter
 +      // within one tick resolves to the correct final tracked state).
 +      if (net.nestworld.region.NestworldRegionSystem.isInitialised()
-+            && this.f_8329_.m_46472_() == net.minecraft.world.level.Level.f_46428_
++            && net.nestworld.region.NestworldRegionSystem.get().isManagedLevel(this.f_8329_)
 +            && Thread.currentThread() instanceof net.nestworld.region.RegionThread) {
 +         net.nestworld.region.NestworldRegionSystem.get().queueEntityTrackingAdd(p_8464_);
 +         return;

@@ -171,14 +171,14 @@
 +      net.nestworld.region.RegionThread nestworldRt =
 +              Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt0 ? nestworldRt0 : null;
 +      boolean nestworldSharded = nestworldRt != null && net.nestworld.region.NestworldRegionSystem.isInitialised()
-+              && this.f_46012_ == net.nestworld.region.NestworldRegionSystem.get().getOverworld();
++              && net.nestworld.region.NestworldRegionSystem.get().isManagedLevel(this.f_46012_);
  
        for(int k2 = 0; k2 < list.size(); ++k2) {
           Entity entity = list.get(k2);
           if (!entity.m_6128_()) {
 +            if (nestworldSharded) {
 +               net.nestworld.region.WorldRegion nestworldOwner = net.nestworld.region.NestworldRegionSystem.get()
-+                       .getGrid().findOwningRegion(entity.m_20148_());
++                       .getDimensionRegion(this.f_46012_).getGrid().findOwningRegion(entity.m_20148_());
 +               if (nestworldOwner != null && nestworldOwner != nestworldRt.getRegion()) {
 +                  nestworldRt.getRegion().nestworldSendOrQueue(nestworldOwner, net.nestworld.region.RegionMessage.entityImpact(
 +                          nestworldRt.getRegion(), nestworldOwner, this.f_46012_.m_7654_().m_129921_(),
@@ -211,7 +211,7 @@
 +                  // shape themselves.
 +                  if (nestworldSharded) {
 +                     net.nestworld.region.WorldRegion nestworldOwner2 = net.nestworld.region.NestworldRegionSystem.get()
-+                             .getGrid().findOwningRegion(entity.m_20148_());
++                             .getDimensionRegion(this.f_46012_).getGrid().findOwningRegion(entity.m_20148_());
 +                     if (nestworldOwner2 != null && nestworldOwner2 != nestworldRt.getRegion()) {
 +                        nestworldRt.getRegion().nestworldSendOrQueue(nestworldOwner2, net.nestworld.region.RegionMessage.entityImpact(
 +                                nestworldRt.getRegion(), nestworldOwner2, this.f_46012_.m_7654_().m_129921_(),
@@ -291,11 +291,11 @@
 +      java.util.List<BlockPos> nestworldLocalBlow = this.f_46020_;
 +      if (Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt
 +              && net.nestworld.region.NestworldRegionSystem.isInitialised()
-+              && this.f_46012_ == net.nestworld.region.NestworldRegionSystem.get().getOverworld()) {
++              && net.nestworld.region.NestworldRegionSystem.get().isManagedLevel(this.f_46012_)) {
 +         nestworldLocalBlow = new java.util.ArrayList<>();
 +         java.util.Map<net.nestworld.region.WorldRegion, java.util.List<BlockPos>> nestworldForeign =
 +                 new java.util.IdentityHashMap<>();
-+         net.nestworld.region.WorldGrid nestworldGrid = net.nestworld.region.NestworldRegionSystem.get().getGrid();
++         net.nestworld.region.WorldGrid nestworldGrid = net.nestworld.region.NestworldRegionSystem.get().getDimensionRegion(this.f_46012_).getGrid();
 +         for (BlockPos nestworldPos : this.f_46020_) {
 +            net.nestworld.region.WorldRegion nestworldOwner =
 +                    nestworldGrid.getRegionForChunk(nestworldPos.m_123341_() >> 4, nestworldPos.m_123343_() >> 4);

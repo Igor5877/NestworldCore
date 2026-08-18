@@ -19,10 +19,24 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class WorldGrid {
 
+    /** Stage 1 (region-sharding for Nether/End plan): which dimension this grid's regions
+     *  belong to. One {@code WorldGrid} per managed dimension (see {@code
+     *  NestworldDimensionRegion}) — used to stamp every {@link WorldRegion} constructed from
+     *  it, since region IDs restart at 0 per-grid and can otherwise collide across dimensions. */
+    private final net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension;
+
     private final CopyOnWriteArrayList<WorldRegion> regions = new CopyOnWriteArrayList<>();
     private final AtomicInteger idCounter = new AtomicInteger(0);
     /** Bumped on every register/unregister; lets per-tick scans detect layout changes cheaply. */
     private final AtomicInteger layoutVersion = new AtomicInteger(0);
+
+    public WorldGrid(net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension) {
+        this.dimension = dimension;
+    }
+
+    public net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> getDimension() {
+        return dimension;
+    }
 
     // --- Lookup ---
 
@@ -162,8 +176,8 @@ public class WorldGrid {
                 org.apache.logging.log4j.LogManager.getLogger("NestWorld/WorldGrid");
 
         // Case 1: deep interior, small margin — only the containing region matches.
-        WorldGrid g1 = new WorldGrid();
-        WorldRegion r1 = new WorldRegion(g1.nextId(), -100, -100, 100, 100);
+        WorldGrid g1 = new WorldGrid(net.minecraft.world.level.Level.OVERWORLD);
+        WorldRegion r1 = new WorldRegion(g1.nextId(), g1.getDimension(), -100, -100, 100, 100);
         g1.register(r1);
         boolean interiorOnly = g1.getRegionsWithinMargin(new BlockPos(0, 100, 0), 48)
                 .equals(java.util.List.of(r1));
@@ -172,9 +186,9 @@ public class WorldGrid {
         // position near that edge, well within the margin, must return BOTH regions;
         // a position deep inside one region (margin doesn't reach the edge) must
         // return only that one.
-        WorldGrid g2 = new WorldGrid();
-        WorldRegion left = new WorldRegion(g2.nextId(), -10, -10, 0, 10);   // blocks x -160..15
-        WorldRegion right = new WorldRegion(g2.nextId(), 1, -10, 10, 10);   // blocks x 16..175
+        WorldGrid g2 = new WorldGrid(net.minecraft.world.level.Level.OVERWORLD);
+        WorldRegion left = new WorldRegion(g2.nextId(), g2.getDimension(), -10, -10, 0, 10);   // blocks x -160..15
+        WorldRegion right = new WorldRegion(g2.nextId(), g2.getDimension(), 1, -10, 10, 10);   // blocks x 16..175
         g2.register(left);
         g2.register(right);
         // 10 blocks from the edge on the left side — within a 48-block margin of BOTH.
@@ -192,11 +206,11 @@ public class WorldGrid {
         // corner overlap... actually a BSP split never leaves overlapping rectangles,
         // so the corner block itself belongs to exactly ONE region at margin 0 — the
         // margin is what pulls the other 3 in.
-        WorldGrid g3 = new WorldGrid();
-        WorldRegion nw = new WorldRegion(g3.nextId(), -10, -10, -1, -1);
-        WorldRegion ne = new WorldRegion(g3.nextId(), 0, -10, 10, -1);
-        WorldRegion sw = new WorldRegion(g3.nextId(), -10, 0, -1, 10);
-        WorldRegion se = new WorldRegion(g3.nextId(), 0, 0, 10, 10);
+        WorldGrid g3 = new WorldGrid(net.minecraft.world.level.Level.OVERWORLD);
+        WorldRegion nw = new WorldRegion(g3.nextId(), g3.getDimension(), -10, -10, -1, -1);
+        WorldRegion ne = new WorldRegion(g3.nextId(), g3.getDimension(), 0, -10, 10, -1);
+        WorldRegion sw = new WorldRegion(g3.nextId(), g3.getDimension(), -10, 0, -1, 10);
+        WorldRegion se = new WorldRegion(g3.nextId(), g3.getDimension(), 0, 0, 10, 10);
         for (WorldRegion r : new WorldRegion[]{nw, ne, sw, se}) g3.register(r);
         boolean cornerMargin0 = g3.getRegionsWithinMargin(new BlockPos(0, 100, 0), 0).size() == 1;
         java.util.List<WorldRegion> cornerMargin48 = g3.getRegionsWithinMargin(new BlockPos(0, 100, 0), 48);

@@ -566,9 +566,9 @@
 +      // heavily-Mixin'd vanilla method's body -- only branch around it).
 +      if (net.nestworld.region.NestworldRegionSystem.isInitialised()
 +              && Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt
-+              && this.m_9236_() == net.nestworld.region.NestworldRegionSystem.get().getOverworld()) {
++              && net.nestworld.region.NestworldRegionSystem.get().isManagedLevel(this.m_9236_())) {
 +         net.nestworld.region.WorldRegion nestworldOwner = net.nestworld.region.NestworldRegionSystem.get()
-+                 .getGrid().findOwningRegion(p_20971_.m_20148_());
++                 .getDimensionRegion(this.m_9236_()).getGrid().findOwningRegion(p_20971_.m_20148_());
 +         if (nestworldOwner != null && nestworldOwner != nestworldRt.getRegion()) {
 +            if (this.m_20365_(p_20971_) || p_20971_.f_19794_ || this.f_19794_) {
 +               return;
