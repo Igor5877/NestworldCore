@@ -225,6 +225,34 @@ public final class NestworldTuning {
             Integer.getInteger("nestworld.mailboxDrainBudgetMs", 5) * 1_000_000L;
 
     /**
+     * Batch-apply Phase 1 (docs/BATCH_APPLY_COALESCING_DESIGN.md): max EXPLOSION_APPLY/
+     * BLOCK_WRITE messages (same destination region, same type) grouped under ONE
+     * combined cascade-guard lock acquisition instead of one lock cycle per message —
+     * the confirmed remaining Fix 3 bottleneck under Step 5 (free-running regions) is
+     * apply-side lock-contention cost, not queue depth (threshold tuning 2000->300
+     * barely moved the crash time). A count cap alone is not sufficient to bound one
+     * batch's cost, though — see {@link #CASCADE_LOCK_TIMEOUT_NANOS}'s use alongside
+     * the shared {@link #MAILBOX_DRAIN_BUDGET_NANOS} deadline in the batch-apply call
+     * site: an in-progress batch's lock wait is clamped to BOTH, per Gemini's review
+     * finding (2026-08-19) that checking the deadline only between batches leaves an
+     * already-started batch free to blow the whole pass's shared budget by itself —
+     * the same starvation shape Fix 3 already fixed once at message granularity.
+     *
+     * <p><b>Default tuned to 16 by a 16/32/64 sweep (2026-08-19, see design doc's
+     * "Sweep Results"):</b> the convoy-effect cost measured at the original 64
+     * default (whole-batch requeue waste under sustained maximum contention) was
+     * larger than anticipated, and got worse with a larger cap, not better — 16
+     * captures the overwhelming majority of the realistic-load lock-reduction win
+     * (locksPerMessage 2.000 -> 0.169, ~91.5% of the way to 64's 0.055) while
+     * surviving the deliberately-extreme continuous-flood repro almost as long as
+     * NO batching at all (803s vs the no-batching control's 828s, vs 64's 506s —
+     * batch size trades directly against extreme-case survival, and the tradeoff
+     * accelerates past 16, not linearly).
+     */
+    public static final int BATCH_APPLY_MAX_SIZE =
+            Integer.getInteger("nestworld.batchApplyMaxSize", 16);
+
+    /**
      * Step 3 (docs/LOCAL_TICK_STAGE4.md, "Step 3 — Single Free-Running Region"): hard
      * kill-switch for the entire free-running-region code path. Off by default —
      * {@code RegionThread.run()}'s branch on {@code region.isFreeRunning()} is dead

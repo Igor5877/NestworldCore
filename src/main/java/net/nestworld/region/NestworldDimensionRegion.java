@@ -623,15 +623,39 @@ public final class NestworldDimensionRegion {
      * applyWork} only after acquiring the {@code chunkLock} of every region within {@link
      * NestworldTuning#CASCADE_SAFETY_MARGIN_BLOCKS} of every position in {@code positions}.
      */
-    void applyWithCascadeGuard(WorldRegion destination, RegionMessage<?> msg,
-                                java.util.Collection<BlockPos> positions, Runnable applyWork) {
+    /**
+     * Batch-apply Phase 1 (docs/BATCH_APPLY_COALESCING_DESIGN.md): acquires ONE combined
+     * lock set for a whole batch of same-type, same-destination messages, applies every
+     * message in the batch in its original order, releases once — instead of one lock
+     * acquire/release cycle per message (the confirmed remaining Fix 3 bottleneck under
+     * Step 5). Whole-batch fail on timeout: nothing is ever half-applied, so no rollback
+     * logic is needed (see design doc's "Lock-timeout behavior" section). Fault
+     * isolation is per-MESSAGE even though the lock is shared — one message's apply
+     * throwing does not skip its batch-mates or leak the lock, matching the old
+     * per-message method's behavior exactly (each drain-site call used to be wrapped in
+     * its own try/catch; that granularity is preserved here, just inside the batch loop).
+     *
+     * <p>The lock-acquisition wait is clamped to BOTH this call's own {@code
+     * CASCADE_LOCK_TIMEOUT_NANOS} window AND {@code sharedDeadlineNanos} (the same
+     * deadline the caller's outer drain loop uses across every region/type in one
+     * barrier pass) — Gemini review finding, 2026-08-19: a count-only batch cap does not
+     * bound an in-progress batch's lock-wait duration, which would reintroduce the exact
+     * starvation shape Fix 3 already fixed once at message granularity (one region's
+     * unbounded floor of work ignoring the shared deadline). Whichever deadline is
+     * sooner wins.
+     */
+    void applyBatchWithCascadeGuard(WorldRegion destination, List<RegionMessage<?>> batch,
+            java.util.Collection<BlockPos> combinedPositions, long sharedDeadlineNanos,
+            java.util.function.Consumer<RegionMessage<?>> perMessageApply) {
         TreeSet<WorldRegion> toLock = new TreeSet<>(Comparator.comparingInt(WorldRegion::getId));
-        for (BlockPos pos : positions) {
+        for (BlockPos pos : combinedPositions) {
             toLock.addAll(grid.getRegionsWithinMargin(pos, NestworldTuning.CASCADE_SAFETY_MARGIN_BLOCKS));
         }
+        BatchApplyStats.recordBatchFormed(batch.size(), toLock.size());
         List<WorldRegion> locked = new ArrayList<>(toLock.size());
         List<Long> stamps = new ArrayList<>(toLock.size());
-        long deadline = System.nanoTime() + NestworldTuning.CASCADE_LOCK_TIMEOUT_NANOS;
+        long batchOwnDeadline = System.nanoTime() + NestworldTuning.CASCADE_LOCK_TIMEOUT_NANOS;
+        long deadline = Math.min(batchOwnDeadline, sharedDeadlineNanos);
         try {
             for (WorldRegion r : toLock) {
                 long remainingNanos = deadline - System.nanoTime();
@@ -644,20 +668,65 @@ public final class NestworldDimensionRegion {
                     }
                 }
                 if (stamp == 0L) {
-                    LOGGER.warn("Cascade guard: timed out locking region {} for a deferred write near {} "
-                            + "— re-queued for a later pass", r.getId(), positions);
-                    destination.nestworldRequeueMessage(msg);
+                    LOGGER.warn("Batch cascade guard: timed out locking region {} for a deferred batch of {} "
+                            + "message(s) near {} — whole batch re-queued for a later pass",
+                            r.getId(), batch.size(), combinedPositions);
+                    for (RegionMessage<?> msg : batch) destination.nestworldRequeueMessage(msg);
+                    BatchApplyStats.recordBatchTimeout(batch.size());
                     return;
                 }
                 locked.add(r);
                 stamps.add(stamp);
             }
-            applyWork.run();
-            MailboxAudit.recordApplied(msg.auditId(), destination, msg.messageType());
+            for (RegionMessage<?> msg : batch) {
+                try {
+                    perMessageApply.accept(msg);
+                    MailboxAudit.recordApplied(msg.auditId(), destination, msg.messageType());
+                } catch (Throwable t) {
+                    LOGGER.warn("Deferred batch message apply failed: {}", t.toString());
+                }
+            }
+            BatchApplyStats.recordBatchApplied();
         } finally {
             for (int i = locked.size() - 1; i >= 0; i--) {
                 locked.get(i).getChunkLock().unlockWrite(stamps.get(i));
             }
+        }
+    }
+
+    /**
+     * Batch-apply Phase 1: forms and applies successive batches (see {@link
+     * WorldRegion#nestworldDrainMailboxBatch}/{@link #applyBatchWithCascadeGuard}) of one
+     * message type for one destination region until either the mailbox has no more
+     * messages of that type or {@code deadlineNanos} passes — the batch-granularity
+     * equivalent of the old {@code nestworldDrainMailboxBudgeted} loop.
+     */
+    private void nestworldDrainAndApplyBatched(WorldRegion region, RegionMessage.Type type, long deadlineNanos) {
+        while (System.nanoTime() < deadlineNanos) {
+            List<RegionMessage<?>> batch = region.nestworldDrainMailboxBatch(type, NestworldTuning.BATCH_APPLY_MAX_SIZE);
+            if (batch.isEmpty()) return;
+
+            List<BlockPos> combinedPositions = new ArrayList<>(batch.size());
+            java.util.function.Consumer<RegionMessage<?>> applier;
+            if (type == RegionMessage.Type.EXPLOSION_APPLY) {
+                for (RegionMessage<?> msg : batch) {
+                    combinedPositions.addAll(((net.minecraft.world.level.Explosion.NestworldExplosionBatch) msg.payload()).positions());
+                }
+                applier = msg -> net.minecraft.world.level.Explosion.nestworldApplyBatch(
+                        (net.minecraft.world.level.Explosion.NestworldExplosionBatch) msg.payload());
+            } else {
+                for (RegionMessage<?> msg : batch) {
+                    combinedPositions.add(((RegionMessage.BlockWrite) msg.payload()).pos());
+                }
+                applier = msg -> {
+                    RegionMessage.BlockWrite write = (RegionMessage.BlockWrite) msg.payload();
+                    level.setBlock(write.pos(), write.newState(), write.flags(), write.recursionLeft());
+                };
+            }
+
+            applyBatchWithCascadeGuard(region, batch, combinedPositions, deadlineNanos, applier);
+
+            if (batch.size() < NestworldTuning.BATCH_APPLY_MAX_SIZE) return; // mailbox had no more of this type
         }
     }
 
@@ -801,27 +870,13 @@ public final class NestworldDimensionRegion {
         long t4 = System.nanoTime();
 
         // 4b/4c. Apply cross-region explosion/block-write batches deferred THIS tick.
+        // Batch-apply Phase 1 (docs/BATCH_APPLY_COALESCING_DESIGN.md): groups each
+        // region/type's queued messages under one combined cascade-guard lock instead of
+        // one lock cycle per message — see nestworldDrainAndApplyBatched.
         long nestworldMailboxDeadline = System.nanoTime() + NestworldTuning.MAILBOX_DRAIN_BUDGET_NANOS;
         for (WorldRegion region : grid.getAllRegions()) {
-            region.nestworldDrainMailboxBudgeted(RegionMessage.Type.EXPLOSION_APPLY, nestworldMailboxDeadline, msg -> {
-                try {
-                    net.minecraft.world.level.Explosion.NestworldExplosionBatch batch =
-                            (net.minecraft.world.level.Explosion.NestworldExplosionBatch) msg.payload();
-                    applyWithCascadeGuard(region, msg, batch.positions(),
-                            () -> net.minecraft.world.level.Explosion.nestworldApplyBatch(batch));
-                } catch (Throwable t) {
-                    LOGGER.warn("Deferred explosion batch apply failed: {}", t.toString());
-                }
-            });
-            region.nestworldDrainMailboxBudgeted(RegionMessage.Type.BLOCK_WRITE, nestworldMailboxDeadline, msg -> {
-                try {
-                    RegionMessage.BlockWrite write = (RegionMessage.BlockWrite) msg.payload();
-                    applyWithCascadeGuard(region, msg, List.of(write.pos()),
-                            () -> level.setBlock(write.pos(), write.newState(), write.flags(), write.recursionLeft()));
-                } catch (Throwable t) {
-                    LOGGER.warn("Deferred block write at {} failed: {}", msg, t.toString());
-                }
-            });
+            nestworldDrainAndApplyBatched(region, RegionMessage.Type.EXPLOSION_APPLY, nestworldMailboxDeadline);
+            nestworldDrainAndApplyBatched(region, RegionMessage.Type.BLOCK_WRITE, nestworldMailboxDeadline);
         }
 
         // 5. Refresh ghost zones (runs while region threads are paused at barrier)

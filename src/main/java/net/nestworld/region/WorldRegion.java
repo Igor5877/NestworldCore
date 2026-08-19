@@ -343,6 +343,33 @@ public class WorldRegion {
         }
     }
 
+    /**
+     * Batch-apply Phase 1 (docs/BATCH_APPLY_COALESCING_DESIGN.md): forms up to {@code
+     * maxBatchSize} messages of the given type, in FIFO order, from this region's
+     * mailbox — pure dequeue, no lock/apply work. The caller is expected to acquire ONE
+     * combined lock for the whole returned batch (see {@code
+     * NestworldDimensionRegion#applyBatchWithCascadeGuard}) instead of one lock per
+     * message, which is the actual point of this method existing separately from
+     * {@link #nestworldDrainMailboxBudgeted}. A batch smaller than {@code maxBatchSize}
+     * means the mailbox has no more messages of this type left (the scan reached the
+     * end), NOT that the caller should stop looking — a full-size batch means there may
+     * be more. Empty list if nothing of this type is queued. Main-thread only, same
+     * barrier-safe contract as {@link #nestworldDrainMailboxBudgeted}.
+     */
+    public java.util.List<RegionMessage<?>> nestworldDrainMailboxBatch(RegionMessage.Type type, int maxBatchSize) {
+        if (nestworldMailbox.isEmpty()) return java.util.List.of();
+        java.util.List<RegionMessage<?>> batch = new java.util.ArrayList<>(Math.min(maxBatchSize, 32));
+        java.util.Iterator<RegionMessage<?>> it = nestworldMailbox.iterator();
+        while (it.hasNext() && batch.size() < maxBatchSize) {
+            RegionMessage<?> m = it.next();
+            if (m.messageType() != type) continue;
+            it.remove();
+            nestworldMailboxDepth.decrementAndGet();
+            batch.add(m);
+        }
+        return batch;
+    }
+
     /** Approximate current mailbox depth, all message types combined — an O(n) queue
      *  walk, so call only from low-frequency diagnostics (e.g. {@code /nestworld
      *  status}), never from a per-tick path. Non-zero across a tick boundary is only

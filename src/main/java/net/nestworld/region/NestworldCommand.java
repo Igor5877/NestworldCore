@@ -147,6 +147,7 @@ public final class NestworldCommand {
                                                         IntegerArgumentType.getInteger(ctx, "z")))))))
                 .then(Commands.literal("scheduler").executes(ctx -> scheduler(ctx.getSource())))
                 .then(Commands.literal("mailboxaudit").executes(ctx -> mailboxAudit(ctx.getSource())))
+                .then(Commands.literal("pressure").executes(ctx -> pressure(ctx.getSource())))
                 .then(Commands.literal("entityguard").executes(ctx -> entityGuard(ctx.getSource())))
                 .then(Commands.literal("entityrecheck").executes(ctx -> entityRecheck(ctx.getSource())))
                 .then(Commands.literal("hotspots").executes(ctx -> hotspots(ctx.getSource())))
@@ -238,6 +239,16 @@ public final class NestworldCommand {
         int stale = MailboxAudit.logStaleEntries(5_000_000_000L);
         src.sendSuccess(() -> Component.literal("Mailbox audit: " + MailboxAudit.summary()
                 + (stale > 0 ? String.format(" — %d stale (check log)", stale) : "")), false);
+        return 1;
+    }
+
+    /** Batch-apply Phase 1 diagnostic (docs/BATCH_APPLY_COALESCING_DESIGN.md) — the
+     *  {@code locks/message} (before) vs {@code locks/batch} (after) numbers the design
+     *  doc's benchmark plan is built around, plus timeout/convoy rate. Always available
+     *  (no ENABLED gate — the underlying counters are always-on, unlike MailboxAudit). */
+    private static int pressure(CommandSourceStack src) {
+        src.sendSuccess(() -> Component.literal("Batch-apply: " + BatchApplyStats.summary()), false);
+        src.sendSuccess(() -> Component.literal("Mailbox audit: " + MailboxAudit.summary()), false);
         return 1;
     }
 
