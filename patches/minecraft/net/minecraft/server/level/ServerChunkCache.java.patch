@@ -1,6 +1,6 @@
 --- a/net/minecraft/server/level/ServerChunkCache.java
 +++ b/net/minecraft/server/level/ServerChunkCache.java
-@@ -63,6 +_,24 @@
+@@ -63,6 +_,32 @@
     private final long[] f_8337_ = new long[4];
     private final ChunkStatus[] f_8338_ = new ChunkStatus[4];
     private final ChunkAccess[] f_8339_ = new ChunkAccess[4];
@@ -21,6 +21,14 @@
 +   // heavy event (mass chunk-gen, a mod's raycast into ungenerated terrain) even though
 +   // the crash it prevents is rare.
 +   public final java.util.concurrent.atomic.AtomicLong nestworldRegionGetChunkTimeouts = new java.util.concurrent.atomic.AtomicLong();
++   // NestWorld: counts how many times a load=false FULL-status main-thread getChunk() call
++   // (e.g. Level.getChunkForCollisions(), the entity-movement/collision-check path) hit the
++   // bounded-wait timeout below instead of resolving normally. Real crash (2026-08-20, live
++   // ATM9): this exact call shape attached to an already-in-flight load=true generation for
++   // the same position and inherited its multi-second wait under a chunk-gen backlog,
++   // tripping the 60s ServerHangWatchdog because the pre-existing zero-wait/bounded-wait
++   // protection above only covered load=true callers.
++   public final java.util.concurrent.atomic.AtomicLong nestworldLoadFalseTimeouts = new java.util.concurrent.atomic.AtomicLong();
 +
     @Nullable
     @VisibleForDebug
@@ -115,7 +123,7 @@
           for(int j = 0; j < 4; ++j) {
              if (i == this.f_8337_[j] && p_8362_ == this.f_8338_[j]) {
                 ChunkAccess chunkaccess = this.f_8339_[j];
-@@ -128,7 +_,89 @@
+@@ -128,7 +_,113 @@
  
           profilerfiller.m_6174_("getChunkCacheMiss");
           CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> completablefuture = this.m_8456_(p_8360_, p_8361_, p_8362_, p_8363_);
@@ -197,6 +205,30 @@
 +               return proxy;
 +            }
 +            // Completed within the deadline after all — fall through to the normal path below.
++         } else if (p_8362_ == ChunkStatus.f_62326_ && !p_8363_) {
++            // NestWorld: same "main thread never blocks on worldgen" invariant as the
++            // load=true zero-wait branch above, extended to load=false FULL-status callers
++            // (e.g. Level.getChunkForCollisions(), used by Entity.travel()'s block-collision
++            // check during ordinary movement). TRUE zero-wait, not a bounded managedBlock — a
++            // first attempt at this used a deadline-checked managedBlock() (like the load=true
++            // FALLBACK branch below), which turned out to be insufficient (see the crash note
++            // below). Correct because load=false already means "give me the chunk if it's
++            // already there, else don't force generation" to every caller — vanilla contract: null on
++            // a miss — so returning null the instant it isn't already resolved changes nothing
++            // about correctness, it only changes whether we wait first. Real crash (2026-08-20,
++            // live ATM9, TWICE — once against the unpatched vanilla path, once again against
++            // the bounded-wait attempt): both times this exact path hung 60s+ and tripped
++            // ServerHangWatchdog because a single dequeued main-thread task (real chunk
++            // generation work for another in-flight caller) can itself run far longer than any
++            // per-iteration deadline check can preempt — managedBlock() only re-evaluates its
++            // exit condition BETWEEN dequeued tasks, not during one, so a bound on wait time is
++            // not actually a bound when the poison is one slow task's own execution time. Not
++            // waiting AT ALL is the only fix that closes that gap.
++            if (!completablefuture.isDone()) {
++               nestworldLoadFalseTimeouts.incrementAndGet();
++               return null;
++            }
++            // Already resolved — fall through to the normal path below, no wait needed.
 +         } else {
 +            long nestworldBlockStart = System.nanoTime();
 +            nestworldBlockingCalls.incrementAndGet();

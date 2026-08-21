@@ -1,6 +1,6 @@
 --- a/net/minecraft/server/level/DistanceManager.java
 +++ b/net/minecraft/server/level/DistanceManager.java
-@@ -45,7 +_,274 @@
+@@ -45,7 +_,290 @@
     private final DistanceManager.FixedPlayerDistanceChunkTracker f_140763_ = new DistanceManager.FixedPlayerDistanceChunkTracker(8);
     private final TickingTracker f_183901_ = new TickingTracker();
     private final DistanceManager.PlayerTicketTracker f_140764_ = new DistanceManager.PlayerTicketTracker(32);
@@ -77,6 +77,20 @@
 +   private int nestworldPromotionSampleCount = 0;
 +   private long nestworldPromotionTotalApplied = 0;
 +   private long nestworldPromotionTotalNanos = 0;
++
++   // NestWorld 2026-08-20 (live ATM9 crash — see NestworldTuning.CHUNK_PROMOTION_PUMP_BUDGET_MS's
++   // javadoc for the full incident): "admitted" is how many Tier 1b/Tier 2 holders were selected
++   // for a promotion attempt this tick, independent of whether the pump-budget deadline actually
++   // let them run (Tier 1a is deliberately excluded -- it is never throttled by either budget, so
++   // admitted==applied there always and counting it would only dilute the signal this exists to
++   // show). Comparing this against nestworldPromotionTotalApplied is what makes a budget/backlog
++   // mismatch visible mid-session instead of only as an emergent symptom (a growing backlog)
++   // after the fact.
++   private long nestworldPromotionTotalAdmitted = 0;
++   // How many times the pump-budget deadline actually cut a promotion pass short this session —
++   // zero means the clamp has never had to do anything; non-zero is expected/healthy under a real
++   // backlog-drain (it means the safety valve is doing its job, not that something is broken).
++   private long nestworldPumpDeadlineHits = 0;
 +
 +   /** Main-thread-only (this whole class only mutates on the main thread) — wraps a
 +    *  single updateFutures() call with timing and records the sample. */
@@ -252,6 +266,8 @@
 +   }
 +
 +   public long nestworldPromotionTotalApplied() { return this.nestworldPromotionTotalApplied; }
++   public long nestworldPromotionTotalAdmitted() { return this.nestworldPromotionTotalAdmitted; }
++   public long nestworldPumpDeadlineHits() { return this.nestworldPumpDeadlineHits; }
 +
 +   public double nestworldPromotionAvgMs() {
 +      return this.nestworldPromotionTotalApplied == 0 ? 0.0
@@ -285,7 +301,7 @@
     protected DistanceManager(Executor p_140774_, Executor p_140775_) {
        ProcessorHandle<Runnable> processorhandle = ProcessorHandle.m_18714_("player ticket throttler", p_140775_::execute);
        ChunkTaskPriorityQueueSorter chunktaskpriorityqueuesorter = new ChunkTaskPriorityQueueSorter(ImmutableList.of(processorhandle), p_140774_, 4);
-@@ -104,22 +_,209 @@
+@@ -104,22 +_,249 @@
     @Nullable
     protected abstract ChunkHolder m_7288_(long p_140780_, int p_140781_, @Nullable ChunkHolder p_140782_, int p_140783_);
  
@@ -343,6 +359,13 @@
 +      if (!(this.chunksToUpdateFuturesPlayer.isEmpty() && this.chunksToUpdateFuturesBulk.isEmpty())
 +            && this.nestworldFutureBudget > 0) {
 +         if (net.nestworld.region.NestworldTuning.CHUNK_GEN_BUDGET <= 0) {
++            // NestWorld: the pump-budget deadline clamp (CHUNK_PROMOTION_PUMP_BUDGET_MS)
++            // deliberately does NOT apply in this branch -- an operator who explicitly sets
++            // chunkGenBudget<=0 has opted out of admission throttling entirely (this branch's
++            // pre-existing contract is "vanilla-identical unlimited"), and this project has no
++            // live incident data for what a time-clamped version of unlimited-admission would
++            // even mean semantically. Not a silent gap: budget<=0 is not the deployed default
++            // (2), and every default-config server gets the clamp via the branch below.
 +            this.chunksToUpdateFuturesPlayer.forEach((p_183908_) -> {
 +               this.nestworldTimedUpdateFutures(p_183908_, p_140806_);
 +            });
@@ -417,6 +440,17 @@
 +            net.nestworld.region.DistanceManagerAttribution.record(
 +               net.nestworld.region.DistanceManagerAttribution.Category.TIER1_CLASSIFY_PROMOTE, nestworldDmaT8 - nestworldDmaT7);
 +
++            // NestWorld 2026-08-20: shared deadline clamp for Tier 1b + Tier 2 promotion below
++            // (NestworldTuning.CHUNK_PROMOTION_PUMP_BUDGET_MS's javadoc has the full incident).
++            // Deliberately declared here, AFTER Tier 1a's unconditional promote loop above and
++            // BEFORE Tier 1b's, so it covers both throttleable tiers under one shared budget
++            // (a single tick's worth of "extra" promotion work, not one budget per tier) while
++            // never touching Tier 1a's own never-throttled invariant.
++            long nestworldPumpBudgetMs = net.nestworld.region.NestworldLiveTuning.effectiveChunkPromotionPumpBudgetMs();
++            long nestworldPumpDeadline = nestworldPumpBudgetMs > 0
++                  ? System.nanoTime() + nestworldPumpBudgetMs * 1_000_000L : Long.MAX_VALUE;
++            boolean nestworldPumpExhausted = false;
++
 +            int nestworldTier1bN = Math.min(
 +                  net.nestworld.region.NestworldTuning.CHUNK_GEN_TIER1B_BUDGET <= 0
 +                        ? nestworldTier1b.size() : net.nestworld.region.NestworldTuning.CHUNK_GEN_TIER1B_BUDGET,
@@ -433,6 +467,14 @@
 +                  }
 +               }
 +               for (ChunkHolder nestworldH : nestworldTier1bTopN) {
++                  this.nestworldPromotionTotalAdmitted++;
++                  if (!nestworldPumpExhausted && System.nanoTime() >= nestworldPumpDeadline) {
++                     nestworldPumpExhausted = true;
++                     this.nestworldPumpDeadlineHits++;
++                  }
++                  if (nestworldPumpExhausted) {
++                     continue; // stays in chunksToUpdateFuturesPlayer (never removed) -- re-drives next tick
++                  }
 +                  this.chunksToUpdateFuturesPlayer.remove(nestworldH);
 +                  this.nestworldTimedUpdateFutures(nestworldH, p_140806_);
 +               }
@@ -487,6 +529,20 @@
 +            net.nestworld.region.DistanceManagerAttribution.record(
 +               net.nestworld.region.DistanceManagerAttribution.Category.TIER2_SELECT, nestworldDmaT9b - nestworldDmaT9);
 +            for (ChunkHolder nestworldH : nestworldSelected) {
++               this.nestworldPromotionTotalAdmitted++;
++               if (!nestworldPumpExhausted && System.nanoTime() >= nestworldPumpDeadline) {
++                  nestworldPumpExhausted = true;
++                  this.nestworldPumpDeadlineHits++;
++               }
++               if (nestworldPumpExhausted) {
++                  // Already popped off nestworldTier2Ready during selection above -- without
++                  // re-pushing, this holder would stay in chunksToUpdateFuturesBulk (still
++                  // correctly tracked as pending) but become invisible to every FUTURE
++                  // selection pass (which only reads the ready-heap, not the flat set) --
++                  // permanently stuck, not just deferred. Re-push restores next-tick visibility.
++                  this.nestworldTier2Push(nestworldH);
++                  continue;
++               }
 +               this.chunksToUpdateFuturesBulk.remove(nestworldH);
 +               this.nestworldTimedUpdateFutures(nestworldH, p_140806_);
 +            }

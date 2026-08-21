@@ -1045,6 +1045,40 @@ public final class NestworldTuning {
             Long.getLong("nestworld.getChunkBurstBudgetMs", 3_000L);
 
     /**
+     * Deadline clamp (ms) on {@code DistanceManager.runAllUpdates()}'s Tier 1b + Tier 2
+     * chunk-holder promotion pass, per tick — independent of, and orthogonal to, {@link
+     * #CHUNK_GEN_BUDGET}. CHUNK_GEN_BUDGET bounds HOW MANY holders get admitted for
+     * promotion this tick; this bounds how much WALL-CLOCK TIME that admitted batch is
+     * allowed to spend, since admission count alone doesn't bound cost — a single
+     * admitted holder in genuinely virgin territory can cascade into scheduling futures
+     * for its whole unresolved neighbourhood (worldgen status dependencies fan out
+     * through neighbouring chunks at every stage from EMPTY to FULL), so N admitted
+     * holders is not a bound on total promotion-pass time when N is raised without this
+     * clamp. Real crash (2026-08-20, live ATM9): raising chunkGenBudget 2->8 while an
+     * ~80k-position predictive backlog existed let the promotion pass run uninterrupted
+     * for 62.75s inside {@code ChunkMap.nestworldGetChunkRangeFutureInner()} — not
+     * because that method is itself slow (it is a small, bounded vanilla loop plus one
+     * cheap ThreadLocal flag), but because nothing capped how much cumulative work the
+     * pass could pull through the queue in one go. This is that cap: exceeded, the
+     * remaining Tier 1b holders stay in the pending set and Tier 2 holders are re-pushed
+     * onto the ready-heap, both re-driving next tick via the same natural-redrive
+     * mechanism budget-exhaustion already used (not a new code path, same shape).
+     *
+     * <p>Deliberately does NOT touch Tier 1a (the {@code PLAYER_URGENT_CHUNK_RADIUS}
+     * ring) — that stays unconditional by design (a player must never fall through the
+     * world), same invariant {@code DistanceManagerAttribution}'s Tier split already
+     * documents. {@code 0} = disabled (vanilla-identical, count-only bound from
+     * CHUNK_GEN_BUDGET alone — NOT recommended after the incident above). Default
+     * 250ms leaves a huge margin under the 60s watchdog (240x) while still letting one
+     * tick's promotion pass do meaningfully more work than a strict per-call bound
+     * would; not yet load-tested against a real backlog-drain scenario, so treat this
+     * default as a starting point — {@code /nestworld setpumpbudget} exists specifically
+     * to recalibrate it under test, same rationale as {@link #MAX_MOVEMENT_PACKETS_PER_TICK}.
+     */
+    public static final long CHUNK_PROMOTION_PUMP_BUDGET_MS =
+            Long.getLong("nestworld.chunkPromotionPumpBudgetMs", 250L);
+
+    /**
      * Layer 10 (docs/GEN_SPIKE.md): the hard invariant — project owner's explicit
      * direction, 2026-08-11, after the burst-budget-first-call fix above still left a
      * BOUNDED (not zero) main-thread wait: "MAIN THREAD НІКОЛИ НЕ МОЖЕ БЛОКУВАТИСЯ НА
@@ -1075,6 +1109,69 @@ public final class NestworldTuning {
      */
     public static final boolean GETCHUNK_ZERO_WAIT_MAIN_THREAD =
             !"false".equalsIgnoreCase(System.getProperty("nestworld.getChunkZeroWaitMainThread", "true"));
+
+    /**
+     * Multiplier on vanilla's "moved too quickly" movement-speed check (see the
+     * {@code ServerGamePacketListenerImpl.handleMovePlayer} patch's {@code f2}
+     * computation). {@code 1.0} (default) = unchanged vanilla behavior: 100 blocks²/tick
+     * normally, 300 while fall-flying (elytra). Real-world trigger (2026-08-20, live ATM9):
+     * a player using mod-added fast flight (Ad Astra jetpack — not real elytra gliding, so
+     * the vanilla {@code disableElytraMovementCheck} gamerule doesn't help) kept getting
+     * rubber-banded backward as the server rejected legitimate movement packets and
+     * snapped the client back to the last accepted position.
+     *
+     * <p>Unlike every other tunable in this class, this one is read from {@code
+     * server.properties} (key {@code nestworld-move-too-quickly-multiplier}) instead of a
+     * JVM system property, per explicit operator request — same file players already edit
+     * for {@code max-players} etc., no JVM args needed. Live-changeable without a restart
+     * via {@code /nestworld setmovethreshold <multiplier>} — see {@link NestworldLiveTuning
+     * #effectiveMoveTooQuicklyMultiplier()}; this constant is only the boot-time default the
+     * live override falls back to.
+     */
+    public static final double MOVE_TOO_QUICKLY_MULTIPLIER =
+            readServerPropertyDouble("nestworld-move-too-quickly-multiplier", 1.0D);
+
+    /**
+     * Cap on the movement-packet-burst allowance ({@code i} in {@code
+     * ServerGamePacketListenerImpl.handleMovePlayer}'s patched clamp). Vanilla resets {@code i}
+     * to 1 the instant more than 5 queued packets arrive in one tick; this project caps it
+     * instead of collapsing it, so tolerance scales with a real backlog (e.g. from a server-side
+     * tick stall) rather than shrinking exactly when more tolerance is needed. Default 20 is a
+     * starting point, not a validated number — {@code /nestworld setmovepacketcap} exists
+     * specifically so it can be tuned under load-test before committing to a final value (see
+     * the movement-threshold-multiplier work this accompanies, 2026-08-20).
+     */
+    public static final int MAX_MOVEMENT_PACKETS_PER_TICK =
+            (int) readServerPropertyDouble("nestworld-max-movement-packets-per-tick", 20.0D);
+
+    /**
+     * Reads a single key out of {@code server.properties} in the server's working
+     * directory (same file/location vanilla itself reads {@code max-players} etc. from).
+     * Deliberately independent of vanilla's own {@code DedicatedServerProperties} parsing
+     * (which isn't available yet at this class's static-init time) — a tiny standalone
+     * {@link java.util.Properties} load is simpler than hooking that pipeline for one key.
+     * Missing file/key/unparsable value all fall back to {@code def} silently (server.properties
+     * may not exist yet on a brand-new install's very first boot, before vanilla itself
+     * creates it — same "don't crash startup over a tuning knob" discipline as every other
+     * flag in this class).
+     */
+    private static double readServerPropertyDouble(String key, double def) {
+        java.util.Properties props = new java.util.Properties();
+        try (java.io.InputStream in = new java.io.FileInputStream("server.properties")) {
+            props.load(in);
+        } catch (java.io.IOException e) {
+            return def;
+        }
+        String raw = props.getProperty(key);
+        if (raw == null) {
+            return def;
+        }
+        try {
+            return Double.parseDouble(raw.trim());
+        } catch (NumberFormatException e) {
+            return def;
+        }
+    }
 
     private NestworldTuning() {
     }

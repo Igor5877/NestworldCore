@@ -13,6 +13,29 @@
     public static final double f_215198_ = Mth.m_144952_(6.0D);
     private static final int f_215199_ = -1;
     private static final int f_244471_ = 4096;
+@@ -878,11 +_,20 @@
+                      int i = this.f_9740_ - this.f_9741_;
+                      if (i > 5) {
+                         f_9744_.debug("{} is sending move packets too frequently ({} packets since last tick)", this.f_9743_.m_7755_().getString(), i);
+-                        i = 1;
++                        // NestWorld: vanilla used to collapse i back to 1 here, which shrinks the
++                        // "moved too quickly" tolerance (f2 * i below) exactly when a burst of
++                        // queued packets from a real server-side tick stall needs MORE tolerance,
++                        // not less -- a client that was legitimately still moving during a multi-
++                        // second freeze gets rubber-banded the instant the server catches up. Cap
++                        // instead of collapsing: tolerance now scales with the backlog (up to the
++                        // cap) rather than punishing it. Physically absurd single-tick jumps are
++                        // still caught -- that's f2's job, unchanged -- this only fixes how many
++                        // legitimately-queued packets get credited toward the allowance.
++                        i = Math.min(i, net.nestworld.region.NestworldLiveTuning.effectiveMaxMovementPacketsPerTick());
+                      }
+ 
+                      if (!this.f_9743_.m_8958_() && (!this.f_9743_.m_9236_().m_46469_().m_46207_(GameRules.f_46148_) || !this.f_9743_.m_21255_())) {
+-                        float f2 = this.f_9743_.m_21255_() ? 300.0F : 100.0F;
++                        float f2 = (this.f_9743_.m_21255_() ? 300.0F : 100.0F) * (float) net.nestworld.region.NestworldLiveTuning.effectiveMoveTooQuicklyMultiplier();
+                         if (d10 - d9 > (double)(f2 * (float)i) && !this.m_9956_()) {
+                            f_9744_.warn("{} moved too quickly! {},{},{}", this.f_9743_.m_7755_().getString(), d6, d7, d8);
+                            this.m_9774_(this.f_9743_.m_20185_(), this.f_9743_.m_20186_(), this.f_9743_.m_20189_(), this.f_9743_.m_146908_(), this.f_9743_.m_146909_());
 @@ -983,8 +_,10 @@
           case SWAP_ITEM_WITH_OFFHAND:
              if (!this.f_9743_.m_5833_()) {

@@ -11,7 +11,7 @@
     private final ProcessorHandle<ChunkTaskPriorityQueueSorter.Message<Runnable>> f_140143_;
     private final ChunkProgressListener f_140144_;
     private final ChunkStatusUpdateListener f_143031_;
-@@ -143,6 +_,345 @@
+@@ -143,6 +_,365 @@
     private final Long2LongMap f_202981_ = new Long2LongOpenHashMap();
     private final Queue<Runnable> f_140125_ = Queues.newConcurrentLinkedQueue();
     int f_140126_;
@@ -255,19 +255,37 @@
 +         synchronized (this.pending) { return this.pending.size(); }
 +      }
 +
++      /** NestWorld (Phase 1): occupied slots right now -- capacity minus the ones still
++       *  free. Clamped to 0 since setCapacity() lets slotsFree go negative transiently
++       *  (see its own comment) when shrinking mid-flight; that's an implementation
++       *  detail of the self-correcting drain, not a real negative active count. */
++      int activeCount() {
++         synchronized (this.pending) { return Math.max(0, this.capacity - this.slotsFree); }
++      }
++
 +      CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> gate(
 +            java.util.function.Supplier<CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>>> real) {
 +         CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> pendingFuture = new CompletableFuture<>();
 +         Runnable task = () -> {
++            // NestWorld (Phase 1, docs/CHUNK_GEN_PIPELINE_OBSERVABILITY_SPEC.md): timing
++            // starts here, at admission (task actually running), not at gate()'s own call
++            // time -- a task that sat in `pending` waiting for a free slot already has
++            // that wait reflected in pendingCount()/queued-time elsewhere; this measures
++            // the GENERATION step itself, matching the spec's "generation" bucket.
++            long nestworldGenStart = System.nanoTime();
 +            CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> realFuture;
 +            try {
 +               realFuture = real.get();
 +            } catch (Throwable t) {
++               net.nestworld.region.GenerationAttribution.recordCompletion(
++                     System.nanoTime() - nestworldGenStart, false);
 +               this.release();
 +               pendingFuture.completeExceptionally(t);
 +               return;
 +            }
 +            realFuture.whenComplete((r, e) -> {
++               net.nestworld.region.GenerationAttribution.recordCompletion(
++                     System.nanoTime() - nestworldGenStart, e == null);
 +               this.release();
 +               if (e != null) pendingFuture.completeExceptionally(e);
 +               else pendingFuture.complete(r);
@@ -280,6 +298,7 @@
 +               runNow = true;
 +            } else {
 +               this.pending.add(task);
++               net.nestworld.region.GenerationAttribution.recordDeferred();
 +               runNow = false;
 +            }
 +         }
@@ -337,6 +356,7 @@
 +   public void nestworldSetGenConcurrency(int n) { this.nestworldNoiseSurfaceCarversPool.setCapacity(n); }
 +   public int nestworldGenConcurrency() { return this.nestworldNoiseSurfaceCarversPool.capacity(); }
 +   public int nestworldGenPoolPending() { return this.nestworldNoiseSurfaceCarversPool.pendingCount(); }
++   public int nestworldGenPoolActive() { return this.nestworldNoiseSurfaceCarversPool.activeCount(); }
 +
 +   /**
 +    * NestWorld: run {@code p_nw_real} (the real generate() call) now if {@code
