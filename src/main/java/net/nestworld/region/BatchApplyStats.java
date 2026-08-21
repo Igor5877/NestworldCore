@@ -17,6 +17,15 @@ public final class BatchApplyStats {
     private static final AtomicLong batchesApplied = new AtomicLong();
     private static final AtomicLong batchesTimedOut = new AtomicLong();
     private static final AtomicLong messagesInTimedOutBatches = new AtomicLong();
+    // Phase 2 feasibility probe (2026-08-22): does a batch's own combinedPositions list
+    // ever contain the SAME BlockPos more than once? If duplicate-position writes within
+    // one batch are rare, payload-level coalescing (dedup same-position writes, keep only
+    // the final state) has near-zero payoff regardless of implementation quality — measure
+    // BEFORE building the side-effect-preserving dedup logic, not after. Pure counters,
+    // no behavior change; safe to leave on.
+    private static final AtomicLong positionsTotal = new AtomicLong();
+    private static final AtomicLong positionsDuplicate = new AtomicLong();
+    private static final AtomicLong batchesWithAnyDuplicate = new AtomicLong();
 
     private BatchApplyStats() {}
 
@@ -27,6 +36,19 @@ public final class BatchApplyStats {
         batchesFormed.incrementAndGet();
         messagesInBatches.addAndGet(batchSize);
         lockSetSizeSum.addAndGet(lockSetSize);
+    }
+
+    /** Called once per batch with its raw (pre-dedup) position list — counts how many of
+     *  the batch's positions are repeats of an earlier position in the SAME batch. */
+    static void recordPositionDuplicates(java.util.Collection<net.minecraft.core.BlockPos> positions) {
+        int total = positions.size();
+        long distinct = positions.stream().distinct().count();
+        int dup = (int) (total - distinct);
+        positionsTotal.addAndGet(total);
+        if (dup > 0) {
+            positionsDuplicate.addAndGet(dup);
+            batchesWithAnyDuplicate.incrementAndGet();
+        }
     }
 
     /** Called once per batch that acquired its full lock set and applied every message. */
@@ -48,10 +70,15 @@ public final class BatchApplyStats {
         double avgBatchSize = formed == 0 ? 0.0 : (double) messages / formed;
         double avgLockSetPerBatch = formed == 0 ? 0.0 : (double) lockSum / formed;
         double locksPerMessage = messages == 0 ? 0.0 : (double) lockSum / messages;
+        long posTotal = positionsTotal.get();
+        long posDup = positionsDuplicate.get();
+        double dupRate = posTotal == 0 ? 0.0 : 100.0 * posDup / posTotal;
         return String.format(
                 "batchesFormed=%d applied=%d timedOut=%d messages=%d avgBatchSize=%.1f "
-                        + "avgLockSetPerBatch=%.2f locksPerMessage=%.3f messagesInTimedOutBatches=%d",
+                        + "avgLockSetPerBatch=%.2f locksPerMessage=%.3f messagesInTimedOutBatches=%d "
+                        + "| dupProbe: positions=%d duplicates=%d dupRate=%.2f%% batchesWithDup=%d",
                 formed, batchesApplied.get(), batchesTimedOut.get(), messages,
-                avgBatchSize, avgLockSetPerBatch, locksPerMessage, messagesInTimedOutBatches.get());
+                avgBatchSize, avgLockSetPerBatch, locksPerMessage, messagesInTimedOutBatches.get(),
+                posTotal, posDup, dupRate, batchesWithAnyDuplicate.get());
     }
 }

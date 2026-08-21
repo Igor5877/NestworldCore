@@ -70,6 +70,8 @@ public final class NestworldDimensionRegion {
      *  so a player's last-known position isn't mixed across a dimension crossing. */
     private final PredictiveChunkGen predictiveGen = new PredictiveChunkGen();
 
+    public PredictiveChunkGen predictiveGen() { return this.predictiveGen; }
+
     /** Entities spawned by region threads (off-main addFreshEntity), drained on
      *  main each tick so ChunkMap entity tracking is never mutated concurrently.
      *  Bounded (anti-grief spawn-flood cap) — offer() refuses atomically when full,
@@ -403,7 +405,17 @@ public final class NestworldDimensionRegion {
                         level.areEntitiesLoaded(net.minecraft.world.level.ChunkPos.asLong(cx, cz)));
             }
             try {
+                long nestworldTickAttrStart = System.nanoTime();
                 ticker.tick();
+                long nestworldTickAttrNanos = System.nanoTime() - nestworldTickAttrStart;
+                String nestworldBeType = ticker.getType();
+                int nestworldNsCut = nestworldBeType.indexOf(':');
+                TickAttribution.recordBlockEntityTick(
+                        nestworldNsCut < 0 ? nestworldBeType : nestworldBeType.substring(0, nestworldNsCut),
+                        nestworldTickAttrNanos);
+                BlockPos nestworldBePos = ticker.getPos();
+                TickAttribution.recordChunkCost(level.dimension().location().toString(),
+                        new net.minecraft.world.level.ChunkPos(nestworldBePos), nestworldTickAttrNanos);
             } catch (Throwable err) {
                 if (pins.isAutoPinEnabled()) pins.noteBlockEntityTickError(ticker.getType());
                 LOGGER.warn("Block entity tick failed at {}: {}", ticker.getPos(), err.toString());
@@ -486,7 +498,14 @@ public final class NestworldDimensionRegion {
                 entity.checkDespawn();
                 if (entity.isRemoved()) continue;
                 if (!level.isPositionEntityTicking(entity.blockPosition())) continue;
+                long nestworldTickAttrStart = System.nanoTime();
                 level.tickNonPassenger(entity);
+                long nestworldTickAttrNanos = System.nanoTime() - nestworldTickAttrStart;
+                TickAttribution.recordEntityTick(
+                        net.minecraft.world.entity.EntityType.getKey(entity.getType()).getNamespace(),
+                        nestworldTickAttrNanos);
+                TickAttribution.recordChunkCost(level.dimension().location().toString(),
+                        entity.chunkPosition(), nestworldTickAttrNanos);
             } catch (Throwable t) {
                 LOGGER.warn("Pinned entity {} tick error: {}", entity.getType().getDescriptionId(), t.toString());
             }
@@ -724,6 +743,7 @@ public final class NestworldDimensionRegion {
                 };
             }
 
+            BatchApplyStats.recordPositionDuplicates(combinedPositions);
             applyBatchWithCascadeGuard(region, batch, combinedPositions, deadlineNanos, applier);
 
             if (batch.size() < NestworldTuning.BATCH_APPLY_MAX_SIZE) return; // mailbox had no more of this type

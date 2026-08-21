@@ -352,7 +352,34 @@ Existing `/nestworld status` fields (`mailbox=`, `pending=`, TPS, MSPT) stay
 as the top-level pass/fail signal; `/nestworld pressure` is the new
 mechanism-level diagnostic.
 
-## Phase 2 (separate, deferred, NOT part of this implementation pass)
+## Phase 2 — CLOSED NEGATIVE (2026-08-22), measured before building
+
+Before writing the side-effect-preserving dedup logic below, added a cheap probe
+(`BatchApplyStats.recordPositionDuplicates`) to measure how often a batch's own combined
+position list actually contains the SAME `BlockPos` more than once — the precondition for
+Phase 2 to have ANY payoff at all, regardless of implementation quality. Ran the exact same
+extreme continuous-flood reproduction (gen-spike-repro, 9x9 grid TNT every ~2s, no gaps) used
+for all the benchmarks above.
+
+**Result: dupRate = 0.05%** (55 duplicate positions out of 110,588 total across 3,344 formed
+batches, in a 124s window that reproduced the same crash-precursor conditions as the original
+extreme-flood tests — `pending` growing past 135K, `timedOut` ~99% of batches). Even a perfect,
+zero-risk implementation of Phase 2 could only ever eliminate ~0.05% of applied work — noise,
+not a lever. **Confirms directly, with data, what the extreme-benchmark table above already
+implied indirectly** (locks/message already amortized to near-zero via Phase 1, yet the crash
+timing barely moved): the bottleneck under extreme flood is not redundant/duplicate writes
+that coalescing could remove, it's that destination regions are themselves saturated
+processing their OWN local explosions, so an incoming cross-region batch's lock request has
+essentially nothing to do with how many distinct or duplicate positions it's requesting —
+the target simply isn't available to grant the lock often enough, regardless of payload shape.
+
+**Decision: do not build Phase 2.** The real side-effect-preserving implementation would have
+carried genuine semantic risk (vanilla's per-write neighbor/physics/block-entity notifications)
+for a measured, not estimated, near-zero return. If a future workload pattern is ever found
+where duplicate-position rate is meaningfully higher than 0.05%, re-run this same probe first
+before reconsidering — the counters are cheap enough to leave permanently enabled.
+
+## Phase 2 (original design, kept for history — NOT built, see closure above)
 
 Payload-level coalescing for `BLOCK_WRITE` specifically: if a batch contains
 two writes to the *same* `BlockPos`, only the position's *final* `BlockState`
