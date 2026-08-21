@@ -1,0 +1,41 @@
+--- a/net/minecraft/server/rcon/thread/GenericThread.java
++++ b/net/minecraft/server/rcon/thread/GenericThread.java
+@@ -25,6 +_,9 @@
+       } else {
+          this.f_11515_ = true;
+          this.f_11517_ = new Thread(this, this.f_11516_ + " #" + f_11519_.incrementAndGet());
++         // NestWorld: daemon so an RconClient thread that never dies (see stop() below)
++         // can never block JVM exit on its own -- paired fix, see stop()'s comment.
++         this.f_11517_.setDaemon(true);
+          this.f_11517_.setUncaughtExceptionHandler(new DefaultUncaughtExceptionHandlerWithName(f_11518_));
+          this.f_11517_.start();
+          f_11518_.info("Thread {} started", (Object)this.f_11516_);
+@@ -32,12 +_,28 @@
+       }
+    }
+ 
++   // NestWorld: vanilla's own MAX_STOP_WAIT (5) only switches the log-message wording
++   // below -- it was never an actual loop bound, so a thread that never dies (e.g. an
++   // RconClient blocked in CompletableFuture.join() waiting for the very "Server thread"
++   // that's now sitting in THIS join() loop -- a genuine circular deadlock, confirmed live
++   // via jstack 2026-08-22, one thread's stack ending in RconThread.stop()->this join(),
++   // the other's ending in RconClient.run()->DedicatedServer.runCommand()->join()) hung
++   // MinecraftServer.stopServer() forever, forcing a manual kill -9 of the whole JVM every
++   // time. This is a real bound: give up and let the caller's shutdown sequence continue --
++   // the abandoned thread (now daemon, see start() above) can no longer block JVM exit.
++   private static final int NESTWORLD_STOP_GIVEUP_SECONDS = 15;
++
+    public synchronized void m_7530_() {
+       this.f_11515_ = false;
+       if (null != this.f_11517_) {
+          int i = 0;
+ 
+          while(this.f_11517_.isAlive()) {
++            if (i >= NESTWORLD_STOP_GIVEUP_SECONDS) {
++               f_11518_.warn("Thread {} did not stop after {} seconds -- giving up (thread is daemon, won't block JVM exit)",
++                     this.f_11516_, i);
++               break;
++            }
+             try {
+                this.f_11517_.join(1000L);
+                ++i;
