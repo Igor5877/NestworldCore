@@ -67,6 +67,18 @@ public final class WorldgenGlueAttribution {
         return copy[Math.max(0, idx)] / 1e6;
     }
 
+    /** Phase 1 (docs/CHUNK_GEN_PIPELINE_OBSERVABILITY_SPEC.md): public numeric accessors
+     *  for bucket C (chunk_finalize) -- this IS the "integration" telemetry the spec's
+     *  section 5.3 asks for (ProtoChunk -> LevelChunk, the main-thread commit point),
+     *  already collected here since P1.2/P1.4; only needed a stable API surface to
+     *  reach net.nestworld.api instead of the pre-existing formatted-string snapshot(). */
+    public static long chunkFinalizeCompletedTotal() { return chunkFinalizeCalls; }
+    public static double chunkFinalizeAvgMs() {
+        return chunkFinalizeCalls == 0 ? 0.0 : chunkFinalizeNanosSum / 1e6 / chunkFinalizeCalls;
+    }
+    public static double chunkFinalizeP95Ms() { return percentile(chunkFinalizeSamples, chunkFinalizeSampleCount, 0.95); }
+    public static double chunkFinalizeP99Ms() { return percentile(chunkFinalizeSamples, chunkFinalizeSampleCount, 0.99); }
+
     public static String snapshot() {
         StringBuilder sb = new StringBuilder();
         sb.append("P1.2/P1.4 worldgen main-thread glue (bucket A + C, exact hook points, not heuristic):\n");

@@ -1,0 +1,22 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+issueTrackerURL="https://github.com/Igor5877/NestworldCore"
+
+[[mods]]
+modId="nestworld_metrics"
+version="1.0.0"
+displayName="NestworldCore Metrics Exporter"
+description='''Exposes NestworldCore internal state (region cost, chunk-gen backlog,
+promotion throughput, pump-budget health, predictive-gen demand) plus JVM
+heap/GC/per-thread-group CPU time as a Prometheus /metrics HTTP endpoint.
+Separate from NestworldCore's own patched-forge jar by design -- reads its
+public net.nestworld.api facade only, redeployable independently.'''
+authors="NestworldCore"
+
+[[dependencies.nestworld_metrics]]
+    modId="forge"
+    mandatory=true
+    versionRange="[47,)"
+    ordering="NONE"
+    side="SERVER"

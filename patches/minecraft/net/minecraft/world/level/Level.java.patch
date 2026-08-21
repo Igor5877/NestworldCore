@@ -151,7 +151,7 @@
     }
  
     public int m_6924_(Heightmap.Types p_46571_, int p_46572_, int p_46573_) {
-@@ -395,41 +_,96 @@
+@@ -395,41 +_,103 @@
     }
  
     public void m_151525_(TickingBlockEntity p_151526_) {
@@ -234,7 +234,14 @@
     public <T extends Entity> void m_46653_(Consumer<T> p_46654_, T p_46655_) {
        try {
 +         net.minecraftforge.server.timings.TimeTracker.ENTITY_UPDATE.trackStart(p_46655_);
++         long nestworldTickAttrStart = System.nanoTime();
           p_46654_.accept(p_46655_);
++         long nestworldTickAttrNanos = System.nanoTime() - nestworldTickAttrStart;
++         net.nestworld.region.TickAttribution.recordEntityTick(
++               net.minecraft.world.entity.EntityType.m_20613_(p_46655_.m_6095_()).m_135827_(),
++               nestworldTickAttrNanos);
++         net.nestworld.region.TickAttribution.recordChunkCost(this.m_46472_().m_135782_().toString(),
++               p_46655_.m_146902_(), nestworldTickAttrNanos);
        } catch (Throwable throwable) {
 -         CrashReport crashreport = CrashReport.m_127521_(throwable, "Ticking entity");
 -         CrashReportCategory crashreportcategory = crashreport.m_127514_("Entity being ticked");

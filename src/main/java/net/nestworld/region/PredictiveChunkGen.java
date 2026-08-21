@@ -82,6 +82,20 @@ public final class PredictiveChunkGen {
     private int logCooldown = 0;
 
     /**
+     * Cumulative frontier tickets issued since server start — never reset, unlike
+     * {@link #issuedSinceLog}. Exposed for {@code /nestworld chunkpromotion}'s
+     * requested/admitted/promoted/backlog breakdown (2026-08-20, live ATM9 incident):
+     * comparing this against {@code DistanceManager.nestworldPromotionTotalApplied()}
+     * is what actually surfaces a predictive/promotion-budget mismatch (this project's
+     * live measurement found predictive issuing ~225-250 tickets/s against a ~40/s
+     * promotion budget) instead of it only being visible as an emergent 80k-backlog
+     * symptom after the fact.
+     */
+    private long issuedTotal = 0L;
+
+    public long issuedTotal() { return this.issuedTotal; }
+
+    /**
      * Project and request the frontier for every moving player. Call once per tick
      * on the main thread (player positions are main-thread state).
      */
@@ -127,6 +141,7 @@ public final class PredictiveChunkGen {
                     // Re-adding each tick refreshes the timeout on the live frontier;
                     // chunks left behind are not re-added and expire on their own.
                     level.getChunkSource().addRegionTicket(PREDICTIVE, cp, FULL_DISTANCE, cp);
+                    this.issuedTotal++;
                     if (LOG) {
                         this.issuedSinceLog++;
                         int lead = Math.abs(cx - pcx) + Math.abs(cz - pcz);

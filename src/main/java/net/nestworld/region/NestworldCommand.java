@@ -1,6 +1,7 @@
 package net.nestworld.region;
 
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.commands.CommandSourceStack;
@@ -116,6 +117,21 @@ public final class NestworldCommand {
                                 .executes(ctx -> setGenBudget(ctx.getSource(),
                                         IntegerArgumentType.getInteger(ctx, "n")))))
                 .then(Commands.literal("genbudget").executes(ctx -> genBudget(ctx.getSource())))
+                .then(Commands.literal("setmovethreshold")
+                        .then(Commands.argument("multiplier", DoubleArgumentType.doubleArg(-1.0D))
+                                .executes(ctx -> setMoveThreshold(ctx.getSource(),
+                                        DoubleArgumentType.getDouble(ctx, "multiplier")))))
+                .then(Commands.literal("movethreshold").executes(ctx -> moveThreshold(ctx.getSource())))
+                .then(Commands.literal("setmovepacketcap")
+                        .then(Commands.argument("n", IntegerArgumentType.integer(-1))
+                                .executes(ctx -> setMovePacketCap(ctx.getSource(),
+                                        IntegerArgumentType.getInteger(ctx, "n")))))
+                .then(Commands.literal("movepacketcap").executes(ctx -> movePacketCap(ctx.getSource())))
+                .then(Commands.literal("setpumpbudget")
+                        .then(Commands.argument("ms", IntegerArgumentType.integer(-1))
+                                .executes(ctx -> setPumpBudget(ctx.getSource(),
+                                        IntegerArgumentType.getInteger(ctx, "ms")))))
+                .then(Commands.literal("pumpbudget").executes(ctx -> pumpBudget(ctx.getSource())))
                 .then(Commands.literal("mspt").executes(ctx -> msptPercentiles(ctx.getSource())))
                 .then(Commands.literal("stresschunks")
                         .then(Commands.argument("count", IntegerArgumentType.integer(1, 200000))
@@ -151,10 +167,16 @@ public final class NestworldCommand {
                 .then(Commands.literal("entityguard").executes(ctx -> entityGuard(ctx.getSource())))
                 .then(Commands.literal("entityrecheck").executes(ctx -> entityRecheck(ctx.getSource())))
                 .then(Commands.literal("hotspots").executes(ctx -> hotspots(ctx.getSource())))
+                .then(Commands.literal("modload").executes(ctx -> modLoad(ctx.getSource())))
+                .then(Commands.literal("tickchunks").executes(ctx -> tickChunks(ctx.getSource())))
                 .then(Commands.literal("goto")
                         .then(Commands.literal("hotspot")
                                 .then(Commands.argument("id", IntegerArgumentType.integer(1))
                                         .executes(ctx -> gotoHotspot(ctx.getSource(),
+                                                IntegerArgumentType.getInteger(ctx, "id")))))
+                        .then(Commands.literal("tickchunk")
+                                .then(Commands.argument("id", IntegerArgumentType.integer(1))
+                                        .executes(ctx -> gotoTickChunk(ctx.getSource(),
                                                 IntegerArgumentType.getInteger(ctx, "id")))))
                         .then(Commands.literal("region")
                                 .then(Commands.argument("id", IntegerArgumentType.integer(0))
@@ -674,6 +696,27 @@ public final class NestworldCommand {
                 "  snapshot: size=%,d build=%.3fms build_ticks=%,d partial_rebuilds=%,d",
                 dm.nestworldValidatorSnapshotSize(), dm.nestworldValidatorSnapshotBuildMs(),
                 dm.nestworldValidatorSnapshotBuildTicks(), dm.nestworldValidatorPartialRebuilds())), false);
+        // 2026-08-20 (live ATM9 crash): requested/admitted/promoted/backlog in one place --
+        // requested (predictive tickets issued) vs admitted (Tier 1b+2 selected for promotion)
+        // vs promoted (=applied above) is exactly the picture that showed predictive issuing
+        // ~225-250/s against a ~40/s promotion budget. pump_deadline_hits>0 means the
+        // CHUNK_PROMOTION_PUMP_BUDGET_MS safety clamp has actually engaged (expected/healthy
+        // under a real backlog-drain, not a sign of breakage).
+        long requested = 0L;
+        if (NestworldRegionSystem.isInitialised()) {
+            for (net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> nestworldKey
+                    : src.getServer().levelKeys()) {
+                NestworldDimensionRegion nestworldReg =
+                        NestworldRegionSystem.get().getDimensionRegionByKey(nestworldKey);
+                if (nestworldReg != null) requested += nestworldReg.predictiveGen().issuedTotal();
+            }
+        }
+        long requestedTotal = requested;
+        long admitted = dm.nestworldPromotionTotalAdmitted();
+        long pumpHits = dm.nestworldPumpDeadlineHits();
+        src.sendSuccess(() -> Component.literal(String.format(
+                "  requested(predictive): %,d   admitted(tier1b+2): %,d   pump_deadline_hits: %,d",
+                requestedTotal, admitted, pumpHits)), false);
         return pending;
     }
 
@@ -899,6 +942,73 @@ public final class NestworldCommand {
         src.sendSuccess(() -> Component.literal("NW chunkGenBudget effective=" + effective
                 + " (override=" + override + ", boot-default=" + net.nestworld.region.NestworldTuning.CHUNK_GEN_BUDGET + ")"), false);
         return effective;
+    }
+
+    /**
+     * Live override for the "moved too quickly" movement-check multiplier (see
+     * NestworldTuning.MOVE_TOO_QUICKLY_MULTIPLIER's javadoc). -1 restores the
+     * boot-time server.properties value.
+     */
+    private static int setMoveThreshold(CommandSourceStack src, double multiplier) {
+        net.nestworld.region.NestworldLiveTuning.moveTooQuicklyMultiplierOverride = multiplier;
+        double effective = net.nestworld.region.NestworldLiveTuning.effectiveMoveTooQuicklyMultiplier();
+        src.sendSuccess(() -> Component.literal("NW moveTooQuicklyMultiplier set to " + multiplier
+                + " (effective=" + effective + ")"), true);
+        return (int) Math.round(effective);
+    }
+
+    private static int moveThreshold(CommandSourceStack src) {
+        double effective = net.nestworld.region.NestworldLiveTuning.effectiveMoveTooQuicklyMultiplier();
+        double override = net.nestworld.region.NestworldLiveTuning.moveTooQuicklyMultiplierOverride;
+        src.sendSuccess(() -> Component.literal("NW moveTooQuicklyMultiplier effective=" + effective
+                + " (override=" + override + ", boot-default(server.properties)="
+                + net.nestworld.region.NestworldTuning.MOVE_TOO_QUICKLY_MULTIPLIER + ")"), false);
+        return (int) Math.round(effective);
+    }
+
+    /**
+     * Live override for the movement-packet-burst cap (see
+     * NestworldTuning.MAX_MOVEMENT_PACKETS_PER_TICK's javadoc). -1 restores the boot-time
+     * server.properties value.
+     */
+    private static int setMovePacketCap(CommandSourceStack src, int n) {
+        net.nestworld.region.NestworldLiveTuning.maxMovementPacketsPerTickOverride = n;
+        int effective = net.nestworld.region.NestworldLiveTuning.effectiveMaxMovementPacketsPerTick();
+        src.sendSuccess(() -> Component.literal("NW maxMovementPacketsPerTick set to " + n
+                + " (effective=" + effective + ")"), true);
+        return effective;
+    }
+
+    private static int movePacketCap(CommandSourceStack src) {
+        int effective = net.nestworld.region.NestworldLiveTuning.effectiveMaxMovementPacketsPerTick();
+        int override = net.nestworld.region.NestworldLiveTuning.maxMovementPacketsPerTickOverride;
+        src.sendSuccess(() -> Component.literal("NW maxMovementPacketsPerTick effective=" + effective
+                + " (override=" + override + ", boot-default(server.properties)="
+                + net.nestworld.region.NestworldTuning.MAX_MOVEMENT_PACKETS_PER_TICK + ")"), false);
+        return effective;
+    }
+
+    /**
+     * Live override for the chunk-promotion pump-budget deadline clamp (see
+     * NestworldTuning.CHUNK_PROMOTION_PUMP_BUDGET_MS's javadoc). -1 restores the
+     * boot-time value; 0 disables the clamp entirely (NOT recommended, see the
+     * 2026-08-20 incident it exists to prevent).
+     */
+    private static int setPumpBudget(CommandSourceStack src, int ms) {
+        net.nestworld.region.NestworldLiveTuning.chunkPromotionPumpBudgetMsOverride = ms;
+        long effective = net.nestworld.region.NestworldLiveTuning.effectiveChunkPromotionPumpBudgetMs();
+        src.sendSuccess(() -> Component.literal("NW chunkPromotionPumpBudgetMs set to " + ms
+                + " (effective=" + effective + ")"), true);
+        return (int) effective;
+    }
+
+    private static int pumpBudget(CommandSourceStack src) {
+        long effective = net.nestworld.region.NestworldLiveTuning.effectiveChunkPromotionPumpBudgetMs();
+        long override = net.nestworld.region.NestworldLiveTuning.chunkPromotionPumpBudgetMsOverride;
+        src.sendSuccess(() -> Component.literal("NW chunkPromotionPumpBudgetMs effective=" + effective
+                + "ms (override=" + override + ", boot-default="
+                + net.nestworld.region.NestworldTuning.CHUNK_PROMOTION_PUMP_BUDGET_MS + "ms)"), false);
+        return (int) effective;
     }
 
     /**
@@ -1208,6 +1318,73 @@ public final class NestworldCommand {
         String out = sb.toString();
         src.sendSuccess(() -> Component.literal(out), false);
         return found.size();
+    }
+
+    /** "Хто винен" -- топ модів за сумарним виміряним часом entity/block-entity тіку
+     *  (точна інструментація, не семпл), накопичено з моменту старту сервера.
+     *  Джерело: {@link TickAttribution}, хуки в RegionThread/NestworldDimensionRegion/Level. */
+    private static int modLoad(CommandSourceStack src) {
+        var entityTop = TickAttribution.topMods("entity", 15);
+        var beTop = TickAttribution.topMods("blockentity", 15);
+        if (entityTop.isEmpty() && beTop.isEmpty()) {
+            src.sendSuccess(() -> Component.literal("No tick attribution data yet — server just started or no entities/block-entities have ticked."), false);
+            return 1;
+        }
+        StringBuilder sb = new StringBuilder("MOD LOAD (cumulative measured tick time since boot)\n");
+        sb.append("-- entities --\n");
+        for (var m : entityTop) {
+            sb.append(String.format("  %-24s total=%9.2fms count=%,-9d avg=%.4fms%n",
+                    m.modId(), m.ms(), m.count(), m.count() == 0 ? 0.0 : m.ms() / m.count()));
+        }
+        sb.append("-- block entities --\n");
+        for (var m : beTop) {
+            sb.append(String.format("  %-24s total=%9.2fms count=%,-9d avg=%.4fms%n",
+                    m.modId(), m.ms(), m.count(), m.count() == 0 ? 0.0 : m.ms() / m.count()));
+        }
+        String out = sb.toString();
+        src.sendSuccess(() -> Component.literal(out), false);
+        return 1;
+    }
+
+    private static java.util.List<TickAttribution.ChunkCost> lastTickChunks = java.util.List.of();
+
+    /** "В яких чанках" -- топ чанків за виміряним tick-часом (entity+block-entity разом),
+     *  за поточне decayed вікно (~останні секунди, дивись TickAttribution.decayChunks()).
+     *  На відміну від {@code /nestworld hotspots} (миттєвий density-скан), це РЕАЛЬНО
+     *  виміряний час, накопичений з точних хуків, а не оцінка по кількості ентіті. */
+    private static int tickChunks(CommandSourceStack src) {
+        var top = TickAttribution.topChunks(15);
+        lastTickChunks = top;
+        if (top.isEmpty()) {
+            src.sendSuccess(() -> Component.literal("No chunk tick-cost data in the current window."), false);
+            return 1;
+        }
+        StringBuilder sb = new StringBuilder("TOP TICK-COST CHUNKS (measured, current window)\n");
+        int rank = 1;
+        for (var c : top) {
+            sb.append(String.format("#%d [%s] chunk (%d, %d) — %.2fms\n",
+                    rank++, c.dimensionKey(), c.chunkX(), c.chunkZ(), c.ms()));
+        }
+        sb.append("Use /nestworld goto tickchunk <id> (overworld only) to teleport.\n");
+        String out = sb.toString();
+        src.sendSuccess(() -> Component.literal(out), false);
+        return top.size();
+    }
+
+    /** Teleport to a ranked entry from the most recent {@code /nestworld tickchunks} call.
+     *  Overworld-only, same constraint as the rest of this file's goto commands
+     *  ({@link #teleportTo} hardcodes {@code NestworldRegionSystem.getOverworld()}). */
+    private static int gotoTickChunk(CommandSourceStack src, int id) throws CommandSyntaxException {
+        if (id < 1 || id > lastTickChunks.size()) {
+            src.sendFailure(Component.literal("No tick-chunk #" + id + " — run /nestworld tickchunks first"));
+            return 0;
+        }
+        TickAttribution.ChunkCost c = lastTickChunks.get(id - 1);
+        if (!"minecraft:overworld".equals(c.dimensionKey())) {
+            src.sendFailure(Component.literal("Tick-chunk #" + id + " is in " + c.dimensionKey() + " — goto only supports the overworld"));
+            return 0;
+        }
+        return gotoChunk(src, c.chunkX(), c.chunkZ());
     }
 
     /** NestWorld Inspector §5: teleport the admin to a specific ranked hotspot from the most

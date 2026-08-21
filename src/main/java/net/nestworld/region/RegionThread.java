@@ -728,7 +728,14 @@ public class RegionThread extends Thread {
                 // safe -- the new owner picks it up on its own next pass -- and cheap (one
                 // ConcurrentHashMap.contains).
                 if (!EntityOwnershipRecheck.stillOwns(region, uuid)) continue;
+                long nestworldTickAttrStart = System.nanoTime();
                 level.tickNonPassenger(entity);
+                long nestworldTickAttrNanos = System.nanoTime() - nestworldTickAttrStart;
+                TickAttribution.recordEntityTick(
+                        net.minecraft.world.entity.EntityType.getKey(entity.getType()).getNamespace(),
+                        nestworldTickAttrNanos);
+                TickAttribution.recordChunkCost(level.dimension().location().toString(),
+                        entity.chunkPosition(), nestworldTickAttrNanos);
                 ticked++;
                 // Phase 2: track this owned entity now (region phase). Skip if the tick removed it.
                 if (entity.isRemoved()) {

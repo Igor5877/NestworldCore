@@ -138,6 +138,10 @@ public class RegionSplitManager {
         // Once per second: age the block-tick heat window so the scorer reacts
         // to where load is now, not where it was minutes ago.
         blockTickHeat.decay();
+        // Same cadence/reasoning for the per-mod/per-chunk tick-attribution hotspot
+        // window (TickAttribution) -- keeps /nestworld hotspots and the Prometheus
+        // top-N chunk export reacting to recent load, not accumulating since boot.
+        TickAttribution.decayChunks();
 
         List<WorldRegion> active = tree.getActiveRegions();
 
