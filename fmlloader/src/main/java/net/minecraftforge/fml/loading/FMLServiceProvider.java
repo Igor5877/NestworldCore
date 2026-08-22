@@ -59,6 +59,26 @@ public class FMLServiceProvider implements ITransformationService
 
     @Override
     public void initialize(IEnvironment environment) {
+        // NestWorld: register our Mixin error-handler class BY NAME, as early as
+        // possible -- well before any mod-loading or game-class transform happens.
+        // Fixes the documented "ChunkMap lambda-ordinal Mixin fragility" crash class
+        // (see net.nestworld.region.NestworldMixinErrorHandler's own javadoc and
+        // project memory chunkmap-lambda-ordinal-mixin-fragility.md) at the core
+        // level -- no more per-server mod-jar patching needed for known-safe cases.
+        // Reflection, not a direct import: fmlloader is a separate Gradle module
+        // that (unlike :forge) doesn't have org.spongepowered.asm.mixin on its own
+        // compile classpath, and this call must never be able to break fmlloader's
+        // own bootstrap if Mixin's API ever shifts -- same soft-dependency discipline
+        // as net.nestworld.region.NestworldFabricChunkEventsCompat.
+        try {
+            Class<?> mixinsClass = Class.forName("org.spongepowered.asm.mixin.Mixins");
+            mixinsClass.getMethod("registerErrorHandlerClass", String.class)
+                    .invoke(null, "net.nestworld.region.NestworldMixinErrorHandler");
+            LOGGER.debug(CORE, "NestWorld: Mixin error handler registered");
+        } catch (Throwable t) {
+            LOGGER.warn(CORE, "NestWorld: failed to register Mixin error handler (non-fatal): {}", t.toString());
+        }
+
         LOGGER.debug(CORE, "Setting up basic FML game directories");
         FMLPaths.setup(environment);
         LOGGER.debug(CORE, "Loading configuration");
