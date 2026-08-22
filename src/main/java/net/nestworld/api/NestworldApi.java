@@ -36,6 +36,33 @@ public final class NestworldApi {
     }
 
     /**
+     * The one deliberate exception to this class's "observation-only" contract
+     * (2026-08-22): asynchronously warms {@code level}'s on-disk chunk cache for
+     * {@code positions} ahead of need (e.g. a joining player's view-distance area),
+     * using {@code net.nestworld.region.ChunkPrefetch}'s own parallel worker pool.
+     *
+     * <p>Exists specifically so an external mod that wants faster chunk-join times
+     * (the same goal a Mixin-based "bypass IOWorker's mailbox" approach would chase)
+     * can call this instead — a tested, in-core implementation that never bypasses
+     * {@code IOWorker}'s mailbox-serialization guarantee against in-flight writes
+     * (see {@code ChunkPrefetch}'s own javadoc for the full safety reasoning), rather
+     * than layering its own untested concurrent-access path on top of a region-
+     * sharded core that has found many subtle races from exactly that shape of change.
+     *
+     * <p>Fire-and-forget, always safe to call (no-op if {@link #isActive()} is false
+     * or {@code level}/{@code positions} is null/empty) — never throws, never blocks
+     * the calling thread, and prefetching a chunk that's redundant (already loaded,
+     * or requested before the prefetch finishes) costs at most one wasted disk read,
+     * never a correctness issue.
+     */
+    public static void prefetchChunks(ServerLevel level, java.util.Collection<net.minecraft.world.level.ChunkPos> positions) {
+        if (!isActive() || level == null || positions == null || positions.isEmpty()) {
+            return;
+        }
+        net.nestworld.region.ChunkPrefetch.prefetch(level, positions);
+    }
+
+    /**
      * Every loaded dimension's key (e.g. {@code "minecraft:overworld"}), so a caller
      * (e.g. a metrics exporter running as a plain Forge mod, compiled against MAPPED
      * method names that do NOT survive this project's SRG reobfuscation step the way

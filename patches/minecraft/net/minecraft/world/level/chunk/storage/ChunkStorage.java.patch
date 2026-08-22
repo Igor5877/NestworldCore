@@ -1,0 +1,15 @@
+--- a/net/minecraft/world/level/chunk/storage/ChunkStorage.java
++++ b/net/minecraft/world/level/chunk/storage/ChunkStorage.java
+@@ -31,6 +_,12 @@
+       this.f_63495_ = new IOWorker(p_196912_, p_196914_, "chunk");
+    }
+ 
++   /** NestWorld: accessor for {@link net.nestworld.region.ChunkPrefetch}, which needs
++    *  direct access to the underlying {@link IOWorker} to warm its prefetch cache. */
++   public IOWorker nestworldGetWorker() {
++      return this.f_63495_;
++   }
++
+    public boolean m_223451_(ChunkPos p_223452_, int p_223453_) {
+       return this.f_63495_.m_223471_(p_223452_, p_223453_);
+    }

@@ -1,0 +1,60 @@
+--- a/net/minecraft/world/level/chunk/storage/IOWorker.java
++++ b/net/minecraft/world/level/chunk/storage/IOWorker.java
+@@ -34,6 +_,16 @@
+    private final ProcessorMailbox<StrictQueue.IntRunnable> f_63517_;
+    private final RegionFileStorage f_63518_;
+    private final Map<ChunkPos, IOWorker.PendingStore> f_63519_ = Maps.newLinkedHashMap();
++   // NestWorld: warm-cache for net.nestworld.region.ChunkPrefetch -- populated by a
++   // separate parallel worker pool calling storage.nestworldReadConcurrent() AHEAD of
++   // need, consumed here inside the normal mailbox-serialized loadAsync() task (see
++   // below). This keeps the mailbox's ordering guarantee against pendingWrites fully
++   // intact (a pending write always wins, checked first, exactly as before) -- the
++   // prefetch only ever saves loadAsync()'s own mailbox task the cost of the disk read
++   // itself, which already happened earlier on another thread. ConcurrentHashMap since
++   // offers arrive from the prefetch pool's threads while removes happen on whichever
++   // thread runs this IOWorker's mailbox task.
++   private final java.util.concurrent.ConcurrentHashMap<ChunkPos, CompoundTag> nestworldPrefetchCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Long2ObjectLinkedOpenHashMap<CompletableFuture<BitSet>> f_223459_ = new Long2ObjectLinkedOpenHashMap<>();
+    private static final int f_223460_ = 1024;
+ 
+@@ -135,6 +_,13 @@
+          if (ioworker$pendingstore != null) {
+             return Either.left(Optional.ofNullable(ioworker$pendingstore.f_63565_));
+          } else {
++            // NestWorld: pendingWrites always wins (checked above, unchanged) -- a
++            // prefetched entry can only ever be consumed for a position with no
++            // pending write, so this can never serve stale data ahead of a write.
++            CompoundTag nestworldPrefetched = this.nestworldPrefetchCache.remove(p_156588_);
++            if (nestworldPrefetched != null) {
++               return Either.left(Optional.of(nestworldPrefetched));
++            }
+             try {
+                CompoundTag compoundtag = this.f_63518_.m_63706_(p_156588_);
+                return Either.left(Optional.ofNullable(compoundtag));
+@@ -144,6 +_,26 @@
+             }
+          }
+       });
++   }
++
++   /** NestWorld: called by {@link net.nestworld.region.ChunkPrefetch}'s worker pool
++    *  once it has read a chunk's raw NBT ahead of need. Safe to call from any thread. */
++   public void nestworldOfferPrefetch(ChunkPos pos, CompoundTag tag) {
++      // Bounded: a caller that prefetches far more than gets consumed (e.g. a bug, or
++      // a player disconnecting mid-prefetch) must not grow this unboundedly. Dropping
++      // an offer past the cap is always safe -- that chunk just falls through to a
++      // normal disk read on its own loadAsync() call, same as if never prefetched.
++      if (this.nestworldPrefetchCache.size() >= 4096) {
++         return;
++      }
++      this.nestworldPrefetchCache.put(pos, tag);
++   }
++
++   /** NestWorld: accessor for {@link net.nestworld.region.ChunkPrefetch}, which needs
++    *  the underlying storage to perform its own concurrent reads (see
++    *  {@link RegionFileStorage#nestworldReadConcurrent}). */
++   public RegionFileStorage nestworldStorage() {
++      return this.f_63518_;
+    }
+ 
+    public CompletableFuture<Void> m_182498_(boolean p_182499_) {

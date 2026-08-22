@@ -138,6 +138,11 @@ public final class NestworldCommand {
                                 .executes(ctx -> setFloatingKick(ctx.getSource(),
                                         BoolArgumentType.getBool(ctx, "enabled")))))
                 .then(Commands.literal("floatingkick").executes(ctx -> floatingKick(ctx.getSource())))
+                .then(Commands.literal("chunkprefetch")
+                        .then(Commands.argument("radius", IntegerArgumentType.integer(1, 32))
+                                .executes(ctx -> chunkPrefetchTest(ctx.getSource(),
+                                        IntegerArgumentType.getInteger(ctx, "radius")))))
+                .then(Commands.literal("chunkprefetchstats").executes(ctx -> chunkPrefetchStats(ctx.getSource())))
                 .then(Commands.literal("mspt").executes(ctx -> msptPercentiles(ctx.getSource())))
                 .then(Commands.literal("stresschunks")
                         .then(Commands.argument("count", IntegerArgumentType.integer(1, 200000))
@@ -991,6 +996,43 @@ public final class NestworldCommand {
                 + " (override=" + override + ", boot-default(server.properties)="
                 + net.nestworld.region.NestworldTuning.FLOATING_KICK_ENABLED + ")"), false);
         return effective ? 1 : 0;
+    }
+
+    /**
+     * Test/ops entry point for {@link ChunkPrefetch} — prefetches a (2*radius+1)^2 chunk
+     * square around the command sender's current position, then reports the resulting
+     * counters a few hundred ms later (long enough for the parallel pool to mostly finish
+     * on any reasonable radius). Manual verification tool, not meant for routine use —
+     * an external mod calling {@code NestworldApi.prefetchChunks} is the real integration
+     * point this exists to validate.
+     */
+    private static int chunkPrefetchTest(CommandSourceStack src, int radius) {
+        ServerLevel level = src.getLevel();
+        net.minecraft.world.level.ChunkPos center = new net.minecraft.world.level.ChunkPos(BlockPos.containing(src.getPosition()));
+        java.util.List<net.minecraft.world.level.ChunkPos> positions = new java.util.ArrayList<>();
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                positions.add(new net.minecraft.world.level.ChunkPos(center.x + dx, center.z + dz));
+            }
+        }
+        long beforePrefetched = ChunkPrefetch.prefetchedTotal();
+        long beforeFailed = ChunkPrefetch.failedTotal();
+        long beforeMisses = ChunkPrefetch.missesTotal();
+        net.nestworld.api.NestworldApi.prefetchChunks(level, positions);
+        src.sendSuccess(() -> Component.literal("NW chunkprefetch: dispatched " + positions.size()
+                + " positions (radius " + radius + "). Before: prefetched=" + beforePrefetched
+                + " failed=" + beforeFailed + " misses=" + beforeMisses
+                + " — run /nestworld chunkprefetchstats shortly to see the delta."), true);
+        return positions.size();
+    }
+
+    private static int chunkPrefetchStats(CommandSourceStack src) {
+        long p = ChunkPrefetch.prefetchedTotal();
+        long f = ChunkPrefetch.failedTotal();
+        long m = ChunkPrefetch.missesTotal();
+        src.sendSuccess(() -> Component.literal("NW ChunkPrefetch (cumulative since boot): prefetched="
+                + p + " failed=" + f + " misses(no chunk on disk)=" + m), false);
+        return (int) p;
     }
 
     /**

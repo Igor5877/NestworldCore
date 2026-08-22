@@ -11,7 +11,7 @@
     private final ProcessorHandle<ChunkTaskPriorityQueueSorter.Message<Runnable>> f_140143_;
     private final ChunkProgressListener f_140144_;
     private final ChunkStatusUpdateListener f_143031_;
-@@ -143,6 +_,365 @@
+@@ -143,6 +_,371 @@
     private final Long2LongMap f_202981_ = new Long2LongOpenHashMap();
     private final Queue<Runnable> f_140125_ = Queues.newConcurrentLinkedQueue();
     int f_140126_;
@@ -357,6 +357,12 @@
 +   public int nestworldGenConcurrency() { return this.nestworldNoiseSurfaceCarversPool.capacity(); }
 +   public int nestworldGenPoolPending() { return this.nestworldNoiseSurfaceCarversPool.pendingCount(); }
 +   public int nestworldGenPoolActive() { return this.nestworldNoiseSurfaceCarversPool.activeCount(); }
++
++   /** NestWorld: this ChunkMap's underlying IOWorker, for {@link
++    *  net.nestworld.region.ChunkPrefetch}. Just forwards {@code ChunkStorage}'s own
++    *  accessor -- named separately here so callers reaching this via {@code
++    *  level.getChunkSource().chunkMap} don't need to know about the inheritance chain. */
++   public net.minecraft.world.level.chunk.storage.IOWorker nestworldIOWorker() { return this.nestworldGetWorker(); }
 +
 +   /**
 +    * NestWorld: run {@code p_nw_real} (the real generate() call) now if {@code
