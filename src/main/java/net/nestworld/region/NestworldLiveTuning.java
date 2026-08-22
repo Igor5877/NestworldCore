@@ -69,4 +69,21 @@ public final class NestworldLiveTuning {
                 ? chunkPromotionPumpBudgetMsOverride
                 : NestworldTuning.CHUNK_PROMOTION_PUMP_BUDGET_MS;
     }
+
+    /**
+     * Live-settable override for vanilla's "floating too long" anti-flyhack kick — see
+     * {@link NestworldTuning#FLOATING_KICK_ENABLED}'s javadoc. Tri-state: {@code 0} =
+     * "use the boot-time server.properties value" (the default), {@code 1} = force
+     * enabled, {@code -1} = force disabled — a plain {@code volatile boolean} can't
+     * represent "unset", hence this int encoding (same idiom as this class's other
+     * {@code -1 = unset} overrides, just shifted since 0/false is a valid real value here).
+     */
+    public static volatile int floatingKickEnabledOverride = 0;
+
+    /** Effective floating-kick-enabled state right now. */
+    public static boolean effectiveFloatingKickEnabled() {
+        if (floatingKickEnabledOverride > 0) return true;
+        if (floatingKickEnabledOverride < 0) return false;
+        return NestworldTuning.FLOATING_KICK_ENABLED;
+    }
 }

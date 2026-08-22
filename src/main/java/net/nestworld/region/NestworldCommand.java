@@ -1,6 +1,7 @@
 package net.nestworld.region;
 
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.BoolArgumentType;
 import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
@@ -132,6 +133,11 @@ public final class NestworldCommand {
                                 .executes(ctx -> setPumpBudget(ctx.getSource(),
                                         IntegerArgumentType.getInteger(ctx, "ms")))))
                 .then(Commands.literal("pumpbudget").executes(ctx -> pumpBudget(ctx.getSource())))
+                .then(Commands.literal("setfloatingkick")
+                        .then(Commands.argument("enabled", BoolArgumentType.bool())
+                                .executes(ctx -> setFloatingKick(ctx.getSource(),
+                                        BoolArgumentType.getBool(ctx, "enabled")))))
+                .then(Commands.literal("floatingkick").executes(ctx -> floatingKick(ctx.getSource())))
                 .then(Commands.literal("mspt").executes(ctx -> msptPercentiles(ctx.getSource())))
                 .then(Commands.literal("stresschunks")
                         .then(Commands.argument("count", IntegerArgumentType.integer(1, 200000))
@@ -964,6 +970,27 @@ public final class NestworldCommand {
                 + " (override=" + override + ", boot-default(server.properties)="
                 + net.nestworld.region.NestworldTuning.MOVE_TOO_QUICKLY_MULTIPLIER + ")"), false);
         return (int) Math.round(effective);
+    }
+
+    /**
+     * Live override for vanilla's "floating too long" anti-flyhack kick (see
+     * NestworldTuning.FLOATING_KICK_ENABLED's javadoc). Takes effect immediately for
+     * every connected player's next tick, no restart or reconnect needed.
+     */
+    private static int setFloatingKick(CommandSourceStack src, boolean enabled) {
+        net.nestworld.region.NestworldLiveTuning.floatingKickEnabledOverride = enabled ? 1 : -1;
+        src.sendSuccess(() -> Component.literal("NW floating-too-long kick " + (enabled ? "ENABLED" : "DISABLED")
+                + " (live, takes effect immediately)"), true);
+        return enabled ? 1 : 0;
+    }
+
+    private static int floatingKick(CommandSourceStack src) {
+        boolean effective = net.nestworld.region.NestworldLiveTuning.effectiveFloatingKickEnabled();
+        int override = net.nestworld.region.NestworldLiveTuning.floatingKickEnabledOverride;
+        src.sendSuccess(() -> Component.literal("NW floating-too-long kick effective=" + effective
+                + " (override=" + override + ", boot-default(server.properties)="
+                + net.nestworld.region.NestworldTuning.FLOATING_KICK_ENABLED + ")"), false);
+        return effective ? 1 : 0;
     }
 
     /**

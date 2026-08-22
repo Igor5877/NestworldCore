@@ -1145,6 +1145,29 @@ public final class NestworldTuning {
             (int) readServerPropertyDouble("nestworld-max-movement-packets-per-tick", 20.0D);
 
     /**
+     * Whether vanilla's "floating too long" anti-flyhack kick ({@code
+     * ServerGamePacketListenerImpl.tick()}'s {@code aboveGroundTickCount > 80} check) is
+     * active. {@code true} (default) = unchanged vanilla behavior. Real-world trigger
+     * (2026-08-22, live ATM9): a player riding an EvilCraft broom (a mod-added flying
+     * mount) got kicked with "Flying is not enabled on this server" — the broom doesn't
+     * set any of the flags vanilla's own {@code clientIsFloating} check treats as
+     * legitimate flight ({@code getAbilities().mayfly}, {@code hasEffect(LEVITATION)},
+     * {@code isFallFlying()}/elytra, {@code isAutoSpinAttack()}), so it looks
+     * indistinguishable from an actual fly-hack. Same class of problem as {@link
+     * #MOVE_TOO_QUICKLY_MULTIPLIER} (a mod's custom movement mechanic tripping a vanilla
+     * anti-cheat heuristic that was never taught about it) and the same fix shape:
+     * server.properties + live-toggle, not a silent core behavior change.
+     *
+     * <p>Read from {@code server.properties} (key {@code
+     * nestworld-floating-kick-enabled}), same rationale as {@link
+     * #MOVE_TOO_QUICKLY_MULTIPLIER}. Live-changeable without a restart via {@code
+     * /nestworld setfloatingkick <true|false>} — see {@link NestworldLiveTuning
+     * #effectiveFloatingKickEnabled()}; this constant is only the boot-time default.
+     */
+    public static final boolean FLOATING_KICK_ENABLED =
+            readServerPropertyBoolean("nestworld-floating-kick-enabled", true);
+
+    /**
      * Reads a single key out of {@code server.properties} in the server's working
      * directory (same file/location vanilla itself reads {@code max-players} etc. from).
      * Deliberately independent of vanilla's own {@code DedicatedServerProperties} parsing
@@ -1171,6 +1194,19 @@ public final class NestworldTuning {
         } catch (NumberFormatException e) {
             return def;
         }
+    }
+
+    /** Same rationale/fallback behavior as {@link #readServerPropertyDouble}, for a plain
+     *  {@code true}/{@code false} property instead of a number. */
+    private static boolean readServerPropertyBoolean(String key, boolean def) {
+        java.util.Properties props = new java.util.Properties();
+        try (java.io.InputStream in = new java.io.FileInputStream("server.properties")) {
+            props.load(in);
+        } catch (java.io.IOException e) {
+            return def;
+        }
+        String raw = props.getProperty(key);
+        return raw == null ? def : Boolean.parseBoolean(raw.trim());
     }
 
     private NestworldTuning() {

@@ -13,6 +13,16 @@
     public static final double f_215198_ = Mth.m_144952_(6.0D);
     private static final int f_215199_ = -1;
     private static final int f_244471_ = 4096;
+@@ -257,7 +_,8 @@
+       this.f_9743_.m_19890_(this.f_9753_, this.f_9754_, this.f_9755_, this.f_9743_.m_146908_(), this.f_9743_.m_146909_());
+       ++this.f_9746_;
+       this.f_9741_ = this.f_9740_;
+-      if (this.f_9736_ && !this.f_9743_.m_5803_() && !this.f_9743_.m_20159_() && !this.f_9743_.m_21224_()) {
++      if (net.nestworld.region.NestworldLiveTuning.effectiveFloatingKickEnabled()
++            && this.f_9736_ && !this.f_9743_.m_5803_() && !this.f_9743_.m_20159_() && !this.f_9743_.m_21224_()) {
+          if (++this.f_9737_ > 80) {
+             f_9744_.warn("{} was kicked for floating too long!", (Object)this.f_9743_.m_7755_().getString());
+             this.m_9942_(Component.m_237115_("multiplayer.disconnect.flying"));
 @@ -878,11 +_,20 @@
                       int i = this.f_9740_ - this.f_9741_;
                       if (i > 5) {
