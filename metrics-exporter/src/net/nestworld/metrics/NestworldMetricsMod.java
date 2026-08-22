@@ -66,6 +66,29 @@ public final class NestworldMetricsMod {
     @SubscribeEvent
     public void onServerStarted(ServerStartedEvent event) {
         serverRef = event.getServer();
+
+        // NestworldCore-only: this mod's whole render() path calls net.nestworld.api
+        // .NestworldApi, a class that only exists on a NestworldCore-patched server jar
+        // -- on plain Forge it isn't on the classpath at all. Rather than start the HTTP
+        // server anyway and throw NoClassDefFoundError on every single /metrics scrape
+        // forever (200 OK with an error body, but a full stack trace to the log every
+        // ~15s), detect that up front and simply never open the port. Presence-only
+        // check (Class.forName), NOT NestworldApi.isActive() -- the region system may
+        // still be a few ticks from finishing init at ServerStartedEvent time even on a
+        // real NestworldCore server, and this runs exactly once per boot, so gating on
+        // "active" here risks a false negative that skips /metrics for the whole
+        // session; every NestworldApi method already returns empty/zeroed data (never
+        // throws) when the region system isn't active yet, so that transient state is
+        // already handled correctly inside render() itself, per-request.
+        try {
+            Class.forName("net.nestworld.api.NestworldApi");
+        } catch (Throwable t) {
+            System.out.println("[NestworldMetrics] NestworldCore not detected (plain Forge, "
+                    + "or an incompatible build) -- this mod only works on NestworldCore. "
+                    + "Not starting /metrics.");
+            return;
+        }
+
         int port = Integer.getInteger("nestworld.metrics.port", 9219);
         try {
             http = HttpServer.create(new InetSocketAddress(port), 0);
