@@ -156,6 +156,45 @@ public class RegionTree {
         }
     }
 
+    /**
+     * 2026-08-28 O(n²) merge-candidate fix (see project memory
+     * kfirstslots-offload-win-but-n150-crashes.md): {@link RegionSplitManager#applyPending()}
+     * used to try EVERY pair of merge candidates, acquiring real per-region {@code chunkLock}s
+     * (via {@link RegionSplitManager} on both regions plus every neighbor of either) before
+     * discovering most pairs weren't tree siblings at all -- confirmed live at ~160 doomed
+     * lock-acquisition sequences/min even on an idle server. This is the fix: the caller looks
+     * up a candidate's ACTUAL tree sibling directly (O(depth), no chunkLock touched at all) and
+     * only ever attempts a real merge (with real locks) on a validated sibling pair.
+     *
+     * <p>Returns the sibling region if and only if {@code region} is a direct Leaf child of some
+     * Branch AND the branch's other child is ALSO a Leaf (a valid single-region merge partner,
+     * i.e. {@code doMerge} could actually succeed on this pair). Returns {@code null} if {@code
+     * region} is the tree root (no parent to have a sibling under), is not found in this tree at
+     * all (already merged/split away since the candidate was queued -- this IS the stale-
+     * candidate check, for free, not a separate pass), or its sibling is itself an internal
+     * subtree (a Branch, not a Leaf) -- not a legal simple pairwise merge target.
+     */
+    public WorldRegion getMergeSibling(WorldRegion region) {
+        lock.readLock().lock();
+        try {
+            return findMergeSibling(root, region);
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    private WorldRegion findMergeSibling(Node node, WorldRegion target) {
+        if (!(node instanceof Branch b)) return null;
+        if (b.left instanceof Leaf l && l.region == target) {
+            return b.right instanceof Leaf rl ? rl.region : null;
+        }
+        if (b.right instanceof Leaf l && l.region == target) {
+            return b.left instanceof Leaf ll ? ll.region : null;
+        }
+        WorldRegion found = findMergeSibling(b.left, target);
+        return found != null ? found : findMergeSibling(b.right, target);
+    }
+
     // --- Tree traversal ---
 
     private void collectLeaves(Node node, List<WorldRegion> out) {

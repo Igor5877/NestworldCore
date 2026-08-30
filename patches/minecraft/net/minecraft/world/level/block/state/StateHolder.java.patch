@@ -1,0 +1,59 @@
+--- a/net/minecraft/world/level/block/state/StateHolder.java
++++ b/net/minecraft/world/level/block/state/StateHolder.java
+@@ -129,6 +_,12 @@
+       }
+    }
+ 
++   // NestWorld: kept byte-for-byte identical to unpatched vanilla -- ModernFix's
++   // modernfix-common.mixins.json:perf.mojang_registry_size.StateHolderMixin @Inject-s into this
++   // exact method by name/signature (require=0, so a mismatch wouldn't crash, but keeping it exact
++   // costs nothing and avoids silently losing that mod's own optimization). This is also the
++   // fallback path StateDefinition's constructor uses when NestworldModCompat.MODERNFIX_PRESENT --
++   // see nestworldPopulateNeighboursFast below for the optimized path used otherwise.
+    public void m_61133_(Map<Map<Property<?>, Comparable<?>>, S> p_61134_) {
+       if (this.f_61114_ != null) {
+          throw new IllegalStateException();
+@@ -153,6 +_,43 @@
+       Map<Property<?>, Comparable<?>> map = Maps.newHashMap(this.f_61111_);
+       map.put(p_61141_, p_61142_);
+       return map;
++   }
++
++   // NestWorld: keyed by List<Comparable<?>> (property values in this.values' fixed iteration
++   // order), matching the key type StateDefinition builds on its fast path -- see comment there for
++   // why (avoids Map-as-hashmap-key treeification observed live during boot on property-heavy
++   // blocks). Deliberately a SEPARATELY-NAMED method (not an overload of populateNeighbours) so
++   // ModernFix's mixin (which targets populateNeighbours by name) is unaffected either way.
++   public void nestworldPopulateNeighboursFast(Map<java.util.List<Comparable<?>>, S> p_61134_) {
++      if (this.f_61114_ != null) {
++         throw new IllegalStateException();
++      } else {
++         Table<Property<?>, Comparable<?>, S> table = HashBasedTable.create();
++         // this.values' iteration order is always propertiesByName's sorted order (see
++         // StateDefinition), i.e. the same order the neighbour-lookup keys were built in.
++         java.util.List<Comparable<?>> nestworldBaseValues = new java.util.ArrayList<>(this.f_61111_.values());
++         int nestworldIdx = 0;
++
++         for(Map.Entry<Property<?>, Comparable<?>> entry : this.f_61111_.entrySet()) {
++            Property<?> property = entry.getKey();
++
++            for(Comparable<?> comparable : property.m_6908_()) {
++               if (!comparable.equals(entry.getValue())) {
++                  table.put(property, comparable, p_61134_.get(this.nestworldMakeNeighbourValuesFast(nestworldBaseValues, nestworldIdx, comparable)));
++               }
++            }
++
++            nestworldIdx++;
++         }
++
++         this.f_61114_ = (Table<Property<?>, Comparable<?>, S>)(table.isEmpty() ? table : ArrayTable.create(table));
++      }
++   }
++
++   private java.util.List<Comparable<?>> nestworldMakeNeighbourValuesFast(java.util.List<Comparable<?>> p_nestworldBase, int p_nestworldIdx, Comparable<?> p_61142_) {
++      java.util.List<Comparable<?>> list = new java.util.ArrayList<>(p_nestworldBase);
++      list.set(p_nestworldIdx, p_61142_);
++      return list;
+    }
+ 
+    public ImmutableMap<Property<?>, Comparable<?>> m_61148_() {

@@ -13,6 +13,26 @@
        }, true);
     }
  
+@@ -204,7 +_,8 @@
+ 
+    private void m_182420_(int p_182421_, int p_182422_) {
+       for(ContainerListener containerlistener : this.f_38848_) {
+-         containerlistener.m_142153_(this, p_182421_, p_182422_);
++         net.nestworld.region.ModCallbackRouter.dispatchContainerListener("dataChanged", containerlistener,
++               () -> containerlistener.m_142153_(this, p_182421_, p_182422_));
+       }
+ 
+    }
+@@ -216,7 +_,8 @@
+          this.f_38841_.set(p_150408_, itemstack1);
+ 
+          for(ContainerListener containerlistener : this.f_38848_) {
+-            containerlistener.m_7934_(this, p_150408_, itemstack1);
++            net.nestworld.region.ModCallbackRouter.dispatchContainerListener("slotChanged", containerlistener,
++                  () -> containerlistener.m_7934_(this, p_150408_, itemstack1));
+          }
+       }
+ 
 @@ -229,6 +_,8 @@
              ItemStack itemstack1 = p_150438_.get();
              this.f_150394_.set(p_150436_, itemstack1);

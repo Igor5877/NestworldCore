@@ -28,7 +28,7 @@
  
        if (this.f_8521_ % this.f_8511_ == 0 || this.f_8510_.f_19812_ || this.f_8510_.m_20088_().m_135352_()) {
           if (this.f_8510_.m_20159_()) {
-@@ -215,6 +_,7 @@
+@@ -215,13 +_,18 @@
     public void m_8534_(ServerPlayer p_8535_) {
        this.f_8510_.m_6452_(p_8535_);
        p_8535_.f_8906_.m_9829_(new ClientboundRemoveEntitiesPacket(this.f_8510_.m_19879_()));
@@ -36,8 +36,11 @@
     }
  
     public void m_8541_(ServerPlayer p_8542_) {
-@@ -222,6 +_,7 @@
+       List<Packet<ClientGamePacketListener>> list = new ArrayList<>();
        this.m_289200_(p_8542_, list::add);
++      // NestWorld: 2026-08-29 AddPairing Burst Attribution ТЗ -- measurement only, no
++      // batching/async change. See JoinBurstMetrics's javadoc.
++      net.nestworld.region.JoinBurstMetrics.recordPairingDetailed(this.f_8510_, p_8542_, list);
        p_8542_.f_8906_.m_9829_(new ClientboundBundlePacket(list));
        this.f_8510_.m_6457_(p_8542_);
 +      net.minecraftforge.event.ForgeEventFactory.onStartEntityTracking(this.f_8510_, p_8542_);

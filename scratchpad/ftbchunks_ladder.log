@@ -1,0 +1,78 @@
+Restarting ftbchunks-repro for a clean baseline before the ladder...
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+Hardware snapshot: {'physicalCores': 17, 'logicalCpus': 20, 'nettyWorkerThreadsConfigured': 16.0}
+
+=== n50 (ftbchunks-repro) ===
+  spawning 50 bots (JOIN phase)...
+  rcon_setup (TELEPORT phase)...
+  30s SETTLE before steady-state window...
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [n50] POLL FAILED (likely crash): rcon call failed after retries -- signature=ftbquests_race
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [n50] known intermittent FTB Quests race -- one clean-restart retry
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+
+=== n50 (ftbchunks-repro) ===
+  spawning 50 bots (JOIN phase)...
+  rcon_setup (TELEPORT phase)...
+  30s SETTLE before steady-state window...
+  [n50 measure] TPS=20.0 MSPT=11.8 netty=16/16 region=0/17 oversub=2.05 cpu%=0.0 entities=623
+  [n50 measure] TPS=20.0 MSPT=13.8 netty=16/16 region=0/17 oversub=2.05 cpu%=0.0 entities=615
+  [n50 measure] TPS=20.0 MSPT=13.1 netty=16/16 region=0/17 oversub=2.1 cpu%=0.0 entities=610
+  [n50 measure] TPS=20.0 MSPT=15.6 netty=16/16 region=4/17 oversub=2.3 cpu%=0.0 entities=601
+  [n50 measure] TPS=20.0 MSPT=13.4 netty=16/16 region=0/17 oversub=2.05 cpu%=0.0 entities=596
+  [n50 measure] TPS=20.0 MSPT=14.4 netty=16/16 region=0/17 oversub=2.05 cpu%=0.0 entities=587
+  [n50 measure] TPS=20.0 MSPT=14.9 netty=16/16 region=0/17 oversub=2.05 cpu%=0.0 entities=581
+  [n50 measure] TPS=20.0 MSPT=11.4 netty=16/16 region=4/17 oversub=2.25 cpu%=0.0 entities=578
+  [n50 measure] TPS=20.0 MSPT=13.3 netty=16/16 region=0/17 oversub=2.05 cpu%=0.0 entities=579
+  [n50 measure] TPS=20.0 MSPT=13.8 netty=16/16 region=0/17 oversub=2.05 cpu%=0.0 entities=580
+  [n50 measure] TPS=20.0 MSPT=17.2 netty=16/16 region=0/17 oversub=2.05 cpu%=0.0 entities=579
+  [n50 measure] TPS=20.0 MSPT=14.8 netty=16/16 region=0/17 oversub=2.05 cpu%=0.0 entities=581
+  [n50 measure] TPS=20.0 MSPT=14.2 netty=16/16 region=1/17 oversub=2.1 cpu%=0.0 entities=578
+  [n50 measure] TPS=20.0 MSPT=15.3 netty=16/16 region=1/17 oversub=2.1 cpu%=0.0 entities=577
+  [n50 measure] TPS=20.0 MSPT=14.2 netty=16/16 region=1/17 oversub=2.1 cpu%=0.0 entities=575
+  [n50 measure] TPS=20.0 MSPT=13.9 netty=16/16 region=0/17 oversub=2.05 cpu%=0.0 entities=575
+  [n50 measure] TPS=20.0 MSPT=13.3 netty=16/16 region=1/17 oversub=2.1 cpu%=0.0 entities=579
+  [n50 measure] TPS=20.0 MSPT=13.1 netty=16/16 region=0/17 oversub=2.05 cpu%=0.0 entities=577
+  [n50] RESULT: msptP50=13.9 p95=17.2 p99=17.2 tpsAvg=20.0 oversubAvg=2.09 cpuAvg=0.0% online=28/50 exceptions=100 entities~587.0
+
+*** TIER n=50 DID NOT PASS -- stopping ladder here ***
+
+=== FTBCHUNKS-REPRO LADDER DONE ===
+ pop  msptP50  msptP95  msptP99  tpsAvg oversubAvg  cpuAvg%    online  exc  crash  pass
+  50     13.9     17.2     17.2    20.0       2.09      0.0 28/50  100  False False

@@ -33,6 +33,26 @@
           ChunkPos chunkpos = new ChunkPos(serverchunkcache.m_214994_().m_224579_().m_183230_());
           int i = serverchunkcache.m_8481_().m_142051_(p_177897_);
           if (i < p_177897_.m_141937_()) {
+@@ -449,12 +_,19 @@
+       p_129941_.m_7647_(new ChunkPos(blockpos));
+       ServerChunkCache serverchunkcache = serverlevel.m_7726_();
+       this.f_129726_ = Util.m_137550_();
++      net.nestworld.startup.NestworldStartupProfiler.mark("spawn_chunk_gen_start");
+       serverchunkcache.m_8387_(TicketType.f_9442_, new ChunkPos(blockpos), 11, Unit.INSTANCE);
+ 
++      boolean nestworldFirstChunkMarked = false;
+       while(serverchunkcache.m_8427_() != 441) {
++         if (!nestworldFirstChunkMarked && serverchunkcache.m_8427_() > 0) {
++            nestworldFirstChunkMarked = true;
++            net.nestworld.startup.NestworldStartupProfiler.mark("spawn_chunk_first_ready");
++         }
+          this.f_129726_ = Util.m_137550_() + 10L;
+          this.m_130012_();
+       }
++      net.nestworld.startup.NestworldStartupProfiler.mark("spawn_chunk_gen_all_ticking");
+ 
+       this.f_129726_ = Util.m_137550_() + 10L;
+       this.m_130012_();
 @@ -469,6 +_,7 @@
                 ChunkPos chunkpos = new ChunkPos(i);
                 serverlevel1.m_7726_().m_6692_(chunkpos, true);
@@ -61,7 +81,37 @@
  
           while(this.f_129764_) {
              long i = Util.m_137550_() - this.f_129726_;
-@@ -661,6 +_,8 @@
+@@ -651,7 +_,28 @@
+             this.f_129726_ += 50L;
+             this.m_177945_();
+             this.f_129754_.m_6180_("tick");
+-            this.m_5705_(this::m_129960_);
++            // NestWorld: a single tick's exception (typically a third-party mod's event
++            // listener throwing, e.g. ForgeEventFactory.onPostServerTick -> EventBus.post
++            // -> mod code) used to propagate straight out of this while loop and take the
++            // WHOLE server down -- confirmed live: an Ex Deorum ConcurrentModificationException
++            // in its own static state, unrelated to anything NestWorld touches, crashed a
++            // real production server outright. OutOfMemoryError/StackOverflowError are left
++            // fatal on purpose -- past that point the JVM's own heap/stack state is not
++            // reliably recoverable, so continuing risks corrupting the world save instead of
++            // just losing one tick. See project memory "tick-loop-catch-and-continue" and,
++            // for what happens on the genuinely-fatal path this rethrow still falls into,
++            // "orphaned-region-threads-crash-shutdown-gap".
++            try {
++               this.m_5705_(this::m_129960_);
++            } catch (OutOfMemoryError | StackOverflowError nestworldFatal) {
++               throw nestworldFatal;
++            } catch (Throwable nestworldTickFailure) {
++               this.f_129754_.m_7238_(); // balance the push("tick") above -- popPush below is never reached on this path
++               if (this.nestworldOnTickFailure(nestworldTickFailure)) {
++                  continue;
++               }
++               throw nestworldTickFailure;
++            }
+             this.f_129754_.m_6182_("nextTickWait");
+             this.f_129728_ = true;
+             this.f_129727_ = Math.max(Util.m_137550_() + 50L, this.f_129726_);
+@@ -661,8 +_,46 @@
              this.f_129717_ = true;
              JvmProfiler.f_185340_.m_183597_(this.f_129737_);
           }
@@ -69,11 +119,62 @@
 +         net.minecraftforge.server.ServerLifecycleHooks.expectServerStopped(); // Forge: Has to come before MinecraftServer#onServerCrash to avoid race conditions
        } catch (Throwable throwable1) {
           f_129750_.error("Encountered an unexpected exception", throwable1);
++         // NestWorld: guaranteed forced exit if the JVM is somehow still alive 90s after a
++         // crash -- a safety net, not the primary shutdown path. stopServer() below (world
++         // save, region-thread shutdown via the ServerStoppingEvent fix a few lines down)
++         // is expected to finish in well under this window even on a heavy modpack; this
++         // only fires if something UNRELATED to our own shutdown code -- a third-party
++         // mod's own non-daemon thread pool, e.g. an HTTP client or executor it never
++         // shuts down -- is left holding the JVM open, which was previously observed live
++         // (region threads kept ticking indefinitely after a crash while the "Server
++         // thread" itself had already finished cleanly). Runs on a daemon thread so it can
++         // never itself be what keeps the JVM alive; a normal/successful exit races it
++         // harmlessly. See project memory "orphaned-region-threads-crash-shutdown-gap".
++         Thread nestworldForcedExit = new Thread(() -> {
++            try {
++               Thread.sleep(90_000L);
++            } catch (InterruptedException ignored) {
++               return;
++            }
++            f_129750_.error("NestWorld: JVM still alive 90s after a crash-driven shutdown attempt -- forcing exit (see orphaned-region-threads-crash-shutdown-gap)");
++            Runtime.getRuntime().halt(1);
++         }, "NestWorld-Crash-Forced-Exit-Watchdog");
++         nestworldForcedExit.setDaemon(true);
++         nestworldForcedExit.start();
++         // NestWorld: tell any still-connected players BEFORE stopServer() below cuts the
++         // network connection and clears the player list -- otherwise a crash looks to
++         // them like a silent freeze/timeout rather than a server-initiated, recoverable
++         // event. Guarded: this whole crash-handling path must never itself throw and mask
++         // the real crash, and playerList can legitimately be null this early in startup.
++         try {
++            if (this.f_129763_ != null) {
++               this.f_129763_.m_240416_(net.minecraft.network.chat.Component.m_237113_(
++                     "[NestWorld] Сервер аварійно завершив роботу -- переходить в режим відновлення. Скоро буде автоматичний перезапуск."
++               ).m_130940_(net.minecraft.ChatFormatting.RED), false);
++            }
++         } catch (Throwable nestworldBroadcastFailure) {
++            f_129750_.error("NestWorld: failed to broadcast crash notice to players (non-fatal)", nestworldBroadcastFailure);
++         }
           CrashReport crashreport = m_206568_(throwable1);
-@@ -672,6 +_,7 @@
+          this.m_177935_(crashreport.m_178626_());
+          File file1 = new File(new File(this.m_6237_(), "crash-reports"), "crash-" + Util.m_241986_() + "-server.txt");
+@@ -672,6 +_,20 @@
              f_129750_.error("We were unable to save this crash report to disk.");
           }
  
++         // NestWorld: fire ServerStoppingEvent on the crash path too -- vanilla/Forge only
++         // fires it after a NORMAL exit from the tick loop (see the call a few lines above
++         // this catch block, unreachable once an exception jumps here). Any mod (including
++         // NestworldRegionSystem.onServerStopping -- see project memory
++         // "orphaned-region-threads-crash-shutdown-gap") that relies on this event for
++         // cleanup was previously silently skipped on every crash, leaving daemon region
++         // threads (and per-region persisted state) running forever in an orphaned JVM
++         // that never actually exits, even though stopServer() below completes normally.
++         try {
++            net.minecraftforge.server.ServerLifecycleHooks.handleServerStopping(this);
++         } catch (Throwable nestworldStoppingHookFailure) {
++            f_129750_.error("NestWorld: ServerStoppingEvent handler failed on crash path (continuing shutdown)", nestworldStoppingHookFailure);
++         }
 +         net.minecraftforge.server.ServerLifecycleHooks.expectServerStopped(); // Forge: Has to come before MinecraftServer#onServerCrash to avoid race conditions
           this.m_7268_(crashreport);
        } finally {
@@ -86,13 +187,109 @@
              this.m_6988_();
           }
  
-@@ -798,11 +_,13 @@
+@@ -691,6 +_,68 @@
+ 
+    }
+ 
++   // NestWorld: consecutive-failure circuit breaker for nestworldOnTickFailure() below --
++   // a WINDOW of recent failure timestamps, not a plain counter, so an isolated failure
++   // every few minutes over a long uptime never trips it (that's exactly the "server
++   // survived a mod's bug" case this exists for), while a bug that fires every tick (or
++   // close to it) still gets caught quickly instead of spamming the log/players forever
++   // without ever actually recovering.
++   private final java.util.ArrayDeque<Long> nestworldTickFailureTimes = new java.util.ArrayDeque<>();
++   private static final int NESTWORLD_TICK_FAILURE_THRESHOLD = 5;
++   private static final long NESTWORLD_TICK_FAILURE_WINDOW_NANOS = 60_000_000_000L; // 60s
++
++   /**
++    * NestWorld: called from runServer()'s per-tick catch when tickServer() throws
++    * anything other than OutOfMemoryError/StackOverflowError. Returns true if the caller
++    * should log-and-continue the tick loop (this tick is lost, the next one runs
++    * normally), false if the circuit breaker has tripped and the caller should instead
++    * let the failure propagate to runServer()'s outer catch -- the existing full
++    * crash-shutdown path (player broadcast, ServerStoppingEvent, guaranteed-exit
++    * watchdog -- see "orphaned-region-threads-crash-shutdown-gap"), on the theory that a
++    * failure repeating this fast is more likely a genuinely broken invariant than an
++    * isolated mod bug, and limping forward would just mean more of the same instead of
++    * an actual recovery.
++    */
++   private boolean nestworldOnTickFailure(Throwable p_nw_failure) {
++      f_129750_.error("NestWorld: tick failed, skipping this tick and continuing (see tick-loop-catch-and-continue)", p_nw_failure);
++      // NestWorld: a lighter-weight report file, same CrashReport machinery as the real
++      // crash path below (constructOrExtractCrashReport/fillSystemReport/saveToFile) but
++      // named distinctly ("tick-skipped-", not "crash-") so operators scanning
++      // crash-reports/ can tell a lost-tick recovery apart from an actual full crash at a
++      // glance, without needing to grep latest.log for this specific one tick.
++      try {
++         CrashReport nestworldTickReport = m_206568_(p_nw_failure);
++         this.m_177935_(nestworldTickReport.m_178626_());
++         File nestworldTickReportFile = new File(new File(this.m_6237_(), "crash-reports"),
++               "tick-skipped-" + Util.m_241986_() + "-server.txt");
++         if (!nestworldTickReport.m_127512_(nestworldTickReportFile)) {
++            f_129750_.error("NestWorld: unable to save tick-skipped report to disk");
++         }
++      } catch (Throwable nestworldReportFailure) {
++         f_129750_.error("NestWorld: failed to write tick-skipped report (non-fatal)", nestworldReportFailure);
++      }
++      long now = Util.m_137569_();
++      this.nestworldTickFailureTimes.addLast(now);
++      while (!this.nestworldTickFailureTimes.isEmpty() && now - this.nestworldTickFailureTimes.peekFirst() > NESTWORLD_TICK_FAILURE_WINDOW_NANOS) {
++         this.nestworldTickFailureTimes.pollFirst();
++      }
++      if (this.nestworldTickFailureTimes.size() > NESTWORLD_TICK_FAILURE_THRESHOLD) {
++         f_129750_.error("NestWorld: {} tick failures within {}s -- giving up on catch-and-continue, falling through to a full crash shutdown",
++               this.nestworldTickFailureTimes.size(), NESTWORLD_TICK_FAILURE_WINDOW_NANOS / 1_000_000_000L);
++         return false;
++      }
++      try {
++         if (this.f_129763_ != null) {
++            this.f_129763_.m_240416_(net.minecraft.network.chat.Component.m_237113_(
++                  "[NestWorld] Внутрішня помилка на цьому тику -- пропущено, сервер продовжує роботу."
++            ).m_130940_(net.minecraft.ChatFormatting.YELLOW), false);
++         }
++      } catch (Throwable nestworldBroadcastFailure) {
++         f_129750_.error("NestWorld: failed to broadcast tick-failure notice to players (non-fatal)", nestworldBroadcastFailure);
++      }
++      return true;
++   }
++
+    private static CrashReport m_206568_(Throwable p_206569_) {
+       ReportedException reportedexception = null;
+ 
+@@ -798,11 +_,40 @@
  
     public void m_5705_(BooleanSupplier p_129871_) {
        long i = Util.m_137569_();
 +      net.minecraftforge.event.ForgeEventFactory.onPreServerTick(p_129871_, this);
        ++this.f_129766_;
++      // NestWorld: 2026-08-29 Connection Burst Admission Pipeline (Step 2) -- drains the
++      // per-tick login-admission backlog BEFORE tickChildren() processes this tick's newly
++      // arriving login packets, so already-queued (older) admissions get first claim on this
++      // tick's budget and only leftover budget can admit brand-new arrivals same-tick (FIFO).
++      net.nestworld.region.AdmissionController.onTick();
++      // NestWorld: 2026-08-30 Connection Admission Gate (Step 4) -- release queued channels
++      // (paused via setAutoRead(false) at accept time) as budget frees up, before tickChildren()
++      // processes any of this tick's newly-readable connections.
++      net.nestworld.region.ConnectionAdmissionGate.onTick();
        this.m_5703_(p_129871_);
++      // NestWorld: 2026-08-30 Mod Compatibility / Execution Isolation Layer Phase 1 -- drains
++      // mod callbacks that a region thread deferred to main (MAIN_THREAD_ONLY classification),
++      // after the region-thread barrier for this tick has closed. No-op when the feature is
++      // disabled (default) or when nothing was routed this tick.
++      net.nestworld.region.ModCallbackRouter.drain();
++      // NestWorld: 2026-08-28 Outbound Tracking Optimization -- flush every connection's
++      // per-recipient outbound batch queue AFTER tickChildren() returns, i.e. after every region
++      // thread for this tick has already joined back on the region-pool barrier. Main thread
++      // only, once per tick; no-op when the feature is disabled (default).
++      // NestWorld: 2026-08-29 Pairing Outbound Queue -- MUST run before OutboundBatchQueue's
++      // flush below, so any pairing packets drained this tick still go out with the rest of
++      // this tick's traffic (not delayed an extra tick). Same main-thread-only timing contract.
++      net.nestworld.region.PairingOutboundQueue.drainBudget();
++      net.nestworld.region.OutboundBatchQueue.flushAll(this.f_129763_.m_11314_());
++      // NestWorld: 2026-08-29 Setup-Burst / Player Join Pipeline -- drains the budget-limited
++      // chunk-load queue, same timing contract as OutboundBatchQueue.flushAll() above (main
++      // thread only, after the region-thread barrier for this tick has closed).
++      net.nestworld.region.ChunkOutboundQueue.drainBudget();
        if (i - this.f_129724_ >= 5000000000L) {
           this.f_129724_ = i;
           this.f_129757_ = this.m_271988_();

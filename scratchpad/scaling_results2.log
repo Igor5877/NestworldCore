@@ -1,0 +1,55 @@
+
+=== TIER: 20 players ===
+  spawning 20 bots, waiting for connect+spawn settle...
+  RCON setup (gear + opt-in)...
+  There are 20 of a max of 250 players online: ST13, ST16, ST6, ST10, ST19, ST3, ST9, ST1, ST4, ST17, ST18, ST14, ST2, ST12, ST7, ST11, ST5, ST15, ST0, ST8
+  holding 45s under load...
+  MSPT=9.8 TPS=20.0  entitiesAndBE avg=0.291ms max=2.600ms (n=10 samples)
+  NW #31.4 attack timing: main: count=0 totalMs=0.00 avgUs=0.0 | region: count=300 totalMs=106.37 avgUs=354.6
+  NW #31.4 step3 useitem timing: main: count=294 totalMs=10.54 avgUs=35.8 | region: count=6 totalMs=0.28 avgUs=46.7
+  tearing down...
+
+=== TIER: 50 players ===
+  spawning 50 bots, waiting for connect+spawn settle...
+  RCON setup (gear + opt-in)...
+  There are 50 of a max of 250 players online: ST2, ST32, ST17, ST19, ST22, ST37, ST42, ST13, ST10, ST4, ST28, ST25, ST30, ST44, ST39, ST48, ST14, ST12, ST3, ST47, ST5, ST11, ST34, ST33, ST24, ST36, ST27, ST16, ST41, ST26, ST20, ST31, ST49, ST18, ST6, ST0, ST45, ST7, ST15, ST43, ST46, ST23, ST8, ST1, ST21, ST9, ST29, ST35, ST38, ST40
+  holding 45s under load...
+  MSPT=19.0 TPS=20.0  entitiesAndBE avg=0.164ms max=2.600ms (n=21 samples)
+  NW #31.4 attack timing: main: count=0 totalMs=0.00 avgUs=0.0 | region: count=750 totalMs=645.62 avgUs=860.8
+  NW #31.4 step3 useitem timing: main: count=759 totalMs=22.21 avgUs=29.3 | region: count=1 totalMs=0.03 avgUs=31.5
+  tearing down...
+
+=== TIER: 80 players ===
+  spawning 80 bots, waiting for connect+spawn settle...
+  RCON setup (gear + opt-in)...
+  There are 80 of a max of 250 players online: ST19, ST59, ST34, ST37, ST13, ST1, ST49, ST60, ST55, ST72, ST66, ST48, ST44, ST25, ST76, ST51, ST61, ST43, ST79, ST8, ST70, ST6, ST0, ST46, ST26, ST23, ST33, ST35, ST15, ST73, ST5, ST2, ST57, ST45, ST42, ST39, ST17, ST64, ST7, ST9, ST12, ST32, ST40, ST20, ST14, ST18, ST28, ST3, ST31, ST65, ST56, ST67, ST36, ST29, ST69, ST38, ST22, ST74, ST54, ST63, ST71, ST4, ST68, ST53, ST24, ST78, ST77, ST62, ST52, ST27, ST21, ST41, ST16, ST75, ST30, ST11, ST58, ST10, ST47, ST50
+  holding 45s under load...
+  MSPT=33.8 TPS=20.0  entitiesAndBE avg=0.114ms max=2.600ms (n=34 samples)
+  NW #31.4 attack timing: main: count=0 totalMs=0.00 avgUs=0.0 | region: count=1,187 totalMs=1546.76 avgUs=1303.1
+  NW #31.4 step3 useitem timing: main: count=1,191 totalMs=33.36 avgUs=28.0 | region: count=9 totalMs=0.29 avgUs=31.8
+  tearing down...
+
+=== TIER: 120 players ===
+  spawning 120 bots, waiting for connect+spawn settle...
+  RCON setup (gear + opt-in)...
+  There are 120 of a max of 250 players online: ST19, ST83, ST30, ST96, ST11, ST26, ST9, ST41, ST54, ST37, ST58, ST104, ST69, ST8, ST34, ST63, ST31, ST17, ST24, ST101, ST100, ST102, ST119, ST82, ST12, ST7, ST27, ST73, ST71, ST4, ST61, ST46, ST65, ST76, ST91, ST79, ST40, ST94, ST110, ST5, ST99, ST3, ST59, ST55, ST28, ST116, ST84, ST95, ST25, ST0, ST117, ST33, ST111, ST35, ST81, ST49, ST98, ST74, ST105, ST50, ST92, ST107, ST70, ST10, ST20, ST36, ST62, ST47, ST48, ST80, ST66, ST75, ST77, ST109, ST72, ST88, ST60, ST85, ST15, ST97, ST52, ST87, ST16, ST6, ST56, ST103, ST113, ST115, ST42, ST53, ST106, ST64, ST1, ST23, ST21, ST45, ST90, ST43, ST2, ST38, ST51, ST29, ST67, ST22, ST108, ST14, ST13, ST39, ST118, ST112, ST57, ST68, ST93, ST78, ST44, ST114, ST18, ST86, ST32, ST89
+  holding 45s under load...
+  MSPT=89.0 TPS=11.2  entitiesAndBE avg=0.674ms max=28.900ms (n=49 samples)
+  NW #31.4 attack timing: main: count=0 totalMs=0.00 avgUs=0.0 | region: count=1,616 totalMs=2478.69 avgUs=1533.8
+  NW #31.4 step3 useitem timing: main: count=1,786 totalMs=27.82 avgUs=15.6 | region: count=18 totalMs=0.45 avgUs=25.2
+  tearing down...
+
+
+=== SUMMARY ===
+n=  20  MSPT=9.8  TPS=20.0  entitiesAndBE avg=0.291ms max=2.600ms
+          NW #31.4 attack timing: main: count=0 totalMs=0.00 avgUs=0.0 | region: count=300 totalMs=106.37 avgUs=354.6
+          NW #31.4 step3 useitem timing: main: count=294 totalMs=10.54 avgUs=35.8 | region: count=6 totalMs=0.28 avgUs=46.7
+n=  50  MSPT=19.0  TPS=20.0  entitiesAndBE avg=0.164ms max=2.600ms
+          NW #31.4 attack timing: main: count=0 totalMs=0.00 avgUs=0.0 | region: count=750 totalMs=645.62 avgUs=860.8
+          NW #31.4 step3 useitem timing: main: count=759 totalMs=22.21 avgUs=29.3 | region: count=1 totalMs=0.03 avgUs=31.5
+n=  80  MSPT=33.8  TPS=20.0  entitiesAndBE avg=0.114ms max=2.600ms
+          NW #31.4 attack timing: main: count=0 totalMs=0.00 avgUs=0.0 | region: count=1,187 totalMs=1546.76 avgUs=1303.1
+          NW #31.4 step3 useitem timing: main: count=1,191 totalMs=33.36 avgUs=28.0 | region: count=9 totalMs=0.29 avgUs=31.8
+n= 120  MSPT=89.0  TPS=11.2  entitiesAndBE avg=0.674ms max=28.900ms
+          NW #31.4 attack timing: main: count=0 totalMs=0.00 avgUs=0.0 | region: count=1,616 totalMs=2478.69 avgUs=1533.8
+          NW #31.4 step3 useitem timing: main: count=1,786 totalMs=27.82 avgUs=15.6 | region: count=18 totalMs=0.45 avgUs=25.2

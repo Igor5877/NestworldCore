@@ -1,5 +1,19 @@
 --- a/net/minecraft/world/level/saveddata/maps/MapItemSavedData.java
 +++ b/net/minecraft/world/level/saveddata/maps/MapItemSavedData.java
+@@ -109,7 +_,12 @@
+       return mapitemsaveddata;
+    }
+ 
+-   public CompoundTag m_7176_(CompoundTag p_77956_) {
++   // NestWorld: full-core-audit finding (2026-08-27) -- this was the one method in the class
++   // still missing `synchronized`, iterating bannerMarkers/frameMarkers without the same lock
++   // every other mutator/reader in this class already uses (see comment above tickCarriedBy) --
++   // races region-thread mutators via autosave, which reads via DimensionDataStorage's own
++   // (different) cache lock, not this one.
++   public synchronized CompoundTag m_7176_(CompoundTag p_77956_) {
+       ResourceLocation.f_135803_.encodeStart(NbtOps.f_128958_, this.f_77887_.m_135782_()).resultOrPartial(f_77895_::error).ifPresent((p_77954_) -> {
+          p_77956_.m_128365_("dimension", p_77954_);
+       });
 @@ -151,7 +_,17 @@
        return m_164780_((double)this.f_256718_, (double)this.f_256789_, (byte)Mth.m_14045_(this.f_77890_ + p_164788_, 0, 4), this.f_77888_, this.f_77889_, this.f_77887_);
     }

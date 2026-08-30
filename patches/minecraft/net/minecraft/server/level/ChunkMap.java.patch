@@ -1,5 +1,13 @@
 --- a/net/minecraft/server/level/ChunkMap.java
 +++ b/net/minecraft/server/level/ChunkMap.java
+@@ -59,6 +_,7 @@
+ import net.minecraft.network.protocol.Packet;
+ import net.minecraft.network.protocol.game.ClientboundChunksBiomesPacket;
+ import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
++import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
+ import net.minecraft.network.protocol.game.ClientboundSetChunkCacheCenterPacket;
+ import net.minecraft.network.protocol.game.ClientboundSetEntityLinkPacket;
+ import net.minecraft.network.protocol.game.ClientboundSetPassengersPacket;
 @@ -130,6 +_,10 @@
     private boolean f_140140_;
     private final ChunkTaskPriorityQueueSorter f_140141_;
@@ -11,7 +19,7 @@
     private final ProcessorHandle<ChunkTaskPriorityQueueSorter.Message<Runnable>> f_140143_;
     private final ChunkProgressListener f_140144_;
     private final ChunkStatusUpdateListener f_143031_;
-@@ -143,6 +_,371 @@
+@@ -143,6 +_,389 @@
     private final Long2LongMap f_202981_ = new Long2LongOpenHashMap();
     private final Queue<Runnable> f_140125_ = Queues.newConcurrentLinkedQueue();
     int f_140126_;
@@ -44,7 +52,11 @@
 +   private long nestworldAdmitWindowStartNanos = 0L;
 +   private int nestworldAdmitWindowRemaining = Integer.MAX_VALUE;
 +   private static final long NESTWORLD_ADMIT_WINDOW_NANOS = 50_000_000L; // ~1 tick at 20 TPS
-+   private final ThreadLocal<Boolean> nestworldInCascade = ThreadLocal.withInitial(() -> Boolean.FALSE);
++   // NestWorld: method reference, not a lambda -- see NestworldGateGeneration's
++   // sibling note at nestworldOnResolvedBi() for why. Avoids adding a synthetic
++   // lambda$<init>$N this early in the class.
++   private static Boolean nestworldFalse() { return Boolean.FALSE; }
++   private final ThreadLocal<Boolean> nestworldInCascade = ThreadLocal.withInitial(ChunkMap::nestworldFalse);
 +   private final java.util.ArrayDeque<Runnable> nestworldDeferredAdmissions = new java.util.ArrayDeque<>();
 +   // NestWorld: a per-window admit RATE alone isn't enough to bound backlog across MANY
 +   // separate bursts (each passes its own rate check independently) — this tracks how
@@ -105,7 +117,7 @@
 +         nestworldFailed.completeExceptionally(nestworldT);
 +         return nestworldFailed;
 +      }
-+      nestworldF.whenComplete((nestworldR, nestworldE) -> this.nestworldOnResolved());
++      nestworldF.whenComplete(this::nestworldOnResolvedBi);
 +      return nestworldF;
 +   }
 +
@@ -130,6 +142,20 @@
 +    *  resolves (success or failure) — called via whenComplete on that future. */
 +   void nestworldOnResolved() {
 +      this.nestworldInFlight--;
++   }
++
++   // NestWorld: named method used via `this::nestworldOnResolvedBi` (a method
++   // reference), not an inline `(r, e) -> ...` lambda -- see
++   // chunkmap-lambda-ordinal-mixin-fragility.md. javac numbers synthetic
++   // lambda$ methods sequentially across the WHOLE class by declaration order;
++   // any lambda EXPRESSION we add before scheduleUnload() shifts every later
++   // vanilla lambda's ordinal, which breaks third-party Mixins that target a
++   // vanilla lambda by its compiler-assigned name (e.g. fabric-lifecycle-
++   // events-v1's ThreadedAnvilChunkStorageMixin targets scheduleUnload's own
++   // lambda by ordinal). A method reference does NOT generate a lambda$
++   // synthetic method, so it doesn't consume a slot in that count.
++   private void nestworldOnResolvedBi(Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure> nestworldR, Throwable nestworldE) {
++      this.nestworldOnResolved();
 +   }
 +
 +   /** NestWorld: queue a gated (holder,status) scheduling unit to retry once budget frees up. */
@@ -565,18 +591,81 @@
        };
        return completablefuture.thenComposeAsync((p_214873_) -> {
           return p_214873_.map((p_280971_) -> {
-@@ -638,9 +_,9 @@
+@@ -638,9 +_,14 @@
                       return this.m_140383_(p_140361_);
                    }, chunkaccess);
                 } else {
 -                  completablefuture1 = p_140362_.m_280308_(executor, this.f_140133_, this.f_140136_, this.f_214833_, this.f_140134_, (p_280966_) -> {
-+                  completablefuture1 = this.nestworldGateGeneration(p_140362_, () -> p_140362_.m_280308_(executor, this.f_140133_, this.f_140136_, this.f_214833_, this.f_140134_, (p_280966_) -> {
-                      return this.m_140383_(p_140361_);
+-                     return this.m_140383_(p_140361_);
 -                  }, p_280971_);
-+                  }, p_280971_));
++                  // NestWorld: `new NestworldGenerateOp(...)`, not a `() -> ...` lambda --
++                  // see NestworldGenerateOp's own javadoc / chunkmap-lambda-ordinal-mixin-
++                  // fragility.md for why a lambda here shifts every later vanilla lambda's
++                  // compiler-assigned ordinal, breaking third-party Mixins that target one
++                  // by name (e.g. fabric-lifecycle-events-v1's onChunkLoad injector, which
++                  // targets protoChunkToFullChunk's own mapLeft lambda by ordinal).
++                  completablefuture1 = this.nestworldGateGeneration(p_140362_,
++                        new NestworldGenerateOp(this, p_140362_, executor, p_140361_, p_280971_));
                 }
  
                 this.f_140144_.m_5511_(chunkpos, p_140362_);
+@@ -664,6 +_,56 @@
+       }, executor);
+    }
+ 
++   // NestWorld: performs the real (ChunkStatus.generate) call for
++   // scheduleChunkGeneration's ungated fallback AND is what NestworldGenerateOp.get()
++   // below delegates to for the gated path -- kept as a plain named ChunkMap method
++   // (not folded into NestworldGenerateOp itself) specifically so its own inner
++   // `(p_280966_) -> ...` lambda stays counted as one of ChunkMap's OWN lambdas, at
++   // the same ordinal vanilla's un-gated equivalent would occupy -- moving it into
++   // NestworldGenerateOp's class body would relocate that lambda's enclosing class
++   // and remove it from ChunkMap's count entirely, UNDER-shooting vanilla's expected
++   // count by one instead of matching it. See NestworldGenerateOp's own javadoc.
++   private CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> nestworldRealGenerate(
++         ChunkStatus p_140362_, Executor executor, ChunkHolder p_140361_, List<ChunkAccess> p_280971_) {
++      return p_140362_.m_280308_(executor, this.f_140133_, this.f_140136_, this.f_214833_, this.f_140134_, (p_280966_) -> {
++         return this.m_140383_(p_140361_);
++      }, p_280971_);
++   }
++
++   /**
++    * NestWorld: named {@code Supplier} implementation, not a {@code () -> ...} lambda
++    * expression -- see project memory chunkmap-lambda-ordinal-mixin-fragility.md.
++    * javac numbers synthetic {@code lambda$} methods sequentially across the WHOLE
++    * class by textual declaration order; any lambda EXPRESSION added to ChunkMap
++    * shifts every later vanilla lambda's compiler-assigned ordinal, which breaks
++    * third-party Mixins that target a vanilla lambda by that ordinal (confirmed live:
++    * fabric-lifecycle-events-v1's onChunkLoad injector targets
++    * protoChunkToFullChunk's mapLeft lambda this way). {@link #get()} is a plain
++    * method with a plain method-call body -- no lambda syntax at all -- so this class
++    * contributes zero new entries to that count; it only exists to carry the four
++    * values scheduleChunkGeneration() would otherwise have captured in a lambda.
++    */
++   private static final class NestworldGenerateOp implements java.util.function.Supplier<CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>>> {
++      private final ChunkMap map;
++      private final ChunkStatus status;
++      private final Executor executor;
++      private final ChunkHolder holder;
++      private final List<ChunkAccess> neighbors;
++
++      NestworldGenerateOp(ChunkMap map, ChunkStatus status, Executor executor, ChunkHolder holder, List<ChunkAccess> neighbors) {
++         this.map = map;
++         this.status = status;
++         this.executor = executor;
++         this.holder = holder;
++         this.neighbors = neighbors;
++      }
++
++      @Override
++      public CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> get() {
++         return this.map.nestworldRealGenerate(this.status, this.executor, this.holder, this.neighbors);
++      }
++   }
++
+    protected void m_140375_(ChunkPos p_140376_) {
+       this.f_140135_.m_6937_(Util.m_137474_(() -> {
+          this.f_140145_.m_140823_(TicketType.f_9446_, p_140376_, ChunkLevel.m_287141_(ChunkStatus.f_62323_), p_140376_);
 @@ -693,6 +_,14 @@
     private CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> m_140383_(ChunkHolder p_140384_) {
        CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> completablefuture = p_140384_.m_140047_(ChunkStatus.f_62326_.m_62482_());
@@ -635,15 +724,110 @@
              this.m_63502_(chunkpos, compoundtag);
              this.m_140229_(chunkpos, chunkstatus.m_62494_());
              return true;
-@@ -889,6 +_,7 @@
+@@ -876,22 +_,94 @@
+    protected void m_183754_(ServerPlayer p_183755_, ChunkPos p_183756_, MutableObject<ClientboundLevelChunkWithLightPacket> p_183757_, boolean p_183758_, boolean p_183759_) {
+       if (p_183755_.m_9236_() == this.f_140133_) {
+          if (p_183759_ && !p_183758_) {
+-            ChunkHolder chunkholder = this.m_140327_(p_183756_.m_45588_());
+-            if (chunkholder != null) {
+-               LevelChunk levelchunk = chunkholder.m_140085_();
+-               if (levelchunk != null) {
+-                  this.m_183760_(p_183755_, p_183757_, levelchunk);
+-               }
++            // NestWorld: 2026-08-29 Setup-Burst / Player Join Pipeline ТЗ -- when enabled, defer
++            // the whole load (chunk send) into a budget-drained queue instead of sending
++            // synchronously here. See ChunkOutboundQueue's javadoc for the correctness boundary
++            // (UNLOAD-cancels-pending-LOAD) and why this is separate from OutboundBatchQueue.
++            if (net.nestworld.region.ChunkOutboundQueue.ENABLED) {
++               net.nestworld.region.ChunkOutboundQueue.enqueueLoad(this, p_183755_, p_183756_);
++            } else {
++               ChunkHolder chunkholder = this.m_140327_(p_183756_.m_45588_());
++               if (chunkholder != null) {
++                  LevelChunk levelchunk = chunkholder.m_140085_();
++                  if (levelchunk != null) {
++                     this.m_183760_(p_183755_, p_183757_, levelchunk);
++                  }
+ 
+-               DebugPackets.m_133676_(this.f_140133_, p_183756_);
++                  DebugPackets.m_133676_(this.f_140133_, p_183756_);
++               }
+             }
+          }
  
           if (!p_183759_ && p_183758_) {
-             p_183755_.m_9088_(p_183756_);
-+            net.minecraftforge.event.ForgeEventFactory.fireChunkUnWatch(p_183755_, p_183756_, this.f_140133_);
+-            p_183755_.m_9088_(p_183756_);
++            // NestWorld: cancel a still-pending deferred LOAD for this exact (player, chunk)
++            // instead of sending an UNLOAD for a chunk the client was never told to load.
++            boolean nestworldCancelledPendingLoad = net.nestworld.region.ChunkOutboundQueue.cancelIfPending(p_183755_, p_183756_);
++            if (!nestworldCancelledPendingLoad) {
++               p_183755_.m_9088_(p_183756_);
++               net.minecraftforge.event.ForgeEventFactory.fireChunkUnWatch(p_183755_, p_183756_, this.f_140133_);
++            }
           }
  
        }
-@@ -1037,11 +_,60 @@
++   }
++
++   /** NestWorld: 2026-08-29 Setup-Burst / Player Join Pipeline -- called by
++    *  {@code ChunkOutboundQueue.drainBudget()} to actually perform a previously-deferred chunk
++    *  load, with a FRESH readiness re-check (the chunk/player state may have changed since the
++    *  load was originally queued). Returns false if there was nothing to send (chunk not ready,
++    *  or the vanilla POI-debug-packet-only no-op case) -- mirrors the original synchronous
++    *  code's own "silently do nothing if not ready yet" behavior exactly, just now on a delay. */
++   public boolean nestworldDeferredLoadChunk(ServerPlayer p_nestworldPlayer, ChunkPos p_nestworldPos) {
++      if (p_nestworldPlayer.m_9236_() != this.f_140133_) return false;
++      ChunkHolder chunkholder = this.m_140327_(p_nestworldPos.m_45588_());
++      if (chunkholder == null) return false;
++      LevelChunk levelchunk = chunkholder.m_140085_();
++      boolean sent = false;
++      if (levelchunk != null) {
++         this.m_183760_(p_nestworldPlayer, new MutableObject<>(), levelchunk);
++         sent = true;
++      }
++      DebugPackets.m_133676_(this.f_140133_, p_nestworldPos);
++      return sent;
++   }
++
++   /** NestWorld: 2026-08-29 Pairing Outbound Queue -- called by
++    *  {@code PairingOutboundQueue.drainBudget()} to actually perform a previously-deferred ADD
++    *  pairing. Does {@code seenBy.add()} + the pairing-data send + {@code startSeenByPlayer} +
++    *  the Forge tracking-start event all TOGETHER, atomically, at the moment the packet is
++    *  actually about to go out -- see PairingOutboundQueue's javadoc for why this trio can't be
++    *  split across enqueue-time and drain-time. Routes individual packets through
++    *  {@code OutboundBatchQueue} (not {@code ServerEntity.addPairing()}'s own bundle) so they
++    *  merge with same-tick entity-tracking traffic for this recipient into as few physical sends
++    *  as possible. Returns false if the pairing is no longer valid (entity/player gone, entity no
++    *  longer tracked) -- mirrors {@link #nestworldDeferredLoadChunk}'s "re-check, don't trust a
++    *  stale snapshot" discipline. */
++   public boolean nestworldDeferredAddPairing(Entity p_nestworldEntity, ServerPlayer p_nestworldPlayer) {
++      ChunkMap.TrackedEntity chunkmap$trackedentity = this.f_140150_.get(p_nestworldEntity.m_19879_());
++      if (chunkmap$trackedentity == null || chunkmap$trackedentity.f_140472_ != p_nestworldEntity) return false;
++      if (p_nestworldEntity.m_213877_() || !p_nestworldPlayer.m_6084_() || p_nestworldPlayer.f_8906_ == null) return false;
++      if (!chunkmap$trackedentity.f_140475_.add(p_nestworldPlayer.f_8906_)) return false; // already paired somehow
++      chunkmap$trackedentity.f_140471_.m_289200_(p_nestworldPlayer,
++              packet -> net.nestworld.region.OutboundBatchQueue.route(p_nestworldPlayer.f_8906_, packet));
++      p_nestworldEntity.m_6457_(p_nestworldPlayer);
++      net.minecraftforge.event.ForgeEventFactory.onStartEntityTracking(p_nestworldEntity, p_nestworldPlayer);
++      return true;
++   }
++
++   /** NestWorld: 2026-08-29 Pairing Outbound Queue -- called by
++    *  {@code PairingOutboundQueue.drainBudget()} to actually send a previously-deferred REMOVE
++    *  pairing's packet. {@code seenBy.remove()} already happened IMMEDIATELY at decision time
++    *  (see PairingOutboundQueue's javadoc for why REMOVE's invariant is relaxed vs. ADD's), so
++    *  this only needs to send the "forget this entity" packet + fire the Forge stop-tracking
++    *  event. Routed through {@code OutboundBatchQueue} like the ADD case. Returns false if the
++    *  player already disconnected (nothing to send to). */
++   public boolean nestworldDeferredRemovePairing(Entity p_nestworldEntity, ServerPlayer p_nestworldPlayer) {
++      if (p_nestworldPlayer.f_8906_ == null) return false;
++      net.nestworld.region.OutboundBatchQueue.route(p_nestworldPlayer.f_8906_,
++              new ClientboundRemoveEntitiesPacket(p_nestworldEntity.m_19879_()));
++      net.minecraftforge.event.ForgeEventFactory.onStopEntityTracking(p_nestworldEntity, p_nestworldPlayer);
++      return true;
+    }
+ 
+    public int m_140394_() {
+@@ -1037,12 +_,70 @@
     }
  
     public void m_140184_(ServerPlayer p_140185_) {
@@ -657,6 +841,8 @@
 +      // un-tracked), with a full-scan fallback for large jumps (teleport). See NestworldTuning.
 +      ChunkMap.TrackedEntity nestworldSelf = this.f_140150_.get(p_140185_.m_19879_());
 +      boolean nestworldCulled = false;
++      // NestWorld: 2026-08-29 Player Tick / Decision Fan-out Attribution ТЗ -- measurement only.
++      net.nestworld.region.MoveDecisionMetrics.recordMoveInvocation();
 +      // A1: re-evaluate this player's entity tracking at most once per server tick. A fast
 +      // flyer emits several move packets per tick; without this each re-scans nearby entities
 +      // (O(entities near player)) on the main thread and the tick stalls. The own-chunk
@@ -668,8 +854,10 @@
 +         long nestworldNowTick = this.f_140133_.m_7654_().m_129921_();
 +         if (nestworldSelf.nestworldLastMoveEvalTick == nestworldNowTick) {
 +            nestworldCulled = true; // already re-evaluated this tick — skip both scan paths
++            net.nestworld.region.MoveDecisionMetrics.recordThrottled();
           } else {
 -            chunkmap$trackedentity.m_140497_(p_140185_);
+-         }
 +            nestworldSelf.nestworldLastMoveEvalTick = nestworldNowTick;
 +         }
 +      }
@@ -688,26 +876,33 @@
 +            net.minecraft.world.phys.AABB nestworldBox = new net.minecraft.world.phys.AABB(
 +                  nestworldCur.f_82479_ - nestworldQ, nestworldCur.f_82480_ - nestworldYpad, nestworldCur.f_82481_ - nestworldQ,
 +                  nestworldCur.f_82479_ + nestworldQ, nestworldCur.f_82480_ + nestworldYpad, nestworldCur.f_82481_ + nestworldQ);
++            int nestworldCandidateCount = 0;
 +            for (Entity nestworldE : this.f_140133_.m_6249_(p_140185_, nestworldBox, (e) -> true)) {
 +               ChunkMap.TrackedEntity nestworldTe = this.f_140150_.get(nestworldE.m_19879_());
 +               if (nestworldTe != null && nestworldTe.f_140472_ != p_140185_) {
 +                  nestworldTe.m_140497_(p_140185_);
++                  nestworldCandidateCount++;
 +               }
 +            }
++            net.nestworld.region.MoveDecisionMetrics.recordSpatialCull(nestworldCandidateCount);
 +            nestworldSelf.m_140487_(this.f_140133_.m_6907_());
 +            nestworldCulled = true;
 +         }
 +      }
 +      if (!nestworldCulled) {
++         int nestworldFullScanCount = 0;
 +         for(ChunkMap.TrackedEntity chunkmap$trackedentity : this.f_140150_.values()) {
 +            if (chunkmap$trackedentity.f_140472_ == p_140185_) {
 +               chunkmap$trackedentity.m_140487_(this.f_140133_.m_6907_());
 +            } else {
 +               chunkmap$trackedentity.m_140497_(p_140185_);
++               nestworldFullScanCount++;
 +            }
-          }
++         }
++         net.nestworld.region.MoveDecisionMetrics.recordFullScan(nestworldFullScanCount);
        }
  
+       int j2 = SectionPos.m_123171_(p_140185_.m_146903_());
 @@ -1132,7 +_,7 @@
     }
  
@@ -717,6 +912,26 @@
           EntityType<?> entitytype = p_140200_.m_6095_();
           int i = entitytype.m_20681_() * 16;
           if (i != 0) {
+@@ -1168,6 +_,19 @@
+          }
+       }
+ 
++      if (p_140332_ instanceof ServerPlayer nestworldDisconnecting) {
++         // NestWorld: 2026-08-29 Pairing Outbound Queue ТЗ §10 -- cancel every pending
++         // pairing where this player is the RECIPIENT (about to be told about some other
++         // entity) before it's gone. No leaked queue entries referencing a gone connection.
++         net.nestworld.region.PairingOutboundQueue.cancelAllForPlayer(nestworldDisconnecting.m_20148_());
++      }
++
++      // NestWorld: ТЗ §11 -- cancel every pending pairing where THIS entity is the SOURCE
++      // (about to be spawned for some recipient who hasn't gotten the packet yet). Covers
++      // both "a mob died mid-queue" and "a player disconnected while being paired to others"
++      // (a player is itself a trackable/pairable Entity, same as any mob).
++      net.nestworld.region.PairingOutboundQueue.cancelAllForEntity(p_140332_.m_19879_());
++
+       ChunkMap.TrackedEntity chunkmap$trackedentity1 = this.f_140150_.remove(p_140332_.m_19879_());
+       if (chunkmap$trackedentity1 != null) {
+          chunkmap$trackedentity1.m_140482_();
 @@ -1175,28 +_,187 @@
  
     }
@@ -1023,6 +1238,15 @@
     }
  
     public void m_140201_(Entity p_140202_, Packet<?> p_140203_) {
+@@ -1251,6 +_,8 @@
+          p_183762_.setValue(new ClientboundLevelChunkWithLightPacket(p_183763_, this.f_140134_, (BitSet)null, (BitSet)null));
+       }
+ 
++      // NestWorld: 2026-08-29 Setup-Burst / Player Join Pipeline ТЗ -- measurement only.
++      net.nestworld.region.JoinBurstMetrics.recordChunkPacket();
+       p_183761_.m_184135_(p_183763_.m_7697_(), p_183762_.getValue());
+       DebugPackets.m_133676_(this.f_140133_, p_183763_.m_7697_());
+       List<Entity> list = Lists.newArrayList();
 @@ -1282,6 +_,7 @@
           }
        }
@@ -1112,6 +1336,109 @@
  
        public TrackedEntity(Entity p_140478_, int p_140479_, int p_140480_, boolean p_140481_) {
           this.f_140471_ = new ServerEntity(ChunkMap.this.f_140133_, p_140478_, p_140480_, p_140481_, this::m_140489_);
+@@ -1343,8 +_,18 @@
+       }
+ 
+       public void m_140489_(Packet<?> p_140490_) {
++         // NestWorld: 2026-08-28 Entity Tracking Fan-out Attribution ТЗ (see project memory
++         // entity-tracking-offload-next-milestone-2026-08-28.md) -- classifies each broadcast
++         // fan-out by entity category, packet type, reason, source region, and (sampled)
++         // same/cross-region + distance. MEASUREMENT ONLY -- see TrackingMetrics's javadoc for
++         // the overhead-budget discipline (cheap fixed-key counters, sampling for the O(fanout)
++         // per-recipient axes). One call per broadcast() call, not per individual packet-send.
++         net.nestworld.region.TrackingMetrics.recordBroadcast(this.f_140472_, p_140490_, this.f_140475_);
+          for(ServerPlayerConnection serverplayerconnection : this.f_140475_) {
+-            serverplayerconnection.m_9829_(p_140490_);
++            // NestWorld: 2026-08-28 Outbound Tracking Optimization -- routes through the
++            // per-recipient batch queue (feature-flagged, OFF by default) instead of sending
++            // immediately; see OutboundBatchQueue's javadoc.
++            net.nestworld.region.OutboundBatchQueue.route(serverplayerconnection, p_140490_);
+          }
+ 
+       }
+@@ -1358,15 +_,32 @@
+       }
+ 
+       public void m_140482_() {
++         // NestWorld: this entity is being fully removed -- cancelAllForEntity (called by
++         // ChunkMap.removeEntity() just before this) already cancelled any not-yet-drained
++         // pending pairings. Everyone still in seenBy already GOT their spawn packet, so their
++         // removal still needs to go out; queue it (deferred packet, immediate seenBy state is
++         // moot here since the TrackedEntity itself is being discarded).
+          for(ServerPlayerConnection serverplayerconnection : this.f_140475_) {
+-            this.f_140471_.m_8534_(serverplayerconnection.m_142253_());
++            ServerPlayer nestworldRecipient = serverplayerconnection.m_142253_();
++            if (net.nestworld.region.PairingOutboundQueue.ENABLED) {
++               net.nestworld.region.PairingOutboundQueue.enqueueRemove(ChunkMap.this, nestworldRecipient, this.f_140472_);
++            } else {
++               this.f_140471_.m_8534_(nestworldRecipient);
++            }
+          }
+ 
+       }
+ 
+       public void m_140485_(ServerPlayer p_140486_) {
+          if (this.f_140475_.remove(p_140486_.f_8906_)) {
+-            this.f_140471_.m_8534_(p_140486_);
++            if (net.nestworld.region.PairingOutboundQueue.ENABLED) {
++               net.nestworld.region.PairingOutboundQueue.enqueueRemove(ChunkMap.this, p_140486_, this.f_140472_);
++            } else {
++               this.f_140471_.m_8534_(p_140486_);
++            }
++         } else if (net.nestworld.region.PairingOutboundQueue.ENABLED) {
++            net.nestworld.region.PairingOutboundQueue.cancelIfOp(p_140486_, this.f_140472_,
++                    net.nestworld.region.PairingOutboundQueue.Op.ADD);
+          }
+ 
+       }
+@@ -1378,7 +_,46 @@
+             double d1 = vec3.f_82479_ * vec3.f_82479_ + vec3.f_82481_ * vec3.f_82481_;
+             double d2 = d0 * d0;
+             boolean flag = d1 <= d2 && this.f_140472_.m_6459_(p_140498_);
+-            if (flag) {
++            // NestWorld: 2026-08-29 Pairing Outbound Queue ТЗ -- see PairingOutboundQueue's
++            // javadoc for why seenBy.add() (ADD case) is deferred together with the packet
++            // (ordering invariant vs. TrackedEntity.broadcast()), while seenBy.remove()
++            // (REMOVE case) stays immediate and only the packet is deferred. Three-state
++            // handling (nothing pending / ADD pending / REMOVE pending) avoids both queue
++            // churn (re-enqueueing an ADD every tick a still-in-range player re-evaluates)
++            // and wrongly cancelling the "other" op (e.g. a fresh in-range decision must
++            // cancel a stale pending REMOVE, not enqueue a duplicate ADD the client would
++            // reject/duplicate, since the original ADD already reached them).
++            if (net.nestworld.region.PairingOutboundQueue.ENABLED) {
++               net.nestworld.region.PairingOutboundQueue.Op pending =
++                       net.nestworld.region.PairingOutboundQueue.currentOp(p_140498_, this.f_140472_);
++               if (flag) {
++                  if (this.f_140475_.contains(p_140498_.f_8906_) || pending == net.nestworld.region.PairingOutboundQueue.Op.ADD) {
++                     // already paired, or already going to be -- nothing to do
++                  } else if (pending == net.nestworld.region.PairingOutboundQueue.Op.REMOVE) {
++                     // client still has it from the earlier ADD (never got the forget-packet
++                     // yet) -- cancel the pending REMOVE and resume broadcast() targeting
++                     // immediately; no new packet needed, they already have it client-side.
++                     if (net.nestworld.region.PairingOutboundQueue.cancelIfOp(p_140498_, this.f_140472_,
++                             net.nestworld.region.PairingOutboundQueue.Op.REMOVE)) {
++                        this.f_140475_.add(p_140498_.f_8906_);
++                     }
++                  } else if (net.nestworld.region.PairingAdmissionGate.tryAdmit(
++                          ChunkMap.this.f_140133_.m_7654_().m_129921_(), p_140498_.m_20148_())) {
++                     // NestWorld: 2026-08-29 Visibility/Pairing Admission Gate (Step 3) -- gates
++                     // ONLY the NOT_VISIBLE -> ADD_PENDING transition (never REMOVE, which must
++                     // stay immediate to avoid stale/ghost visibility). A denied admission simply
++                     // does nothing this tick; this same updatePlayer() call re-evaluates the pair
++                     // fresh next tick (flag recomputed, pending still absent), retrying for free
++                     // -- no separate backlog needed. See PairingAdmissionGate's class javadoc.
++                     net.nestworld.region.PairingOutboundQueue.enqueueAdd(ChunkMap.this, p_140498_, this.f_140472_);
++                  }
++               } else if (this.f_140475_.remove(p_140498_.f_8906_)) {
++                  net.nestworld.region.PairingOutboundQueue.enqueueRemove(ChunkMap.this, p_140498_, this.f_140472_);
++               } else if (pending == net.nestworld.region.PairingOutboundQueue.Op.ADD) {
++                  net.nestworld.region.PairingOutboundQueue.cancelIfOp(p_140498_, this.f_140472_,
++                          net.nestworld.region.PairingOutboundQueue.Op.ADD);
++               }
++            } else if (flag) {
+                if (this.f_140475_.add(p_140498_.f_8906_)) {
+                   this.f_140471_.m_8541_(p_140498_);
+                }
 @@ -1396,10 +_,15 @@
        private int m_140496_() {
           int i = this.f_140473_;

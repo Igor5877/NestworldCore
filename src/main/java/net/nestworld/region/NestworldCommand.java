@@ -64,6 +64,11 @@ public final class NestworldCommand {
                                         .executes(ctx -> merge(ctx.getSource(),
                                                 IntegerArgumentType.getInteger(ctx, "a"),
                                                 IntegerArgumentType.getInteger(ctx, "b"))))))
+                .then(Commands.literal("dumpregistries")
+                        .executes(ctx -> dumpRegistries(ctx.getSource(), "registry-snapshot.txt"))
+                        .then(Commands.argument("path", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                .executes(ctx -> dumpRegistries(ctx.getSource(),
+                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "path")))))
                 .then(Commands.literal("pins").executes(ctx -> listPins(ctx.getSource())))
                 .then(Commands.literal("pin")
                         .then(Commands.argument("type", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
@@ -108,6 +113,184 @@ public final class NestworldCommand {
                 .then(Commands.literal("featurefails").executes(ctx -> featureFails(ctx.getSource())))
                 .then(Commands.literal("tickphases").executes(ctx -> tickPhases(ctx.getSource())))
                 .then(Commands.literal("leveticksownership").executes(ctx -> levelTicksOwnership(ctx.getSource())))
+                .then(Commands.literal("ownershipassertions").executes(ctx -> ownershipAssertions(ctx.getSource())))
+                .then(Commands.literal("playerinputstats").executes(ctx -> playerInputStats(ctx.getSource())))
+                .then(Commands.literal("playertickexperiment")
+                        .then(Commands.literal("add")
+                                .then(Commands.argument("name", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                        .executes(ctx -> playerTickExperimentAdd(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name")))))
+                        .then(Commands.literal("remove")
+                                .then(Commands.argument("name", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                        .executes(ctx -> playerTickExperimentRemove(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name")))))
+                        .then(Commands.literal("list").executes(ctx -> playerTickExperimentList(ctx.getSource()))))
+                .then(Commands.literal("playerattackexperiment")
+                        .then(Commands.literal("add")
+                                .then(Commands.argument("name", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                        .executes(ctx -> playerAttackExperimentAdd(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name")))))
+                        .then(Commands.literal("remove")
+                                .then(Commands.argument("name", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                        .executes(ctx -> playerAttackExperimentRemove(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name")))))
+                        .then(Commands.literal("list").executes(ctx -> playerAttackExperimentList(ctx.getSource()))))
+                .then(Commands.literal("playerattacktiming").executes(ctx -> playerAttackTiming(ctx.getSource())))
+                .then(Commands.literal("playerattacktimingreset").executes(ctx -> playerAttackTimingReset(ctx.getSource())))
+                .then(Commands.literal("playerinteractiontiming").executes(ctx -> playerInteractionTiming(ctx.getSource())))
+                .then(Commands.literal("playerinteractiontimingreset").executes(ctx -> playerInteractionTimingReset(ctx.getSource())))
+                .then(Commands.literal("blockmainprobe")
+                        .then(Commands.argument("ms", IntegerArgumentType.integer(0))
+                                .then(Commands.argument("region", IntegerArgumentType.integer(0))
+                                        .executes(ctx -> blockMainProbe(ctx.getSource(),
+                                                IntegerArgumentType.getInteger(ctx, "ms"),
+                                                IntegerArgumentType.getInteger(ctx, "region"))))))
+                .then(Commands.literal("playerinteractionexperiment")
+                        .then(Commands.literal("add")
+                                .then(Commands.argument("name", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                        .executes(ctx -> playerInteractionExperimentAdd(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name")))))
+                        .then(Commands.literal("remove")
+                                .then(Commands.argument("name", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                        .executes(ctx -> playerInteractionExperimentRemove(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name")))))
+                        .then(Commands.literal("list").executes(ctx -> playerInteractionExperimentList(ctx.getSource()))))
+                .then(Commands.literal("playeruseitemexperiment")
+                        .then(Commands.literal("add")
+                                .then(Commands.argument("name", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                        .executes(ctx -> playerUseItemExperimentAdd(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name")))))
+                        .then(Commands.literal("remove")
+                                .then(Commands.argument("name", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                        .executes(ctx -> playerUseItemExperimentRemove(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name")))))
+                        .then(Commands.literal("list").executes(ctx -> playerUseItemExperimentList(ctx.getSource()))))
+                .then(Commands.literal("playeruseitemtiming").executes(ctx -> playerUseItemTiming(ctx.getSource())))
+                .then(Commands.literal("playeruseitemtimingreset").executes(ctx -> playerUseItemTimingReset(ctx.getSource())))
+                .then(Commands.literal("playeruseitemonblockexperiment")
+                        .then(Commands.literal("add")
+                                .then(Commands.argument("name", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                        .executes(ctx -> playerUseItemOnBlockExperimentAdd(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name")))))
+                        .then(Commands.literal("remove")
+                                .then(Commands.argument("name", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                        .executes(ctx -> playerUseItemOnBlockExperimentRemove(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name")))))
+                        .then(Commands.literal("list").executes(ctx -> playerUseItemOnBlockExperimentList(ctx.getSource()))))
+                .then(Commands.literal("playeruseitemonblocktiming").executes(ctx -> playerUseItemOnBlockTiming(ctx.getSource())))
+                .then(Commands.literal("playeruseitemonblocktimingreset").executes(ctx -> playerUseItemOnBlockTimingReset(ctx.getSource())))
+                .then(Commands.literal("playerusecontroltiming").executes(ctx -> playerUseControlTiming(ctx.getSource())))
+                .then(Commands.literal("playerusecontroltimingreset").executes(ctx -> playerUseControlTimingReset(ctx.getSource())))
+                .then(Commands.literal("playerentityinteractexperiment")
+                        .then(Commands.literal("add")
+                                .then(Commands.argument("name", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                        .executes(ctx -> playerEntityInteractExperimentAdd(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name")))))
+                        .then(Commands.literal("remove")
+                                .then(Commands.argument("name", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                        .executes(ctx -> playerEntityInteractExperimentRemove(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name")))))
+                        .then(Commands.literal("list").executes(ctx -> playerEntityInteractExperimentList(ctx.getSource()))))
+                .then(Commands.literal("entityinteracttiming").executes(ctx -> entityInteractTiming(ctx.getSource())))
+                .then(Commands.literal("entityinteracttimingreset").executes(ctx -> entityInteractTimingReset(ctx.getSource())))
+                .then(Commands.literal("interactionwaitbudget").executes(ctx -> interactionWaitBudget(ctx.getSource())))
+                .then(Commands.literal("interactionwaitbudgetreset").executes(ctx -> interactionWaitBudgetReset(ctx.getSource())))
+                .then(Commands.literal("interactionlatencydist").executes(ctx -> interactionLatencyDist(ctx.getSource())))
+                .then(Commands.literal("interactionwaitspikes").executes(ctx -> interactionWaitSpikes(ctx.getSource())))
+                .then(Commands.literal("interactionslots")
+                        .then(Commands.argument("k", com.mojang.brigadier.arguments.IntegerArgumentType.integer(0))
+                                .executes(ctx -> interactionSlots(ctx.getSource(),
+                                        com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "k")))))
+                .then(Commands.literal("interactionmaxwaitms")
+                        .then(Commands.argument("x", com.mojang.brigadier.arguments.IntegerArgumentType.integer(0))
+                                .executes(ctx -> interactionMaxWaitMs(ctx.getSource(),
+                                        com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "x")))))
+                .then(Commands.literal("splitmergesummary").executes(ctx -> splitMergeSummary(ctx.getSource())))
+                .then(Commands.literal("splitmergedump").executes(ctx -> splitMergeDump(ctx.getSource(), 60))
+                        .then(Commands.argument("lines", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1))
+                                .executes(ctx -> splitMergeDump(ctx.getSource(),
+                                        com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "lines")))))
+                .then(Commands.literal("splitmergereset").executes(ctx -> splitMergeReset(ctx.getSource())))
+                .then(Commands.literal("connectiondiag").executes(ctx -> connectionDiag(ctx.getSource())))
+                .then(Commands.literal("connectiondiagreset").executes(ctx -> connectionDiagReset(ctx.getSource())))
+                .then(Commands.literal("connectiondiagslow").executes(ctx -> connectionDiagSlow(ctx.getSource(), 100))
+                        .then(Commands.argument("lines", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1))
+                                .executes(ctx -> connectionDiagSlow(ctx.getSource(),
+                                        com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "lines")))))
+                .then(Commands.literal("trackingreport").executes(ctx -> trackingReport(ctx.getSource())))
+                .then(Commands.literal("trackingreset").executes(ctx -> trackingReset(ctx.getSource())))
+                .then(Commands.literal("recipientfanout")
+                        .then(Commands.argument("ticks", DoubleArgumentType.doubleArg(0.001))
+                                .executes(ctx -> recipientFanout(ctx.getSource(), DoubleArgumentType.getDouble(ctx, "ticks")))))
+                .then(Commands.literal("outboundbatch")
+                        .then(Commands.literal("on").executes(ctx -> outboundBatchToggle(ctx.getSource(), true)))
+                        .then(Commands.literal("off").executes(ctx -> outboundBatchToggle(ctx.getSource(), false))))
+                .then(Commands.literal("outboundbatchreport").executes(ctx -> outboundBatchReport(ctx.getSource())))
+                .then(Commands.literal("outboundbatchreset").executes(ctx -> outboundBatchReset(ctx.getSource())))
+                .then(Commands.literal("outboundbatchmaxsize")
+                        .then(Commands.argument("n", IntegerArgumentType.integer(1))
+                                .executes(ctx -> outboundBatchMaxSize(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "n")))))
+                .then(Commands.literal("joinburstreport").executes(ctx -> joinBurstReport(ctx.getSource())))
+                .then(Commands.literal("joinburstreset").executes(ctx -> joinBurstReset(ctx.getSource())))
+                .then(Commands.literal("chunkoutbound")
+                        .then(Commands.literal("on").executes(ctx -> chunkOutboundToggle(ctx.getSource(), true)))
+                        .then(Commands.literal("off").executes(ctx -> chunkOutboundToggle(ctx.getSource(), false))))
+                .then(Commands.literal("chunkoutboundreport").executes(ctx -> chunkOutboundReport(ctx.getSource())))
+                .then(Commands.literal("chunkoutboundreset").executes(ctx -> chunkOutboundReset(ctx.getSource())))
+                .then(Commands.literal("chunkoutboundbudget")
+                        .then(Commands.argument("n", IntegerArgumentType.integer(1))
+                                .executes(ctx -> chunkOutboundBudget(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "n")))))
+                .then(Commands.literal("pairingbatch")
+                        .then(Commands.literal("on").executes(ctx -> pairingBatchToggle(ctx.getSource(), true)))
+                        .then(Commands.literal("off").executes(ctx -> pairingBatchToggle(ctx.getSource(), false)))
+                        .then(Commands.literal("status").executes(ctx -> pairingBatchStatus(ctx.getSource()))))
+                .then(Commands.literal("pairingbatchreset").executes(ctx -> pairingBatchReset(ctx.getSource())))
+                .then(Commands.literal("pairingbatchbudget")
+                        .then(Commands.argument("n", IntegerArgumentType.integer(1))
+                                .executes(ctx -> pairingBatchBudget(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "n")))))
+                .then(Commands.literal("movedecisionreport").executes(ctx -> moveDecisionReport(ctx.getSource())))
+                .then(Commands.literal("movedecisionreset").executes(ctx -> moveDecisionReset(ctx.getSource())))
+                .then(Commands.literal("naturalspawnerreport").executes(ctx -> naturalSpawnerReport(ctx.getSource())))
+                .then(Commands.literal("naturalspawnerreset").executes(ctx -> naturalSpawnerReset(ctx.getSource())))
+                .then(Commands.literal("burstreport").executes(ctx -> burstReport(ctx.getSource())))
+                .then(Commands.literal("modcallbackreport").executes(ctx -> modCallbackReport(ctx.getSource())))
+                .then(Commands.literal("modcallbackreset").executes(ctx -> modCallbackReset(ctx.getSource())))
+                .then(Commands.literal("modcallbackrouterreport").executes(ctx -> modCallbackRouterReport(ctx.getSource())))
+                .then(Commands.literal("modcallbackrouterreset").executes(ctx -> modCallbackRouterReset(ctx.getSource())))
+                .then(Commands.literal("burstreset").executes(ctx -> burstReset(ctx.getSource())))
+                .then(Commands.literal("burstthreads").executes(ctx -> burstThreads(ctx.getSource())))
+                .then(Commands.literal("admission")
+                        .then(Commands.literal("on").executes(ctx -> admissionToggle(ctx.getSource(), true)))
+                        .then(Commands.literal("off").executes(ctx -> admissionToggle(ctx.getSource(), false))))
+                .then(Commands.literal("admissionreport").executes(ctx -> admissionReport(ctx.getSource())))
+                .then(Commands.literal("admissionreset").executes(ctx -> admissionReset(ctx.getSource())))
+                .then(Commands.literal("admissionbudget")
+                        .then(Commands.argument("n", IntegerArgumentType.integer(1))
+                                .executes(ctx -> admissionBudget(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "n")))))
+                .then(Commands.literal("pairingadmission")
+                        .then(Commands.literal("on").executes(ctx -> pairingAdmissionToggle(ctx.getSource(), true)))
+                        .then(Commands.literal("off").executes(ctx -> pairingAdmissionToggle(ctx.getSource(), false))))
+                .then(Commands.literal("pairingadmissionreport").executes(ctx -> pairingAdmissionReport(ctx.getSource())))
+                .then(Commands.literal("pairingadmissionreset").executes(ctx -> pairingAdmissionReset(ctx.getSource())))
+                .then(Commands.literal("pairingadmissionbudget")
+                        .then(Commands.argument("n", IntegerArgumentType.integer(1))
+                                .executes(ctx -> pairingAdmissionBudget(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "n")))))
+                .then(Commands.literal("pairingadmissionperplayer")
+                        .then(Commands.argument("n", IntegerArgumentType.integer(1))
+                                .executes(ctx -> pairingAdmissionPerPlayer(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "n")))))
+                .then(Commands.literal("connectionadmission")
+                        .then(Commands.literal("on").executes(ctx -> connectionAdmissionToggle(ctx.getSource(), true)))
+                        .then(Commands.literal("off").executes(ctx -> connectionAdmissionToggle(ctx.getSource(), false))))
+                .then(Commands.literal("connectionadmissionreport").executes(ctx -> connectionAdmissionReport(ctx.getSource())))
+                .then(Commands.literal("connectionadmissionreset").executes(ctx -> connectionAdmissionReset(ctx.getSource())))
+                .then(Commands.literal("connectionadmissionbudget")
+                        .then(Commands.argument("n", IntegerArgumentType.integer(1))
+                                .executes(ctx -> connectionAdmissionBudget(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "n")))))
+                .then(Commands.literal("cpuplanner").executes(ctx -> cpuPlannerReport(ctx.getSource())))
+                .then(Commands.literal("nearestplayerverify").executes(ctx -> nearestPlayerVerifyReport(ctx.getSource())))
+                .then(Commands.literal("nearestplayerverifyreset").executes(ctx -> nearestPlayerVerifyReset(ctx.getSource())))
+                .then(Commands.literal("nearestplayermismatches").executes(ctx -> nearestPlayerMismatches(ctx.getSource())))
+                .then(Commands.literal("nearestplayermismatchesdump").executes(ctx -> nearestPlayerMismatchesDump(ctx.getSource())))
                 .then(Commands.literal("setgenconcurrency")
                         .then(Commands.argument("n", IntegerArgumentType.integer(0))
                                 .executes(ctx -> setGenConcurrency(ctx.getSource(),
@@ -205,7 +388,16 @@ public final class NestworldCommand {
                                                 UuidArgument.getUuid(ctx, "uuid"))))))
                 .then(Commands.literal("freerun")
                         .then(Commands.argument("id", IntegerArgumentType.integer(0))
-                                .executes(ctx -> freeRun(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "id"))))));
+                                .executes(ctx -> freeRun(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "id")))))
+                .then(Commands.literal("testmutate")
+                        .then(Commands.literal("kill")
+                                .then(Commands.argument("uuid", UuidArgument.uuid())
+                                        .executes(ctx -> testMutate(ctx.getSource(),
+                                                UuidArgument.getUuid(ctx, "uuid"), new EntityMutationOp.Kill()))))
+                        .then(Commands.literal("discard")
+                                .then(Commands.argument("uuid", UuidArgument.uuid())
+                                        .executes(ctx -> testMutate(ctx.getSource(),
+                                                UuidArgument.getUuid(ctx, "uuid"), new EntityMutationOp.Discard()))))));
 
         // /spark — in-game access to the spark standalone agent (see SparkBridge).
         // Only when the real spark mod is absent (dev runtime can't load it);
@@ -886,6 +1078,799 @@ public final class NestworldCommand {
         return 0;
     }
 
+    private static int ownershipAssertions(CommandSourceStack src) {
+        String result = "NW ownership assertions: " + net.nestworld.region.NestworldOwnershipAssertions.summary();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 0;
+    }
+
+    /** Phase 11 #31.2 shadow-mode diagnostics. */
+    private static int playerInputStats(CommandSourceStack src) {
+        String mode = net.nestworld.region.NestworldTuning.PLAYER_INPUT_REGION_EXECUTION ? "SHADOW-ON" : "OFF";
+        String result = "NW player-input (mode=" + mode + "): " + net.nestworld.region.PlayerInputDiagnostics.summary();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 0;
+    }
+
+    /** Phase 11 #31.3 — staged rollout control: add/remove a named player from the region-tick
+     *  opt-in set. No effect unless -Dnestworld.playerTickRegionExecution=true is also set. */
+    private static int playerTickExperimentAdd(CommandSourceStack src, String name) {
+        ServerPlayer player = src.getServer().getPlayerList().getPlayerByName(name);
+        if (player == null) {
+            src.sendFailure(Component.literal("No online player named " + name));
+            return 0;
+        }
+        boolean added = net.nestworld.region.PlayerTickExperiment.add(player.getUUID());
+        String masterFlag = net.nestworld.region.NestworldTuning.PLAYER_TICK_REGION_EXECUTION ? "" :
+                " (WARNING: -Dnestworld.playerTickRegionExecution is OFF -- this player will still tick on main)";
+        src.sendSuccess(() -> Component.literal((added ? "Added " : "Already in set: ") + name
+                + " to #31.3 player-tick experiment" + masterFlag), true);
+        return 1;
+    }
+
+    private static int playerTickExperimentRemove(CommandSourceStack src, String name) {
+        ServerPlayer player = src.getServer().getPlayerList().getPlayerByName(name);
+        java.util.UUID id = player != null ? player.getUUID() : null;
+        if (id == null) {
+            // Allow removing an offline/UUID-unresolvable name defensively -- no-op if not found.
+            src.sendFailure(Component.literal("No online player named " + name + " (nothing removed)"));
+            return 0;
+        }
+        boolean removed = net.nestworld.region.PlayerTickExperiment.remove(id);
+        src.sendSuccess(() -> Component.literal((removed ? "Removed " : "Was not in set: ") + name
+                + " from #31.3 player-tick experiment"), true);
+        return 1;
+    }
+
+    private static int playerTickExperimentList(CommandSourceStack src) {
+        java.util.Set<java.util.UUID> ids = net.nestworld.region.PlayerTickExperiment.snapshot();
+        String masterFlag = net.nestworld.region.NestworldTuning.PLAYER_TICK_REGION_EXECUTION ? "ON" : "OFF";
+        StringBuilder sb = new StringBuilder("NW #31.3 player-tick experiment: masterFlag=").append(masterFlag)
+                .append(" size=").append(ids.size());
+        for (java.util.UUID id : ids) {
+            ServerPlayer p = src.getServer().getPlayerList().getPlayer(id);
+            sb.append("\n  ").append(p != null ? p.getGameProfile().getName() : id.toString());
+        }
+        String result = sb.toString();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
+    /** Phase 11 #31.4 — staged rollout control: add/remove a named player from the region-attack
+     *  opt-in set. No effect unless -Dnestworld.playerAttackRegionExecution=true is also set. */
+    private static int playerAttackExperimentAdd(CommandSourceStack src, String name) {
+        ServerPlayer player = src.getServer().getPlayerList().getPlayerByName(name);
+        if (player == null) {
+            src.sendFailure(Component.literal("No online player named " + name));
+            return 0;
+        }
+        boolean added = net.nestworld.region.PlayerAttackExperiment.add(player.getUUID());
+        String masterFlag = net.nestworld.region.NestworldTuning.PLAYER_ATTACK_REGION_EXECUTION ? "" :
+                " (WARNING: -Dnestworld.playerAttackRegionExecution is OFF -- this player's attacks will still run on main)";
+        src.sendSuccess(() -> Component.literal((added ? "Added " : "Already in set: ") + name
+                + " to #31.4 player-attack experiment" + masterFlag), true);
+        return 1;
+    }
+
+    private static int playerAttackExperimentRemove(CommandSourceStack src, String name) {
+        ServerPlayer player = src.getServer().getPlayerList().getPlayerByName(name);
+        java.util.UUID id = player != null ? player.getUUID() : null;
+        if (id == null) {
+            src.sendFailure(Component.literal("No online player named " + name + " (nothing removed)"));
+            return 0;
+        }
+        boolean removed = net.nestworld.region.PlayerAttackExperiment.remove(id);
+        src.sendSuccess(() -> Component.literal((removed ? "Removed " : "Was not in set: ") + name
+                + " from #31.4 player-attack experiment"), true);
+        return 1;
+    }
+
+    private static int playerAttackExperimentList(CommandSourceStack src) {
+        java.util.Set<java.util.UUID> ids = net.nestworld.region.PlayerAttackExperiment.snapshot();
+        String masterFlag = net.nestworld.region.NestworldTuning.PLAYER_ATTACK_REGION_EXECUTION ? "ON" : "OFF";
+        StringBuilder sb = new StringBuilder("NW #31.4 player-attack experiment: masterFlag=").append(masterFlag)
+                .append(" size=").append(ids.size());
+        for (java.util.UUID id : ids) {
+            ServerPlayer p = src.getServer().getPlayerList().getPlayer(id);
+            sb.append("\n  ").append(p != null ? p.getGameProfile().getName() : id.toString());
+        }
+        String result = sb.toString();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
+    /** Phase 11 #31.4 measurement-only diagnostics, see PlayerAttackTiming. */
+    private static int playerAttackTiming(CommandSourceStack src) {
+        String result = "NW #31.4 attack timing: " + net.nestworld.region.PlayerAttackTiming.summary();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
+    private static int playerAttackTimingReset(CommandSourceStack src) {
+        net.nestworld.region.PlayerAttackTiming.reset();
+        src.sendSuccess(() -> Component.literal("NW #31.4 attack timing reset"), true);
+        return 1;
+    }
+
+    /** Phase 11 #31.4 step 2 measurement-only diagnostics, see PlayerInteractionTiming. */
+    private static int playerInteractionTiming(CommandSourceStack src) {
+        String result = "NW #31.4 step2 interaction timing: " + net.nestworld.region.PlayerInteractionTiming.summary();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
+    private static int playerInteractionTimingReset(CommandSourceStack src) {
+        net.nestworld.region.PlayerInteractionTiming.reset();
+        src.sendSuccess(() -> Component.literal("NW #31.4 step2 interaction timing reset"), true);
+        return 1;
+    }
+
+    /** Phase 11 #31.4 step 2 — staged rollout control for the block-interaction experiment. No
+     *  effect unless -Dnestworld.playerInteractionRegionExecution=true is also set. */
+    private static int playerInteractionExperimentAdd(CommandSourceStack src, String name) {
+        ServerPlayer player = src.getServer().getPlayerList().getPlayerByName(name);
+        if (player == null) {
+            src.sendFailure(Component.literal("No online player named " + name));
+            return 0;
+        }
+        boolean added = net.nestworld.region.PlayerInteractionExperiment.add(player.getUUID());
+        String masterFlag = net.nestworld.region.NestworldTuning.PLAYER_INTERACTION_REGION_EXECUTION ? "" :
+                " (WARNING: -Dnestworld.playerInteractionRegionExecution is OFF -- this player's block interactions will still run on main)";
+        src.sendSuccess(() -> Component.literal((added ? "Added " : "Already in set: ") + name
+                + " to #31.4 step2 player-interaction experiment" + masterFlag), true);
+        return 1;
+    }
+
+    private static int playerInteractionExperimentRemove(CommandSourceStack src, String name) {
+        ServerPlayer player = src.getServer().getPlayerList().getPlayerByName(name);
+        java.util.UUID id = player != null ? player.getUUID() : null;
+        if (id == null) {
+            src.sendFailure(Component.literal("No online player named " + name + " (nothing removed)"));
+            return 0;
+        }
+        boolean removed = net.nestworld.region.PlayerInteractionExperiment.remove(id);
+        src.sendSuccess(() -> Component.literal((removed ? "Removed " : "Was not in set: ") + name
+                + " from #31.4 step2 player-interaction experiment"), true);
+        return 1;
+    }
+
+    private static int playerInteractionExperimentList(CommandSourceStack src) {
+        java.util.Set<java.util.UUID> ids = net.nestworld.region.PlayerInteractionExperiment.snapshot();
+        String masterFlag = net.nestworld.region.NestworldTuning.PLAYER_INTERACTION_REGION_EXECUTION ? "ON" : "OFF";
+        StringBuilder sb = new StringBuilder("NW #31.4 step2 player-interaction experiment: masterFlag=").append(masterFlag)
+                .append(" size=").append(ids.size());
+        for (java.util.UUID id : ids) {
+            ServerPlayer p = src.getServer().getPlayerList().getPlayer(id);
+            sb.append("\n  ").append(p != null ? p.getGameProfile().getName() : id.toString());
+        }
+        String result = sb.toString();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
+    /** Phase 11 #31.4 step 3 — staged rollout control for the useItem() experiment. No effect
+     *  unless -Dnestworld.playerUseItemRegionExecution=true is also set. */
+    private static int playerUseItemExperimentAdd(CommandSourceStack src, String name) {
+        ServerPlayer player = src.getServer().getPlayerList().getPlayerByName(name);
+        if (player == null) {
+            src.sendFailure(Component.literal("No online player named " + name));
+            return 0;
+        }
+        boolean added = net.nestworld.region.PlayerUseItemExperiment.add(player.getUUID());
+        String masterFlag = net.nestworld.region.NestworldTuning.PLAYER_USE_ITEM_REGION_EXECUTION ? "" :
+                " (WARNING: -Dnestworld.playerUseItemRegionExecution is OFF -- this player's useItem() will still run on main)";
+        src.sendSuccess(() -> Component.literal((added ? "Added " : "Already in set: ") + name
+                + " to #31.4 step3 player-useitem experiment" + masterFlag), true);
+        return 1;
+    }
+
+    private static int playerUseItemExperimentRemove(CommandSourceStack src, String name) {
+        ServerPlayer player = src.getServer().getPlayerList().getPlayerByName(name);
+        java.util.UUID id = player != null ? player.getUUID() : null;
+        if (id == null) {
+            src.sendFailure(Component.literal("No online player named " + name + " (nothing removed)"));
+            return 0;
+        }
+        boolean removed = net.nestworld.region.PlayerUseItemExperiment.remove(id);
+        src.sendSuccess(() -> Component.literal((removed ? "Removed " : "Was not in set: ") + name
+                + " from #31.4 step3 player-useitem experiment"), true);
+        return 1;
+    }
+
+    private static int playerUseItemExperimentList(CommandSourceStack src) {
+        java.util.Set<java.util.UUID> ids = net.nestworld.region.PlayerUseItemExperiment.snapshot();
+        String masterFlag = net.nestworld.region.NestworldTuning.PLAYER_USE_ITEM_REGION_EXECUTION ? "ON" : "OFF";
+        StringBuilder sb = new StringBuilder("NW #31.4 step3 player-useitem experiment: masterFlag=").append(masterFlag)
+                .append(" size=").append(ids.size());
+        for (java.util.UUID id : ids) {
+            ServerPlayer p = src.getServer().getPlayerList().getPlayer(id);
+            sb.append("\n  ").append(p != null ? p.getGameProfile().getName() : id.toString());
+        }
+        String result = sb.toString();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
+    /** Phase 11 #31.4 step 3 measurement-only diagnostics, see PlayerUseItemTiming. */
+    private static int playerUseItemTiming(CommandSourceStack src) {
+        String result = "NW #31.4 step3 useitem timing: " + net.nestworld.region.PlayerUseItemTiming.summary();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
+    private static int playerUseItemTimingReset(CommandSourceStack src) {
+        net.nestworld.region.PlayerUseItemTiming.reset();
+        src.sendSuccess(() -> Component.literal("NW #31.4 step3 useitem timing reset"), true);
+        return 1;
+    }
+
+    /** Phase 11 #31.4 step 4 — staged rollout control for the item-on-block experiment. No effect
+     *  unless -Dnestworld.playerUseItemOnBlockRegionExecution=true is also set. */
+    private static int playerUseItemOnBlockExperimentAdd(CommandSourceStack src, String name) {
+        ServerPlayer player = src.getServer().getPlayerList().getPlayerByName(name);
+        if (player == null) {
+            src.sendFailure(Component.literal("No online player named " + name));
+            return 0;
+        }
+        boolean added = net.nestworld.region.PlayerUseItemOnBlockExperiment.add(player.getUUID());
+        String masterFlag = net.nestworld.region.NestworldTuning.PLAYER_USE_ITEM_ON_BLOCK_REGION_EXECUTION ? "" :
+                " (WARNING: -Dnestworld.playerUseItemOnBlockRegionExecution is OFF -- this player's useOn() will still run on main)";
+        src.sendSuccess(() -> Component.literal((added ? "Added " : "Already in set: ") + name
+                + " to #31.4 step4 player-useitemonblock experiment" + masterFlag), true);
+        return 1;
+    }
+
+    private static int playerUseItemOnBlockExperimentRemove(CommandSourceStack src, String name) {
+        ServerPlayer player = src.getServer().getPlayerList().getPlayerByName(name);
+        java.util.UUID id = player != null ? player.getUUID() : null;
+        if (id == null) {
+            src.sendFailure(Component.literal("No online player named " + name + " (nothing removed)"));
+            return 0;
+        }
+        boolean removed = net.nestworld.region.PlayerUseItemOnBlockExperiment.remove(id);
+        src.sendSuccess(() -> Component.literal((removed ? "Removed " : "Was not in set: ") + name
+                + " from #31.4 step4 player-useitemonblock experiment"), true);
+        return 1;
+    }
+
+    private static int playerUseItemOnBlockExperimentList(CommandSourceStack src) {
+        java.util.Set<java.util.UUID> ids = net.nestworld.region.PlayerUseItemOnBlockExperiment.snapshot();
+        String masterFlag = net.nestworld.region.NestworldTuning.PLAYER_USE_ITEM_ON_BLOCK_REGION_EXECUTION ? "ON" : "OFF";
+        StringBuilder sb = new StringBuilder("NW #31.4 step4 player-useitemonblock experiment: masterFlag=").append(masterFlag)
+                .append(" size=").append(ids.size());
+        for (java.util.UUID id : ids) {
+            ServerPlayer p = src.getServer().getPlayerList().getPlayer(id);
+            sb.append("\n  ").append(p != null ? p.getGameProfile().getName() : id.toString());
+        }
+        String result = sb.toString();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
+    /** Phase 11 #31.4 step 4 measurement-only diagnostics, see PlayerUseItemOnBlockTiming. */
+    private static int playerUseItemOnBlockTiming(CommandSourceStack src) {
+        String result = "NW #31.4 step4 useitemonblock timing: " + net.nestworld.region.PlayerUseItemOnBlockTiming.summary();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
+    private static int playerUseItemOnBlockTimingReset(CommandSourceStack src) {
+        net.nestworld.region.PlayerUseItemOnBlockTiming.reset();
+        src.sendSuccess(() -> Component.literal("NW #31.4 step4 useitemonblock timing reset"), true);
+        return 1;
+    }
+
+    /** Phase 11 #31.3/#31.4 player-action-ownership hardening measurement-only diagnostics,
+     *  see PlayerUseControlTiming. */
+    private static int playerUseControlTiming(CommandSourceStack src) {
+        String result = "NW player-use-control timing: " + net.nestworld.region.PlayerUseControlTiming.summary();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
+    private static int playerUseControlTimingReset(CommandSourceStack src) {
+        net.nestworld.region.PlayerUseControlTiming.reset();
+        src.sendSuccess(() -> Component.literal("NW player-use-control timing reset"), true);
+        return 1;
+    }
+
+    private static int playerEntityInteractExperimentAdd(CommandSourceStack src, String name) {
+        ServerPlayer player = src.getServer().getPlayerList().getPlayerByName(name);
+        if (player == null) {
+            src.sendFailure(Component.literal("No online player named " + name));
+            return 0;
+        }
+        boolean added = net.nestworld.region.PlayerEntityInteractExperiment.add(player.getUUID());
+        String masterFlag = net.nestworld.region.NestworldTuning.PLAYER_ENTITY_INTERACT_REGION_EXECUTION ? "" :
+                " (WARNING: -Dnestworld.playerEntityInteractRegionExecution is OFF -- this player's interact() will still run on main)";
+        src.sendSuccess(() -> Component.literal((added ? "Added " : "Already in set: ") + name
+                + " to #31.4 item-on-entity experiment" + masterFlag), true);
+        return 1;
+    }
+
+    private static int playerEntityInteractExperimentRemove(CommandSourceStack src, String name) {
+        ServerPlayer player = src.getServer().getPlayerList().getPlayerByName(name);
+        java.util.UUID id = player != null ? player.getUUID() : null;
+        if (id == null) {
+            src.sendFailure(Component.literal("No online player named " + name + " (nothing removed)"));
+            return 0;
+        }
+        boolean removed = net.nestworld.region.PlayerEntityInteractExperiment.remove(id);
+        src.sendSuccess(() -> Component.literal((removed ? "Removed " : "Was not in set: ") + name
+                + " from #31.4 item-on-entity experiment"), true);
+        return 1;
+    }
+
+    private static int playerEntityInteractExperimentList(CommandSourceStack src) {
+        java.util.Set<java.util.UUID> ids = net.nestworld.region.PlayerEntityInteractExperiment.snapshot();
+        String masterFlag = net.nestworld.region.NestworldTuning.PLAYER_ENTITY_INTERACT_REGION_EXECUTION ? "ON" : "OFF";
+        StringBuilder sb = new StringBuilder("NW #31.4 item-on-entity experiment: masterFlag=").append(masterFlag)
+                .append(" size=").append(ids.size());
+        for (java.util.UUID id : ids) {
+            ServerPlayer p = src.getServer().getPlayerList().getPlayer(id);
+            sb.append("\n  ").append(p != null ? p.getGameProfile().getName() : id.toString());
+        }
+        String result = sb.toString();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
+    /** Phase 11 #31.4 item-on-entity measurement-only diagnostics, see EntityInteractionTiming. */
+    private static int entityInteractTiming(CommandSourceStack src) {
+        String result = "NW item-on-entity timing: " + net.nestworld.region.EntityInteractionTiming.summary();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
+    private static int entityInteractTimingReset(CommandSourceStack src) {
+        net.nestworld.region.EntityInteractionTiming.reset();
+        src.sendSuccess(() -> Component.literal("NW item-on-entity timing reset"), true);
+        return 1;
+    }
+
+    /** Shared per-tick interaction-dispatch wait budget diagnostics, see
+     *  PlayerInteractionWaitBudget -- added after a real Server Watchdog crash this session
+     *  (reproduced at 60-80 concurrent players: N synchronous dispatch calls in the same tick,
+     *  each individually timeout-bounded, compounding with no shared cap). Also reports the max
+     *  region mailbox depth across all active regions as a coarse backlog signal. */
+    private static int interactionWaitBudget(CommandSourceStack src) {
+        String result = "NW interaction-wait-budget: " + net.nestworld.region.PlayerInteractionWaitBudget.summary();
+        int maxDepth = 0;
+        if (NestworldRegionSystem.isInitialised()) {
+            for (WorldRegion r : overworldRegion(NestworldRegionSystem.get()).getTree().getActiveRegions()) {
+                maxDepth = Math.max(maxDepth, r.nestworldMailboxDepthFast());
+            }
+        }
+        final String finalResult = result + " regionQueueDepthMax=" + maxDepth;
+        src.sendSuccess(() -> Component.literal(finalResult), false);
+        return 1;
+    }
+
+    private static int interactionWaitBudgetReset(CommandSourceStack src) {
+        net.nestworld.region.PlayerInteractionWaitBudget.reset();
+        src.sendSuccess(() -> Component.literal("NW interaction-wait-budget reset"), true);
+        return 1;
+    }
+
+    /** Real percentile distributions (p50/p90/p95/p99/max) for round-trip apply latency (split
+     *  same/cross-region) and main-thread wait latency, plus the calls-per-tick distribution --
+     *  2026-08-28 measurement request, run BEFORE choosing K/maxPerCall/region-health thresholds
+     *  for the interaction-dispatch redesign. See PlayerInteractionWaitBudget#distributionSummary. */
+    private static int interactionLatencyDist(CommandSourceStack src) {
+        String result = "NW interaction-latency-dist: " + net.nestworld.region.PlayerInteractionWaitBudget.distributionSummary();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
+    /** 2026-08-30 -- scheduler-starvation attribution (see PlayerInteractionWaitBudget's
+     *  recordWait javadoc): when a bounded latch.await() call's REAL wall-clock time exceeds
+     *  what was requested/granted, that's evidence the thread wasn't scheduled back promptly by
+     *  the OS (CPU oversubscription), not a bug in the dispatcher's own timeout logic. */
+    private static int interactionWaitSpikes(CommandSourceStack src) {
+        String result = net.nestworld.region.PlayerInteractionWaitBudget.spikeSummary();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
+    /** K-first-slots sweep knobs (2026-08-28) -- see NestworldTuning#INTERACTION_MAX_WAIT_SLOTS_PER_TICK's
+     *  javadoc. Runtime-settable (not just startup system property) so a K/X sweep across many
+     *  combinations doesn't need a JVM restart between each one. */
+    private static int interactionSlots(CommandSourceStack src, int k) {
+        net.nestworld.region.NestworldTuning.INTERACTION_MAX_WAIT_SLOTS_PER_TICK = k;
+        src.sendSuccess(() -> Component.literal("NW interaction K (max wait slots/tick) set to " + k), true);
+        return 1;
+    }
+
+    private static int interactionMaxWaitMs(CommandSourceStack src, int x) {
+        net.nestworld.region.NestworldTuning.INTERACTION_MAX_WAIT_PER_CALL_NANOS = x * 1_000_000L;
+        src.sendSuccess(() -> Component.literal("NW interaction X (max wait per call) set to " + x + "ms"), true);
+        return 1;
+    }
+
+    /** 2026-08-28 split/merge thrash investigation -- see SplitMergeEventLog's javadoc. */
+    private static int splitMergeSummary(CommandSourceStack src) {
+        String result = "NW split/merge: " + net.nestworld.region.SplitMergeEventLog.summary()
+                + " | " + net.nestworld.region.SplitMergeEventLog.regionCountSummary();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
+    private static int splitMergeDump(CommandSourceStack src, int lines) {
+        String dump = net.nestworld.region.SplitMergeEventLog.dump(lines);
+        for (String line : dump.split("\n")) {
+            if (!line.isBlank()) {
+                src.sendSuccess(() -> Component.literal(line), false);
+            }
+        }
+        return 1;
+    }
+
+    private static int splitMergeReset(CommandSourceStack src) {
+        net.nestworld.region.SplitMergeEventLog.reset();
+        src.sendSuccess(() -> Component.literal("NW split/merge event log reset"), true);
+        return 1;
+    }
+
+    /** 2026-08-28 Connection/Netty fan-in diagnostics -- see ConnectionDiagnostics's javadoc. */
+    private static int connectionDiag(CommandSourceStack src) {
+        String result = "NW connection-diag: " + net.nestworld.region.ConnectionDiagnostics.summary()
+                + " | " + net.nestworld.region.ConnectionDiagnostics.inFlightSummary()
+                + " | perSource: " + net.nestworld.region.ConnectionDiagnostics.perSourceSummary()
+                + " | broadcastComposition: " + net.nestworld.region.ConnectionDiagnostics.broadcastCompositionSummary();
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
+    private static int connectionDiagReset(CommandSourceStack src) {
+        net.nestworld.region.ConnectionDiagnostics.reset();
+        src.sendSuccess(() -> Component.literal("NW connection-diag reset"), true);
+        return 1;
+    }
+
+    /** 2026-08-28 Entity Tracking Fan-out Attribution ТЗ -- see TrackingMetrics's javadoc. */
+    private static int trackingReport(CommandSourceStack src) {
+        int players = src.getServer().getPlayerList().getPlayerCount();
+        double serverMspt = src.getServer().getAverageTickTime();
+        double tpsVal = Math.min(20.0, 1000.0 / Math.max(serverMspt, 0.001));
+        String mspt = String.format("%.1f", serverMspt);
+        String tps = String.format("%.1f", tpsVal);
+        String report = net.nestworld.region.TrackingMetrics.report(players, tps, mspt);
+        for (String line : report.split("\n")) {
+            if (!line.isBlank()) {
+                src.sendSuccess(() -> Component.literal(line), false);
+            }
+        }
+        return 1;
+    }
+
+    private static int trackingReset(CommandSourceStack src) {
+        net.nestworld.region.TrackingMetrics.reset();
+        src.sendSuccess(() -> Component.literal("NW tracking metrics reset"), true);
+        return 1;
+    }
+
+    /** 2026-08-28 Outbound Tracking Optimization ТЗ -- sizes the ClientboundBundlePacket win.
+     *  {@code ticks} is the caller-measured tick count for the window (tps * durationSeconds). */
+    private static int recipientFanout(CommandSourceStack src, double ticks) {
+        String report = net.nestworld.region.TrackingMetrics.recipientFanoutReport(ticks);
+        for (String line : report.split("\n")) {
+            if (!line.isBlank()) {
+                src.sendSuccess(() -> Component.literal(line), false);
+            }
+        }
+        return 1;
+    }
+
+    /** 2026-08-28 Outbound Tracking Optimization ТЗ -- feature-flag toggle for
+     *  OutboundBatchQueue (default OFF). */
+    private static int outboundBatchToggle(CommandSourceStack src, boolean on) {
+        net.nestworld.region.OutboundBatchQueue.ENABLED = on;
+        src.sendSuccess(() -> Component.literal("NW outbound-batch " + (on ? "ENABLED" : "disabled")), true);
+        return 1;
+    }
+
+    private static int outboundBatchReport(CommandSourceStack src) {
+        String report = net.nestworld.region.OutboundBatchQueue.report();
+        src.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int outboundBatchReset(CommandSourceStack src) {
+        net.nestworld.region.OutboundBatchQueue.reset();
+        src.sendSuccess(() -> Component.literal("NW outbound-batch metrics reset"), true);
+        return 1;
+    }
+
+    private static int outboundBatchMaxSize(CommandSourceStack src, int n) {
+        net.nestworld.region.OutboundBatchQueue.MAX_BUNDLE_SIZE = n;
+        src.sendSuccess(() -> Component.literal("NW outbound-batch maxBundleSize=" + n), true);
+        return 1;
+    }
+
+    /** 2026-08-29 Setup-Burst / Player Join Pipeline ТЗ -- see JoinBurstMetrics's javadoc. */
+    private static int joinBurstReport(CommandSourceStack src) {
+        String report = net.nestworld.region.JoinBurstMetrics.report();
+        src.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int joinBurstReset(CommandSourceStack src) {
+        net.nestworld.region.JoinBurstMetrics.reset();
+        src.sendSuccess(() -> Component.literal("NW join-burst metrics reset"), true);
+        return 1;
+    }
+
+    /** 2026-08-29 Setup-Burst / Player Join Pipeline -- see ChunkOutboundQueue's javadoc. */
+    private static int chunkOutboundToggle(CommandSourceStack src, boolean on) {
+        net.nestworld.region.ChunkOutboundQueue.ENABLED = on;
+        src.sendSuccess(() -> Component.literal("NW chunk-outbound " + (on ? "ENABLED" : "disabled")), true);
+        return 1;
+    }
+
+    private static int chunkOutboundReport(CommandSourceStack src) {
+        String report = net.nestworld.region.ChunkOutboundQueue.report();
+        src.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int chunkOutboundReset(CommandSourceStack src) {
+        net.nestworld.region.ChunkOutboundQueue.reset();
+        src.sendSuccess(() -> Component.literal("NW chunk-outbound metrics reset"), true);
+        return 1;
+    }
+
+    private static int chunkOutboundBudget(CommandSourceStack src, int n) {
+        net.nestworld.region.ChunkOutboundQueue.BUDGET_PER_TICK = n;
+        src.sendSuccess(() -> Component.literal("NW chunk-outbound budgetPerTick=" + n), true);
+        return 1;
+    }
+
+    /** 2026-08-29 Pairing Outbound Queue ТЗ §21 -- see PairingOutboundQueue's javadoc. */
+    private static int pairingBatchToggle(CommandSourceStack src, boolean on) {
+        net.nestworld.region.PairingOutboundQueue.ENABLED = on;
+        src.sendSuccess(() -> Component.literal("NW pairing-batch " + (on ? "ENABLED" : "disabled")), true);
+        return 1;
+    }
+
+    private static int pairingBatchStatus(CommandSourceStack src) {
+        String status = net.nestworld.region.PairingOutboundQueue.status();
+        src.sendSuccess(() -> Component.literal(status), false);
+        return 1;
+    }
+
+    private static int pairingBatchReset(CommandSourceStack src) {
+        net.nestworld.region.PairingOutboundQueue.reset();
+        src.sendSuccess(() -> Component.literal("NW pairing-batch metrics reset"), true);
+        return 1;
+    }
+
+    private static int pairingBatchBudget(CommandSourceStack src, int n) {
+        net.nestworld.region.PairingOutboundQueue.BUDGET_PER_TICK = n;
+        src.sendSuccess(() -> Component.literal("NW pairing-batch budgetPerTick=" + n), true);
+        return 1;
+    }
+
+    /** 2026-08-29 Player Tick / Decision Fan-out Attribution ТЗ -- see MoveDecisionMetrics's javadoc. */
+    private static int moveDecisionReport(CommandSourceStack src) {
+        String report = net.nestworld.region.MoveDecisionMetrics.report();
+        src.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int moveDecisionReset(CommandSourceStack src) {
+        net.nestworld.region.MoveDecisionMetrics.reset();
+        src.sendSuccess(() -> Component.literal("NW move-decision metrics reset"), true);
+        return 1;
+    }
+
+    /** 2026-08-29 NaturalSpawner Attribution ТЗ -- see NaturalSpawnerMetrics's javadoc. */
+    private static int naturalSpawnerReport(CommandSourceStack src) {
+        String report = net.nestworld.region.NaturalSpawnerMetrics.report();
+        src.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int naturalSpawnerReset(CommandSourceStack src) {
+        net.nestworld.region.NaturalSpawnerMetrics.reset();
+        src.sendSuccess(() -> Component.literal("NW natural-spawner metrics reset"), true);
+        return 1;
+    }
+
+    private static int burstReport(CommandSourceStack src) {
+        String report = net.nestworld.region.BurstAdmissionMetrics.report();
+        src.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int modCallbackReport(CommandSourceStack src) {
+        String report = net.nestworld.region.ModCallbackAttribution.report();
+        src.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int modCallbackReset(CommandSourceStack src) {
+        net.nestworld.region.ModCallbackAttribution.reset();
+        src.sendSuccess(() -> Component.literal("NW mod-callback-attribution reset"), true);
+        return 1;
+    }
+
+    private static int modCallbackRouterReport(CommandSourceStack src) {
+        String report = net.nestworld.region.ModCallbackRouter.report();
+        src.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int modCallbackRouterReset(CommandSourceStack src) {
+        net.nestworld.region.ModCallbackRouter.reset();
+        src.sendSuccess(() -> Component.literal("NW mod-callback-router reset"), true);
+        return 1;
+    }
+
+    private static int burstReset(CommandSourceStack src) {
+        net.nestworld.region.BurstAdmissionMetrics.reset();
+        src.sendSuccess(() -> Component.literal("NW burst-admission metrics reset"), true);
+        return 1;
+    }
+
+    private static int burstThreads(CommandSourceStack src) {
+        String census = net.nestworld.region.BurstAdmissionMetrics.threadCensus();
+        src.sendSuccess(() -> Component.literal(census), false);
+        return 1;
+    }
+
+    private static int admissionToggle(CommandSourceStack src, boolean on) {
+        net.nestworld.region.AdmissionController.ENABLED = on;
+        src.sendSuccess(() -> Component.literal("NW admission controller " + (on ? "ENABLED" : "disabled")), true);
+        return 1;
+    }
+
+    private static int admissionReport(CommandSourceStack src) {
+        String report = net.nestworld.region.AdmissionController.report();
+        src.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int admissionReset(CommandSourceStack src) {
+        net.nestworld.region.AdmissionController.reset();
+        src.sendSuccess(() -> Component.literal("NW admission metrics reset"), true);
+        return 1;
+    }
+
+    private static int admissionBudget(CommandSourceStack src, int n) {
+        net.nestworld.region.AdmissionController.BUDGET_PER_TICK = n;
+        src.sendSuccess(() -> Component.literal("NW admission budgetPerTick=" + n), true);
+        return 1;
+    }
+
+    private static int pairingAdmissionToggle(CommandSourceStack src, boolean on) {
+        net.nestworld.region.PairingAdmissionGate.ENABLED = on;
+        src.sendSuccess(() -> Component.literal("NW pairing-admission gate " + (on ? "ENABLED" : "disabled")), true);
+        return 1;
+    }
+
+    private static int pairingAdmissionReport(CommandSourceStack src) {
+        String report = net.nestworld.region.PairingAdmissionGate.report();
+        src.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int pairingAdmissionReset(CommandSourceStack src) {
+        net.nestworld.region.PairingAdmissionGate.reset();
+        src.sendSuccess(() -> Component.literal("NW pairing-admission metrics reset"), true);
+        return 1;
+    }
+
+    private static int pairingAdmissionBudget(CommandSourceStack src, int n) {
+        net.nestworld.region.PairingAdmissionGate.GLOBAL_BUDGET_PER_TICK = n;
+        src.sendSuccess(() -> Component.literal("NW pairing-admission globalBudgetPerTick=" + n), true);
+        return 1;
+    }
+
+    private static int pairingAdmissionPerPlayer(CommandSourceStack src, int n) {
+        net.nestworld.region.PairingAdmissionGate.PER_PLAYER_BUDGET_PER_TICK = n;
+        src.sendSuccess(() -> Component.literal("NW pairing-admission perPlayerBudgetPerTick=" + n), true);
+        return 1;
+    }
+
+    private static int connectionAdmissionToggle(CommandSourceStack src, boolean on) {
+        net.nestworld.region.ConnectionAdmissionGate.ENABLED = on;
+        src.sendSuccess(() -> Component.literal("NW connection-admission gate " + (on ? "ENABLED" : "disabled")), true);
+        return 1;
+    }
+
+    private static int connectionAdmissionReport(CommandSourceStack src) {
+        String report = net.nestworld.region.ConnectionAdmissionGate.report();
+        src.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int connectionAdmissionReset(CommandSourceStack src) {
+        net.nestworld.region.ConnectionAdmissionGate.reset();
+        src.sendSuccess(() -> Component.literal("NW connection-admission metrics reset"), true);
+        return 1;
+    }
+
+    private static int connectionAdmissionBudget(CommandSourceStack src, int n) {
+        net.nestworld.region.ConnectionAdmissionGate.MAX_NEW_CONNECTIONS_PER_WINDOW = n;
+        src.sendSuccess(() -> Component.literal("NW connection-admission maxPerWindow=" + n), true);
+        return 1;
+    }
+
+    private static int cpuPlannerReport(CommandSourceStack src) {
+        String report = net.nestworld.region.CpuCapacityPlanner.buildFullReport().format();
+        for (String line : report.split("\n")) {
+            src.sendSuccess(() -> Component.literal(line), false);
+        }
+        return 1;
+    }
+
+    private static int nearestPlayerVerifyReport(CommandSourceStack src) {
+        String report = net.nestworld.region.NearestPlayerIndex.verifyReport();
+        src.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int nearestPlayerVerifyReset(CommandSourceStack src) {
+        net.nestworld.region.NearestPlayerIndex.verifyReset();
+        src.sendSuccess(() -> Component.literal("NW nearest-player-index verify metrics reset"), true);
+        return 1;
+    }
+
+    private static int nearestPlayerMismatches(CommandSourceStack src) {
+        var log = net.nestworld.region.NearestPlayerIndex.mismatchLog();
+        src.sendSuccess(() -> Component.literal("NW nearest-player-index mismatch log (" + log.size() + " entries):"), false);
+        for (String line : log) {
+            src.sendSuccess(() -> Component.literal("  " + line), false);
+        }
+        return 1;
+    }
+
+    private static int nearestPlayerMismatchesDump(CommandSourceStack src) {
+        var log = net.nestworld.region.NearestPlayerIndex.mismatchLog();
+        java.nio.file.Path out = java.nio.file.Path.of("nearestplayer_mismatches.txt");
+        try {
+            java.nio.file.Files.write(out, log);
+            src.sendSuccess(() -> Component.literal("Dumped " + log.size() + " mismatch entries to " + out.toAbsolutePath()), false);
+            return 1;
+        } catch (java.io.IOException e) {
+            src.sendFailure(Component.literal("Dump failed: " + e.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int connectionDiagSlow(CommandSourceStack src, int lines) {
+        String dump = net.nestworld.region.ConnectionDiagnostics.slowLog(lines);
+        for (String line : dump.split("\n")) {
+            if (!line.isBlank()) {
+                src.sendSuccess(() -> Component.literal(line), false);
+            }
+        }
+        return 1;
+    }
+
+    /** Diagnostic-only, temporary: blocks the calling (main) thread for {@code ms}, then reports
+     *  how many times region {@code regionId}'s normal tick body ran before, during, and after
+     *  the block -- isolates whether a blocked main thread stalls a free-running region's own
+     *  loop, independent of any interaction-specific code. See RegionLoopProbe. */
+    private static int blockMainProbe(CommandSourceStack src, int ms, int regionId) {
+        long before = net.nestworld.region.RegionLoopProbe.get(regionId);
+        long beforeNanos = System.nanoTime();
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        long after = net.nestworld.region.RegionLoopProbe.get(regionId);
+        long elapsedMs = (System.nanoTime() - beforeNanos) / 1_000_000;
+        long delta = after - before;
+        double expectedTicks = elapsedMs / 50.0;
+        String result = String.format(
+                "NW blockMainProbe: blocked main for %dms (region %d): tick count %d -> %d (delta=%d, expected~%.0f @ 20Hz)",
+                elapsedMs, regionId, before, after, delta, expectedTicks);
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 1;
+    }
+
     private static int tickPhases(CommandSourceStack src) {
         if (!net.nestworld.region.NestworldRegionSystem.isInitialised()) {
             src.sendFailure(Component.literal("NestWorld region system is not active"));
@@ -1256,6 +2241,45 @@ public final class NestworldCommand {
         return 1;
     }
 
+    /** NestWorld: writes a full registry id/key/value snapshot (see
+     *  {@link net.minecraftforge.registries.RegistryManager#nestworldDumpAll}) to
+     *  {@code <serverDir>/<relPath>}, callable any time from RCON/console -- no
+     *  reboot, no log4j marker configuration needed. Meant as a "ground truth"
+     *  reference: diff a snapshot taken before a patch that touches
+     *  block/registration code against one taken after, on the same world, to
+     *  confirm registry ids stayed identical (world-save id persistence risk --
+     *  see project memory registry-bake-parallel-init-cache.md). */
+    private static int dumpRegistries(CommandSourceStack src, String relPath) {
+        java.io.File serverDir = src.getServer().getServerDirectory();
+        java.io.File file = new java.io.File(serverDir, relPath);
+        // NestWorld: full-core-audit finding (2026-08-27) -- relPath is a raw greedyString with
+        // no containment check; a "../../etc/..."-style path escaped the server directory
+        // entirely (arbitrary file write). OP-gated already, but a materially bigger blast
+        // radius than this diagnostic command's own intent warrants defense in depth.
+        try {
+            String serverCanon = serverDir.getCanonicalPath() + java.io.File.separator;
+            String fileCanon = file.getCanonicalPath();
+            if (!fileCanon.startsWith(serverCanon)) {
+                src.sendFailure(Component.literal("Path escapes the server directory: " + relPath));
+                return 0;
+            }
+        } catch (java.io.IOException e) {
+            src.sendFailure(Component.literal("Failed to resolve path: " + e));
+            return 0;
+        }
+        java.io.File parent = file.getParentFile();
+        if (parent != null) parent.mkdirs();
+        try (java.io.PrintWriter out = new java.io.PrintWriter(new java.io.FileWriter(file))) {
+            net.minecraftforge.registries.RegistryManager.nestworldDumpAll(out);
+        } catch (Exception e) {
+            src.sendFailure(Component.literal("Failed to dump registries: " + e));
+            return 0;
+        }
+        src.sendSuccess(() -> Component.literal(
+                "Registry snapshot written to " + file.getAbsolutePath()), true);
+        return 1;
+    }
+
     private static int listPins(CommandSourceStack src) {
         if (!NestworldRegionSystem.isInitialised()) {
             src.sendFailure(Component.literal("NestWorld region system is not active"));
@@ -1502,6 +2526,26 @@ public final class NestworldCommand {
      *  admin-chosen UUID that may not be in any recently-computed hotspot's cached data — the same
      *  category of live cross-thread read every vanilla entity-targeting command already performs
      *  in this environment (command dispatch doesn't check region ownership), not a new hazard. */
+    /** Phase 9.2 (#27) test-only entry point: exercises {@code EntityMutationDispatcher.dispatch}
+     *  directly with {@link EntityMutationOp.Kill}/{@link EntityMutationOp.Discard} for foreign-
+     *  entity live testing, since neither op has a real in-game call site yet. Always dispatched
+     *  from the MAIN thread (RCON/command execution), so this exercises the same
+     *  redirectFromMainThread-shaped path Player.attack() uses. */
+    private static int testMutate(CommandSourceStack src, java.util.UUID uuid, EntityMutationOp op) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        net.minecraft.world.entity.Entity target = NestworldRegionSystem.get().getOverworld().getEntity(uuid);
+        if (target == null) {
+            src.sendFailure(Component.literal("No live entity with UUID " + uuid));
+            return 0;
+        }
+        EntityMutationDispatcher.dispatch(target, op);
+        src.sendSuccess(() -> Component.literal("Dispatched " + op.getClass().getSimpleName() + " for " + uuid), true);
+        return 1;
+    }
+
     private static int gotoEntity(CommandSourceStack src, java.util.UUID uuid) throws CommandSyntaxException {
         if (!NestworldRegionSystem.isInitialised()) {
             src.sendFailure(Component.literal("NestWorld region system is not active"));

@@ -8,6 +8,15 @@
  
     public PlayerList(MinecraftServer p_203842_, LayeredRegistryAccess<RegistryLayer> p_251844_, PlayerDataStorage p_203844_, int p_203845_) {
        this.f_11195_ = p_203842_;
+@@ -142,6 +_,8 @@
+    }
+ 
+    public void m_11261_(Connection p_11262_, ServerPlayer p_11263_) {
++      net.nestworld.startup.NestworldStartupProfiler.markFirstPlayerJoinOnce();
++      net.nestworld.region.BurstAdmissionMetrics.recordPlayerCreated();
+       GameProfile gameprofile = p_11263_.m_36316_();
+       GameProfileCache gameprofilecache = this.f_11195_.m_129927_();
+       String s;
 @@ -167,13 +_,14 @@
        p_11263_.m_284127_(serverlevel1);
        String s1 = "local";
@@ -32,6 +41,16 @@
        servergamepacketlistenerimpl.m_9829_(new ClientboundUpdateRecipesPacket(this.f_11195_.m_129894_().m_44051_()));
        servergamepacketlistenerimpl.m_9829_(new ClientboundUpdateTagsPacket(TagNetworkSerialization.m_245799_(this.f_243858_)));
        this.m_11289_(p_11263_);
+@@ -209,7 +_,9 @@
+       this.f_11197_.put(p_11263_.m_20148_(), p_11263_);
+       this.m_11268_(ClientboundPlayerInfoUpdatePacket.m_247122_(List.of(p_11263_)));
+       this.m_11229_(p_11263_, serverlevel1);
++      long __nwSetupStartNanos = System.nanoTime();
+       serverlevel1.m_8834_(p_11263_);
++      net.nestworld.region.BurstAdmissionMetrics.recordSetupCall(System.nanoTime() - __nwSetupStartNanos);
+       this.f_11195_.m_129901_().m_136293_(p_11263_);
+       this.f_11195_.m_214042_().ifPresent((p_215606_) -> {
+          p_11263_.m_143408_(p_215606_.f_236743_(), p_215606_.f_236744_(), p_215606_.f_236745_(), p_215606_.f_236746_());
 @@ -255,6 +_,7 @@
        }
  
@@ -56,10 +75,27 @@
        this.f_11204_.m_78433_(p_11277_);
        ServerStatsCounter serverstatscounter = this.f_11202_.get(p_11277_.m_20148_());
        if (serverstatscounter != null) {
-@@ -337,6 +_,7 @@
+@@ -337,6 +_,24 @@
     }
  
     public void m_11286_(ServerPlayer p_11287_) {
++      // NestWorld: Phase 11 #31.2 -- clear this player's input-shadow-pipeline bookkeeping
++      // (sequence counter, pending-slot count, last-applied-sequence) so it doesn't leak
++      // forever and a reconnecting player (same UUID) starts a fresh sequence.
++      net.nestworld.region.PlayerInputDiagnostics.cleanup(p_11287_.m_20148_());
++      // NestWorld: Phase 11 #31.3 -- a disconnecting player must not stay in the region-tick
++      // opt-in set (no "live" Player object left to tick anywhere once removed).
++      net.nestworld.region.PlayerTickExperiment.remove(p_11287_.m_20148_());
++      // NestWorld: Phase 11 #31.4 -- same reasoning as #31.3's opt-in set above.
++      net.nestworld.region.PlayerAttackExperiment.remove(p_11287_.m_20148_());
++      // NestWorld: Phase 11 #31.4 step 2 -- same reasoning as #31.3/#31.4 attack's sets above.
++      net.nestworld.region.PlayerInteractionExperiment.remove(p_11287_.m_20148_());
++      // NestWorld: Phase 11 #31.4 step 3 -- same reasoning as the sets above.
++      net.nestworld.region.PlayerUseItemExperiment.remove(p_11287_.m_20148_());
++      // NestWorld: Phase 11 #31.4 step 4 -- same reasoning as the sets above.
++      net.nestworld.region.PlayerUseItemOnBlockExperiment.remove(p_11287_.m_20148_());
++      // NestWorld: Phase 11 #31.4 item-on-entity -- same reasoning as the sets above.
++      net.nestworld.region.PlayerEntityInteractExperiment.remove(p_11287_.m_20148_());
 +      net.minecraftforge.event.ForgeEventFactory.firePlayerLoggedOut(p_11287_);
        ServerLevel serverlevel = p_11287_.m_284548_();
        p_11287_.m_36220_(Stats.f_12989_);

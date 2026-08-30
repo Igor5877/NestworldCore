@@ -117,7 +117,7 @@
           MenuProvider menuprovider = blockstate.m_60750_(p_9267_, blockpos);
           if (menuprovider != null) {
              p_9266_.m_5893_(menuprovider);
-@@ -308,10 +_,15 @@
+@@ -308,27 +_,50 @@
              return InteractionResult.PASS;
           }
        } else {
@@ -131,18 +131,53 @@
 +         boolean flag1 = (p_9266_.m_36341_() && flag) && !(p_9266_.m_21205_().doesSneakBypassUse(p_9267_, blockpos, p_9266_) && p_9266_.m_21206_().doesSneakBypassUse(p_9267_, blockpos, p_9266_));
           ItemStack itemstack = p_9268_.m_41777_();
 -         if (!flag1) {
+-            InteractionResult interactionresult = blockstate.m_60664_(p_9267_, p_9266_, p_9269_, p_9270_);
 +         if (event.getUseBlock() == net.minecraftforge.eventbus.api.Event.Result.ALLOW || (event.getUseBlock() != net.minecraftforge.eventbus.api.Event.Result.DENY && !flag1)) {
-             InteractionResult interactionresult = blockstate.m_60664_(p_9267_, p_9266_, p_9269_, p_9270_);
++            // NestWorld: Phase 11 #31.4 step 2 -- region-routed block interaction experiment.
++            InteractionResult interactionresult = net.nestworld.region.PlayerInteractionDispatcher
++                    .dispatch(p_9266_, p_9267_, blockpos, p_9269_, p_9270_)
++                    .orElseGet(() -> {
++                        // NestWorld: Phase 11 #31.4 step 2 measurement-only timing, see PlayerInteractionTiming.
++                        long nestworldInteractT0 = System.nanoTime();
++                        InteractionResult r = blockstate.m_60664_(p_9267_, p_9266_, p_9269_, p_9270_);
++                        net.nestworld.region.PlayerInteractionTiming.recordMain(System.nanoTime() - nestworldInteractT0);
++                        return r;
++                    });
              if (interactionresult.m_19077_()) {
                 CriteriaTriggers.f_10562_.m_285767_(p_9266_, blockpos, itemstack);
-@@ -319,8 +_,8 @@
+                return interactionresult;
              }
           }
  
 -         if (!p_9268_.m_41619_() && !p_9266_.m_36335_().m_41519_(p_9268_.m_41720_())) {
 -            UseOnContext useoncontext = new UseOnContext(p_9266_, p_9269_, p_9270_);
+-            InteractionResult interactionresult1;
+-            if (this.m_9295_()) {
+-               int i = p_9268_.m_41613_();
+-               interactionresult1 = p_9268_.m_41661_(useoncontext);
+-               p_9268_.m_41764_(i);
+-            } else {
+-               interactionresult1 = p_9268_.m_41661_(useoncontext);
+-            }
 +         if (event.getUseItem() == net.minecraftforge.eventbus.api.Event.Result.ALLOW || (!p_9268_.m_41619_() && !p_9266_.m_36335_().m_41519_(p_9268_.m_41720_()))) {
 +            if (event.getUseItem() == net.minecraftforge.eventbus.api.Event.Result.DENY) return InteractionResult.PASS;
-             InteractionResult interactionresult1;
-             if (this.m_9295_()) {
-                int i = p_9268_.m_41613_();
++            // NestWorld: Phase 11 #31.4 step 4 -- region-routed item-on-block experiment.
++            InteractionResult interactionresult1 = net.nestworld.region.PlayerUseItemOnBlockDispatcher
++                    .dispatch(p_9266_, p_9269_, p_9270_)
++                    .orElseGet(() -> {
++                        // NestWorld: Phase 11 #31.4 step 4 measurement-only timing, see PlayerUseItemOnBlockTiming.
++                        long nestworldUseOnT0 = System.nanoTime();
++                        InteractionResult r;
++                        if (this.m_9295_()) {
++                           int i = p_9268_.m_41613_();
++                           r = p_9268_.m_41661_(useoncontext);
++                           p_9268_.m_41764_(i);
++                        } else {
++                           r = p_9268_.m_41661_(useoncontext);
++                        }
++                        net.nestworld.region.PlayerUseItemOnBlockTiming.recordMain(System.nanoTime() - nestworldUseOnT0);
++                        return r;
++                    });
+ 
+             if (interactionresult1.m_19077_()) {
+                CriteriaTriggers.f_10562_.m_285767_(p_9266_, blockpos, itemstack);

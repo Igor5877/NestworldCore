@@ -1,17 +1,19 @@
 --- a/net/minecraft/server/network/ServerConnectionListener.java
 +++ b/net/minecraft/server/network/ServerConnectionListener.java
-@@ -47,11 +_,12 @@
+@@ -47,11 +_,14 @@
  
  public class ServerConnectionListener {
     private static final Logger f_9701_ = LogUtils.getLogger();
 +   private static final int READ_TIMEOUT = Integer.parseInt(System.getProperty("forge.readTimeout", "30"));
++   // NestWorld: 2026-08-30 Step 5 A/B experiment -- explicit worker-thread override (0 = vanilla
++   // Netty default, 2x availableProcessors). See NestworldTuning.NETTY_WORKER_THREADS's javadoc.
     public static final LazyLoadedValue<NioEventLoopGroup> f_9698_ = new LazyLoadedValue<>(() -> {
 -      return new NioEventLoopGroup(0, (new ThreadFactoryBuilder()).setNameFormat("Netty Server IO #%d").setDaemon(true).build());
-+      return new NioEventLoopGroup(0, (new ThreadFactoryBuilder()).setNameFormat("Netty Server IO #%d").setDaemon(true).setThreadFactory(net.minecraftforge.fml.util.thread.SidedThreadGroups.SERVER).build());
++      return new NioEventLoopGroup(net.nestworld.region.NestworldTuning.NETTY_WORKER_THREADS, (new ThreadFactoryBuilder()).setNameFormat("Netty Server IO #%d").setDaemon(true).setThreadFactory(net.minecraftforge.fml.util.thread.SidedThreadGroups.SERVER).build());
     });
     public static final LazyLoadedValue<EpollEventLoopGroup> f_9699_ = new LazyLoadedValue<>(() -> {
 -      return new EpollEventLoopGroup(0, (new ThreadFactoryBuilder()).setNameFormat("Netty Epoll Server IO #%d").setDaemon(true).build());
-+      return new EpollEventLoopGroup(0, (new ThreadFactoryBuilder()).setNameFormat("Netty Epoll Server IO #%d").setDaemon(true).setThreadFactory(net.minecraftforge.fml.util.thread.SidedThreadGroups.SERVER).build());
++      return new EpollEventLoopGroup(net.nestworld.region.NestworldTuning.NETTY_WORKER_THREADS, (new ThreadFactoryBuilder()).setNameFormat("Netty Epoll Server IO #%d").setDaemon(true).setThreadFactory(net.minecraftforge.fml.util.thread.SidedThreadGroups.SERVER).build());
     });
     final MinecraftServer f_9702_;
     public volatile boolean f_9700_;
@@ -24,7 +26,7 @@
        synchronized(this.f_9703_) {
           Class<? extends ServerSocketChannel> oclass;
           LazyLoadedValue<? extends EventLoopGroup> lazyloadedvalue;
-@@ -84,7 +_,7 @@
+@@ -84,11 +_,16 @@
                 } catch (ChannelException channelexception) {
                 }
  
@@ -33,3 +35,12 @@
                 Connection.m_264299_(channelpipeline, PacketFlow.SERVERBOUND);
                 int i = ServerConnectionListener.this.f_9702_.m_7032_();
                 Connection connection = (Connection)(i > 0 ? new RateKickingConnection(i) : new Connection(PacketFlow.SERVERBOUND));
+                ServerConnectionListener.this.f_9704_.add(connection);
++               net.nestworld.region.BurstAdmissionMetrics.recordConnectionAccepted();
++               // NestWorld: 2026-08-30 Connection Admission Gate (Step 4) -- earliest possible
++               // gate point, before any handshake packet is processed. No-op pass-through when
++               // disabled (default). See ConnectionAdmissionGate's class javadoc.
++               net.nestworld.region.ConnectionAdmissionGate.admitOrQueue(p_9729_);
+                channelpipeline.addLast("packet_handler", connection);
+                connection.m_129505_(new ServerHandshakePacketListenerImpl(ServerConnectionListener.this.f_9702_, connection));
+             }

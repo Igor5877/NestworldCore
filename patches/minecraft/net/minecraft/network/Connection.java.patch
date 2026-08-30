@@ -27,6 +27,72 @@
     }
  
     public void channelInactive(ChannelHandlerContext p_129527_) {
+@@ -179,10 +_,28 @@
+       this.m_243124_(p_129513_, (PacketSendListener)null);
+    }
+ 
++   // NestWorld: 2026-08-28 Connection/Netty fan-in diagnostics -- see
++   // net.nestworld.region.ConnectionDiagnostics's javadoc for the full investigation this
++   // exists to measure (a Server Watchdog crash family, Server thread frozen inside this class's
++   // packet-send path, root cause not yet established -- CPU/cgroup saturation already ruled
++   // out). Per-instance, not static: tracks how many threads are simultaneously inside send()
++   // for THIS ONE connection right now -- the "many senders, one target player" fan-in the
++   // investigation's working hypothesis is built around.
++   public final java.util.concurrent.atomic.AtomicInteger nestworldConcurrentSenders = new java.util.concurrent.atomic.AtomicInteger();
++
+    public void m_243124_(Packet<?> p_243248_, @Nullable PacketSendListener p_243316_) {
+       if (this.m_129536_()) {
+-         this.m_129544_();
+-         this.m_129520_(p_243248_, p_243316_);
++         int nestworldConcurrent = this.nestworldConcurrentSenders.incrementAndGet();
++         net.nestworld.region.ConnectionDiagnostics.recordSendEnter(nestworldConcurrent);
++         long nestworldSendStart = System.nanoTime();
++         try {
++            this.m_129544_();
++            this.m_129520_(p_243248_, p_243316_);
++         } finally {
++            this.nestworldConcurrentSenders.decrementAndGet();
++            net.nestworld.region.ConnectionDiagnostics.recordSendExit(
++                    System.nanoTime() - nestworldSendStart, nestworldConcurrent);
++         }
+       } else {
+          this.f_129467_.add(new Connection.PacketHolder(p_243248_, p_243316_));
+       }
+@@ -205,9 +_,21 @@
+       if (this.f_129468_.eventLoop().inEventLoop()) {
+          this.m_243087_(p_129521_, p_243246_, connectionprotocol, connectionprotocol1);
+       } else {
+-         this.f_129468_.eventLoop().execute(() -> {
+-            this.m_243087_(p_129521_, p_243246_, connectionprotocol, connectionprotocol1);
+-         });
++         // NestWorld: 2026-08-28 -- this is the EXACT call whose native eventFdWrite every crash
++         // in the Connection/Netty investigation froze inside (see ConnectionDiagnostics javadoc).
++         // enterEventLoopExecute/exit bracket it so a LIVE poll during a freeze can see this call
++         // still in flight (a completed-only duration log is blind to a call that never returns).
++         net.nestworld.region.ConnectionDiagnostics.enterEventLoopExecute();
++         long nestworldExecuteStart = System.nanoTime();
++         try {
++            this.f_129468_.eventLoop().execute(() -> {
++               this.m_243087_(p_129521_, p_243246_, connectionprotocol, connectionprotocol1);
++            });
++         } finally {
++            net.nestworld.region.ConnectionDiagnostics.exitEventLoopExecute();
++         }
++         net.nestworld.region.ConnectionDiagnostics.recordEventLoopExecuteLatency(
++                 System.nanoTime() - nestworldExecuteStart);
+       }
+ 
+    }
+@@ -242,7 +_,9 @@
+ 
+    private void m_129544_() {
+       if (this.f_129468_ != null && this.f_129468_.isOpen()) {
++         long nestworldLockStart = System.nanoTime();
+          synchronized(this.f_129467_) {
++            net.nestworld.region.ConnectionDiagnostics.recordQueueLockWait(System.nanoTime() - nestworldLockStart);
+             Connection.PacketHolder connection$packetholder;
+             while((connection$packetholder = this.f_129467_.poll()) != null) {
+                this.m_129520_(connection$packetholder.f_129558_, connection$packetholder.f_129559_);
 @@ -316,6 +_,8 @@
     }
  

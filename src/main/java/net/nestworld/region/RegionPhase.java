@@ -12,5 +12,11 @@ public enum RegionPhase {
     SCHEDULED_TICK,
     RANDOM_TICK,
     BLOCK_ENTITY,
-    BLOCK_EVENT
+    BLOCK_EVENT,
+    /** Phase 11 #31.3 (docs/PHASE11_PLAYER_REGION_EXECUTION_SPEC.md) — opt-in experiment only,
+     *  see {@link PlayerTickExperiment}. */
+    PLAYER_TICK_EXPERIMENT,
+    /** Phase 11 #31.4 (docs/PHASE11_PLAYER_REGION_EXECUTION_SPEC.md) — opt-in experiment only,
+     *  see {@link PlayerAttackExperiment}. */
+    PLAYER_ATTACK_EXPERIMENT
 }

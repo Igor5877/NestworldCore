@@ -27,9 +27,13 @@ public class ServerModLoader
         });
         LanguageHook.loadForgeAndMCLangs();
         try {
+            net.nestworld.startup.NestworldStartupProfiler.mark("mod_gather_init_start");
             ModLoader.get().gatherAndInitializeMods(ModWorkManager.syncExecutor(), ModWorkManager.parallelExecutor(), ()->{});
+            net.nestworld.startup.NestworldStartupProfiler.mark("mod_gather_init_done");
             ModLoader.get().loadMods(ModWorkManager.syncExecutor(), ModWorkManager.parallelExecutor(), ()->{});
+            net.nestworld.startup.NestworldStartupProfiler.mark("mod_load_events_done");
             ModLoader.get().finishMods(ModWorkManager.syncExecutor(), ModWorkManager.parallelExecutor(), ()->{});
+            net.nestworld.startup.NestworldStartupProfiler.mark("mod_finish_done");
         } catch (LoadingFailedException error) {
             ServerModLoader.hasErrors = true;
             // In case its not loaded properly

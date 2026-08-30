@@ -27,11 +27,16 @@ import java.util.concurrent.ConcurrentHashMap;
  * falls back to a ghost-zone read (read-only, 1-tick stale).
  *
  * <p>Thread-safety: capability reads can happen from any RegionThread concurrently.
- * The controller block-entity is owned by a single region's write-lock, but since
- * Java object field reads are safe without a lock (provided the block-entity is
- * not being mutated at the exact same nanosecond), the common case is lock-free.
- * For writes (e.g. inserting items into an adjacent inventory), the bus acquires
- * a read-stamp on the controller region's StampedLock before delegating.
+ * NestWorld: corrected 2026-08-27 (full-core-audit finding) -- the previous wording here
+ * claimed unsynchronized field reads are safe "provided the block-entity is not being
+ * mutated at the exact same nanosecond," which is not a real JMM guarantee and doesn't
+ * describe what actually makes this safe. Tracing the real code: {@code resolveFromRegion()}
+ * takes a proper {@code StampedLock.readLock()} before reading, and
+ * {@code resolveFromGhost()} reads from {@link BoundaryManager}'s ghost-chunk snapshot, a
+ * genuine volatile-swap-a-whole-new-object publication (not live shared mutable state) --
+ * both paths are correctly safe by an actual mechanism, not by the reasoning previously
+ * written here. For writes (e.g. inserting items into an adjacent inventory), the bus
+ * acquires a read-stamp on the controller region's StampedLock before delegating.
  */
 public class CrossRegionCapabilityBus {
 

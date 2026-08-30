@@ -1,5 +1,13 @@
 --- a/net/minecraft/server/Main.java
 +++ b/net/minecraft/server/Main.java
+@@ -66,6 +_,7 @@
+ 
+    @DontObfuscate
+    public static void main(String[] p_129699_) {
++      net.nestworld.startup.NestworldStartupProfiler.mark("main_entry");
+       SharedConstants.m_142977_();
+       OptionParser optionparser = new OptionParser();
+       OptionSpec<Void> optionspec = optionparser.accepts("nogui");
 @@ -84,6 +_,15 @@
        OptionSpec<Void> optionspec13 = optionparser.accepts("jfrProfile");
        OptionSpec<Path> optionspec14 = optionparser.accepts("pidFile").withRequiredArg().withValuesConvertedBy(new PathConverter());
@@ -30,11 +38,15 @@
  
           Path path = optionset.valueOf(optionspec14);
           if (path != null) {
-@@ -106,25 +_,24 @@
+@@ -104,27 +_,28 @@
+ 
+          Bootstrap.m_135870_();
           Bootstrap.m_135889_();
++         net.nestworld.startup.NestworldStartupProfiler.mark("bootstrap_done");
           Util.m_137584_();
           Path path1 = Paths.get("server.properties");
 +         if (!optionset.has(optionspec1)) net.minecraftforge.server.loading.ServerModLoader.load(); // Load mods before we load almost anything else anymore. Single spot now. Only loads if they haven't passed the initserver param
++         net.nestworld.startup.NestworldStartupProfiler.mark("mod_loading_done");
           DedicatedServerSettings dedicatedserversettings = new DedicatedServerSettings(path1);
           dedicatedserversettings.m_139780_();
 -         Path path2 = Paths.get("eula.txt");
@@ -62,6 +74,14 @@
           LevelSummary levelsummary = levelstoragesource$levelstorageaccess.m_78308_();
           if (levelsummary != null) {
              if (levelsummary.m_193020_()) {
+@@ -146,6 +_,7 @@
+          PackRepository packrepository = ServerPacksSource.m_245786_(levelstoragesource$levelstorageaccess.m_78283_(LevelResource.f_78180_));
+ 
+          WorldStem worldstem;
++         net.nestworld.startup.NestworldStartupProfiler.mark("datapack_load_start");
+          try {
+             WorldLoader.InitConfig worldloader$initconfig = m_245383_(dedicatedserversettings.m_139777_(), levelstoragesource$levelstorageaccess, flag, packrepository);
+             worldstem = Util.m_214679_((p_248086_) -> {
 @@ -170,6 +_,8 @@
                          worlddimensions = dedicatedserverproperties.m_246483_(p_248079_.f_244104_());
                       }
@@ -71,6 +91,14 @@
                       WorldDimensions.Complete worlddimensions$complete = worlddimensions.m_245300_(registry);
                       Lifecycle lifecycle = worlddimensions$complete.m_245945_().add(p_248079_.f_244104_().m_211816_());
                       return new WorldLoader.DataLoadOutput<>(new PrimaryLevelData(levelsettings, worldoptions, worlddimensions$complete.f_244634_(), lifecycle), worlddimensions$complete.m_245593_());
+@@ -180,6 +_,7 @@
+             f_129670_.warn("Failed to load datapacks, can't proceed with server load. You can either fix your datapacks or reset to vanilla with --safeMode", (Throwable)exception);
+             return;
+          }
++         net.nestworld.startup.NestworldStartupProfiler.mark("datapack_load_done");
+ 
+          RegistryAccess.Frozen registryaccess$frozen = worldstem.f_244542_().m_247579_();
+          if (optionset.has(optionspec4)) {
 @@ -190,22 +_,33 @@
  
           WorldData worlddata = worldstem.f_206895_();

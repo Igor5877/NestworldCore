@@ -1,0 +1,14 @@
+--- a/net/minecraft/world/entity/raid/Raids.java
++++ b/net/minecraft/world/entity/raid/Raids.java
+@@ -27,7 +_,10 @@
+ 
+ public class Raids extends SavedData {
+    private static final String f_150234_ = "raids";
+-   private final Map<Integer, Raid> f_37951_ = Maps.newHashMap();
++   // NestWorld: P1 ownership audit -- multiple concurrent raids can be owned by different
++   // regions; this map is touched by each raid's own tick as well as getOrCreateRaid()'s
++   // lookup/insert, both of which can run from different region threads simultaneously.
++   private final Map<Integer, Raid> f_37951_ = new java.util.concurrent.ConcurrentHashMap<>();
+    private final ServerLevel f_37952_;
+    private int f_37953_;
+    private int f_37954_;

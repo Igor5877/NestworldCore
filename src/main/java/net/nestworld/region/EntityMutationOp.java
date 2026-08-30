@@ -39,4 +39,19 @@ public sealed interface EntityMutationOp {
     record Ignite(int seconds) implements EntityMutationOp {}
     /** Bucket A follow-up (ThrownPotion.applyWater): {@code Entity.extinguishFire()}. */
     record ExtinguishFire() implements EntityMutationOp {}
+    /** Full-core-audit follow-up (2026-08-27): {@code LivingEntity.knockback(double,double,double)}
+     *  -- combat knockback (Player.attack() melee/sweep, projectile impacts, boss AOE), distinct
+     *  from {@link EntityPushHelper}'s physics-collision push (different math, different call
+     *  shape) and previously uncovered by any existing helper. */
+    record Knockback(double strength, double x, double z) implements EntityMutationOp {}
+    /** Phase 9.2 (EntityMutationDispatcher, docs/REGION_OWNERSHIP_CROSS_REGION_SPEC.md §4/§6):
+     *  {@code Entity.kill()} -- vanilla's own "instant death" path (sets health to 0 for
+     *  LivingEntity, or removes directly for non-living), distinct from {@code Damage} with a
+     *  huge amount since it bypasses armor/enchantment/absorption calculation entirely, matching
+     *  vanilla's own semantics for e.g. {@code /kill}. */
+    record Kill() implements EntityMutationOp {}
+    /** Phase 9.2 follow-up: {@code Entity.remove(RemovalReason.DISCARDED)} -- silent removal, no
+     *  death event/drops/advancement triggers (vanilla's own distinction between "killed" and
+     *  "discarded" -- see {@code Entity.RemovalReason}). */
+    record Discard() implements EntityMutationOp {}
 }

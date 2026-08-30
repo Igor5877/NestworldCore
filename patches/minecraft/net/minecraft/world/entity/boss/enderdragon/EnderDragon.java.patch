@@ -27,6 +27,39 @@
        this.m_146874_();
        if (this.m_9236_().f_46443_) {
           this.m_21153_(this.m_21223_());
+@@ -400,8 +_,13 @@
+             double d4 = Math.max(d2 * d2 + d3 * d3, 0.1D);
+             entity.m_5997_(d2 / d4 * 4.0D, (double)0.2F, d3 / d4 * 4.0D);
+             if (!this.f_31074_.m_31415_().m_7080_() && ((LivingEntity)entity).m_21213_() < entity.f_19797_ - 2) {
+-               entity.m_6469_(this.m_269291_().m_269333_(this), 5.0F);
+-               this.m_19970_(this, entity);
++               // NestWorld: full-core-audit finding (2026-08-27) -- AoE crush damage with zero
++               // ownership check; dragon-fight entity density makes a cross-region hit likely.
++               if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, entity,
++                       new net.nestworld.region.EntityMutationOp.Damage(this.m_269291_().m_269333_(this), 5.0F))) {
++                  entity.m_6469_(this.m_269291_().m_269333_(this), 5.0F);
++                  this.m_19970_(this, entity);
++               }
+             }
+          }
+       }
+@@ -411,8 +_,14 @@
+    private void m_31141_(List<Entity> p_31142_) {
+       for(Entity entity : p_31142_) {
+          if (entity instanceof LivingEntity) {
+-            entity.m_6469_(this.m_269291_().m_269333_(this), 10.0F);
+-            this.m_19970_(this, entity);
++            // NestWorld: full-core-audit finding (2026-08-27) -- AoE bite damage, same gap as
++            // knockBack() above; doEnchantDamageEffects only called on the direct path, see
++            // comment there.
++            if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, entity,
++                    new net.nestworld.region.EntityMutationOp.Damage(this.m_269291_().m_269333_(this), 10.0F))) {
++               entity.m_6469_(this.m_269291_().m_269333_(this), 10.0F);
++               this.m_19970_(this, entity);
++            }
+          }
+       }
+ 
 @@ -438,7 +_,7 @@
                 BlockPos blockpos = new BlockPos(k1, l1, i2);
                 BlockState blockstate = this.m_9236_().m_8055_(blockpos);

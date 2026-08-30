@@ -261,6 +261,14 @@ public class WorldRegion {
     // sites only ever run while every region thread is parked (no concurrent posting).
     private final java.util.Queue<RegionMessage<?>> nestworldMailbox = new java.util.concurrent.ConcurrentLinkedQueue<>();
 
+    /** Diagnostic-only, temporary: identity probe for the #31.4 step2 investigation -- lets a
+     *  poster and a drainer compare whether they're touching the SAME {@code WorldRegion}/
+     *  mailbox object, not just the same numeric id (a stale grid snapshot could hand out a
+     *  different object claiming the same id). */
+    public int nestworldMailboxIdentity() {
+        return System.identityHashCode(nestworldMailbox);
+    }
+
     /** Posts a GENUINELY NEW message to this region's inbound mailbox. Safe from any
      *  thread. Counted by {@link MailboxAudit} as one "sent" event — for re-queuing an
      *  EXISTING message (e.g. Part 3's cascade-guard lock-timeout retry), use {@link

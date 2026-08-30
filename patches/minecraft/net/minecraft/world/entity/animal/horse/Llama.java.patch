@@ -1,0 +1,16 @@
+--- a/net/minecraft/world/entity/animal/horse/Llama.java
++++ b/net/minecraft/world/entity/animal/horse/Llama.java
+@@ -390,7 +_,12 @@
+             this.m_6469_(p_149540_, (float)i);
+             if (this.m_20160_()) {
+                for(Entity entity : this.m_146897_()) {
+-                  entity.m_6469_(p_149540_, (float)i);
++                  // NestWorld: full-core-audit finding (2026-08-27) -- indirect passenger can
++                  // be owned by a different region than the llama itself.
++                  if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, entity,
++                          new net.nestworld.region.EntityMutationOp.Damage(p_149540_, (float)i))) {
++                     entity.m_6469_(p_149540_, (float)i);
++                  }
+                }
+             }
+          }

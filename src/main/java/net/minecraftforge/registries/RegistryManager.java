@@ -59,6 +59,37 @@ public class RegistryManager
         return this.name;
     }
 
+    /**
+     * NestWorld: writes every registry currently in {@code ACTIVE}'s current
+     * id -&gt; key -&gt; value mapping to {@code out}, one registry section at a time,
+     * sorted by id within each registry -- a ground-truth snapshot for detecting
+     * any registry-id-assignment drift across boots (e.g. after a patch touching
+     * block/state construction or registration order -- see project memory
+     * registry-bake-parallel-init-cache.md for exactly the kind of change this is
+     * meant to guard against). Deliberately NOT the same path as
+     * {@link ForgeRegistry#dump}, which is gated behind the REGISTRYDUMP log4j
+     * marker and only usable at boot time -- this is callable directly, any time,
+     * e.g. from an in-game/RCON command, with no logging-config dependency.
+     */
+    public static void nestworldDumpAll(java.io.PrintWriter out) {
+        java.util.List<java.util.Map.Entry<ResourceLocation, ForgeRegistry<?>>> sorted =
+                new java.util.ArrayList<>(ACTIVE.registries.entrySet());
+        sorted.sort(java.util.Map.Entry.comparingByKey());
+        for (java.util.Map.Entry<ResourceLocation, ForgeRegistry<?>> entry : sorted) {
+            ResourceLocation name = entry.getKey();
+            ForgeRegistry<?> reg = entry.getValue();
+            out.println("=== " + name + " (" + reg.getKeys().size() + " entries) ===");
+            reg.getKeys().stream()
+                    .map(reg::getID)
+                    .sorted()
+                    .forEach(id -> {
+                        Object value = reg.getValue(id);
+                        ResourceKey<?> key = reg.getKey(id);
+                        out.println(id + "\t" + key + "\t" + value);
+                    });
+        }
+    }
+
     boolean isStaging()
     {
         return "STAGING".equals(this.name);

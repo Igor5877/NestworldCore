@@ -131,6 +131,14 @@
     }
  
     protected void m_142540_(MobEffectInstance p_143393_, @Nullable Entity p_143394_) {
+@@ -1173,6 +_,7 @@
+    }
+ 
+    public boolean m_264318_(ServerLevel p_265564_, double p_265424_, double p_265680_, double p_265312_, Set<RelativeMovement> p_265192_, float p_265059_, float p_265266_) {
++      net.nestworld.region.BurstAdmissionMetrics.recordPlayerTeleported();
+       ChunkPos chunkpos = new ChunkPos(BlockPos.m_274561_(p_265424_, p_265680_, p_265312_));
+       p_265564_.m_7726_().m_8387_(TicketType.f_9448_, chunkpos, 1, this.m_19879_());
+       this.m_8127_();
 @@ -1215,6 +_,8 @@
     }
  

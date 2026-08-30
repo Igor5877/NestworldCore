@@ -88,6 +88,11 @@ public class RegionSplitManager {
 
     // Pending splits applied at the next evaluation
     private final List<WorldRegion> pendingSplits = new ArrayList<>();
+    // NestWorld: 2026-08-28 split/merge event-log instrumentation -- the automatic-heuristic
+    // reason for each pending split, captured at decision time in onTick() since doSplit() itself
+    // has no visibility into WHICH condition (avg threshold / p95 tail / fill-cores) fired.
+    // Keyed by identity, cleared as each entry is consumed in applyPending().
+    private final java.util.Map<WorldRegion, String> pendingSplitReasons = new java.util.IdentityHashMap<>();
     /**
      * Merge candidates persist across evaluations (insertion-ordered) because
      * sibling regions rarely cross the threshold in the same second. A candidate
@@ -144,6 +149,7 @@ public class RegionSplitManager {
         TickAttribution.decayChunks();
 
         List<WorldRegion> active = tree.getActiveRegions();
+        SplitMergeEventLog.recordRegionCount(active.size());
 
         // Load balancing: when fewer regions are active than we have cores, the
         // tick is gated by the most expensive region while cores idle (spark:
@@ -202,6 +208,9 @@ public class RegionSplitManager {
                 if (++region.splitPressureChecks >= SPLIT_CHECKS_REQUIRED && region.canSplit()) {
                     if (splitWouldSeparateLoad(region)) {
                         pendingSplits.add(region);
+                        pendingSplitReasons.put(region, fillSplit ? "fill-cores(spare)"
+                                : tailHot ? String.format("p95-tail(%.1fms>%.0f)", p95Ms, SPLIT_MS_THRESHOLD)
+                                        : String.format("avg-threshold(%.1fms>%.0f)", costMs, SPLIT_MS_THRESHOLD));
                         if (tailHot && costMs <= SPLIT_MS_THRESHOLD) {
                             LOGGER.info("Split of {} triggered by p95 tail ({} ms) despite average"
                                             + " looking healthy ({} ms)", region,
@@ -355,23 +364,35 @@ public class RegionSplitManager {
 
     private void applyPending() {
         for (WorldRegion region : pendingSplits) {
-            doSplit(region);
+            doSplit(region, pendingSplitReasons.getOrDefault(region, "unknown"));
         }
         pendingSplits.clear();
+        pendingSplitReasons.clear();
 
-        // Try to pair up merge candidates that are tree siblings
+        // NestWorld: 2026-08-28 O(n²) fix (see RegionTree.getMergeSibling's javadoc for the full
+        // incident) -- O(active regions) via direct tree-sibling lookup, NOT O(candidates²) blind
+        // all-pairs scanning. No chunkLock is ever touched for a candidate that isn't a validated
+        // tree sibling of another candidate; the old code took real locks on both sides of every
+        // doomed non-sibling pair before RegionTree.merge() itself finally checked sibling-ness.
         List<WorldRegion> candidates = new ArrayList<>(mergeCandidates);
-        for (int i = 0; i < candidates.size(); i++) {
-            WorldRegion a = candidates.get(i);
-            if (!mergeCandidates.contains(a)) continue;
-            for (int j = i + 1; j < candidates.size(); j++) {
-                WorldRegion b = candidates.get(j);
-                if (!mergeCandidates.contains(b)) continue;
-                if (doMerge(a, b) != null) {
-                    mergeCandidates.remove(a);
-                    mergeCandidates.remove(b);
-                    break;
-                }
+        SplitMergeEventLog.recordCandidateGeneration(candidates.size());
+        Set<WorldRegion> attemptedThisPass = new java.util.HashSet<>();
+        for (WorldRegion a : candidates) {
+            if (!mergeCandidates.contains(a) || attemptedThisPass.contains(a)) continue;
+            WorldRegion sibling = tree.getMergeSibling(a);
+            // sibling == null: root, sibling is an internal subtree, or `a` is already stale
+            // (merged/split away since queued) -- RegionTree itself reports "not found" as null,
+            // so this doubles as the stale-candidate check the ТЗ asked for, at no extra cost.
+            if (sibling == null || !mergeCandidates.contains(sibling)) {
+                SplitMergeEventLog.recordRejectedBeforeLock();
+                continue;
+            }
+            attemptedThisPass.add(a);
+            attemptedThisPass.add(sibling);
+            if (doMerge(a, sibling, String.format("sustained-low-load(<%.0fms, %d checks)",
+                    MERGE_MS_THRESHOLD, MERGE_CHECKS_REQUIRED)) != null) {
+                mergeCandidates.remove(a);
+                mergeCandidates.remove(sibling);
             }
         }
     }
@@ -385,10 +406,22 @@ public class RegionSplitManager {
      * Returns the children, or null if the region cannot be split.
      */
     public WorldRegion[] doSplit(WorldRegion region) {
+        return doSplit(region, "manual");
+    }
+
+    /** See {@link #doSplit(WorldRegion)} -- {@code reason} is purely for {@link
+     *  SplitMergeEventLog} visibility (2026-08-28 split/merge thrash investigation), never
+     *  affects behavior. */
+    public WorldRegion[] doSplit(WorldRegion region, String reason) {
+        double avgTickMsAtDecision = region.getAvgTickMs();
+        int entityCountAtDecision = region.getOwnedEntityIds().size();
+        int parentId = region.getId();
+        long opStart = System.nanoTime();
+        boolean[] lockTimedOut = {false};
         CutChoice choice = loadAwareCut(region);
         // Manual /nestworld split bypasses the hotspot veto: fall back to the
         // raw median on the preferred axis so an operator can still force a cut.
-        return nestworldWithRegionLocks(java.util.List.of(region), () -> {
+        WorldRegion[] result = nestworldWithRegionLocks(java.util.List.of(region), () -> {
             WorldRegion[] children = (choice != null)
                     ? tree.split(region, choice.axis, choice.cut)
                     : tree.split(region, entityMedianCut(region));
@@ -432,7 +465,12 @@ public class RegionSplitManager {
                     choice != null ? choice.axis : region.preferredSplitAxis(),
                     blockTickHeat.hotspotSummary(region, 3));
             return children;
-        });
+        }, lockTimedOut);
+        SplitMergeEventLog.recordSplit(parentId,
+                result != null ? new int[] {result[0].getId(), result[1].getId()} : new int[] {-1, -1},
+                reason, avgTickMsAtDecision, entityCountAtDecision, System.nanoTime() - opStart,
+                lockTimedOut[0], result != null);
+        return result;
     }
 
     /**
@@ -453,6 +491,15 @@ public class RegionSplitManager {
      */
     private <T> T nestworldWithRegionLocks(java.util.Collection<WorldRegion> primary,
             java.util.function.Supplier<T> body) {
+        return nestworldWithRegionLocks(primary, body, null);
+    }
+
+    /** See the 2-arg overload -- {@code timedOutFlag}, if non-null, is set to {@code true} when
+     *  this call returns {@code null} specifically because the lock guard timed out (as opposed
+     *  to {@code body} itself returning null for an unrelated reason) -- 2026-08-28 split/merge
+     *  event-log instrumentation needs to distinguish the two. */
+    private <T> T nestworldWithRegionLocks(java.util.Collection<WorldRegion> primary,
+            java.util.function.Supplier<T> body, boolean[] timedOutFlag) {
         WorldGrid grid = tree.getGrid();
         java.util.TreeSet<WorldRegion> toLock = new java.util.TreeSet<>(
                 java.util.Comparator.comparingInt(WorldRegion::getId));
@@ -461,10 +508,12 @@ public class RegionSplitManager {
         java.util.List<WorldRegion> locked = new java.util.ArrayList<>(toLock.size());
         java.util.List<Long> stamps = new java.util.ArrayList<>(toLock.size());
         long deadline = System.nanoTime() + NestworldTuning.CASCADE_LOCK_TIMEOUT_NANOS;
+        boolean diag = NestworldTuning.PLAYER_INTERACTION_REGION_EXECUTION && toLock.stream().anyMatch(r -> r.getId() == 4);
         try {
             for (WorldRegion r : toLock) {
                 long remainingNanos = deadline - System.nanoTime();
                 long stamp = 0L;
+                if (diag) LOGGER.info("NestWorld DIAG-ID: SPLITMGR_LOCK_WAIT_BEGIN region={} thread={}", r.getId(), Thread.currentThread().getName());
                 if (remainingNanos > 0) {
                     try {
                         stamp = r.getChunkLock().tryWriteLock(remainingNanos, java.util.concurrent.TimeUnit.NANOSECONDS);
@@ -475,8 +524,11 @@ public class RegionSplitManager {
                 if (stamp == 0L) {
                     LOGGER.warn("Split/merge lock guard: timed out locking region {} — skipping this pass, "
                             + "will be retried automatically", r.getId());
+                    if (diag) LOGGER.info("NestWorld DIAG-ID: SPLITMGR_LOCK_TIMEOUT region={} thread={}", r.getId(), Thread.currentThread().getName());
+                    if (timedOutFlag != null) timedOutFlag[0] = true;
                     return null;
                 }
+                if (diag) LOGGER.info("NestWorld DIAG-ID: SPLITMGR_LOCK_ACQUIRED region={} thread={}", r.getId(), Thread.currentThread().getName());
                 locked.add(r);
                 stamps.add(stamp);
             }
@@ -484,6 +536,7 @@ public class RegionSplitManager {
         } finally {
             for (int i = locked.size() - 1; i >= 0; i--) {
                 locked.get(i).getChunkLock().unlockWrite(stamps.get(i));
+                if (diag) LOGGER.info("NestWorld DIAG-ID: SPLITMGR_LOCK_RELEASED region={} thread={}", locked.get(i).getId(), Thread.currentThread().getName());
             }
         }
     }
@@ -860,7 +913,21 @@ public class RegionSplitManager {
      * Returns the merged region, or null if the two are not tree siblings.
      */
     public WorldRegion doMerge(WorldRegion a, WorldRegion b) {
-        return nestworldWithRegionLocks(java.util.List.of(a, b), () -> {
+        return doMerge(a, b, "manual");
+    }
+
+    /** See {@link #doMerge(WorldRegion, WorldRegion)} -- {@code reason} is purely for {@link
+     *  SplitMergeEventLog} visibility (2026-08-28 split/merge thrash investigation), never
+     *  affects behavior. */
+    public WorldRegion doMerge(WorldRegion a, WorldRegion b, String reason) {
+        double avgTickMsA = a.getAvgTickMs();
+        double avgTickMsB = b.getAvgTickMs();
+        int aId = a.getId();
+        int bId = b.getId();
+        int entityCount = a.getOwnedEntityIds().size() + b.getOwnedEntityIds().size();
+        long opStart = System.nanoTime();
+        boolean[] lockTimedOut = {false};
+        WorldRegion result = nestworldWithRegionLocks(java.util.List.of(a, b), () -> {
             WorldRegion merged = tree.merge(a, b);
             if (merged == null) return null;
 
@@ -874,6 +941,9 @@ public class RegionSplitManager {
             LOGGER.info("Merged [{}, {}] -> {}  (costs were {} ms, {} ms)",
                     a, b, merged, String.format("%.1f", a.getAvgTickMs()), String.format("%.1f", b.getAvgTickMs()));
             return merged;
-        });
+        }, lockTimedOut);
+        SplitMergeEventLog.recordMerge(aId, bId, result != null ? result.getId() : -1, reason,
+                avgTickMsA, avgTickMsB, entityCount, System.nanoTime() - opStart, lockTimedOut[0], result != null);
+        return result;
     }
 }

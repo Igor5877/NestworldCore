@@ -14,3 +14,32 @@
     private void m_37080_() {
        this.m_9236_().m_7605_(this, (byte)17);
        this.m_146852_(GameEvent.f_157812_, this.m_19749_());
+@@ -192,7 +_,13 @@
+ 
+       if (f > 0.0F) {
+          if (this.f_37024_ != null) {
+-            this.f_37024_.m_6469_(this.m_269291_().m_268994_(this, this.m_19749_()), 5.0F + (float)(listtag.size() * 2));
++            // NestWorld: full-core-audit finding (2026-08-27) -- AoE damage with zero
++            // ownership check; a crossbow-fired explosive firework routinely spans a region
++            // border. Same redirect-or-call pattern as Guardian.hurt()'s existing usage.
++            if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, this.f_37024_,
++                    new net.nestworld.region.EntityMutationOp.Damage(this.m_269291_().m_268994_(this, this.m_19749_()), 5.0F + (float)(listtag.size() * 2)))) {
++               this.f_37024_.m_6469_(this.m_269291_().m_268994_(this, this.m_19749_()), 5.0F + (float)(listtag.size() * 2));
++            }
+          }
+ 
+          double d0 = 5.0D;
+@@ -213,7 +_,12 @@
+ 
+                if (flag) {
+                   float f1 = f * (float)Math.sqrt((5.0D - (double)this.m_20270_(livingentity)) / 5.0D);
+-                  livingentity.m_6469_(this.m_269291_().m_268994_(this, this.m_19749_()), f1);
++                  // NestWorld: per-entity ownership check inside the AoE loop -- different
++                  // entities hit by the same explosion can belong to different regions.
++                  if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, livingentity,
++                          new net.nestworld.region.EntityMutationOp.Damage(this.m_269291_().m_268994_(this, this.m_19749_()), f1))) {
++                     livingentity.m_6469_(this.m_269291_().m_268994_(this, this.m_19749_()), f1);
++                  }
+                }
+             }
+          }

@@ -17,8 +17,34 @@
           if (mobcategory != MobCategory.MISC) {
              BlockPos blockpos = entity.m_20183_();
              p_186527_.m_47103_(ChunkPos.m_151388_(blockpos), (p_275163_) -> {
-@@ -177,7 +_,7 @@
+@@ -112,6 +_,8 @@
+    }
+ 
+    public static void m_47045_(MobCategory p_47046_, ServerLevel p_47047_, LevelChunk p_47048_, NaturalSpawner.SpawnPredicate p_47049_, NaturalSpawner.AfterSpawnCallback p_47050_) {
++      // NestWorld: 2026-08-29 NaturalSpawner Attribution ТЗ -- measurement only.
++      net.nestworld.region.NaturalSpawnerMetrics.recordSpawnCategoryCall();
+       BlockPos blockpos = m_47062_(p_47047_, p_47048_);
+       if (blockpos.m_123342_() >= p_47047_.m_141937_() + 1) {
+          m_47038_(p_47046_, p_47047_, p_47048_, blockpos, p_47049_, p_47050_);
+@@ -150,7 +_,12 @@
+                blockpos$mutableblockpos.m_122178_(l, i, i1);
+                double d0 = (double)l + 0.5D;
+                double d1 = (double)i1 + 0.5D;
+-               Player player = p_47040_.m_45924_(d0, (double)i, d1, -1.0D, false);
++               // NestWorld: 2026-08-29 NaturalSpawner spatial acceleration (Phase B) -- see
++               // NestworldTuning.NATURAL_SPAWNER_PLAYER_INDEX / NearestPlayerIndex's javadoc for
++               // the correctness proof. Bit-identical to the vanilla call, just cheaper.
++               Player player = net.nestworld.region.NestworldTuning.NATURAL_SPAWNER_PLAYER_INDEX
++                     ? net.nestworld.region.NearestPlayerIndex.findNearestOrFallbackVerified(p_47040_, d0, (double)i, d1)
++                     : p_47040_.m_45924_(d0, (double)i, d1, -1.0D, false);
+                if (player != null) {
+                   double d2 = player.m_20275_(d0, (double)i, d1);
+                   if (m_47024_(p_47040_, p_47041_, blockpos$mutableblockpos, d2)) {
+@@ -175,9 +_,10 @@
+                            spawngroupdata = mob.m_6518_(p_47040_, p_47040_.m_6436_(mob.m_20183_()), MobSpawnType.NATURAL, spawngroupdata, (CompoundTag)null);
+                            ++j;
                             ++l1;
++                           net.nestworld.region.NaturalSpawnerMetrics.recordSuccessfulSpawn();
                             p_47040_.m_47205_(mob);
                             p_47044_.m_47100_(mob, p_47041_);
 -                           if (j >= mob.m_5792_()) {

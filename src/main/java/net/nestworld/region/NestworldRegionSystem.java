@@ -169,6 +169,19 @@ public class NestworldRegionSystem {
         INSTANCE.init(event.getServer());
         // Start the always-on profiler (no-op unless AUTO_SPARK + spark present).
         SparkBridge.autoStart(event.getServer());
+        // CPU Capacity Planner (2026-08-30, Phase 1) -- full parameter inventory + demand model +
+        // startup warning report. Late-hooked here deliberately: by ServerStartingEvent every
+        // other class's static config has already settled, so it's safe to cross-reference them
+        // (unlike NestworldTuning's own NETTY_WORKER_THREADS resolution, which had to stay
+        // hardware-only to avoid a circular class-init hazard -- see CpuCapacityPlanner's javadoc).
+        if (CpuCapacityPlanner.ENABLED) {
+            CpuCapacityPlanner.Report report = CpuCapacityPlanner.buildFullReport();
+            Logger cpuLogger = LogManager.getLogger("NestWorld/CpuPlanner");
+            boolean warn = report.level != CpuCapacityPlanner.WarningLevel.INFO;
+            for (String line : report.format().split("\n")) {
+                if (warn) cpuLogger.warn(line); else cpuLogger.info(line);
+            }
+        }
     }
 
     @SubscribeEvent
@@ -228,6 +241,7 @@ public class NestworldRegionSystem {
 
     private void init(MinecraftServer server) {
         LOGGER.info("Initialising NestWorld region sharding system…");
+        NestworldDeploymentFingerprint.logAtStartup();
 
         // Guard against mods whose optimizations are thread-unsafe under parallel
         // region ticking (Canary/radium/lithium overwrite ClassInstanceMultiMap
@@ -838,4 +852,5 @@ public class NestworldRegionSystem {
         NestworldDimensionRegion dr = dimensions.get(source.getDimension());
         return dr != null && dr.deferForeignBlockWrite(source, destination, pos, newState, flags, recursionLeft);
     }
+
 }

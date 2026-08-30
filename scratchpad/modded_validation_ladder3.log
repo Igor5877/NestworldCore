@@ -1,0 +1,35 @@
+Restarting for clean baseline before n=125...
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+
+=== n125 (Modded Validation Ladder) ===
+  [n125] baseline captured: regions=16 oversub=1.25
+  [n125] Phase A JOIN: 29.1s online=125/125
+  [n125] Phase B TELEPORT: 91.2s
+  [n125] Phase C SETTLE: 46.3s stabilized=False
+  [n125 STEADY] TPS=20.0 MSPT=36.0 oversub=2.1 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=19.1 oversub=2.1 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=14.8 oversub=2.05 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=10.4 oversub=2.1 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=10.4 oversub=2.05 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=2.5 oversub=2.05 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=3.0 oversub=2.05 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=3.0 oversub=2.05 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=2.7 oversub=2.05 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=2.7 oversub=2.05 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=3.6 oversub=2.05 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=3.7 oversub=2.05 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=2.9 oversub=2.05 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=3.1 oversub=2.05 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=3.0 oversub=2.1 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=2.8 oversub=2.05 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=3.0 oversub=2.05 netty=16/16
+  [n125 STEADY] TPS=20.0 MSPT=2.7 oversub=2.05 netty=16/16
+  [n125] RESULT D: msptP50=3.0 p95=36.0 tpsAvg=20.0 oversubAvg=2.06 online=0/125 exceptions=250
+
+*** TIER n=125 DID NOT PASS -- stopping ladder ***
+
+=== MODDED VALIDATION LADDER DONE ===
+ pop  joinS   tpS  settleS  msptP50  msptP95  tpsAvg oversubAvg    online  exc  crash  pass
+ 125   29.1  91.2     46.3      3.0     36.0    20.0       2.06 0/125  250  False False

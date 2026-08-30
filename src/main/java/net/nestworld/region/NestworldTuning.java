@@ -6,6 +6,40 @@ package net.nestworld.region;
 public final class NestworldTuning {
 
     /**
+     * Explicit Netty EventLoopGroup worker-thread count for the server's connection listener
+     * (both epoll and NIO variants). {@code 0} = vanilla/Netty default (2x
+     * {@code Runtime.availableProcessors()}, i.e. 40 on this project's 20-core bench box).
+     * 2026-08-30 Step 5 A/B experiment (ТЗ, per n225-confirmed-ceiling / connection-gate-sweep
+     * findings): the confirmed n=225 burst ceiling correlates with sustained ~2.4-2.8x Netty
+     * thread oversubscription (40 threads vs 20 physical cores), NOT with any of the previously
+     * fixed layers (pairing burst, chunk burst, splitMerge, spatial cull). {@link
+     * ConnectionAdmissionGate} (Step 4) tried to address this by gating post-accept but could NOT
+     * reduce oversubscription -- Netty assigns a channel to its worker thread at accept time,
+     * before that gate's hook point. This flag is the direct lever instead: fewer total worker
+     * threads competing for the same CPU cores. EXPERIMENTAL, A/B ONLY -- not a production
+     * default until validated to not regress steady-state (many stable connections, high packet
+     * throughput, concurrent login+gameplay) per the user's explicit caution.
+     */
+    public static final int NETTY_WORKER_THREADS = resolveNettyWorkerThreads();
+
+    /** {@code -Dnestworld.nettyWorkerThreads} accepts either an explicit integer (manual
+     *  override, unchanged behavior from before this method existed) or the literal string
+     *  {@code "auto"} (2026-08-30 CPU Capacity Planner Phase 1, ТЗ §10) -- in which case {@link
+     *  CpuCapacityPlanner#quickNettyRecommendation()} decides. Unset (the default) resolves to
+     *  {@code 0}, i.e. vanilla/Netty's own default (2x {@code availableProcessors()}) -- fully
+     *  backward compatible, nothing changes unless an admin explicitly opts in either way. */
+    private static int resolveNettyWorkerThreads() {
+        String raw = System.getProperty("nestworld.nettyWorkerThreads");
+        if (raw == null) return 0;
+        if (raw.equalsIgnoreCase("auto")) return CpuCapacityPlanner.quickNettyRecommendation();
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /**
      * Max entities a single minecart collides with per tick. Bounds the
      * O(n^2) cramming cost of entity piles (500 carts in one block =
      * ~250k pair checks per tick in vanilla). Vanilla behavior: unlimited.
@@ -705,6 +739,27 @@ public final class NestworldTuning {
             Boolean.getBoolean("nestworld.trackerSpatialCull");
 
     /**
+     * NaturalSpawner nearest-player lookup spatial acceleration (2026-08-29, EXPERIMENTAL,
+     * default OFF). {@code EntityGetter.getNearestPlayer()} is an unbounded O(players) linear
+     * scan with no spatial index (see {@code PlayerMap.getPlayers()} -- it ignores its chunk-key
+     * parameter entirely and returns ALL players, a vanilla stub, not a real bucket). Called from
+     * deep inside {@code NaturalSpawner.spawnCategoryForPosition()}'s innermost per-attempt loop,
+     * up to ~48x per spawn-eligible chunk, every tick. Measured (naturalspawner-attribution-
+     * 2026-08-29.md): n=100, 595,151 spawnCategoryCalls -> only 51 successful spawns after a mass
+     * teleport, an ~11,670:1 work/result ratio, with spawn-eligible chunks spiking 11.5x right
+     * after the teleport. With this on, {@link net.nestworld.region.NearestPlayerIndex} replaces
+     * that call with a grid-bucketed bounded search (see its javadoc for the correctness proof:
+     * the true nearest player is mathematically guaranteed within 151 blocks whenever this call
+     * site is reached via the normal player-proximity gate, so a 256-block bounded search is
+     * provably bit-identical) with a fallback to the original unbounded scan for the rare
+     * force-loaded-chunk-with-no-nearby-player case. Bit-identical result -- only the cost of
+     * computing it changes, same guarantee as {@link #TRACKER_SPATIAL_CULL}. Enable with
+     * {@code -Dnestworld.naturalSpawnerPlayerIndex=true}.
+     */
+    public static final boolean NATURAL_SPAWNER_PLAYER_INDEX =
+            Boolean.getBoolean("nestworld.naturalSpawnerPlayerIndex");
+
+    /**
      * Event-driven region-ownership reassignment (validated, default ON). Vanilla-side
      * {@link net.nestworld.region.BoundaryEntityTransfer#checkAndReassign} scans <em>every</em>
      * loaded entity each tick to detect region-border crossings — O(all entities), even though
@@ -859,6 +914,212 @@ public final class NestworldTuning {
      */
     public static final boolean LEVELTICKS_OWNERSHIP_STRICT =
             Boolean.parseBoolean(System.getProperty("nestworld.levelTicksOwnershipStrict", "false"));
+
+    /**
+     * Phase 9 (docs/REGION_OWNERSHIP_CROSS_REGION_SPEC.md §13) — generic {@code
+     * assertEntityOwner}/{@code assertBlockOwner}/{@code assertBlockEntityOwner} checks
+     * ({@code NestworldOwnershipAssertions}). Default OFF: these walk a region-grid lookup
+     * on every guarded call site, real overhead unacceptable for production. Enable for
+     * test/soak runs: {@code -Dnestworld.ownershipAssertionsEnabled=true}.
+     */
+    public static final boolean OWNERSHIP_ASSERTIONS_ENABLED =
+            Boolean.parseBoolean(System.getProperty("nestworld.ownershipAssertionsEnabled", "false"));
+
+    /**
+     * STRICT companion to {@link #OWNERSHIP_ASSERTIONS_ENABLED} — same DIAGNOSTIC-vs-STRICT
+     * split as {@link #LEVELTICKS_OWNERSHIP_STRICT}: DIAGNOSTIC (default) logs a full report
+     * and counts the violation without throwing; STRICT ({@code
+     * -Dnestworld.ownershipAssertionsStrict=true}) throws immediately on first violation, for
+     * a targeted test run where the assertion firing at all is itself the bug. Only consulted
+     * when {@link #OWNERSHIP_ASSERTIONS_ENABLED} is also true.
+     */
+    public static final boolean OWNERSHIP_ASSERTIONS_STRICT =
+            Boolean.parseBoolean(System.getProperty("nestworld.ownershipAssertionsStrict", "false"));
+
+    /**
+     * Phase 9.2 (EntityMutationDispatcher) — max times a single queued {@code ENTITY_MUTATE}
+     * message may be re-routed after {@link EntityMutationDispatcher#applyQueued} finds the
+     * applying region no longer owns the target (ownership moved on between send and apply).
+     * Bounds the A→B→C→A… ping-pong case a target changing region faster than the mailbox
+     * drains could otherwise cause. Past this many hops the mutation is dropped (logged), not
+     * applied on the wrong thread and not retried forever — same "graceful degradation over
+     * silent infinite retry" philosophy as the rest of this project's backpressure handling.
+     */
+    public static final int ENTITY_MUTATE_MAX_REROUTE_HOPS =
+            Integer.parseInt(System.getProperty("nestworld.entityMutateMaxRerouteHops", "5"));
+
+    /**
+     * Phase 11 #31.2 (docs/PHASE11_PLAYER_REGION_EXECUTION_SPEC.md) — master switch for the
+     * player-input mailbox transport. Default OFF. Deliberately named for exactly what it does
+     * at THIS stage: {@code false} = old vanilla main-thread-only path, completely untouched,
+     * zero overhead (the capture hook in {@code ServerGamePacketListenerImpl.handleMovePlayer}
+     * early-returns immediately). {@code true} = movement packets are ALSO (not instead)
+     * captured, sequenced, and posted to the player's position-resolved owner region's mailbox
+     * for apply-time ownership/sequence validation — SHADOW MODE ONLY at this stage, per
+     * explicit user instruction: #31.2 must prove the transport is correct before #31.3 lets
+     * anything real depend on it. The old path keeps doing 100% of the real movement
+     * application regardless of this flag's value; flipping it does not change gameplay at all
+     * yet, only whether the shadow pipeline runs. Instant rollback: flip back to {@code false}
+     * and restart, no recompile needed.
+     */
+    public static final boolean PLAYER_INPUT_REGION_EXECUTION =
+            Boolean.parseBoolean(System.getProperty("nestworld.playerInputRegionExecution", "false"));
+
+    /** Phase 11 #31.2 — hard cap on pending (sent, not yet applied) player-input messages held
+     *  for any ONE player at once. A disconnected-but-not-yet-cleaned-up or maliciously flooding
+     *  client must not be able to build an unbounded backlog. Past this, new input for that
+     *  player is dropped (counted, not silently lost from diagnostics) rather than queued.
+     *
+     *  <p>Default raised 64 -> 256 after a #31.3 Stage B finding: two simultaneous mineflayer
+     *  bots produced bursty movement-packet rates that overflowed the 64 slot cap on their own
+     *  (~3.2s of buffer at 20Hz), independent of the player-tick experiment -- confirmed by a
+     *  control run with the tick experiment OFF that reproduced (and slightly worsened) the same
+     *  {@code queueFull}/{@code gaps} counts. 256 is a TEST-TUNING change, not a throughput fix:
+     *  it exists so Stage C's region-boundary-crossing test isn't confounded by an unrelated,
+     *  already-understood queue-capacity artifact. Never set to an unbounded value -- the point
+     *  of this cap is that it stays bounded. */
+    public static final int PLAYER_INPUT_QUEUE_LIMIT_PER_PLAYER =
+            Integer.parseInt(System.getProperty("nestworld.playerInputQueueLimitPerPlayer", "256"));
+
+    /** Phase 11 #31.2 — same reroute-hop bound as {@link #ENTITY_MUTATE_MAX_REROUTE_HOPS}, for
+     *  player-input messages that find the player has moved to a different region's bounds
+     *  between send and apply. */
+    public static final int PLAYER_INPUT_MAX_REROUTE_HOPS =
+            Integer.parseInt(System.getProperty("nestworld.playerInputMaxRerouteHops", "5"));
+
+    /**
+     * Phase 11 #31.3 (docs/PHASE11_PLAYER_REGION_EXECUTION_SPEC.md) — SEPARATE master switch
+     * from {@link #PLAYER_INPUT_REGION_EXECUTION}, deliberately, per explicit user instruction:
+     * the two must be independently toggleable (input=ON/tick=OFF vs input=ON/tick=ON) so a bad
+     * result unambiguously points at ONE of the two mechanisms, not "the combination." Default
+     * OFF. Even when true, this alone changes NOTHING — see {@link PlayerTickExperiment} for the
+     * per-player opt-in set that's the actual gate (Stage A/B/C/D rollout: grow the set from 1
+     * player to 200, never a blanket "everyone" flip).
+     */
+    public static final boolean PLAYER_TICK_REGION_EXECUTION =
+            Boolean.parseBoolean(System.getProperty("nestworld.playerTickRegionExecution", "false"));
+
+    /**
+     * Phase 11 #31.4 (docs/PHASE11_PLAYER_REGION_EXECUTION_SPEC.md) — SEPARATE master switch from
+     * both {@link #PLAYER_INPUT_REGION_EXECUTION} and {@link #PLAYER_TICK_REGION_EXECUTION}, same
+     * isolation reasoning: attack-execution results must be attributable to attack-execution
+     * alone, not conflated with tick-execution's own effects. Default OFF. Even when true, this
+     * alone changes NOTHING — see {@link PlayerAttackExperiment} for the per-player opt-in set
+     * that's the actual gate.
+     */
+    public static final boolean PLAYER_ATTACK_REGION_EXECUTION =
+            Boolean.parseBoolean(System.getProperty("nestworld.playerAttackRegionExecution", "false"));
+
+    /**
+     * Phase 11 #31.4 step 2 (block interaction, docs/PHASE11_PLAYER_REGION_EXECUTION_SPEC.md) —
+     * SEPARATE master switch from every other #31 flag, same isolation reasoning. Default OFF.
+     * Even when true, this alone changes NOTHING — see {@link PlayerInteractionExperiment} for
+     * the per-player opt-in set. Unlike attack/tick (fire-and-forget), block interaction needs a
+     * SYNCHRONOUS result (the packet handler's vanilla flow depends on {@code InteractionResult}
+     * to decide whether to swing the arm, send a "too high" message, etc.) — see {@link
+     * PlayerInteractionDispatcher} for the bounded-wait-then-fallback design this requires.
+     */
+    public static final boolean PLAYER_INTERACTION_REGION_EXECUTION =
+            Boolean.parseBoolean(System.getProperty("nestworld.playerInteractionRegionExecution", "false"));
+
+    /** Phase 11 #31.4 step 2 — how long the main thread will block waiting for a region thread
+     *  to process a dispatched block interaction before giving up and falling back to running it
+     *  directly on main (same "safe direct fallback" precedent as every other #31 dispatcher).
+     *  Bounded specifically because THIS dispatch, unlike every prior #31 mailbox message, is a
+     *  genuine main-thread blocking wait, not fire-and-forget — an unbounded wait here would let
+     *  a backlogged region stall packet processing indefinitely. 100ms is ~2 region-local-ticks
+     *  at the normal 20Hz local-tick rate, generous enough to absorb ordinary jitter without
+     *  visibly stalling the game if reached. */
+    public static final long PLAYER_INTERACTION_TIMEOUT_MS =
+            Long.parseLong(System.getProperty("nestworld.playerInteractionTimeoutMs", "100"));
+
+    /**
+     * Found via a real crash this session: a 60-80 concurrent player scaling stress test
+     * reproduced a genuine {@code Server Watchdog} crash with the main thread's stack frozen
+     * inside {@code PlayerUseItemDispatcher.dispatch()}'s {@code latch.await(...)}.
+     * {@link #PLAYER_INTERACTION_TIMEOUT_MS} bounds a SINGLE dispatch call, but Minecraft
+     * processes all queued inbound packets for a tick sequentially on the SAME main thread —
+     * there was no budget shared ACROSS calls, so N concurrent players each triggering a
+     * synchronous dispatcher ({@link PlayerInteractionDispatcher}/{@link
+     * PlayerUseItemDispatcher}/{@link PlayerUseItemOnBlockDispatcher}/{@link
+     * EntityInteractionDispatcher} — the four that carry a real {@code latch}/{@code
+     * resultRef}, unlike {@link Type#PLAYER_ATTACK}/{@link Type#PLAYER_USE_CONTROL}'s
+     * fire-and-forget shape) in the same tick's packet-processing pass could each burn their
+     * own full timeout, compounding to N x up-to-100ms with no overall cap.
+     *
+     * <p>This is the TOTAL nanosecond budget all four dispatchers' waits share PER MAIN TICK
+     * ({@link PlayerInteractionWaitBudget} resets it lazily on each new {@code tickCount}) —
+     * once exhausted, further dispatch calls that same tick skip the wait ENTIRELY (treated
+     * exactly like an immediate timeout -> main-thread fallback, no different-shaped failure
+     * mode) rather than each independently burning up to 100ms. User-set default keeps this
+     * small relative to a 50ms (20 TPS) tick budget -- deliberately conservative pending real
+     * 100-200 player measurement of what this actually costs in practice.
+     */
+    public static final long MAX_INTERACTION_WAIT_PER_TICK_NANOS =
+            Long.parseLong(System.getProperty("nestworld.maxInteractionWaitPerTickMs", "2")) * 1_000_000L;
+
+    /**
+     * K-first-slots design (2026-08-28) — SUPERSEDES {@link #MAX_INTERACTION_WAIT_PER_TICK_NANOS}
+     * above. Live measurement showed the shared-nanos-budget model collapsing region offload
+     * under load (a 2ms shared pool can't survive the natural ~25-50ms free-running region
+     * round-trip latency this session measured via {@link PlayerInteractionWaitBudget}'s
+     * percentile distributions — p50=25ms, p95=48ms, p99=53ms at n=150). {@link
+     * PlayerInteractionWaitBudget#reserve} now grants a real bounded wait (up to {@link
+     * #INTERACTION_MAX_WAIT_PER_CALL_NANOS}) to only the FIRST {@code
+     * INTERACTION_MAX_WAIT_SLOTS_PER_TICK} synchronous-dispatch calls observed in a given main
+     * tick; every call after that in the same tick skips the wait entirely (instant fallback).
+     * This bounds worst-case main-thread stall to {@code K * X} per tick, a constant independent
+     * of how many total players dispatch that tick — unlike the old model, where the effective
+     * per-call share shrank toward zero as N grew, destroying offload. Both fields are mutable
+     * (not {@code final}) and RCON-settable via {@code /nestworld interactionslots} and {@code
+     * /nestworld interactionmaxwaitms} so a K/X sweep doesn't need a JVM restart between
+     * combinations. Defaults (K=1, X=50ms) are a deliberate starting point for an experimental
+     * sweep (K=1/2/4/8), not a tuned final value.
+     */
+    public static volatile int INTERACTION_MAX_WAIT_SLOTS_PER_TICK =
+            Integer.parseInt(System.getProperty("nestworld.interactionMaxWaitSlotsPerTick", "1"));
+
+    public static volatile long INTERACTION_MAX_WAIT_PER_CALL_NANOS =
+            Long.parseLong(System.getProperty("nestworld.interactionMaxWaitPerCallMs", "50")) * 1_000_000L;
+
+    /**
+     * Phase 11 #31.4 step 3 ({@code ServerGamePacketListenerImpl.handleUseItem()} -> {@code
+     * ServerPlayerGameMode.useItem()}, e.g. eating/drinking/bow-draw) — SEPARATE master switch
+     * from every other #31 flag, same isolation reasoning. Default OFF. Even when true, this
+     * alone changes NOTHING — see {@link PlayerUseItemExperiment} for the per-player opt-in set.
+     * Owner resolved by PLAYER position (matches attack, not block interaction's block-position
+     * resolution) since {@code useItem()} only ever mutates the acting player's own ItemStack/
+     * hunger/health/effects — no foreign block or entity is ever touched by this specific choke
+     * point (deliberately narrower scope than item-on-block/item-on-entity, which stay untouched
+     * future steps).
+     */
+    public static final boolean PLAYER_USE_ITEM_REGION_EXECUTION =
+            Boolean.parseBoolean(System.getProperty("nestworld.playerUseItemRegionExecution", "false"));
+
+    /**
+     * Phase 11 #31.4 step 4 ({@code ServerPlayerGameMode.useItemOn()}'s item-on-block branch --
+     * {@code ItemStack.useOn(UseOnContext)}, e.g. axe strip/scrape/wax-off) — SEPARATE master
+     * switch from every other #31 flag. Default OFF. Even when true, this alone changes NOTHING
+     * — see {@link PlayerUseItemOnBlockExperiment} for the per-player opt-in set. Owner resolved
+     * by the CLICKED BLOCK's position (matches block interaction, not useItem's player-position
+     * resolution) since this call can mutate a block the player doesn't own.
+     */
+    public static final boolean PLAYER_USE_ITEM_ON_BLOCK_REGION_EXECUTION =
+            Boolean.parseBoolean(System.getProperty("nestworld.playerUseItemOnBlockRegionExecution", "false"));
+
+    /**
+     * Phase 11 #31.4 item-on-entity ({@code ServerGamePacketListenerImpl.handleInteract()}'s
+     * {@code onInteraction(hand)}/{@code onInteraction(hand, vec)} branches -- {@code
+     * Entity.interact()}/{@code interactAt()}, e.g. animal breeding/taming, milking, armor
+     * stand/item frame) — SEPARATE master switch from every other #31 flag. Default OFF. Even
+     * when true, this alone changes NOTHING — see {@link PlayerEntityInteractExperiment} for the
+     * per-player opt-in set. Owner resolved by the TARGET ENTITY's CURRENT ownership ({@code
+     * WorldGrid.findOwningRegion}), not position — unlike {@link #PLAYER_ATTACK_REGION_EXECUTION},
+     * since {@code interact()}/{@code interactAt()} mutate the target entity's fields directly
+     * with no {@link EntityMutationHelper}-style safety net inside them.
+     */
+    public static final boolean PLAYER_ENTITY_INTERACT_REGION_EXECUTION =
+            Boolean.parseBoolean(System.getProperty("nestworld.playerEntityInteractRegionExecution", "false"));
 
     /**
      * Phase 2 / Folia step — regionalise the entity tracker (EXPERIMENTAL, default off). Instead of
@@ -1166,6 +1427,23 @@ public final class NestworldTuning {
      */
     public static final boolean FLOATING_KICK_ENABLED =
             readServerPropertyBoolean("nestworld-floating-kick-enabled", true);
+
+    /**
+     * TESTING-ONLY escape hatch (2026-08-30): skips Forge's FML2 mod-list negotiation
+     * ({@code NetworkHooks.tickNegotiation}) entirely, jumping straight to {@code
+     * READY_TO_ACCEPT}. A real modded pack rejects any client that doesn't speak the FML2
+     * handshake ("This server has mods that require Forge to be installed on the client"),
+     * which blocks plain vanilla-protocol load-test bots (mineflayer has no FML2 client
+     * support). This bypass is orthogonal to what those load tests measure (region/tick/
+     * network CPU behavior under a real mod-driven world, not client mod-compat), so it
+     * lets bots reach in-game state without pretending to be a modded client. Default OFF —
+     * never touch a real player-facing deployment with this on; a bot that skips negotiation
+     * never receives per-mod channel/config setup, so any mod that assumes negotiation
+     * completed may throw when talking to that connection (acceptable log noise in a
+     * bot-only test session, not acceptable for real players).
+     */
+    public static final boolean BYPASS_FORGE_HANDSHAKE =
+            Boolean.getBoolean("nestworld.bypassForgeHandshake");
 
     /**
      * Reads a single key out of {@code server.properties} in the server's working

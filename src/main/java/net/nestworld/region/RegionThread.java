@@ -184,6 +184,22 @@ public class RegionThread extends Thread {
      */
     public void requestTick(CountDownLatch latch) {
         synchronized (tickSignal) {
+            // NestWorld: full-core-audit finding (2026-08-27) -- see the `busy` field's
+            // comment. If this thread is still executing a PRIOR round (e.g. stuck in a slow/
+            // hung mod tick past the pool's own await timeout), do NOT overwrite tickLatch --
+            // that would silently lose whatever dispatch is already sitting there unconsumed
+            // and, more importantly, this thread might still be actively mutating shared state
+            // from the old round even after the pool believes it's safe to proceed. Count the
+            // caller's latch down immediately instead (matches how a timed-out awaitLatch()
+            // already treats an unresponsive region -- proceed without it) so the main thread's
+            // own wait doesn't hang on a dispatch we're refusing to accept.
+            if (busy.get()) {
+                LOGGER.warn("NestWorld: region {} still busy from a prior round -- skipping this "
+                        + "tick dispatch instead of overwriting its pending latch (see project "
+                        + "memory p2-regionthreadpool-barrier-audit.md)", region.getId());
+                latch.countDown();
+                return;
+            }
             tickLatch = latch;
             tickSignal.notifyAll();
         }
@@ -196,6 +212,16 @@ public class RegionThread extends Thread {
      */
     public void requestWork(java.util.List<Runnable> work, CountDownLatch latch) {
         synchronized (tickSignal) {
+            // NestWorld: see requestTick()'s comment -- same busy-check, same reasoning. The
+            // skipped work batch (e.g. due scheduled block ticks) is not permanently lost: its
+            // source re-evaluates "what's due" fresh next round, it just doesn't run THIS round.
+            if (busy.get()) {
+                LOGGER.warn("NestWorld: region {} still busy from a prior round -- skipping this "
+                        + "work dispatch instead of overwriting its pending batch (see project "
+                        + "memory p2-regionthreadpool-barrier-audit.md)", region.getId());
+                latch.countDown();
+                return;
+            }
             pendingWork = work;
             tickLatch = latch;
             tickSignal.notifyAll();
@@ -229,9 +255,24 @@ public class RegionThread extends Thread {
                 if (!running) break; // genuine shutdown
                 continue; // woken by a free-running toggle instead — loop back and branch above
             }
-            runOneTick(dispatched.latch(), dispatched.work());
+            // NestWorld: full-core-audit finding (2026-08-27), re-confirming
+            // p2-regionthreadpool-barrier-audit.md (2026-08-12, previously deferred): mark this
+            // thread busy for the FULL duration of runOneTick(), not just while dispatched --
+            // requestTick()/requestWork() below check this and refuse to silently overwrite
+            // tickLatch/pendingWork while still true, instead of clobbering a dispatch this
+            // thread hasn't consumed yet (the root cause NestworldTickOwnership's own javadoc
+            // cites for the second confirmed LevelTicks production crash).
+            busy.set(true);
+            try {
+                runOneTick(dispatched.latch(), dispatched.work());
+            } finally {
+                busy.set(false);
+            }
         }
     }
+
+    /** True for the full duration of a runOneTick() call — see requestTick()/requestWork(). */
+    private final java.util.concurrent.atomic.AtomicBoolean busy = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     /** Persists across calls — the next scheduled local-tick deadline, self-paced. */
     private long freeRunningNextTickNanos = 0;
@@ -382,6 +423,14 @@ public class RegionThread extends Thread {
                     applyPendingEntityImpacts();
                     applyPendingEntityPushes();
                     applyPendingEntityMutations();
+                    applyPendingPlayerInputs();
+                    applyPendingPlayerAttacks();
+                    RegionLoopProbe.tick(region.getId());
+                    applyPendingPlayerBlockInteractions();
+                    applyPendingPlayerUseItems();
+                    applyPendingPlayerUseItemOnBlock();
+                    applyPendingPlayerUseControl();
+                    applyPendingPlayerEntityInteractions();
                     region.nestworldFlushOutboundPending(NestworldTuning.MAILBOX_BACKPRESSURE_FLUSH_BUDGET);
                     long e0 = System.nanoTime();
                     tickEntities();
@@ -581,25 +630,142 @@ public class RegionThread extends Thread {
         for (RegionMessage<?> msg : region.nestworldDrainMailbox(RegionMessage.Type.ENTITY_MUTATE)) {
             RegionMessage.EntityMutate mutate = (RegionMessage.EntityMutate) msg.payload();
             try {
-                net.minecraft.world.entity.Entity entity = level.getEntity(mutate.entityId());
-                if (entity != null && !entity.isRemoved()) {
-                    EntityMutationOp op = mutate.op();
-                    if (op instanceof EntityMutationOp.Damage d) {
-                        entity.hurt(d.source(), d.amount());
-                    } else if (op instanceof EntityMutationOp.AddEffect e) {
-                        if (entity instanceof net.minecraft.world.entity.LivingEntity le) {
-                            le.addEffect(e.effect(), e.source());
-                        }
-                    } else if (op instanceof EntityMutationOp.Ignite i) {
-                        entity.setSecondsOnFire(i.seconds());
-                    } else if (op instanceof EntityMutationOp.ExtinguishFire) {
-                        entity.extinguishFire();
-                    }
-                }
+                // Phase 9.2 (EntityMutationDispatcher): re-validates target existence AND current
+                // ownership fresh before applying, instead of trusting this mailbox's own
+                // destination as ground truth -- see EntityMutationDispatcher.applyQueued's
+                // javadoc for why (a split/merge/handover between send and apply used to be
+                // silently ignored here).
+                EntityMutationDispatcher.applyQueued(mutate.entityId(), mutate.op(), mutate.rerouteHops(), region, level);
             } catch (Throwable t) {
                 LOGGER.warn("Deferred entity mutation on {} failed: {}", mutate.entityId(), t.toString());
             }
             MailboxAudit.recordApplied(msg.auditId(), region, RegionMessage.Type.ENTITY_MUTATE);
+        }
+    }
+
+    /** Phase 11 #31.2 — SHADOW MODE ONLY (docs/PHASE11_PLAYER_REGION_EXECUTION_SPEC.md): drains
+     *  and validates queued player-input snapshots. Does not mutate anything -- see
+     *  PlayerInputDispatcher.applyQueued's javadoc. No-op entirely (mailbox will always be empty)
+     *  when NestworldTuning.PLAYER_INPUT_REGION_EXECUTION is off, since nothing gets posted. */
+    private void applyPendingPlayerInputs() {
+        for (RegionMessage<?> msg : region.nestworldDrainMailbox(RegionMessage.Type.PLAYER_INPUT)) {
+            RegionMessage.PlayerInput input = (RegionMessage.PlayerInput) msg.payload();
+            try {
+                PlayerInputDispatcher.applyQueued(input, region, level);
+            } catch (Throwable t) {
+                LOGGER.warn("Player input shadow-apply for {} failed: {}", input.playerId(), t.toString());
+            }
+            MailboxAudit.recordApplied(msg.auditId(), region, RegionMessage.Type.PLAYER_INPUT);
+        }
+    }
+
+    /** Phase 11 #31.4 — drains and applies queued {@code Player.attack()} calls routed here for
+     *  a per-player opt-in set. See {@link RegionMessage.Type#PLAYER_ATTACK}'s javadoc for why
+     *  this uses a real mailbox instead of {@code RegionThreadPool.runWorkRound()}. */
+    private void applyPendingPlayerAttacks() {
+        for (RegionMessage<?> msg : region.nestworldDrainMailbox(RegionMessage.Type.PLAYER_ATTACK)) {
+            RegionMessage.PlayerAttack attack = (RegionMessage.PlayerAttack) msg.payload();
+            try {
+                PlayerAttackDispatcher.applyQueued(attack, region, level);
+            } catch (Throwable t) {
+                LOGGER.warn("Player attack apply for {} on {} failed: {}",
+                        attack.attackerId(), attack.targetId(), t.toString());
+            }
+            MailboxAudit.recordApplied(msg.auditId(), region, RegionMessage.Type.PLAYER_ATTACK);
+        }
+    }
+
+    /** Phase 11 #31.4 step 2 — drains and applies queued block interactions ({@code
+     *  BlockState.use()}, lever/button/door-class) for a per-player opt-in set. Unlike every
+     *  other {@code applyPendingXxx()} here, {@link PlayerInteractionDispatcher#applyQueued}
+     *  itself counts down the message's result latch (in a finally block) even on failure --
+     *  the waiting main thread must always be released, never left blocked until its own
+     *  timeout fires unnecessarily. */
+    /** Position-based resolve for a player's OWN region -- used only to classify a sync-dispatch
+     *  apply as same/cross-region for {@link PlayerInteractionWaitBudget}'s latency distribution
+     *  (2026-08-28 measurement request), never for ownership/routing decisions. */
+    private WorldRegion nestworldResolvePlayerOwnRegion(java.util.UUID playerId) {
+        net.minecraft.server.level.ServerPlayer p = level.getServer().getPlayerList().getPlayer(playerId);
+        if (p == null || !NestworldRegionSystem.isInitialised()) {
+            return null;
+        }
+        int cx = ((int) Math.floor(p.getX())) >> 4;
+        int cz = ((int) Math.floor(p.getZ())) >> 4;
+        return NestworldRegionSystem.get().getDimensionRegion(level).getGrid().getRegionForChunk(cx, cz);
+    }
+
+    private void applyPendingPlayerBlockInteractions() {
+        java.util.List<RegionMessage<?>> drained = region.nestworldDrainMailbox(RegionMessage.Type.PLAYER_BLOCK_INTERACTION);
+        for (RegionMessage<?> msg : drained) {
+            RegionMessage.BlockInteraction interaction = (RegionMessage.BlockInteraction) msg.payload();
+            PlayerInteractionWaitBudget.recordApplyLatencySplit(msg.ageNanos(),
+                    region == nestworldResolvePlayerOwnRegion(interaction.playerId()));
+            PlayerInteractionDispatcher.applyQueued(interaction, region, level);
+            MailboxAudit.recordApplied(msg.auditId(), region, RegionMessage.Type.PLAYER_BLOCK_INTERACTION);
+        }
+    }
+
+    /** Phase 11 #31.4 step 3 — drains and applies queued {@code useItem()} calls for a per-player
+     *  opt-in set. Same real-mailbox-not-runWorkRound reasoning as {@link
+     *  #applyPendingPlayerBlockInteractions}. */
+    private void applyPendingPlayerUseItems() {
+        java.util.List<RegionMessage<?>> drained = region.nestworldDrainMailbox(RegionMessage.Type.PLAYER_USE_ITEM);
+        for (RegionMessage<?> msg : drained) {
+            RegionMessage.UseItem useItem = (RegionMessage.UseItem) msg.payload();
+            PlayerInteractionWaitBudget.recordApplyLatencySplit(msg.ageNanos(),
+                    region == nestworldResolvePlayerOwnRegion(useItem.playerId()));
+            PlayerUseItemDispatcher.applyQueued(useItem, region, level);
+            MailboxAudit.recordApplied(msg.auditId(), region, RegionMessage.Type.PLAYER_USE_ITEM);
+        }
+    }
+
+    /** Phase 11 #31.4 step 4 — drains and applies queued {@code useOn()} (item-on-block) calls
+     *  for a per-player opt-in set. Same real-mailbox reasoning as the other #31.4 steps. */
+    private void applyPendingPlayerUseItemOnBlock() {
+        java.util.List<RegionMessage<?>> drained = region.nestworldDrainMailbox(RegionMessage.Type.PLAYER_USE_ITEM_ON_BLOCK);
+        for (RegionMessage<?> msg : drained) {
+            RegionMessage.UseItemOnBlock useItemOnBlock = (RegionMessage.UseItemOnBlock) msg.payload();
+            PlayerInteractionWaitBudget.recordApplyLatencySplit(msg.ageNanos(),
+                    region == nestworldResolvePlayerOwnRegion(useItemOnBlock.playerId()));
+            PlayerUseItemOnBlockDispatcher.applyQueued(useItemOnBlock, region, level);
+            MailboxAudit.recordApplied(msg.auditId(), region, RegionMessage.Type.PLAYER_USE_ITEM_ON_BLOCK);
+        }
+    }
+
+    /** Phase 11 #31.3/#31.4 player-action-ownership hardening — drains and applies queued
+     *  {@code releaseUsingItem()}/{@code stopUsingItem()} control ops for players whose tick
+     *  already runs on this region via {@link PlayerTickExperiment}. See {@link
+     *  RegionMessage.Type#PLAYER_USE_CONTROL}'s javadoc: fire-and-forget, no result channel,
+     *  so unlike its neighbors here there is no {@code claimed}/latch — {@code msg.ageNanos()}
+     *  is read for {@link PlayerUseControlTiming}'s mailbox-latency visibility since the packet
+     *  handler that posted it never waits for a result and has no other way to observe it. */
+    private void applyPendingPlayerUseControl() {
+        java.util.List<RegionMessage<?>> drained = region.nestworldDrainMailbox(RegionMessage.Type.PLAYER_USE_CONTROL);
+        for (RegionMessage<?> msg : drained) {
+            RegionMessage.UseControl control = (RegionMessage.UseControl) msg.payload();
+            try {
+                PlayerUseControlDispatcher.applyQueued(control, region, level, msg.ageNanos());
+            } catch (Throwable t) {
+                LOGGER.warn("Player use-control apply for {} ({}) failed: {}",
+                        control.playerId(), control.op(), t.toString());
+            }
+            MailboxAudit.recordApplied(msg.auditId(), region, RegionMessage.Type.PLAYER_USE_CONTROL);
+        }
+    }
+
+    /** Phase 11 #31.4 item-on-entity — drains and applies queued {@code Entity.interact()}/
+     *  {@code interactAt()} calls for a per-player opt-in set. Same real-mailbox reasoning as the
+     *  other #31.4 steps; owner is the TARGET entity's current region, not the region this thread
+     *  happens to be, so no ownership-mismatch fallback loop here -- {@code applyQueued} itself
+     *  re-checks and no-ops (leaving {@code resultRef} unset -> main-thread fallback) if stale. */
+    private void applyPendingPlayerEntityInteractions() {
+        java.util.List<RegionMessage<?>> drained = region.nestworldDrainMailbox(RegionMessage.Type.PLAYER_ENTITY_INTERACT);
+        for (RegionMessage<?> msg : drained) {
+            RegionMessage.EntityInteract interact = (RegionMessage.EntityInteract) msg.payload();
+            PlayerInteractionWaitBudget.recordApplyLatencySplit(msg.ageNanos(),
+                    region == nestworldResolvePlayerOwnRegion(interact.playerId()));
+            EntityInteractionDispatcher.applyQueued(interact, region, level);
+            MailboxAudit.recordApplied(msg.auditId(), region, RegionMessage.Type.PLAYER_ENTITY_INTERACT);
         }
     }
 

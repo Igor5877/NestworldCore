@@ -1,6 +1,6 @@
 --- a/net/minecraft/world/level/block/Block.java
 +++ b/net/minecraft/world/level/block/Block.java
-@@ -61,10 +_,11 @@
+@@ -61,11 +_,18 @@
  import net.minecraft.world.phys.shapes.VoxelShape;
  import org.slf4j.Logger;
  
@@ -9,11 +9,19 @@
     private static final Logger f_49790_ = LogUtils.getLogger();
     private final Holder.Reference<Block> f_204296_ = BuiltInRegistries.f_256975_.m_203693_(this);
 -   public static final IdMapper<BlockState> f_49791_ = new IdMapper<>();
+-   private static final LoadingCache<VoxelShape, Boolean> f_49785_ = CacheBuilder.newBuilder().maximumSize(512L).weakKeys().build(new CacheLoader<VoxelShape, Boolean>() {
 +   @Deprecated //Forge: Do not use, use GameRegistry
 +   public static final IdMapper<BlockState> f_49791_ = net.minecraftforge.registries.GameData.getBlockStateIDMap();
-    private static final LoadingCache<VoxelShape, Boolean> f_49785_ = CacheBuilder.newBuilder().maximumSize(512L).weakKeys().build(new CacheLoader<VoxelShape, Boolean>() {
++   // NestWorld: default Guava concurrencyLevel is 4 lock-striped segments -- under both parallel
++   // registry-bake initCache() (see registry-bake-parallel-init-cache.md) and NestworldCore's
++   // concurrent per-dimension-region ticking (every region thread calls isShapeFullBlock via
++   // isFaceSturdy/propagatesSkylightDown etc.), that's a real, directly-observed contention point
++   // (SIGQUIT thread dump caught `main` blocked in LocalCache$Segment.lockedGetOrLoad here). Pure
++   // Guava lock-striping tuning parameter -- does not change eviction policy or cache semantics.
++   private static final LoadingCache<VoxelShape, Boolean> f_49785_ = CacheBuilder.newBuilder().concurrencyLevel(64).maximumSize(512L).weakKeys().build(new CacheLoader<VoxelShape, Boolean>() {
        public Boolean load(VoxelShape p_49972_) {
           return !Shapes.m_83157_(Shapes.m_83144_(), p_49972_, BooleanOp.f_82687_);
+       }
 @@ -176,7 +_,7 @@
              f_49790_.error("Block classes should end with Block and {} doesn't.", (Object)s);
           }

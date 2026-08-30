@@ -55,11 +55,30 @@
        }
  
        return blockentity;
-@@ -330,6 +_,7 @@
+@@ -322,7 +_,12 @@
+ 
+    public void m_142170_(BlockEntity p_156391_) {
+       this.m_142169_(p_156391_);
+-      if (this.m_156370_()) {
++      boolean nestworldInLevel = this.m_156370_();
++      if (net.nestworld.region.NestworldDimensionRegion.nestworldMatchesTracePos(p_156391_.m_58899_())) {
++         f_62771_.info("NestWorld #28 trace: addAndRegisterBlockEntity {} on [{}] loaded={} isInLevel={} status={}",
++               p_156391_.m_58899_(), Thread.currentThread().getName(), this.f_62775_, nestworldInLevel, this.m_287138_());
++      }
++      if (nestworldInLevel) {
+          Level level = this.f_62776_;
+          if (level instanceof ServerLevel) {
+             ServerLevel serverlevel = (ServerLevel)level;
+@@ -330,6 +_,12 @@
           }
  
           this.m_156406_(p_156391_);
 +         p_156391_.onLoad();
++         if (net.nestworld.region.NestworldDimensionRegion.nestworldMatchesTracePos(p_156391_.m_58899_())) {
++            f_62771_.info("NestWorld #28 trace: updateBlockEntityTicker+onLoad DID run for {}", p_156391_.m_58899_());
++         }
++      } else if (net.nestworld.region.NestworldDimensionRegion.nestworldMatchesTracePos(p_156391_.m_58899_())) {
++         f_62771_.info("NestWorld #28 trace: SKIPPED updateBlockEntityTicker+onLoad for {} (isInLevel was false)", p_156391_.m_58899_());
        }
  
     }

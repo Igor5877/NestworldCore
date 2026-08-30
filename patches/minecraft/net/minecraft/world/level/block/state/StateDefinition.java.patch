@@ -1,0 +1,74 @@
+--- a/net/minecraft/world/level/block/state/StateDefinition.java
++++ b/net/minecraft/world/level/block/state/StateDefinition.java
+@@ -42,7 +_,6 @@
+       }
+ 
+       MapCodec<S> mapcodec1 = mapcodec;
+-      Map<Map<Property<?>, Comparable<?>>, S> map = Maps.newLinkedHashMap();
+       List<S> list = Lists.newArrayList();
+       Stream<List<Pair<Property<?>, Comparable<?>>>> stream = Stream.of(Collections.emptyList());
+ 
+@@ -56,15 +_,54 @@
+          });
+       }
+ 
+-      stream.forEach((p_61063_) -> {
+-         ImmutableMap<Property<?>, Comparable<?>> immutablemap = p_61063_.stream().collect(ImmutableMap.toImmutableMap(Pair::getFirst, Pair::getSecond));
+-         S s1 = p_61054_.m_61106_(p_61053_, immutablemap, mapcodec1);
+-         map.put(immutablemap, s1);
+-         list.add(s1);
+-      });
+-
+-      for(S s : list) {
+-         s.m_61133_(map);
++      if (net.nestworld.compat.NestworldModCompat.MODERNFIX_PRESENT) {
++         // NestWorld: ModernFix's modernfix-common.mixins.json:
++         // perf.state_definition_construct.StateDefinitionMixin @ModifyVariable-s a local variable
++         // in THIS constructor by slot index/ordinal, expecting the original
++         // Map<Map<Property,Comparable>,S> shape below -- our List-keyed fast path (see the else
++         // branch) shifts local-variable slots and changes the type, which broke live on ATM9
++         // (420-mod real pack, 2026-08-27) alongside the onBake incompatibility (see project memory
++         // phase2-modernfix-compat and GameData.BlockCallbacks#onBake). Keep this branch
++         // byte-for-byte identical to unpatched vanilla when ModernFix is present.
++         Map<Map<Property<?>, Comparable<?>>, S> map = Maps.newLinkedHashMap();
++         stream.forEach((p_61063_) -> {
++            ImmutableMap<Property<?>, Comparable<?>> immutablemap = p_61063_.stream().collect(ImmutableMap.toImmutableMap(Pair::getFirst, Pair::getSecond));
++            S s1 = p_61054_.m_61106_(p_61053_, immutablemap, mapcodec1);
++            map.put(immutablemap, s1);
++            list.add(s1);
++         });
++         for(S s : list) {
++            s.m_61133_(map);
++         }
++      } else {
++         // NestWorld: keyed by the property VALUES in propertiesByName's fixed sorted-by-name order
++         // (a List<Comparable<?>>), not by the full Map<Property,Comparable> combination itself.
++         // Map.hashCode()/equals() (AbstractMap) are order-independent sum/XOR + per-entry get()
++         // lookups -- for property-heavy blocks this measurably treeifies this LinkedHashMap's
++         // buckets (confirmed live via SIGQUIT thread dump: HashMap$TreeNode.find/AbstractMap.equals
++         // dominating main during mod construction, see project memory
++         // startup-profiler-phase1-shipped.md). List.hashCode() is a well-distributed polynomial
++         // rolling hash over the same values, same lookup semantics, far fewer collisions. Purely an
++         // internal lookup-key swap -- every state's `values` map iterates in this exact same
++         // propertiesByName order by construction (see immutablemap below), so a state's own
++         // value-list is always comparable, position-for-position, against this key.
++         int nestworldExpectedStates = 1;
++         for (Property<?> nestworldProperty : this.f_61048_.values()) {
++            nestworldExpectedStates *= nestworldProperty.m_6908_().size();
++         }
++         Map<List<Comparable<?>>, S> map = Maps.newLinkedHashMapWithExpectedSize(nestworldExpectedStates);
++         stream.forEach((p_61063_) -> {
++            ImmutableMap<Property<?>, Comparable<?>> immutablemap = p_61063_.stream().collect(ImmutableMap.toImmutableMap(Pair::getFirst, Pair::getSecond));
++            S s1 = p_61054_.m_61106_(p_61053_, immutablemap, mapcodec1);
++            // NestWorld: immutablemap's iteration order is always propertiesByName's sorted order
++            // (built by appending properties in that same order above), so .values() here is
++            // exactly the canonical value-list key.
++            map.put(List.copyOf(immutablemap.values()), s1);
++            list.add(s1);
++         });
++         for(S s : list) {
++            s.nestworldPopulateNeighboursFast(map);
++         }
+       }
+ 
+       this.f_61049_ = ImmutableList.copyOf(list);

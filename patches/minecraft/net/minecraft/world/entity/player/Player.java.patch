@@ -251,21 +251,64 @@
                 }
  
                 float f4 = 0.0F;
-@@ -1121,8 +_,12 @@
+@@ -1105,11 +_,28 @@
+                }
+ 
+                Vec3 vec3 = p_36347_.m_20184_();
+-               boolean flag5 = p_36347_.m_6469_(this.m_269291_().m_269075_(this), f);
++               // NestWorld: full-core-audit finding (2026-08-27, P0 fix) -- Player.attack() had
++               // zero cross-region ownership guard, the highest-frequency finding of the audit
++               // (every player melee hit). `self` here is the attacking PLAYER, always ticked on
++               // the main thread (deliberately, to avoid rubber-banding -- see
++               // NestworldDimensionRegion's player-tick comment), never a RegionThread, so
++               // EntityMutationHelper.redirectIfForeign's existing guard can't cover this
++               // direction -- use the new redirectFromMainThread instead (see project memory
++               // player-region-ownership-architecture.md for the fuller design discussion).
++               boolean flag5;
++               if (net.nestworld.region.EntityMutationHelper.redirectFromMainThread(p_36347_,
++                       new net.nestworld.region.EntityMutationOp.Damage(this.m_269291_().m_269075_(this), f))) {
++                  flag5 = true;
++               } else {
++                  flag5 = p_36347_.m_6469_(this.m_269291_().m_269075_(this), f);
++               }
+                if (flag5) {
+                   if (i > 0) {
+                      if (p_36347_ instanceof LivingEntity) {
+-                        ((LivingEntity)p_36347_).m_147240_((double)((float)i * 0.5F), (double)Mth.m_14031_(this.m_146908_() * ((float)Math.PI / 180F)), (double)(-Mth.m_14089_(this.m_146908_() * ((float)Math.PI / 180F))));
++                        if (!net.nestworld.region.EntityMutationHelper.redirectFromMainThread(p_36347_,
++                                new net.nestworld.region.EntityMutationOp.Knockback((double)((float)i * 0.5F), (double)Mth.m_14031_(this.m_146908_() * ((float)Math.PI / 180F)), (double)(-Mth.m_14089_(this.m_146908_() * ((float)Math.PI / 180F)))))) {
++                           ((LivingEntity)p_36347_).m_147240_((double)((float)i * 0.5F), (double)Mth.m_14031_(this.m_146908_() * ((float)Math.PI / 180F)), (double)(-Mth.m_14089_(this.m_146908_() * ((float)Math.PI / 180F))));
++                        }
+                      } else {
+                         p_36347_.m_5997_((double)(-Mth.m_14031_(this.m_146908_() * ((float)Math.PI / 180F)) * (float)i * 0.5F), 0.1D, (double)(Mth.m_14089_(this.m_146908_() * ((float)Math.PI / 180F)) * (float)i * 0.5F));
+                      }
+@@ -1121,10 +_,22 @@
                    if (flag3) {
                       float f3 = 1.0F + EnchantmentHelper.m_44821_(this) * f;
  
 -                     for(LivingEntity livingentity : this.m_9236_().m_45976_(LivingEntity.class, p_36347_.m_20191_().m_82377_(1.0D, 0.25D, 1.0D))) {
 -                        if (livingentity != this && livingentity != p_36347_ && !this.m_7307_(livingentity) && (!(livingentity instanceof ArmorStand) || !((ArmorStand)livingentity).m_31677_()) && this.m_20280_(livingentity) < 9.0D) {
+-                           livingentity.m_147240_((double)0.4F, (double)Mth.m_14031_(this.m_146908_() * ((float)Math.PI / 180F)), (double)(-Mth.m_14089_(this.m_146908_() * ((float)Math.PI / 180F))));
+-                           livingentity.m_6469_(this.m_269291_().m_269075_(this), f3);
 +                     for(LivingEntity livingentity : this.m_9236_().m_45976_(LivingEntity.class, this.m_21120_(InteractionHand.MAIN_HAND).getSweepHitBox(this, p_36347_))) {
 +                        // Use entity reach instead of constant 9.0. Vanilla uses bottom center-to-center checks here, so don't update this to use canReach, since it uses closest-corner checks.
 +                        // magic number so required Mixins can still target here
 +                        var reachOld = 9.0;
 +                        var reach = this.m_21133_(net.minecraftforge.common.ForgeMod.ENTITY_REACH.get());
 +                        if (livingentity != this && livingentity != p_36347_ && !this.m_7307_(livingentity) && (!(livingentity instanceof ArmorStand) || !((ArmorStand)livingentity).m_31677_()) && this.m_20280_(livingentity) < reach * reach) {
-                            livingentity.m_147240_((double)0.4F, (double)Mth.m_14031_(this.m_146908_() * ((float)Math.PI / 180F)), (double)(-Mth.m_14089_(this.m_146908_() * ((float)Math.PI / 180F))));
-                            livingentity.m_6469_(this.m_269291_().m_269075_(this), f3);
++                           // NestWorld: per-entity ownership check inside the sweep AoE loop --
++                           // different entities hit by the same sweep can belong to different regions.
++                           if (!net.nestworld.region.EntityMutationHelper.redirectFromMainThread(livingentity,
++                                   new net.nestworld.region.EntityMutationOp.Knockback((double)0.4F, (double)Mth.m_14031_(this.m_146908_() * ((float)Math.PI / 180F)), (double)(-Mth.m_14089_(this.m_146908_() * ((float)Math.PI / 180F)))))) {
++                              livingentity.m_147240_((double)0.4F, (double)Mth.m_14031_(this.m_146908_() * ((float)Math.PI / 180F)), (double)(-Mth.m_14089_(this.m_146908_() * ((float)Math.PI / 180F))));
++                           }
++                           if (!net.nestworld.region.EntityMutationHelper.redirectFromMainThread(livingentity,
++                                   new net.nestworld.region.EntityMutationOp.Damage(this.m_269291_().m_269075_(this), f3))) {
++                              livingentity.m_6469_(this.m_269291_().m_269075_(this), f3);
++                           }
                          }
+                      }
+ 
 @@ -1163,13 +_,15 @@
                    EnchantmentHelper.m_44896_(this, p_36347_);
                    ItemStack itemstack1 = this.m_21205_();

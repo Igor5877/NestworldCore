@@ -1,6 +1,36 @@
 --- a/net/minecraft/world/level/storage/DimensionDataStorage.java
 +++ b/net/minecraft/world/level/storage/DimensionDataStorage.java
-@@ -47,14 +_,29 @@
+@@ -35,26 +_,52 @@
+       return new File(this.f_78146_, p_78157_ + ".dat");
+    }
+ 
++   // NestWorld: Phase 10 #30 global-state audit (docs/PHASE10_GLOBAL_STATE_AUDIT.md, finding G3)
++   // -- get()/set()/save() below were already synchronized(this.cache) by an earlier pass, but
++   // this method's own check-miss-construct-store sequence was NOT, despite calling both: two
++   // region threads racing the FIRST-EVER access to the same key could both see get()==null,
++   // both construct a separate instance via the supplier, and the second set() silently
++   // orphans the first thread's instance (never persisted, never read again). Wrapping the
++   // WHOLE sequence in the same monitor closes this -- Java's synchronized is reentrant, so
++   // the inner get()/set() calls re-acquiring the same monitor from this thread is safe, not a
++   // deadlock.
+    public <T extends SavedData> T m_164861_(Function<CompoundTag, T> p_164862_, Supplier<T> p_164863_, String p_164864_) {
+-      T t = this.m_164858_(p_164862_, p_164864_);
+-      if (t != null) {
+-         return t;
+-      } else {
+-         T t1 = p_164863_.get();
+-         this.m_164855_(p_164864_, t1);
+-         return t1;
++      synchronized (this.f_78144_) {
++         T t = this.m_164858_(p_164862_, p_164864_);
++         if (t != null) {
++            return t;
++         } else {
++            T t1 = p_164863_.get();
++            this.m_164855_(p_164864_, t1);
++            return t1;
++         }
+       }
     }
  
     @Nullable

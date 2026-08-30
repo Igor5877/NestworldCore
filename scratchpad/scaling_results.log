@@ -1,0 +1,39 @@
+
+=== TIER: 20 players ===
+  spawning 20 bots, waiting for connect+spawn settle...
+  RCON setup (gear + opt-in)...
+  There are 20 of a max of 250 players online: ST1, ST9, ST5, ST7, ST3, ST10, ST4, ST14, ST12, ST19, ST17, ST0, ST13, ST16, ST18, ST11, ST15, ST2, ST6, ST8
+  holding 45s under load...
+  MSPT=9.8 TPS=20.0  entitiesAndBE avg=0.184ms max=2.600ms (n=16 samples)
+  NW #31.4 attack timing: main: count=0 totalMs=0.00 avgUs=0.0 | region: count=300 totalMs=99.34 avgUs=331.1
+  NW #31.4 step3 useitem timing: main: count=51 totalMs=2.72 avgUs=53.4 | region: count=267 totalMs=14.58 avgUs=54.6
+  tearing down...
+
+=== TIER: 50 players ===
+  spawning 50 bots, waiting for connect+spawn settle...
+  RCON setup (gear + opt-in)...
+  There are 50 of a max of 250 players online: ST24, ST4, ST5, ST44, ST6, ST37, ST25, ST23, ST31, ST15, ST11, ST14, ST0, ST49, ST17, ST33, ST36, ST47, ST10, ST30, ST2, ST39, ST38, ST41, ST43, ST26, ST19, ST48, ST32, ST46, ST28, ST7, ST29, ST45, ST16, ST20, ST13, ST22, ST9, ST12, ST35, ST18, ST3, ST34, ST42, ST40, ST8, ST21, ST1, ST27
+  holding 45s under load...
+  MSPT=28.2 TPS=20.0  entitiesAndBE avg=0.140ms max=2.600ms (n=24 samples)
+  NW #31.4 attack timing: main: count=0 totalMs=0.00 avgUs=0.0 | region: count=757 totalMs=586.07 avgUs=774.2
+  NW #31.4 step3 useitem timing: main: count=10 totalMs=0.24 avgUs=24.3 | region: count=774 totalMs=20.32 avgUs=26.3
+  tearing down...
+
+=== TIER: 80 players ===
+  spawning 80 bots, waiting for connect+spawn settle...
+  RCON setup (gear + opt-in)...
+  [setup batch 60-80 attempt 1 failed: unpack requires a buffer of 4 bytes, retrying]
+  [setup batch 60-80 attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [setup batch 60-80 attempt 3 failed: [Errno 111] Connection refused, retrying]
+  tearing down...
+
+TIER 80 FAILED: setup batch 60-80 failed after 3 attempts. Stopping further tiers.
+
+
+=== SUMMARY ===
+n=  20  MSPT=9.8  TPS=20.0  entitiesAndBE avg=0.184ms max=2.600ms
+          NW #31.4 attack timing: main: count=0 totalMs=0.00 avgUs=0.0 | region: count=300 totalMs=99.34 avgUs=331.1
+          NW #31.4 step3 useitem timing: main: count=51 totalMs=2.72 avgUs=53.4 | region: count=267 totalMs=14.58 avgUs=54.6
+n=  50  MSPT=28.2  TPS=20.0  entitiesAndBE avg=0.140ms max=2.600ms
+          NW #31.4 attack timing: main: count=0 totalMs=0.00 avgUs=0.0 | region: count=757 totalMs=586.07 avgUs=774.2
+          NW #31.4 step3 useitem timing: main: count=10 totalMs=0.24 avgUs=24.3 | region: count=774 totalMs=20.32 avgUs=26.3

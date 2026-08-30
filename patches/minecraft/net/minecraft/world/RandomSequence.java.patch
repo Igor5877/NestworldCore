@@ -1,0 +1,55 @@
+--- a/net/minecraft/world/RandomSequence.java
++++ b/net/minecraft/world/RandomSequence.java
+@@ -31,7 +_,51 @@
+       return RandomSupport.m_288212_(p_288989_.toString());
+    }
+ 
++   // NestWorld: full-core-audit finding (2026-08-27) -- random() used to hand back `this.source`
++   // directly, a shared MUTABLE XoroshiroRandomSource. RandomSequence instances are held in a
++   // ConcurrentHashMap keyed by ResourceLocation (Level.getRandomSequence) and reused across
++   // callers -- the map's own thread-safety only protects the LOOKUP, not the RNG's internal
++   // seedLo/seedHi state once two region threads hold the SAME sequence and call methods on the
++   // returned RandomSource concurrently (a genuine unsynchronized read-modify-write race).
++   // Wrapping every primitive call under a lock on `source` closes that -- default methods on
++   // the interface (triangle/consumeCount/nextInt(int,int)) compose from these already-locked
++   // primitives, so they're still individually race-free even though a single high-level call
++   // isn't atomic as a whole (matches this interface's existing single-consumer-only design;
++   // no vanilla caller ever assumed cross-thread atomicity for a multi-step draw either).
++   private final RandomSource nestworldSyncedSource = new RandomSource() {
++      public RandomSource m_213769_() {
++         synchronized (f_287004_) { return f_287004_.m_213769_(); }
++      }
++      public net.minecraft.world.level.levelgen.PositionalRandomFactory m_188582_() {
++         synchronized (f_287004_) { return f_287004_.m_188582_(); }
++      }
++      public void m_188584_(long p_seed) {
++         synchronized (f_287004_) { f_287004_.m_188584_(p_seed); }
++      }
++      public int m_188502_() {
++         synchronized (f_287004_) { return f_287004_.m_188502_(); }
++      }
++      public int m_188503_(int p_bound) {
++         synchronized (f_287004_) { return f_287004_.m_188503_(p_bound); }
++      }
++      public long m_188505_() {
++         synchronized (f_287004_) { return f_287004_.m_188505_(); }
++      }
++      public boolean m_188499_() {
++         synchronized (f_287004_) { return f_287004_.m_188499_(); }
++      }
++      public float m_188501_() {
++         synchronized (f_287004_) { return f_287004_.m_188501_(); }
++      }
++      public double m_188500_() {
++         synchronized (f_287004_) { return f_287004_.m_188500_(); }
++      }
++      public double m_188583_() {
++         synchronized (f_287004_) { return f_287004_.m_188583_(); }
++      }
++   };
++
+    public RandomSource m_287244_() {
+-      return this.f_287004_;
++      return this.nestworldSyncedSource;
+    }
+ }

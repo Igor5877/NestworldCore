@@ -1,5 +1,36 @@
 --- a/net/minecraft/world/level/storage/PrimaryLevelData.java
 +++ b/net/minecraft/world/level/storage/PrimaryLevelData.java
+@@ -54,8 +_,11 @@
+    private int f_78447_;
+    private int f_78448_;
+    private float f_78449_;
+-   private long f_78450_;
+-   private long f_78451_;
++   // NestWorld: P1 ownership audit -- region-thread mod code reads these every tick while
++   // ServerLevel.tick() writes them on main; volatile gives visibility without a lock (low
++   // write frequency, single-writer, so no read-modify-write race to fix, only staleness).
++   private volatile long f_78450_;
++   private volatile long f_78451_;
+    @Nullable
+    private final DataFixer f_78452_;
+    private final int f_78453_;
+@@ -63,11 +_,11 @@
+    @Nullable
+    private CompoundTag f_78455_;
+    private final int f_78456_;
+-   private int f_78457_;
+-   private boolean f_78458_;
+-   private int f_78459_;
+-   private boolean f_78460_;
+-   private int f_78461_;
++   private volatile int f_78457_;
++   private volatile boolean f_78458_;
++   private volatile int f_78459_;
++   private volatile boolean f_78460_;
++   private volatile int f_78461_;
+    private boolean f_78462_;
+    private boolean f_78463_;
+    private WorldBorder.Settings f_78464_;
 @@ -82,6 +_,7 @@
     private boolean f_78440_;
     private final Set<String> f_276525_;

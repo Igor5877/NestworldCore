@@ -1,0 +1,19 @@
+--- a/net/minecraft/world/entity/ai/behavior/warden/SonicBoom.java
++++ b/net/minecraft/world/entity/ai/behavior/warden/SonicBoom.java
+@@ -61,7 +_,15 @@
+             }
+ 
+             p_217725_.m_5496_(SoundEvents.f_215771_, 3.0F, 1.0F);
+-            p_217704_.m_6469_(p_217724_.m_269111_().m_269285_(p_217725_), 10.0F);
++            // NestWorld: P1 ownership audit -- target comes from a 15-20 block range memory
++            // lookup, easily cross-region; hurt() redirected via the standard Damage op. The
++            // push() below uses a custom force vector (direction + distance-scaled magnitude,
++            // including a Y component) that no existing helper accepts -- same known, deferred,
++            // lower-severity gap as EnderDragon.knockBack()'s custom-vector push.
++            if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(p_217725_, p_217704_,
++                    new net.nestworld.region.EntityMutationOp.Damage(p_217724_.m_269111_().m_269285_(p_217725_), 10.0F))) {
++               p_217704_.m_6469_(p_217724_.m_269111_().m_269285_(p_217725_), 10.0F);
++            }
+             double d1 = 0.5D * (1.0D - p_217704_.m_21133_(Attributes.f_22278_));
+             double d0 = 2.5D * (1.0D - p_217704_.m_21133_(Attributes.f_22278_));
+             p_217704_.m_5997_(vec32.m_7096_() * d0, vec32.m_7098_() * d1, vec32.m_7094_() * d0);

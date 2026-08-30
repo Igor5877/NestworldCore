@@ -8,3 +8,18 @@
        this.m_6532_(hitresult);
        double d0 = this.m_20185_() + vec3.f_82479_;
        double d1 = this.m_20186_() + vec3.f_82480_;
+@@ -54,7 +_,13 @@
+       super.m_5790_(p_37241_);
+       Entity entity = this.m_19749_();
+       if (entity instanceof LivingEntity livingentity) {
+-         p_37241_.m_82443_().m_6469_(this.m_269291_().m_269299_(this, livingentity), 1.0F);
++         // NestWorld: P1 ownership audit -- extends Projectile directly (not
++         // AbstractHurtingProjectile/AbstractArrow), never inherited their foreign-hit guard;
++         // same gap ShulkerBullet had.
++         if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, p_37241_.m_82443_(),
++                 new net.nestworld.region.EntityMutationOp.Damage(this.m_269291_().m_269299_(this, livingentity), 1.0F))) {
++            p_37241_.m_82443_().m_6469_(this.m_269291_().m_269299_(this, livingentity), 1.0F);
++         }
+       }
+ 
+    }

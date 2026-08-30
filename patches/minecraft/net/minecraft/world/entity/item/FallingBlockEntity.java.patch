@@ -29,3 +29,19 @@
                    blockpos = blockhitresult.m_82425_();
                    flag1 = true;
                 }
+@@ -227,8 +_,14 @@
+ 
+             DamageSource damagesource = damagesource1;
+             float f = (float)Math.min(Mth.m_14143_((float)i * this.f_149641_), this.f_31940_);
++            // NestWorld: P1 ownership audit -- entities gathered via a live AABB scan every
++            // fall tick, same "can't assume same-region" situation as RamTarget's already-
++            // guarded ram attack; this call site wasn't covered.
+             this.m_9236_().m_6249_(this, this.m_20191_(), predicate).forEach((p_149649_) -> {
+-               p_149649_.m_6469_(damagesource, f);
++               if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, p_149649_,
++                       new net.nestworld.region.EntityMutationOp.Damage(damagesource, f))) {
++                  p_149649_.m_6469_(damagesource, f);
++               }
+             });
+             boolean flag = this.f_31946_.m_204336_(BlockTags.f_13033_);
+             if (flag && f > 0.0F && this.f_19796_.m_188501_() < 0.05F + (float)i * 0.05F) {

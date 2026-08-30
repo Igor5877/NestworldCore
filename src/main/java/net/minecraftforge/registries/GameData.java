@@ -242,6 +242,7 @@ public class GameData {
 
     public static void freezeData()
     {
+        net.nestworld.startup.NestworldStartupProfiler.mark("registry_freeze_start");
         LOGGER.debug(REGISTRIES, "Freezing registries");
         BuiltInRegistries.REGISTRY.stream().filter(r -> r instanceof MappedRegistry).forEach(r -> ((MappedRegistry<?>)r).freeze());
 
@@ -264,6 +265,7 @@ public class GameData {
         fireRemapEvent(ImmutableMap.of(), true);
 
         LOGGER.debug(REGISTRIES, "All registries frozen");
+        net.nestworld.startup.NestworldStartupProfiler.mark("registry_freeze_done");
     }
 
     public static void revertToFrozen() {
@@ -437,15 +439,57 @@ public class GameData {
             @SuppressWarnings("unchecked")
             ClearableObjectIntIdentityMap<BlockState> blockstateMap = owner.getSlaveMap(BLOCKSTATE_TO_ID, ClearableObjectIntIdentityMap.class);
 
-            for (Block block : owner)
+            if (net.nestworld.compat.NestworldModCompat.MODERNFIX_PRESENT)
             {
-                for (BlockState state : block.getStateDefinition().getPossibleStates())
+                // NestWorld: ModernFix ships its own onBake optimization as a Mixin
+                // @Redirect targeting the literal `state.initCache()` INVOKE call site
+                // inside this method (modernfix-forge.mixins.json:
+                // perf.reduce_blockstate_cache_rebuilds.BlockCallbacksMixin, a mandatory
+                // injector). Our parallel-split version below moves that call out of this
+                // method's own bytecode entirely (into a method reference passed to
+                // parallelStream), so ModernFix's @Redirect finds zero matches and
+                // crashes the whole server at boot -- confirmed live on ATM9 (420-mod
+                // real pack, 2026-08-27), see project memory phase2-modernfix-compat.
+                // Keep this branch byte-for-byte identical to unpatched vanilla so
+                // ModernFix's own (separately maintained) optimization takes over
+                // cleanly instead.
+                for (Block block : owner)
                 {
-                    blockstateMap.add(state);
-                    state.initCache();
-                }
+                    for (BlockState state : block.getStateDefinition().getPossibleStates())
+                    {
+                        blockstateMap.add(state);
+                        state.initCache();
+                    }
 
-                block.getLootTable();
+                    block.getLootTable();
+                }
+            }
+            else
+            {
+                // NestWorld: split what used to be one sequential loop into two passes.
+                // Profiled live (thread dump during boot of a real 197-mod pack): this
+                // method dominates a big chunk of boot time, entirely on the main thread,
+                // while the mod-loading worker pool sits idle -- see project memory
+                // registry-bake-parallel-init-cache.md. blockstateMap.add(state) assigns
+                // SEQUENTIAL integer ids and MUST stay single-threaded and in this exact
+                // per-block/per-state order -- some mods persist these ids, so
+                // nondeterministic ordering across boots risks world-save incompatibility.
+                // state.initCache() (collision shapes etc., the actually expensive part --
+                // see BlockBehaviour.BlockStateBase#initCache) only reads/writes THIS
+                // state's own fields, so it's safe as a second, parallel pass once every
+                // state already has its id.
+                java.util.List<BlockState> nestworldAllStates = new java.util.ArrayList<>();
+                for (Block block : owner)
+                {
+                    for (BlockState state : block.getStateDefinition().getPossibleStates())
+                    {
+                        blockstateMap.add(state);
+                        nestworldAllStates.add(state);
+                    }
+
+                    block.getLootTable();
+                }
+                nestworldAllStates.parallelStream().forEach(BlockState::initCache);
             }
             DebugLevelSource.initValidStates();
         }

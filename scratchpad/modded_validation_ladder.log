@@ -1,0 +1,179 @@
+Restarting for clean baseline before n=50...
+
+=== n50 (Modded Validation Ladder) ===
+  [n50] baseline captured: regions=17 oversub=1.25
+  [n50] Phase A JOIN: 11.1s online=49/50
+  [n50] Phase B TELEPORT: 10.1s
+  [n50] Phase C SETTLE: 24.3s stabilized=True
+  [n50 STEADY] TPS=20.0 MSPT=18.3 oversub=2.05 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=21.6 oversub=2.15 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=19.7 oversub=2.1 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=21.2 oversub=2.15 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=23.5 oversub=2.15 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=18.6 oversub=2.05 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=22.6 oversub=2.1 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=17.8 oversub=2.05 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=21.7 oversub=2.1 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=18.1 oversub=2.05 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=23.2 oversub=2.05 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=20.4 oversub=2.05 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=22.4 oversub=2.05 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=23.5 oversub=2.05 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=19.6 oversub=2.05 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=24.3 oversub=2.15 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=18.3 oversub=2.05 netty=16/16
+  [n50 STEADY] TPS=20.0 MSPT=24.2 oversub=2.2 netty=16/16
+  [n50] RESULT D: msptP50=21.6 p95=24.3 tpsAvg=20.0 oversubAvg=2.09 online=50/50 exceptions=100
+Restarting for clean baseline before n=75...
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+
+=== n75 (Modded Validation Ladder) ===
+  [n75] baseline captured: regions=17 oversub=1.25
+  [n75] Phase A JOIN: 14.6s online=59/75
+  [n75] Phase B TELEPORT: 18.2s
+  [n75] Phase C SETTLE: 46.7s stabilized=False
+  [n75 STEADY] TPS=20.0 MSPT=34.2 oversub=2.1 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=39.8 oversub=2.15 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=35.3 oversub=2.05 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=47.8 oversub=2.05 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=32.0 oversub=2.05 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=39.6 oversub=2.1 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=33.6 oversub=2.05 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=33.7 oversub=2.1 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=33.0 oversub=2.1 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=23.1 oversub=2.1 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=41.5 oversub=2.05 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=31.6 oversub=2.2 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=48.3 oversub=2.1 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=42.2 oversub=2.2 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=33.4 oversub=2.05 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=28.4 oversub=2.05 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=22.5 oversub=2.05 netty=16/16
+  [n75 STEADY] TPS=20.0 MSPT=32.9 oversub=2.05 netty=16/16
+  [n75] RESULT D: msptP50=33.7 p95=48.3 tpsAvg=20.0 oversubAvg=2.09 online=75/75 exceptions=150
+Restarting for clean baseline before n=100...
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+
+=== n100 (Modded Validation Ladder) ===
+  [n100] baseline captured: regions=18 oversub=1.25
+  [n100] Phase A JOIN: 20.5s online=96/100
+  [n100] Phase B TELEPORT: 29.8s
+  [n100] Phase C SETTLE: 45.0s stabilized=False
+  [n100 STEADY] TPS=16.3 MSPT=61.4 oversub=2.1 netty=16/16
+  [n100 STEADY] TPS=20.0 MSPT=41.7 oversub=2.1 netty=16/16
+  [n100 STEADY] TPS=16.2 MSPT=61.9 oversub=2.05 netty=16/16
+  [n100 STEADY] TPS=20.0 MSPT=40.5 oversub=2.1 netty=16/16
+  [n100 STEADY] TPS=17.9 MSPT=55.8 oversub=2.1 netty=16/16
+  [n100 STEADY] TPS=17.9 MSPT=56.0 oversub=2.15 netty=16/16
+  [n100 STEADY] TPS=17.2 MSPT=58.1 oversub=2.05 netty=16/16
+  [n100 STEADY] TPS=16.4 MSPT=60.9 oversub=2.1 netty=16/16
+  [n100 STEADY] TPS=19.9 MSPT=50.3 oversub=2.1 netty=16/16
+  [n100 STEADY] TPS=15.9 MSPT=63.0 oversub=2.05 netty=16/16
+  [n100 STEADY] TPS=18.1 MSPT=55.4 oversub=2.15 netty=16/16
+  [n100 STEADY] TPS=17.3 MSPT=57.7 oversub=2.05 netty=16/16
+  [n100 STEADY] TPS=16.1 MSPT=62.2 oversub=2.05 netty=16/16
+  [n100 STEADY] TPS=20.0 MSPT=36.5 oversub=2.15 netty=16/16
+  [n100 STEADY] TPS=19.3 MSPT=51.9 oversub=2.1 netty=16/16
+  [n100 STEADY] TPS=20.0 MSPT=40.0 oversub=2.15 netty=16/16
+  [n100 STEADY] TPS=11.3 MSPT=88.5 oversub=2.05 netty=16/16
+  [n100 STEADY] TPS=20.0 MSPT=44.1 oversub=2.2 netty=16/16
+  [n100] RESULT D: msptP50=56.0 p95=88.5 tpsAvg=17.77 oversubAvg=2.1 online=100/100 exceptions=200
+Restarting for clean baseline before n=125...
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+
+=== n125 (Modded Validation Ladder) ===
+  [n125] baseline captured: regions=17 oversub=1.25
+  [rcon call attempt 1 failed: timed out, retrying]
+  [n125] Phase A JOIN: 35.2s online=247/125
+  [setup batch 60-80 attempt 1 failed: unpack requires a buffer of 4 bytes, retrying]
+  [setup batch 60-80 attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [setup batch 60-80 attempt 3 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 1 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 2 failed: [Errno 111] Connection refused, retrying]
+  [rcon call attempt 3 failed: [Errno 111] Connection refused, retrying]
+Traceback (most recent call last):
+  File "/root/nestworldcore/scratchpad/modded_validation_ladder.py", line 265, in <module>
+    res = run_tier(n)
+  File "/root/nestworldcore/scratchpad/modded_validation_ladder.py", line 181, in run_tier
+    rcon_setup(n)
+  File "/root/nestworldcore/scratchpad/scaling_test.py", line 101, in rcon_setup
+    raise RuntimeError(f'setup batch {start}-{end} failed after 3 attempts')
+RuntimeError: setup batch 60-80 failed after 3 attempts

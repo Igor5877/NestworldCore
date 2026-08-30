@@ -1,0 +1,16 @@
+JVM info: Ubuntu - 17.0.20 - 17.0.20+8-1-22.04-Ubuntu
+java.net.preferIPv4Stack=true
+Current Time: 30/08/2026 16:30:07
+Option                  Description                                             
+------                  -----------                                             
+--debug                 Run in debug mode -- don't delete any files             
+--extract [File]        Extract the contained jar file to the specified         
+                          directory (default: .)                                
+-h, --help              Help with this installer                                
+--installClient [File]  Install the client files to the specified directory     
+                          (default: .)                                          
+--installServer [File]  Install a server to the specified directory (default: .)
+--makeOffline [File]    Creates a offline installer at the specified path       
+                          (default: .)                                          
+--mirror <URL>          Use a specific mirror URL                               
+--offline               Don't attempt any network calls                         

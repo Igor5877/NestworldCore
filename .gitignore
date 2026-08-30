@@ -56,3 +56,7 @@ changelog.txt
 /spark.jar
 /spark-standalone-agent.jar
 /run/
+
+# python bytecode cache (scratchpad test scripts)
+__pycache__/
+*.pyc

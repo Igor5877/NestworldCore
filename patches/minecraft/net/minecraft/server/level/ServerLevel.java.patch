@@ -1,5 +1,27 @@
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
+@@ -166,7 +_,20 @@
+    private static final Logger f_8566_ = LogUtils.getLogger();
+    private static final int f_143242_ = 300;
+    private static final int f_184046_ = 65536;
+-   final List<ServerPlayer> f_8546_ = Lists.newArrayList();
++   // NestWorld: Phase 10 #30 global-state audit (docs/PHASE10_GLOBAL_STATE_AUDIT.md, finding G1)
++   // -- plain ArrayList, mutated main-thread-only (player join/leave/dimension-change, see the
++   // two add()/remove() call sites below) but read every tick by region-thread mob AI (vanilla's
++   // own PlayerSensor/TemptingSensor Brain sensors, EntityGetter.getNearestPlayer()/
++   // hasNearbyAlivePlayer()) via players(). Read frequency vastly exceeds write frequency (every
++   // hostile/passive mob's AI tick vs. only actual join/leave/dimension-change events), and reads
++   // need to iterate/stream, not just single-key lookups -- CopyOnWriteArrayList is the correct
++   // primitive for exactly this "rare writes, frequent lock-free concurrent iteration" shape
++   // (same reasoning already applied to NestworldPins' ConcurrentHashMap.newKeySet() for a
++   // similarly-shaped read-heavy/write-rare set). Not a region-ownership problem (this list has
++   // no natural single-region owner, it's genuinely server-wide) so a mailbox redirect doesn't
++   // fit -- a concurrent collection is the right explicit serialized-access mechanism per the
++   // audit spec's own B-GLOBAL category guidance.
++   final List<ServerPlayer> f_8546_ = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final ServerChunkCache f_8547_;
+    private final MinecraftServer f_8548_;
+    private final ServerLevelData f_8549_;
 @@ -179,8 +_,14 @@
     private final PortalForcer f_8552_;
     private final LevelTicks<Block> f_8553_ = new LevelTicks<>(this::m_184110_, this.m_46658_());

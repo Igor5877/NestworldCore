@@ -1,0 +1,24 @@
+--- a/net/minecraft/world/level/storage/CommandStorage.java
++++ b/net/minecraft/world/level/storage/CommandStorage.java
+@@ -9,7 +_,10 @@
+ 
+ public class CommandStorage {
+    private static final String f_164834_ = "command_storage_";
+-   private final Map<String, CommandStorage.Container> f_78032_ = Maps.newHashMap();
++   // NestWorld: P1 ownership audit -- command-block entities tick on their owning region
++   // thread every tick, and this storage is shared per-dimension, so concurrent get()/set()
++   // from different regions can race on the same map (CME risk on keys()' iteration).
++   private final Map<String, CommandStorage.Container> f_78032_ = new java.util.concurrent.ConcurrentHashMap<>();
+    private final DimensionDataStorage f_78033_;
+ 
+    public CommandStorage(DimensionDataStorage p_78035_) {
+@@ -51,7 +_,8 @@
+ 
+    static class Container extends SavedData {
+       private static final String f_164847_ = "contents";
+-      private final Map<String, CompoundTag> f_78055_ = Maps.newHashMap();
++      // NestWorld: P1 ownership audit -- same cross-region race as the outer namespaces map.
++      private final Map<String, CompoundTag> f_78055_ = new java.util.concurrent.ConcurrentHashMap<>();
+ 
+       CommandStorage.Container m_164849_(CompoundTag p_164850_) {
+          CompoundTag compoundtag = p_164850_.m_128469_("contents");

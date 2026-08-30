@@ -9,3 +9,39 @@
              this.m_6532_(hitresult);
           }
        }
+@@ -268,12 +_,32 @@
+       Entity entity = p_37345_.m_82443_();
+       Entity entity1 = this.m_19749_();
+       LivingEntity livingentity = entity1 instanceof LivingEntity ? (LivingEntity)entity1 : null;
+-      boolean flag = entity.m_6469_(this.m_269291_().m_269299_(this, livingentity), 4.0F);
++      // NestWorld: full-core-audit finding (2026-08-27) -- this class extends Projectile
++      // directly (not AbstractHurtingProjectile/AbstractArrow), so it never inherited either
++      // of those classes' tick()-level foreign-hit guard. `this` (the bullet) always ticks on
++      // its shooter's region thread; `entity` (the hit target) can be owned by a different
++      // region. Same redirect-or-call pattern as Guardian.hurt()'s existing usage.
++      boolean flag;
++      // NestWorld: doEnchantDamageEffects (fire aspect etc.) is a vanilla method not itself
++      // instrumented against foreign entities -- only call it on the direct (same-region) path,
++      // where it's exactly as safe as it always was; skip it on the redirected path rather than
++      // risk an unverified second mutation on a foreign entity.
++      if (net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, entity,
++              new net.nestworld.region.EntityMutationOp.Damage(this.m_269291_().m_269299_(this, livingentity), 4.0F))) {
++         flag = true;
++      } else {
++         flag = entity.m_6469_(this.m_269291_().m_269299_(this, livingentity), 4.0F);
++         if (flag) {
++            this.m_19970_(livingentity, entity);
++         }
++      }
+       if (flag) {
+-         this.m_19970_(livingentity, entity);
+          if (entity instanceof LivingEntity) {
+             LivingEntity livingentity1 = (LivingEntity)entity;
+-            livingentity1.m_147207_(new MobEffectInstance(MobEffects.f_19620_, 200), MoreObjects.firstNonNull(entity1, this));
++            if (!net.nestworld.region.EntityMutationHelper.redirectIfForeign(this, livingentity1,
++                    new net.nestworld.region.EntityMutationOp.AddEffect(new MobEffectInstance(MobEffects.f_19620_, 200), MoreObjects.firstNonNull(entity1, this)))) {
++               livingentity1.m_147207_(new MobEffectInstance(MobEffects.f_19620_, 200), MoreObjects.firstNonNull(entity1, this));
++            }
+          }
+       }
+ 

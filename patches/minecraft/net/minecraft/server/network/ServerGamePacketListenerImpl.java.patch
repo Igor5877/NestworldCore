@@ -1,6 +1,6 @@
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-@@ -185,6 +_,12 @@
+@@ -185,11 +_,22 @@
  public class ServerGamePacketListenerImpl implements ServerPlayerConnection, TickablePacketListener, ServerGamePacketListener {
     static final Logger f_9744_ = LogUtils.getLogger();
     private static final int f_143608_ = 15000;
@@ -13,9 +13,39 @@
     public static final double f_215198_ = Mth.m_144952_(6.0D);
     private static final int f_215199_ = -1;
     private static final int f_244471_ = 4096;
-@@ -257,7 +_,8 @@
+    private static final Component f_244304_ = Component.m_237115_("multiplayer.disconnect.chat_validation_failed");
+    public final Connection f_9742_;
++   // NestWorld: 2026-08-28 Outbound Tracking Optimization -- per-recipient batch queue, drained
++   // once/tick by OutboundBatchQueue.flushAll() (feature-flagged, OFF by default). Populated by
++   // ChunkMap$TrackedEntity.broadcast() via OutboundBatchQueue.route() instead of calling
++   // this.send() directly, when the feature is enabled.
++   public final java.util.Queue<net.minecraft.network.protocol.Packet<?>> nestworldOutboundBatch = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private final MinecraftServer f_9745_;
+    public ServerPlayer f_9743_;
+    private int f_9746_;
+@@ -223,6 +_,10 @@
+    private int f_9739_;
+    private int f_9740_;
+    private int f_9741_;
++   // NestWorld: full-core-audit finding (2026-08-27) -- see the movement-tolerance check below.
++   private long nestworldLastTickNanos = 0L;
++   private boolean nestworldTickWasStalled = false;
++   private static final long NESTWORLD_STALL_THRESHOLD_NANOS = 100_000_000L; // 2 nominal ticks
+    private final AtomicReference<Instant> f_215197_ = new AtomicReference<>(Instant.EPOCH);
+    @Nullable
+    private RemoteChatSession f_252494_;
+@@ -256,8 +_,17 @@
+       this.f_9743_.m_9240_();
        this.f_9743_.m_19890_(this.f_9753_, this.f_9754_, this.f_9755_, this.f_9743_.m_146908_(), this.f_9743_.m_146909_());
        ++this.f_9746_;
++      // NestWorld: full-core-audit finding (2026-08-27) -- record whether real wall-clock time
++      // since the PREVIOUS tick() call indicates a genuine server-side stall (see the movement-
++      // tolerance check below, which uses this to distinguish a legitimate queued-packet backlog
++      // from a client-driven burst sent while the server was ticking normally).
++      long nestworldNowNanos = System.nanoTime();
++      this.nestworldTickWasStalled = this.nestworldLastTickNanos != 0L
++              && (nestworldNowNanos - this.nestworldLastTickNanos) > NESTWORLD_STALL_THRESHOLD_NANOS;
++      this.nestworldLastTickNanos = nestworldNowNanos;
        this.f_9741_ = this.f_9740_;
 -      if (this.f_9736_ && !this.f_9743_.m_5803_() && !this.f_9743_.m_20159_() && !this.f_9743_.m_21224_()) {
 +      if (net.nestworld.region.NestworldLiveTuning.effectiveFloatingKickEnabled()
@@ -23,7 +53,20 @@
           if (++this.f_9737_ > 80) {
              f_9744_.warn("{} was kicked for floating too long!", (Object)this.f_9743_.m_7755_().getString());
              this.m_9942_(Component.m_237115_("multiplayer.disconnect.flying"));
-@@ -878,11 +_,20 @@
+@@ -856,6 +_,12 @@
+                double d2 = m_143609_(p_9874_.m_134146_(this.f_9743_.m_20189_()));
+                float f = Mth.m_14177_(p_9874_.m_134131_(this.f_9743_.m_146908_()));
+                float f1 = Mth.m_14177_(p_9874_.m_134142_(this.f_9743_.m_146909_()));
++               // NestWorld: Phase 11 #31.2 shadow-mode input mailbox (docs/
++               // PHASE11_PLAYER_REGION_EXECUTION_SPEC.md) -- captures exactly the validated
++               // target values the vanilla path below is about to apply, for the shadow
++               // pipeline's sequence/ownership validation. No-op unless
++               // -Dnestworld.playerInputRegionExecution=true; does not alter control flow.
++               net.nestworld.region.PlayerInputDispatcher.dispatch(this.f_9743_, d0, d1, d2, f, f1);
+                if (this.f_9743_.m_20159_()) {
+                   this.f_9743_.m_19890_(this.f_9743_.m_20185_(), this.f_9743_.m_20186_(), this.f_9743_.m_20189_(), f, f1);
+                   this.f_9743_.m_284548_().m_7726_().m_8385_(this.f_9743_);
+@@ -878,11 +_,32 @@
                       int i = this.f_9740_ - this.f_9741_;
                       if (i > 5) {
                          f_9744_.debug("{} is sending move packets too frequently ({} packets since last tick)", this.f_9743_.m_7755_().getString(), i);
@@ -32,12 +75,24 @@
 +                        // "moved too quickly" tolerance (f2 * i below) exactly when a burst of
 +                        // queued packets from a real server-side tick stall needs MORE tolerance,
 +                        // not less -- a client that was legitimately still moving during a multi-
-+                        // second freeze gets rubber-banded the instant the server catches up. Cap
-+                        // instead of collapsing: tolerance now scales with the backlog (up to the
-+                        // cap) rather than punishing it. Physically absurd single-tick jumps are
-+                        // still caught -- that's f2's job, unchanged -- this only fixes how many
-+                        // legitimately-queued packets get credited toward the allowance.
-+                        i = Math.min(i, net.nestworld.region.NestworldLiveTuning.effectiveMaxMovementPacketsPerTick());
++                        // second freeze gets rubber-banded the instant the server catches up.
++                        //
++                        // Full-core-audit finding (2026-08-27): the ORIGINAL fix here capped
++                        // instead of collapsing UNCONDITIONALLY on packet count alone, with no way
++                        // to tell a real stall from a deliberately flooded burst -- a modified
++                        // client sending 6+ move packets in one tick got the SAME widened
++                        // tolerance a legitimately-stalled one would, a textbook burst-then-jump
++                        // speedhack technique. Now gated on nestworldTickWasStalled (set in
++                        // tick(), true only when real wall-clock time since the PREVIOUS tick()
++                        // call indicates the SERVER itself was actually slow this tick) --
++                        // widen tolerance only when there's independent evidence of a genuine
++                        // stall; otherwise fall back to vanilla's strict collapse-to-1, so a
++                        // burst sent while the server was ticking normally gets no extra leash.
++                        if (this.nestworldTickWasStalled) {
++                           i = Math.min(i, net.nestworld.region.NestworldLiveTuning.effectiveMaxMovementPacketsPerTick());
++                        } else {
++                           i = 1;
++                        }
                       }
  
                       if (!this.f_9743_.m_8958_() && (!this.f_9743_.m_9236_().m_46469_().m_46207_(GameRules.f_46148_) || !this.f_9743_.m_21255_())) {
@@ -46,19 +101,34 @@
                          if (d10 - d9 > (double)(f2 * (float)i) && !this.m_9956_()) {
                             f_9744_.warn("{} moved too quickly! {},{},{}", this.f_9743_.m_7755_().getString(), d6, d7, d8);
                             this.m_9774_(this.f_9743_.m_20185_(), this.f_9743_.m_20186_(), this.f_9743_.m_20189_(), this.f_9743_.m_146908_(), this.f_9743_.m_146909_());
-@@ -983,8 +_,10 @@
+@@ -983,9 +_,13 @@
           case SWAP_ITEM_WITH_OFFHAND:
              if (!this.f_9743_.m_5833_()) {
                 ItemStack itemstack = this.f_9743_.m_21120_(InteractionHand.OFF_HAND);
 -               this.f_9743_.m_21008_(InteractionHand.OFF_HAND, this.f_9743_.m_21120_(InteractionHand.MAIN_HAND));
 -               this.f_9743_.m_21008_(InteractionHand.MAIN_HAND, itemstack);
+-               this.f_9743_.m_5810_();
 +               var event = net.minecraftforge.common.ForgeHooks.onLivingSwapHandItems(this.f_9743_);
 +               if (event.isCanceled()) return;
 +               this.f_9743_.m_21008_(InteractionHand.OFF_HAND, event.getItemSwappedToOffHand());
 +               this.f_9743_.m_21008_(InteractionHand.MAIN_HAND, event.getItemSwappedToMainHand());
-                this.f_9743_.m_5810_();
++               if (!net.nestworld.region.PlayerUseControlDispatcher.dispatch(this.f_9743_, net.nestworld.region.RegionMessage.UseControlOp.STOP)) {
++                  this.f_9743_.m_5810_();
++               }
              }
  
+             return;
+@@ -1002,7 +_,9 @@
+ 
+             return;
+          case RELEASE_USE_ITEM:
+-            this.f_9743_.m_21253_();
++            if (!net.nestworld.region.PlayerUseControlDispatcher.dispatch(this.f_9743_, net.nestworld.region.RegionMessage.UseControlOp.RELEASE)) {
++               this.f_9743_.m_21253_();
++            }
+             return;
+          case START_DESTROY_BLOCK:
+          case ABORT_DESTROY_BLOCK:
 @@ -1035,7 +_,9 @@
           Vec3 vec3 = blockhitresult.m_82450_();
           BlockPos blockpos = blockhitresult.m_82425_();
@@ -90,6 +160,35 @@
     public void m_5760_(ServerboundUseItemPacket p_9932_) {
        PacketUtils.m_131359_(p_9932_, this, this.f_9743_.m_284548_());
        this.m_215201_(p_9932_.m_238013_());
+@@ -1074,7 +_,16 @@
+       ItemStack itemstack = this.f_9743_.m_21120_(interactionhand);
+       this.f_9743_.m_9243_();
+       if (!itemstack.m_41619_() && itemstack.m_246617_(serverlevel.m_246046_())) {
+-         InteractionResult interactionresult = this.f_9743_.f_8941_.m_6261_(this.f_9743_, serverlevel, itemstack, interactionhand);
++         // NestWorld: Phase 11 #31.4 step 3 -- region-routed useItem() experiment.
++         InteractionResult interactionresult = net.nestworld.region.PlayerUseItemDispatcher
++                 .dispatch(this.f_9743_, interactionhand)
++                 .orElseGet(() -> {
++                    // NestWorld: Phase 11 #31.4 step 3 measurement-only timing, see PlayerUseItemTiming.
++                    long nestworldUseItemT0 = System.nanoTime();
++                    InteractionResult r = this.f_9743_.f_8941_.m_6261_(this.f_9743_, serverlevel, itemstack, interactionhand);
++                    net.nestworld.region.PlayerUseItemTiming.recordMain(System.nanoTime() - nestworldUseItemT0);
++                    return r;
++                 });
+          if (interactionresult.m_19080_()) {
+             this.f_9743_.m_21011_(interactionhand, true);
+          }
+@@ -1161,7 +_,9 @@
+       PacketUtils.m_131359_(p_9909_, this, this.f_9743_.m_284548_());
+       if (p_9909_.m_134498_() >= 0 && p_9909_.m_134498_() < Inventory.m_36059_()) {
+          if (this.f_9743_.m_150109_().f_35977_ != p_9909_.m_134498_() && this.f_9743_.m_7655_() == InteractionHand.MAIN_HAND) {
+-            this.f_9743_.m_5810_();
++            if (!net.nestworld.region.PlayerUseControlDispatcher.dispatch(this.f_9743_, net.nestworld.region.RegionMessage.UseControlOp.STOP)) {
++               this.f_9743_.m_5810_();
++            }
+          }
+ 
+          this.f_9743_.m_150109_().f_35977_ = p_9909_.m_134498_();
 @@ -1187,10 +_,13 @@
                 }
  
@@ -106,24 +205,61 @@
                       this.m_243086_(playerchatmessage1);
                    }, p_248212_);
                 });
-@@ -1440,7 +_,7 @@
+@@ -1440,13 +_,21 @@
           }
  
           AABB aabb = entity.m_20191_();
 -         if (aabb.m_272282_(this.f_9743_.m_146892_()) < f_215198_) {
 +         if (this.f_9743_.canReachRaw(entity, 3.0)) { // Vanilla uses MAX_INTERACTION_DISTANCE which is 6*6 default entity reach is 3.0 so add 3.0 padding
              p_9866_.m_179617_(new ServerboundInteractPacket.Handler() {
-                private void m_143678_(InteractionHand p_143679_, ServerGamePacketListenerImpl.EntityInteraction p_143680_) {
+-               private void m_143678_(InteractionHand p_143679_, ServerGamePacketListenerImpl.EntityInteraction p_143680_) {
++               private void performInteraction(InteractionHand p_143679_, Vec3 nestworldAtPos, ServerGamePacketListenerImpl.EntityInteraction p_143680_) {
                    ItemStack itemstack = ServerGamePacketListenerImpl.this.f_9743_.m_21120_(p_143679_);
-@@ -1463,6 +_,8 @@
+                   if (itemstack.m_246617_(serverlevel.m_246046_())) {
+                      ItemStack itemstack1 = itemstack.m_41777_();
+-                     InteractionResult interactionresult = p_143680_.m_143694_(ServerGamePacketListenerImpl.this.f_9743_, entity, p_143679_);
++                     // NestWorld: Phase 11 #31.4 item-on-entity -- region-routed interact()/interactAt() experiment.
++                     long nestworldEntityInteractT0 = System.nanoTime();
++                     InteractionResult interactionresult = net.nestworld.region.EntityInteractionDispatcher
++                             .dispatch(ServerGamePacketListenerImpl.this.f_9743_, entity, p_143679_, nestworldAtPos)
++                             .orElseGet(() -> {
++                                InteractionResult r = p_143680_.m_143694_(ServerGamePacketListenerImpl.this.f_9743_, entity, p_143679_);
++                                net.nestworld.region.EntityInteractionTiming.recordMain(System.nanoTime() - nestworldEntityInteractT0);
++                                return r;
++                             });
+                      if (interactionresult.m_19077_()) {
+                         CriteriaTriggers.f_10565_.m_61494_(ServerGamePacketListenerImpl.this.f_9743_, itemstack1, entity);
+                         if (interactionresult.m_19080_()) {
+@@ -1458,11 +_,13 @@
+                }
+ 
+                public void m_142299_(InteractionHand p_143677_) {
+-                  this.m_143678_(p_143677_, Player::m_36157_);
++                  this.performInteraction(p_143677_, null, Player::m_36157_);
+                }
  
                 public void m_142143_(InteractionHand p_143682_, Vec3 p_143683_) {
-                   this.m_143678_(p_143682_, (p_143686_, p_143687_, p_143688_) -> {
+-                  this.m_143678_(p_143682_, (p_143686_, p_143687_, p_143688_) -> {
++                  this.performInteraction(p_143682_, p_143683_, (p_143686_, p_143687_, p_143688_) -> {
 +                     InteractionResult onInteractEntityAtResult = net.minecraftforge.common.ForgeHooks.onInteractEntityAt(f_9743_, entity, p_143683_, p_143682_);
 +                     if (onInteractEntityAtResult != null) return onInteractEntityAtResult;
                       return p_143687_.m_7111_(p_143686_, p_143683_, p_143688_);
                    });
                 }
+@@ -1471,7 +_,12 @@
+                   if (!(entity instanceof ItemEntity) && !(entity instanceof ExperienceOrb) && !(entity instanceof AbstractArrow) && entity != ServerGamePacketListenerImpl.this.f_9743_) {
+                      ItemStack itemstack = ServerGamePacketListenerImpl.this.f_9743_.m_21120_(InteractionHand.MAIN_HAND);
+                      if (itemstack.m_246617_(serverlevel.m_246046_())) {
+-                        ServerGamePacketListenerImpl.this.f_9743_.m_5706_(entity);
++                        if (!net.nestworld.region.PlayerAttackDispatcher.dispatch(ServerGamePacketListenerImpl.this.f_9743_, entity)) {
++                           // NestWorld: Phase 11 #31.4 measurement-only timing, see PlayerAttackTiming.
++                           long nestworldAttackT0 = System.nanoTime();
++                           ServerGamePacketListenerImpl.this.f_9743_.m_5706_(entity);
++                           net.nestworld.region.PlayerAttackTiming.recordMain(System.nanoTime() - nestworldAttackT0);
++                        }
+                      }
+                   } else {
+                      ServerGamePacketListenerImpl.this.m_9942_(Component.m_237115_("multiplayer.disconnect.invalid_entity_attacked"));
 @@ -1659,6 +_,7 @@
     }
  

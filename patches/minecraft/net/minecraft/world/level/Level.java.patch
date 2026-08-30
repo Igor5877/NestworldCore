@@ -33,7 +33,7 @@
        this.f_46446_ = p_270692_;
        this.f_46442_ = p_270739_;
        this.f_204147_ = p_270240_;
-@@ -196,13 +_,84 @@
+@@ -196,13 +_,89 @@
        } else if (!this.f_46443_ && this.m_46659_()) {
           return false;
        } else {
@@ -79,6 +79,11 @@
 +               }
 +            }
 +         }
++         // Phase 9 (docs/REGION_OWNERSHIP_CROSS_REGION_SPEC.md sec13): validates the Stage 3
++         // guard's own "safe to write directly here" belief, from every caller shape (region
++         // thread in-bounds, region thread applying a just-drained deferred write, or main
++         // thread). No-op unless -Dnestworld.ownershipAssertionsEnabled=true.
++         net.nestworld.region.NestworldOwnershipAssertions.assertBlockOwner(this, p_46605_, "setBlock");
           LevelChunk levelchunk = this.m_46745_(p_46605_);
           Block block = p_46606_.m_60734_();
 +

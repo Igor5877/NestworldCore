@@ -137,7 +137,13 @@ public final class NestworldDimensionRegion {
 
     private int bePhaseLogCountdown = 0;
     private int beTraceCountdown = 0;
-    private static final BlockPos BE_TRACE_POS;
+    static final BlockPos BE_TRACE_POS;
+    /** #28 narrow instrumentation (2026-08-27): public accessor so LevelChunk's
+     *  addAndRegisterBlockEntity() can reuse the same -Dnestworld.beTracePos flag without a new
+     *  system property. */
+    public static boolean nestworldMatchesTracePos(BlockPos pos) {
+        return BE_TRACE_POS != null && BE_TRACE_POS.equals(pos);
+    }
     static {
         String s = System.getProperty("nestworld.beTracePos");
         BlockPos p = null;
@@ -870,13 +876,46 @@ public final class NestworldDimensionRegion {
         // 3b. Tick players on the main thread — their state is shared with the
         // network thread, so region-thread ticking races on position and causes
         // rubber-banding. Passengers are ticked by their vehicle's region.
+        //
+        // Phase 11 #31.3 (docs/PHASE11_PLAYER_REGION_EXECUTION_SPEC.md) — this IS the execution
+        // choke point the whole #31 project exists to move. Minimal routing experiment, per
+        // explicit user instruction: do NOT rewrite Player.tick() or the scheduler -- reuse the
+        // EXISTING pool.runWorkRound() mechanism (already used for random ticks/block-entity
+        // ticking) to route the SAME level.tickNonPassenger(player) call onto a player's
+        // position-resolved owner region's own thread, for an explicit per-player opt-in set
+        // only (PlayerTickExperiment — empty by default, grown incrementally Stage A->D). Every
+        // player NOT in the opt-in set (i.e. everyone, until an operator explicitly adds one)
+        // keeps ticking exactly as before, unconditionally.
+        Map<WorldRegion, List<Runnable>> playerTickBuckets = null;
         for (ServerPlayer player : List.copyOf(level.players())) {
             if (player.isRemoved() || player.isPassenger()) continue;
+            if (NestworldTuning.PLAYER_TICK_REGION_EXECUTION && PlayerTickExperiment.isEnabled(player.getUUID())) {
+                int cx = player.getBlockX() >> 4;
+                int cz = player.getBlockZ() >> 4;
+                WorldRegion owner = grid.getRegionForChunk(cx, cz);
+                if (owner != null) {
+                    if (playerTickBuckets == null) playerTickBuckets = new IdentityHashMap<>();
+                    playerTickBuckets.computeIfAbsent(owner, r -> new ArrayList<>()).add(() -> {
+                        try {
+                            level.tickNonPassenger(player);
+                        } catch (Throwable t) {
+                            LOGGER.warn("[#31.3 experiment] Player {} region-thread tick error: {}",
+                                    player.getGameProfile().getName(), t.getMessage());
+                        }
+                    });
+                    continue;
+                }
+                // owner resolution failed (unmanaged/edge case) -- fall through to main, same
+                // "safe direct fallback" precedent as every other Phase 9/10/11 dispatcher.
+            }
             try {
                 level.tickNonPassenger(player);
             } catch (Throwable t) {
                 LOGGER.warn("Player {} tick error: {}", player.getGameProfile().getName(), t.getMessage());
             }
+        }
+        if (playerTickBuckets != null) {
+            pool.runWorkRound(playerTickBuckets, RegionPhase.PLAYER_TICK_EXPERIMENT);
         }
         // 3c. Tick pinned entity types on the main thread (mod-compat escape hatch).
         if (!pins.isEmpty()) tickPinnedEntitiesOnMain(pins);
