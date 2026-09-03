@@ -340,13 +340,70 @@ public class RegionSplitManager {
         }
     }
 
+    /** Diagnostic-only (2026-09-03, "PROMOTE transition" JFR ТЗ -- see project memory): how
+     *  long after PROMOTE_BEGIN the narrow per-tick/per-scheduled-tick tracing window in {@link
+     *  net.nestworld.region.jfr.PromoteDiagnosticWindow} stays open -- per the project owner's
+     *  explicit requirement, detailed tracing must NOT run unconditionally on every tick
+     *  globally, only around an actual promotion. 1s covers PROMOTE_COMMIT plus several
+     *  FREE_RUNNING ticks/scheduled-tick lifecycle events immediately after. */
+    private static final long PROMOTE_DIAGNOSTIC_WINDOW_NANOS = 1_000_000_000L;
+
     private void promoteFreeRunning(WorldRegion region) {
         region.autoFreeRunning = true;
         region.freeRunPromoteChecks = 0;
         region.freeRunDemoteChecks = 0;
+        net.nestworld.region.jfr.PromoteDiagnosticWindow.open(PROMOTE_DIAGNOSTIC_WINDOW_NANOS);
+        nestworldEmitPromoteEvent(region, "BEGIN", "DISPATCHED", "FREE_RUNNING");
         region.nestworldSetFreeRunning(true);
+        nestworldEmitPromoteEvent(region, "COMMIT", "DISPATCHED", "FREE_RUNNING");
         LOGGER.info("Auto-promoted {} to free-running (cost {} ms)",
                 region, String.format("%.1f", region.getAvgTickMs()));
+    }
+
+    /** Diagnostic-only (2026-09-03, "PROMOTE transition" JFR ТЗ -- see project memory): every
+     *  field is a read-only snapshot -- taking one never drains, polls, blocks, or otherwise
+     *  mutates the region/queues it reports on. {@code shouldCommit()} (not just {@code
+     *  isEnabled()}, per the project owner's explicit review) also accounts for any configured
+     *  threshold, so this is a no-op check when the event type is off, no snapshot work at all.
+     *  Called from the main thread only (RegionSplitManager#onTick's own caller contract,
+     *  unchanged by this diagnostic). PROMOTE_BEGIN/COMMIT are inherently rare (once per actual
+     *  promotion, not per-tick), so this is NOT itself gated behind {@link
+     *  net.nestworld.region.jfr.PromoteDiagnosticWindow} -- it's what OPENS that window for the
+     *  higher-frequency per-tick/per-scheduled-tick events below. */
+    private void nestworldEmitPromoteEvent(WorldRegion region, String phase,
+                                            String oldMode, String newMode) {
+        // Snapshot at emission time -- see class-level note: region.scheduledTicks.size() takes
+        // that structure's own existing lock briefly (pre-existing, not added by this
+        // diagnostic); acceptable here since PROMOTE events are rare (once per promotion, not
+        // per-tick), unlike the per-tick/per-scheduled-tick events below which avoid this same
+        // read entirely outside the diagnostic window. Computed unconditionally (not gated
+        // behind the JFR event's shouldCommit()) since NwjfrLog needs it regardless of JFR's
+        // own (currently always-false, see NwjfrLog's class javadoc) enabled state.
+        int nestworldScheduledDepth = region.scheduledTicks.size();
+        RegionThread nestworldOwning = region.owningThread;
+        int nestworldCarriedDepth = nestworldOwning == null ? 0 : nestworldOwning.getLastWorkDeferred();
+        int nestworldPendingDepth = NestworldRegionSystem.nestworldPendingScheduleTicksDepth();
+        Thread nestworldT = Thread.currentThread();
+
+        net.nestworld.region.jfr.RegionPromoteEvent nestworldEvt = new net.nestworld.region.jfr.RegionPromoteEvent();
+        if (nestworldEvt.shouldCommit()) {
+            nestworldEvt.regionId = region.getId();
+            nestworldEvt.phase = phase;
+            nestworldEvt.oldExecutionMode = oldMode;
+            nestworldEvt.newExecutionMode = newMode;
+            nestworldEvt.threadName = nestworldT.getName();
+            nestworldEvt.threadId = nestworldT.getId();
+            nestworldEvt.scheduledTicksDepth = nestworldScheduledDepth;
+            nestworldEvt.carriedWorkDepth = nestworldCarriedDepth;
+            nestworldEvt.pendingMainThreadScheduleTicksDepth = nestworldPendingDepth;
+            nestworldEvt.commit();
+        }
+
+        // Log-based transport (2026-09-03, per project owner's review -- see NwjfrLog's class
+        // javadoc): independent of JFR's own enabled state, always fires for these rare events.
+        net.nestworld.region.jfr.NwjfrLog.promote(phase, region.getId(), oldMode, newMode,
+                nestworldScheduledDepth, nestworldCarriedDepth, nestworldPendingDepth,
+                nestworldT.getName(), nestworldT.getId());
     }
 
     private void demoteFreeRunning(WorldRegion region) {

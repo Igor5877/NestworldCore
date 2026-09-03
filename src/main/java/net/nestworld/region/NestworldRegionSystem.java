@@ -621,6 +621,39 @@ public class NestworldRegionSystem {
      * drain (see design notes in project memory). */
     public static void nestworldEnqueueScheduleTick(Runnable apply) {
         nestworldPendingMainThreadScheduleTicks.add(apply);
+        // Diagnostic-only (2026-09-03, "PROMOTE transition" JFR ТЗ -- see project memory): HANDOFF
+        // stage -- a region thread's own scheduleTick() call landing in this deferred queue
+        // instead of going straight to vanilla LevelTicks. Gated FIRST behind
+        // PromoteDiagnosticWindow -- ANY region thread's scheduleTick() call reaches here, not
+        // just during a promotion, so per the project owner's explicit requirement this must not
+        // become a global per-scheduled-tick cost -- one volatile read outside the window, no
+        // event construction, no size() call.
+        if (net.nestworld.region.jfr.PromoteDiagnosticWindow.isOpen()) {
+            int nestworldQueueDepth = nestworldPendingMainThreadScheduleTicks.size();
+            Thread nestworldT = Thread.currentThread();
+            // JFR attempt kept in place (see NwjfrLog's class javadoc) -- not the sole path.
+            // No regionId here (this call site doesn't know which region originated the
+            // scheduleTick() call, only the closure) -- -1 marks that explicitly in the log.
+            net.nestworld.region.jfr.ScheduledTickLifecycleEvent nestworldEvt =
+                    new net.nestworld.region.jfr.ScheduledTickLifecycleEvent();
+            if (nestworldEvt.shouldCommit()) {
+                nestworldEvt.eventType = "HANDOFF";
+                nestworldEvt.queueDepth = nestworldQueueDepth;
+                nestworldEvt.threadName = nestworldT.getName();
+                nestworldEvt.threadId = nestworldT.getId();
+                nestworldEvt.commit();
+            }
+            net.nestworld.region.jfr.NwjfrLog.scheduledTick("HANDOFF", -1, nestworldQueueDepth,
+                    null, null, nestworldT.getName(), nestworldT.getId());
+        }
+    }
+
+    /** Diagnostic-only (2026-09-03, "PROMOTE transition" JFR ТЗ): read-only depth snapshot of
+     *  {@link #nestworldPendingMainThreadScheduleTicks} -- safe from any thread
+     *  ({@code ConcurrentLinkedQueue#size()} is thread-safe, if weakly consistent; O(n) but only
+     *  ever called from JFR-event-emission sites already guarded by {@code isEnabled()}). */
+    public static int nestworldPendingScheduleTicksDepth() {
+        return nestworldPendingMainThreadScheduleTicks.size();
     }
 
     private void nestworldDrainPendingScheduleTicks() {

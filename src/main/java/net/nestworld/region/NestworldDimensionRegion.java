@@ -276,6 +276,12 @@ public final class NestworldDimensionRegion {
             case ScheduledTickHandoffMetrics.Tagged.FLUID -> ScheduledTickHandoffMetrics.tagFluid(run, pos);
             default -> run;
         };
+        if (net.nestworld.region.jfr.RedstoneDiagFilter.matches(pos)) {
+            Thread nestworldT = Thread.currentThread();
+            net.nestworld.region.jfr.NwDiagLog.route(pos.toShortString(),
+                    region != null ? ("region-" + region.getId()) : "main",
+                    nestworldT.getName(), nestworldT.getId());
+        }
         if (region != null) {
             buckets.computeIfAbsent(region, r -> new ArrayList<>()).add(tagged);
         } else {

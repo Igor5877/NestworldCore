@@ -41,13 +41,18 @@
        long i = p_193230_.m_45588_();
        LevelChunkTicks<T> levelchunkticks = this.f_193202_.remove(i);
        this.f_193203_.remove(i);
-@@ -74,7 +_,8 @@
+@@ -74,7 +_,13 @@
  
     }
  
 -   public void m_183393_(ScheduledTick<T> p_193252_) {
 +   public synchronized void m_183393_(ScheduledTick<T> p_193252_) {
 +      net.nestworld.region.NestworldTickOwnership.assertOwnerThread("schedule", p_193252_.f_193377_());
++      if (net.nestworld.region.jfr.RedstoneDiagFilter.matches(p_193252_.f_193377_())) {
++         Thread nestworldT = Thread.currentThread();
++         net.nestworld.region.jfr.NwDiagLog.schedule(p_193252_.f_193377_().m_123344_(),
++               String.valueOf(p_193252_.f_193376_()), nestworldT.getName(), nestworldT.getId());
++      }
        long i = ChunkPos.m_151388_(p_193252_.f_193377_());
        LevelChunkTicks<T> levelchunkticks = this.f_193202_.get(i);
        if (levelchunkticks == null) {
@@ -59,6 +64,18 @@
        ProfilerFiller profilerfiller = this.f_193201_.get();
        profilerfiller.m_6180_("collect");
        this.m_193221_(p_193226_, p_193227_, profilerfiller);
+@@ -178,6 +_,11 @@
+    }
+ 
+    private void m_193285_(ScheduledTick<T> p_193286_) {
++      if (net.nestworld.region.jfr.RedstoneDiagFilter.matches(p_193286_.f_193377_())) {
++         Thread nestworldT = Thread.currentThread();
++         net.nestworld.region.jfr.NwDiagLog.collect(p_193286_.f_193377_().m_123344_(),
++               String.valueOf(p_193286_.f_193376_()), nestworldT.getName(), nestworldT.getId());
++      }
+       this.f_193205_.add(p_193286_);
+    }
+ 
 @@ -205,12 +_,24 @@
        this.f_193207_.clear();
     }

@@ -338,6 +338,22 @@ public class RegionThread extends Thread {
             return;
         }
 
+        // Diagnostic-only (2026-09-03, "PROMOTE transition" investigation -- see project
+        // memory): before/after scheduled-tick-queue depths bracketing exactly the portion of
+        // this iteration relevant to that question (not the entity round or park/pacing logic
+        // below, which don't touch these queues). Gated FIRST behind PromoteDiagnosticWindow
+        // (per the project owner's explicit requirement: this must not run on every region
+        // tick globally, only in a short window around an actual promotion) -- one volatile
+        // read outside that window, no snapshot work, no field writes, nothing logged.
+        boolean nestworldTickDiag = net.nestworld.region.jfr.PromoteDiagnosticWindow.isOpen();
+        int nestworldSchedBefore = 0, nestworldCarriedBefore = 0;
+        Thread nestworldTickThread = null;
+        if (nestworldTickDiag) {
+            nestworldTickThread = Thread.currentThread();
+            nestworldSchedBefore = region.scheduledTicks.size();
+            nestworldCarriedBefore = getLastWorkDeferred();
+        }
+
         java.util.List<Runnable> work = region.nestworldPollFreeRunningWork();
         if (work != null) {
             RegionTimeCompatibility.noteWorkBatch(region, work.size(), level.getGameTime());
@@ -350,6 +366,28 @@ public class RegionThread extends Thread {
         // triggerTick <= gameTime check before being routed here, so there is no backlog that's
         // "not due yet" to leave behind.
         drainOneScheduledTickBatch();
+
+        if (nestworldTickDiag) {
+            int nestworldSchedAfter = region.scheduledTicks.size();
+            int nestworldCarriedAfter = getLastWorkDeferred();
+            // JFR attempt kept in place (see NwjfrLog's class javadoc for why this currently
+            // never actually commits in this environment) -- not the sole delivery path.
+            net.nestworld.region.jfr.RegionTickEvent nestworldTickEvt = new net.nestworld.region.jfr.RegionTickEvent();
+            if (nestworldTickEvt.shouldCommit()) {
+                nestworldTickEvt.regionId = region.getId();
+                nestworldTickEvt.executionMode = "FREE_RUNNING";
+                nestworldTickEvt.threadName = nestworldTickThread.getName();
+                nestworldTickEvt.threadId = nestworldTickThread.getId();
+                nestworldTickEvt.scheduledTicksDepthBefore = nestworldSchedBefore;
+                nestworldTickEvt.scheduledTicksDepthAfter = nestworldSchedAfter;
+                nestworldTickEvt.carriedWorkDepthBefore = nestworldCarriedBefore;
+                nestworldTickEvt.carriedWorkDepthAfter = nestworldCarriedAfter;
+                nestworldTickEvt.commit();
+            }
+            net.nestworld.region.jfr.NwjfrLog.regionTick(region.getId(), "FREE_RUNNING",
+                    nestworldSchedBefore, nestworldSchedAfter, nestworldCarriedBefore, nestworldCarriedAfter,
+                    nestworldTickThread.getName(), nestworldTickThread.getId());
+        }
 
         long now = System.nanoTime();
         if (freeRunningNextTickNanos == 0) {
@@ -615,6 +653,60 @@ public class RegionThread extends Thread {
         int done = 0;
         for (; done < all.size(); done++) {
             Runnable r = all.get(done);
+            // Diagnostic-only (2026-09-03, "PROMOTE transition" JFR ТЗ -- see project memory):
+            // EXECUTE stage, immediately before this drained entry's real work runs. Reuses
+            // ScheduledTickHandoffMetrics.Tagged's already-public pos/kind fields for
+            // position/tickType -- no scheduler signature change, per the ТЗ's explicit
+            // instruction not to add a correlation ID if doing so requires one. Gated FIRST
+            // behind PromoteDiagnosticWindow -- per the project owner's explicit requirement,
+            // a server with a large scheduled-tick volume must not pay this cost on every one
+            // globally, only in the narrow window around an actual promotion.
+            if (net.nestworld.region.jfr.PromoteDiagnosticWindow.isOpen()) {
+                int nestworldQueueDepth = all.size() - done;
+                Thread nestworldT = Thread.currentThread();
+                String nestworldPosStr = null, nestworldTickTypeStr = null;
+                if (r instanceof ScheduledTickHandoffMetrics.Tagged nestworldTagged) {
+                    net.minecraft.core.BlockPos nestworldPos = net.minecraft.core.BlockPos.of(nestworldTagged.pos);
+                    nestworldPosStr = nestworldPos.getX() + "," + nestworldPos.getY() + "," + nestworldPos.getZ();
+                    nestworldTickTypeStr = nestworldTagged.kind == ScheduledTickHandoffMetrics.Tagged.BLOCK ? "BLOCK"
+                            : nestworldTagged.kind == ScheduledTickHandoffMetrics.Tagged.FLUID ? "FLUID" : "OTHER";
+                }
+                // JFR attempt kept in place (see NwjfrLog's class javadoc) -- not the sole path.
+                net.nestworld.region.jfr.ScheduledTickLifecycleEvent nestworldEvt =
+                        new net.nestworld.region.jfr.ScheduledTickLifecycleEvent();
+                if (nestworldEvt.shouldCommit()) {
+                    nestworldEvt.regionId = region.getId();
+                    nestworldEvt.eventType = "EXECUTE";
+                    nestworldEvt.queueDepth = nestworldQueueDepth;
+                    nestworldEvt.threadName = nestworldT.getName();
+                    nestworldEvt.threadId = nestworldT.getId();
+                    nestworldEvt.position = nestworldPosStr;
+                    nestworldEvt.tickType = nestworldTickTypeStr;
+                    nestworldEvt.commit();
+                }
+                net.nestworld.region.jfr.NwjfrLog.scheduledTick("EXECUTE", region.getId(), nestworldQueueDepth,
+                        nestworldPosStr, nestworldTickTypeStr, nestworldT.getName(), nestworldT.getId());
+            }
+            // Diagnostic-only (2026-09-03, "startup freeze" follow-up -- see project memory):
+            // independent of PromoteDiagnosticWindow (this must catch a recurrence even if it
+            // doesn't happen to land in the ~1s window around a promotion) -- gated ONLY by
+            // RedstoneDiagFilter's narrow position match, so it's inert everywhere else.
+            if (r instanceof ScheduledTickHandoffMetrics.Tagged nestworldChunkTag) {
+                net.minecraft.core.BlockPos nestworldChunkPos = net.minecraft.core.BlockPos.of(nestworldChunkTag.pos);
+                if (net.nestworld.region.jfr.RedstoneDiagFilter.matches(nestworldChunkPos)) {
+                    Thread nestworldChunkT = Thread.currentThread();
+                    net.nestworld.region.jfr.NwDiagLog.chunkState(
+                            nestworldChunkPos.getX() + "," + nestworldChunkPos.getY() + "," + nestworldChunkPos.getZ(),
+                            level.isLoaded(nestworldChunkPos),
+                            level.isLoaded(nestworldChunkPos.above()),
+                            level.isLoaded(nestworldChunkPos.below()),
+                            level.isLoaded(nestworldChunkPos.north()),
+                            level.isLoaded(nestworldChunkPos.south()),
+                            level.isLoaded(nestworldChunkPos.east()),
+                            level.isLoaded(nestworldChunkPos.west()),
+                            nestworldChunkT.getName(), nestworldChunkT.getId());
+                }
+            }
             try {
                 r.run();
             } catch (Throwable t) {

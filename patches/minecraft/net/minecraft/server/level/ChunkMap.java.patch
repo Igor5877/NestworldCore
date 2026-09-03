@@ -488,6 +488,116 @@
        ProfilerFiller profilerfiller = this.f_140133_.m_46473_();
        profilerfiller.m_6180_("poi");
        this.f_140138_.m_6202_(p_140281_);
+@@ -482,15 +_,100 @@
+          runnable.run();
+       }
+ 
+-      int l = 0;
+-      ObjectIterator<ChunkHolder> objectiterator = this.f_140130_.values().iterator();
+-
+-      while(l < 20 && p_140354_.getAsBoolean() && objectiterator.hasNext()) {
+-         if (this.m_198874_(objectiterator.next())) {
+-            ++l;
+-         }
+-      }
+-
++      // NestWorld "#4" fix (2026-09-03, persistence-contract gap -- see project memory): this
++      // opportunistic per-tick save loop is a SEPARATE persistence boundary from ServerLevel
++      // #save() -- it never goes through that method's call graph at all, so it was never
++      // covered by the "#3" free-running-region save rendezvous, even though it writes the
++      // exact same LevelChunkTicks.save() a scheduled tick can be silently dropped from (a
++      // tick already popped from vanilla's own persistent structures can still be sitting in
++      // WorldRegion#scheduledTicks / a region's own runWorkBudgeted()-carried remainder /
++      // NestworldRegionSystem#nestworldPendingMainThreadScheduleTicks). Confirmed live: a
++      // redstone self-clocking loop froze mid-session with no /save-all and no demote event
++      // logged -- exactly this path, since an actively-flipping chunk is continuously
++      // isUnsaved()==true (LevelChunk#setBlockState sets it on every block-state change) and
++      // becomes save-eligible again the instant its ~10s per-chunk cooldown expires.
++      //
++      // Fix: gated reuse of the EXACT #3 mechanism (nestworldPauseFreeRunningRegionsForSave/
++      // nestworldResumeFreeRunningRegionsAfterSave) -- no new barrier, no new drain logic, no
++      // new consumer. The gate matters because this loop runs every tick (unlike an explicit
++      // save, which is rare) while an actual eligible chunk is comparatively uncommon (the
++      // ~10s cooldown throttles it) -- pausing every free-running region unconditionally on
++      // every tick would be a real TPS regression for no benefit on the ticks where nothing
++      // is actually about to be saved. nestworldHasSaveCandidate() mirrors saveChunkIfNeeded()'s
++      // own eligibility checks (see nestworldIsSaveCandidate()'s javadoc for why this is a
++      // deliberate read-only mirror, not a shared call, and why that's safe) -- it only ever
++      // decides WHETHER to pause, never WHAT to save; saveChunkIfNeeded() below is completely
++      // unmodified and remains the sole authority for that, so even if the gate's answer were
++      // ever stale (it can't be here -- see below), the loop would just correctly do nothing
++      // for a chunk that turned out not to be eligible -- never a stale/incomplete save.
++      boolean nestworldHasCandidate = this.nestworldHasSaveCandidate();
++      java.util.List<net.nestworld.region.WorldRegion> nestworldPaused = nestworldHasCandidate
++            ? net.nestworld.region.NestworldRegionSystem.nestworldPauseFreeRunningRegionsForSave(this.f_140133_)
++            : java.util.List.of();
++      try {
++         int l = 0;
++         ObjectIterator<ChunkHolder> objectiterator = this.f_140130_.values().iterator();
++
++         while(l < 20 && p_140354_.getAsBoolean() && objectiterator.hasNext()) {
++            if (this.m_198874_(objectiterator.next())) {
++               ++l;
++            }
++         }
++      } finally {
++         if (nestworldHasCandidate) {
++            net.nestworld.region.NestworldRegionSystem.nestworldResumeFreeRunningRegionsAfterSave(nestworldPaused);
++         }
++      }
++
++   }
++
++   // NestWorld "#4" fix: cheap, side-effect-free, short-circuiting scan -- stops at the first
++   // chunk found eligible, does not walk the whole map on the (overwhelmingly common) tick
++   // where nothing is due yet. Written as a plain loop, not a stream/lambda -- this file is
++   // already flagged fragile to new lambda ordinals shifting third-party Mixin targets (see
++   // project memory chunkmap-lambda-ordinal-mixin-fragility.md), so this stays consistent
++   // with every other NestWorld addition to this class.
++   private boolean nestworldHasSaveCandidate() {
++      ObjectIterator<ChunkHolder> nestworldIt = this.f_140130_.values().iterator();
++      while (nestworldIt.hasNext()) {
++         if (this.nestworldIsSaveCandidate(nestworldIt.next())) {
++            return true;
++         }
++      }
++      return false;
++   }
++
++   // NestWorld "#4" fix: mirrors saveChunkIfNeeded()'s own three eligibility checks (accessible,
++   // real/imposter LevelChunk, cooldown expired), PLUS ChunkAccess#isUnsaved() -- the fourth
++   // condition, checked inside save(ChunkAccess) itself in vanilla, not inside
++   // saveChunkIfNeeded(). This is a deliberate READ-ONLY mirror, not a shared/extracted call --
++   // saveChunkIfNeeded() and save() are left byte-for-byte unmodified so this cannot introduce
++   // a behavior change there (an earlier version of this fix DID call this predicate FROM
++   // saveChunkIfNeeded() and broke it: save()'s poiManager.flush(pos) call happens
++   // UNCONDITIONALLY before its own isUnsaved() check, every real call, regardless of whether
++   // the chunk turns out to be dirty -- folding isUnsaved() into a shared early-return would
++   // have silently skipped that flush whenever a chunk was accessible+cooldown-expired but not
++   // actually dirty). Every read here is a plain field/getter with no side effect (confirmed:
++   // ChunkAccess#isUnsaved() only returns a field, unlike save() which also WRITES it) and no
++   // I/O -- safe to call speculatively, before anything is actually decided, from the gate.
++   // If vanilla's real eligibility logic ever changes, both copies need updating together --
++   // an ordinary patch-maintenance concern, not a live correctness risk, since this method's
++   // only consumer (the gate) can only ever cause an UNNECESSARY pause on a stale answer, never
++   // an incorrect save.
++   private boolean nestworldIsSaveCandidate(ChunkHolder p_nestworldHolder) {
++      if (!p_nestworldHolder.m_140095_()) {
++         return false;
++      }
++      ChunkAccess nestworldChunk = p_nestworldHolder.m_140090_().getNow((ChunkAccess)null);
++      if (!(nestworldChunk instanceof ImposterProtoChunk) && !(nestworldChunk instanceof LevelChunk)) {
++         return false;
++      }
++      long nestworldPos = nestworldChunk.m_7697_().m_45588_();
++      long nestworldCooldown = this.f_202981_.getOrDefault(nestworldPos, -1L);
++      if (System.currentTimeMillis() < nestworldCooldown) {
++         return false;
++      }
++      return nestworldChunk.m_6344_();
+    }
+ 
+    private void m_140181_(long p_140182_, ChunkHolder p_140183_) {
 @@ -503,6 +_,17 @@
              if (this.f_140131_.remove(p_140182_, p_140183_) && p_203002_ != null) {
                 if (p_203002_ instanceof LevelChunk) {

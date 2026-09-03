@@ -155,14 +155,61 @@ public class WorldRegion {
     public void nestworldPostScheduledTicks(java.util.List<Runnable> work, long producerTick, long gameTime) {
         scheduledTicks.offerAll(work);
         scheduledTickHandoff.recordPost(work, null, producerTick, id, gameTime);
+        // Diagnostic-only (2026-09-03, "PROMOTE transition" JFR ТЗ -- see project memory): POST
+        // stage. Gated FIRST behind PromoteDiagnosticWindow (this runs every real tick for every
+        // free-running region -- per the project owner's explicit requirement, must not become a
+        // per-tick global cost) -- one volatile read outside the window, no event construction.
+        if (net.nestworld.region.jfr.PromoteDiagnosticWindow.isOpen()) {
+            int nestworldQueueDepth = scheduledTicks.size();
+            Thread nestworldT = Thread.currentThread();
+            // JFR attempt kept in place (see NwjfrLog's class javadoc) -- not the sole path.
+            net.nestworld.region.jfr.ScheduledTickLifecycleEvent nestworldEvt =
+                    new net.nestworld.region.jfr.ScheduledTickLifecycleEvent();
+            if (nestworldEvt.shouldCommit()) {
+                nestworldEvt.regionId = id;
+                nestworldEvt.eventType = "POST";
+                nestworldEvt.queueDepth = nestworldQueueDepth;
+                nestworldEvt.threadName = nestworldT.getName();
+                nestworldEvt.threadId = nestworldT.getId();
+                nestworldEvt.commit();
+            }
+            net.nestworld.region.jfr.NwjfrLog.scheduledTick("POST", id, nestworldQueueDepth,
+                    null, null, nestworldT.getName(), nestworldT.getId());
+        }
     }
 
     /** Phase 2.1: lossless counterpart of {@link #nestworldPollFreeRunningWork}. Called from
      *  this region's own thread only; non-blocking; drains everything currently pending. */
     public java.util.List<Runnable> nestworldPollScheduledTicks() {
+        // Diagnostic-only (2026-09-03, "PROMOTE transition" JFR ТЗ -- see project memory): POLL
+        // stage. Gated FIRST behind PromoteDiagnosticWindow -- this is called every free-running
+        // tick iteration regardless of whether there's anything to drain, so per the project
+        // owner's explicit requirement it must not run unconditionally on every scheduled tick
+        // globally. Depth captured BEFORE the drain (what's about to move to execution) --
+        // reading size() here, before drainAll(), does not change drainAll()'s own behavior.
+        boolean nestworldDiag = net.nestworld.region.jfr.PromoteDiagnosticWindow.isOpen();
+        int nestworldDepthBefore = nestworldDiag ? scheduledTicks.size() : 0;
+
         java.util.List<Runnable> work = scheduledTicks.drainAll();
         if (!work.isEmpty()) {
             scheduledTickHandoff.recordConsumed(work, localTickCount);
+        }
+
+        if (nestworldDiag && !work.isEmpty()) {
+            Thread nestworldT = Thread.currentThread();
+            // JFR attempt kept in place (see NwjfrLog's class javadoc) -- not the sole path.
+            net.nestworld.region.jfr.ScheduledTickLifecycleEvent nestworldEvt =
+                    new net.nestworld.region.jfr.ScheduledTickLifecycleEvent();
+            if (nestworldEvt.shouldCommit()) {
+                nestworldEvt.regionId = id;
+                nestworldEvt.eventType = "POLL";
+                nestworldEvt.queueDepth = nestworldDepthBefore;
+                nestworldEvt.threadName = nestworldT.getName();
+                nestworldEvt.threadId = nestworldT.getId();
+                nestworldEvt.commit();
+            }
+            net.nestworld.region.jfr.NwjfrLog.scheduledTick("POLL", id, nestworldDepthBefore,
+                    null, null, nestworldT.getName(), nestworldT.getId());
         }
         return work;
     }
