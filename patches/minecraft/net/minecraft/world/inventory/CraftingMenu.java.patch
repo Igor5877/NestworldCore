@@ -1,0 +1,92 @@
+--- a/net/minecraft/world/inventory/CraftingMenu.java
++++ b/net/minecraft/world/inventory/CraftingMenu.java
+@@ -26,6 +_,19 @@
+    private final ResultContainer f_39349_ = new ResultContainer();
+    private final ContainerLevelAccess f_39350_;
+    private final Player f_39351_;
++   /**
++    * Transaction-scoped batching (2026-09-03, ТЗ: Transaction-Scoped Batching for
++    * CraftingMenu.slotsChanged): quickMoveStack (Shift-click) can mutate many crafting-grid
++    * slots in one logical operation via moveItemStackTo()/onTake(), and each mutation would
++    * otherwise trigger its own full recipe lookup. batchDepth/dirty defer slotsChanged's real
++    * work to the end of the outermost batch, collapsing N lookups into 1 for that operation,
++    * with zero effect on any other menu (this state is per-CraftingMenu-instance only) and
++    * zero effect on single, non-batched slot changes (slotsChanged runs immediately when
++    * batchDepth == 0, unchanged from vanilla).
++    */
++   private int nestworld$batchDepth = 0;
++   private boolean nestworld$dirty = false;
++   private int nestworld$batchMutationCount = 0;
+ 
+    public CraftingMenu(int p_39353_, Inventory p_39354_) {
+       this(p_39353_, p_39354_, ContainerLevelAccess.f_39287_);
+@@ -59,7 +_,9 @@
+       if (!p_150548_.f_46443_) {
+          ServerPlayer serverplayer = (ServerPlayer)p_150549_;
+          ItemStack itemstack = ItemStack.f_41583_;
++         long nestworld$lookupStart = System.nanoTime();
+          Optional<CraftingRecipe> optional = p_150548_.m_7654_().m_129894_().m_44015_(RecipeType.f_44107_, p_150550_, p_150548_);
++         net.nestworld.region.RecipeLookupTiming.record(System.nanoTime() - nestworld$lookupStart);
+          if (optional.isPresent()) {
+             CraftingRecipe craftingrecipe = optional.get();
+             if (p_150551_.m_40135_(p_150548_, serverplayer, craftingrecipe)) {
+@@ -77,11 +_,43 @@
+    }
+ 
+    public void m_6199_(Container p_39366_) {
++      if (this.nestworld$batchDepth > 0) {
++         this.nestworld$dirty = true;
++         this.nestworld$batchMutationCount++;
++         net.nestworld.region.CraftingBatchMetrics.recordSuppressed();
++         return;
++      }
++      net.nestworld.region.CraftingBatchMetrics.recordUnbatchedSlotsChanged();
++      this.nestworld$doSlotsChanged();
++   }
++
++   private void nestworld$doSlotsChanged() {
++      net.nestworld.region.CraftingBatchMetrics.recordRecipeLookup();
+       this.f_39350_.m_39292_((p_39386_, p_39387_) -> {
+          m_150546_(this, p_39386_, this.f_39351_, this.f_39348_, this.f_39349_);
+       });
+    }
+ 
++   private void nestworld$beginBatch() {
++      this.nestworld$batchDepth++;
++      if (this.nestworld$batchDepth == 1) {
++         this.nestworld$batchMutationCount = 0;
++         net.nestworld.region.CraftingBatchMetrics.recordBatchStarted();
++      }
++   }
++
++   private void nestworld$endBatch() {
++      this.nestworld$batchDepth--;
++      if (this.nestworld$batchDepth == 0) {
++         boolean wasDirty = this.nestworld$dirty;
++         this.nestworld$dirty = false;
++         if (wasDirty) {
++            this.nestworld$doSlotsChanged();
++         }
++         net.nestworld.region.CraftingBatchMetrics.recordBatchCompleted(this.nestworld$batchMutationCount);
++      }
++   }
++
+    public void m_5816_(StackedContents p_39374_) {
+       this.f_39348_.m_5809_(p_39374_);
+    }
+@@ -107,6 +_,15 @@
+    }
+ 
+    public ItemStack m_7648_(Player p_39391_, int p_39392_) {
++      this.nestworld$beginBatch();
++      try {
++         return this.nestworld$quickMoveStack(p_39391_, p_39392_);
++      } finally {
++         this.nestworld$endBatch();
++      }
++   }
++
++   private ItemStack nestworld$quickMoveStack(Player p_39391_, int p_39392_) {
+       ItemStack itemstack = ItemStack.f_41583_;
+       Slot slot = this.f_38839_.get(p_39392_);
+       if (slot != null && slot.m_6657_()) {

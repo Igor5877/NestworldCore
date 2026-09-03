@@ -799,6 +799,17 @@ public class NestworldRegionSystem {
      * @return the paused regions, to hand back to {@link #nestworldResumeFreeRunningRegionsAfterSave}
      */
     public static java.util.List<WorldRegion> nestworldPauseFreeRunningRegionsForSave(ServerLevel level) {
+        // Fix for "#3" (2026-09-03, persistence-contract gap -- see project memory), general
+        // leg: nestworldPendingMainThreadScheduleTicks holds a deferred scheduleTick() call from
+        // ANY region thread (NestworldRegionSystem#nestworldIsRegionThread doesn't check
+        // free-running status), not just free-running ones -- so this flush must run on every
+        // save regardless of FREE_RUNNING_REGIONS_ENABLED/whether anything is actually
+        // free-running right now, unlike the rendezvous logic below which genuinely is
+        // free-running-specific. isInitialised() is still required (INSTANCE may not exist yet
+        // during early startup).
+        if (isInitialised()) {
+            INSTANCE.nestworldDrainPendingScheduleTicks();
+        }
         NestworldDimensionRegion dr = !NestworldTuning.FREE_RUNNING_REGIONS_ENABLED || !isInitialised()
                 ? null : INSTANCE.getDimensionRegion(level);
         if (dr == null) {
@@ -825,6 +836,23 @@ public class NestworldRegionSystem {
                 Thread.currentThread().interrupt();
             }
         }
+        // Fix for "#3" (2026-09-03, persistence-contract gap -- see project memory): SECOND
+        // flush -- see the general-case one at the top of this method for the first. Every
+        // paused-above region has, by this point, already drained+executed its own
+        // WorldRegion#scheduledTicks to completion (RegionThread#drainScheduledTicksToCompletion,
+        // run before that region counted down its pause latch). Executing one of those entries
+        // can itself call scheduleTick() (e.g. a repeater re-arming its own next flip) FROM that
+        // region's own thread -- landing in the SAME nestworldPendingMainThreadScheduleTicks
+        // queue the top-of-method flush already covers, but these specific entries did not exist
+        // yet at that point (they're a product of the drain this method's rendezvous loop just
+        // triggered) -- so a second pass, here, after every region has confirmed paused and
+        // BEFORE the caller's chunk/entity serialization runs, is genuinely necessary, not
+        // redundant. One pass is sufficient, not a loop: every closure this drain runs is a
+        // terminal direct call straight into LevelTicks.schedule() (see LevelAccessor's patched
+        // scheduleTick() default methods) -- it cannot itself call scheduleTick() again, and even
+        // if it somehow did, this drain runs on the main thread, where nestworldIsRegionThread()
+        // is false, so that call would go straight to vanilla instead of re-entering this queue.
+        INSTANCE.nestworldDrainPendingScheduleTicks();
         return freeRunning;
     }
 

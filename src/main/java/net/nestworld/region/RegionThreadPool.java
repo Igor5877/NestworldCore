@@ -228,17 +228,62 @@ public class RegionThreadPool {
      * done. Called from the main thread mid-tick (inside ServerLevel.tick).
      */
     public void runWorkRound(java.util.Map<WorldRegion, java.util.List<Runnable>> assignments, RegionPhase phase) {
-        if (assignments.isEmpty()) return;
+        // Lifecycle fix ("#1 ~4s freeze", 2026-09-03 -- see project memory): WorldRegion
+        // #scheduledTicks has exactly one consumer, RegionThread#runFreeRunningTick(), which
+        // only ever runs while isFreeRunning() is true. A batch posted into that queue while a
+        // region WAS free-running becomes permanently stranded if the region demotes before its
+        // own thread drains it -- confirmed live, 3/3 demote events. Fix: for SCHEDULED_TICK
+        // specifically, unconditionally drain any leftover backlog for every NON-free-running
+        // region and merge it into this tick's dispatch, BEFORE the empty-assignments early-outs
+        // below -- so a demoted region with a stale backlog and nothing newly due this tick still
+        // gets its backlog dispatched (the early-out on an empty/absent work list is exactly the
+        // case that used to strand it forever). Still executes on the region's own RegionThread
+        // via the existing requestWork()/awaitDispatch() blocking-dispatch path -- no new
+        // consumer, no thread-affinity violation, same execution mechanism every other
+        // non-free-running region already uses every tick. Backlog is strictly older than
+        // anything newly due this tick, so it's prepended to preserve FIFO order (matches
+        // RegionScheduledTicks's own "earlier tick's entries drain first" contract). Draining via
+        // nestworldPollScheduledTicks() (not the raw queue) so ScheduledTickHandoffMetrics's
+        // posted/consumed accounting stays balanced regardless of which path did the draining.
+        java.util.Map<WorldRegion, java.util.List<Runnable>> effectiveAssignments = assignments;
+        if (phase == RegionPhase.SCHEDULED_TICK) {
+            for (RegionThread t : threads) {
+                if (NestworldTuning.FREE_RUNNING_REGIONS_ENABLED && t.region.isFreeRunning()) continue;
+                java.util.List<Runnable> backlog = t.region.nestworldPollScheduledTicks();
+                if (backlog.isEmpty()) continue;
+                LOGGER.warn("NestWorld DIAG (#1 freeze investigation): recovered {} scheduled tick(s) "
+                        + "from {}'s free-running backlog while demoted -- merging into this tick's "
+                        + "dispatch instead of leaving them stranded", backlog.size(), t.region);
+                if (effectiveAssignments == assignments) {
+                    effectiveAssignments = new java.util.HashMap<>(assignments);
+                }
+                java.util.List<Runnable> existing = effectiveAssignments.get(t.region);
+                java.util.List<Runnable> merged = new java.util.ArrayList<>(
+                        backlog.size() + (existing == null ? 0 : existing.size()));
+                merged.addAll(backlog);
+                if (existing != null) merged.addAll(existing);
+                effectiveAssignments.put(t.region, merged);
+            }
+        }
+        if (effectiveAssignments.isEmpty()) return;
 
         java.util.List<RegionThread> workers = new java.util.ArrayList<>();
         for (RegionThread t : threads) {
-            java.util.List<Runnable> work = assignments.get(t.region);
+            java.util.List<Runnable> work = effectiveAssignments.get(t.region);
             if (work == null || work.isEmpty()) continue;
             // Step 3 (docs/LOCAL_TICK_STAGE4.md, design point 2): a free-running region
             // never blocks on this latch-dispatch — its own loop drains this bucket
             // non-blockingly at the start of each of its own local ticks. NOT waited on.
             if (NestworldTuning.FREE_RUNNING_REGIONS_ENABLED && t.region.isFreeRunning()) {
-                t.region.nestworldPostFreeRunningWork(work);
+                // Phase 2.1 (docs/SCHEDULED_TICK_COMPATIBILITY_CONTRACT.md): SCHEDULED_TICK gets
+                // the lossless append-only queue; RANDOM_TICK/BLOCK_EVENT keep the existing
+                // "latest batch wins" mailbox -- that tradeoff is still accepted for those two
+                // phases (see WorldRegion#pendingFreeRunningWork's javadoc).
+                if (phase == RegionPhase.SCHEDULED_TICK) {
+                    t.region.nestworldPostScheduledTicks(work, level.getServer().getTickCount(), level.getGameTime());
+                } else {
+                    t.region.nestworldPostFreeRunningWork(work, level.getServer().getTickCount(), level.getGameTime());
+                }
                 continue;
             }
             workers.add(t);
@@ -247,7 +292,7 @@ public class RegionThreadPool {
 
         long nestworldT0 = System.nanoTime();
         CountDownLatch latch = new CountDownLatch(workers.size());
-        for (RegionThread t : workers) t.requestWork(assignments.get(t.region), latch);
+        for (RegionThread t : workers) t.requestWork(effectiveAssignments.get(t.region), latch);
         long nestworldDispatchNanosLocal = System.nanoTime() - nestworldT0;
 
         awaitLatch(latch, phase, workers, nestworldDispatchNanosLocal);

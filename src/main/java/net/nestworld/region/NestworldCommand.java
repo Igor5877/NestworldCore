@@ -193,6 +193,28 @@ public final class NestworldCommand {
                         .then(Commands.literal("list").executes(ctx -> playerEntityInteractExperimentList(ctx.getSource()))))
                 .then(Commands.literal("entityinteracttiming").executes(ctx -> entityInteractTiming(ctx.getSource())))
                 .then(Commands.literal("entityinteracttimingreset").executes(ctx -> entityInteractTimingReset(ctx.getSource())))
+                .then(Commands.literal("entityfairness").executes(ctx -> entityFairness(ctx.getSource())))
+                .then(Commands.literal("entityfairnessreset").executes(ctx -> entityFairnessReset(ctx.getSource())))
+                .then(Commands.literal("scheduledtickloss").executes(ctx -> scheduledTickLoss(ctx.getSource())))
+                .then(Commands.literal("scheduledticklossreset").executes(ctx -> scheduledTickLossReset(ctx.getSource())))
+                .then(Commands.literal("scheduledtickstress")
+                        .then(Commands.argument("x", IntegerArgumentType.integer())
+                                .then(Commands.argument("y", IntegerArgumentType.integer())
+                                        .then(Commands.argument("z", IntegerArgumentType.integer())
+                                                .then(Commands.argument("count", IntegerArgumentType.integer(1, 100000))
+                                                        .executes(ctx -> scheduledTickStress(ctx.getSource(),
+                                                                IntegerArgumentType.getInteger(ctx, "x"),
+                                                                IntegerArgumentType.getInteger(ctx, "y"),
+                                                                IntegerArgumentType.getInteger(ctx, "z"),
+                                                                IntegerArgumentType.getInteger(ctx, "count"))))))))
+                .then(Commands.literal("scheduledtickdedupcheck")
+                        .then(Commands.argument("x", IntegerArgumentType.integer())
+                                .then(Commands.argument("y", IntegerArgumentType.integer())
+                                        .then(Commands.argument("z", IntegerArgumentType.integer())
+                                                .executes(ctx -> scheduledTickDedupCheck(ctx.getSource(),
+                                                        IntegerArgumentType.getInteger(ctx, "x"),
+                                                        IntegerArgumentType.getInteger(ctx, "y"),
+                                                        IntegerArgumentType.getInteger(ctx, "z")))))))
                 .then(Commands.literal("interactionwaitbudget").executes(ctx -> interactionWaitBudget(ctx.getSource())))
                 .then(Commands.literal("interactionwaitbudgetreset").executes(ctx -> interactionWaitBudgetReset(ctx.getSource())))
                 .then(Commands.literal("interactionlatencydist").executes(ctx -> interactionLatencyDist(ctx.getSource())))
@@ -230,6 +252,49 @@ public final class NestworldCommand {
                 .then(Commands.literal("outboundbatchmaxsize")
                         .then(Commands.argument("n", IntegerArgumentType.integer(1))
                                 .executes(ctx -> outboundBatchMaxSize(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "n")))))
+                .then(Commands.literal("recipecensus")
+                        .then(Commands.literal("reset").executes(ctx -> recipeCensusReset(ctx.getSource())))
+                        .then(Commands.literal("stop").executes(ctx -> recipeCensusStop(ctx.getSource())))
+                        .then(Commands.literal("report").executes(ctx -> recipeCensusReport(ctx.getSource())))
+                        .then(Commands.literal("reportbythread").executes(ctx -> recipeCensusReportByThread(ctx.getSource()))))
+                .then(Commands.literal("recipetiming")
+                        .then(Commands.literal("reset").executes(ctx -> recipeTimingReset(ctx.getSource())))
+                        .then(Commands.literal("stop").executes(ctx -> recipeTimingStop(ctx.getSource())))
+                        .then(Commands.literal("report").executes(ctx -> recipeTimingReport(ctx.getSource()))))
+                .then(Commands.literal("craftingbatch")
+                        .then(Commands.literal("reset").executes(ctx -> craftingBatchReset(ctx.getSource())))
+                        .then(Commands.literal("report").executes(ctx -> craftingBatchReport(ctx.getSource()))))
+                .then(Commands.literal("recipematchprofiler")
+                        .then(Commands.literal("reset").executes(ctx -> recipeMatchProfilerReset(ctx.getSource())))
+                        .then(Commands.literal("stop").executes(ctx -> recipeMatchProfilerStop(ctx.getSource())))
+                        .then(Commands.literal("report").executes(ctx -> recipeMatchProfilerReport(ctx.getSource()))))
+                .then(Commands.literal("candidateindex")
+                        .then(Commands.literal("reset").executes(ctx -> candidateIndexReset(ctx.getSource())))
+                        .then(Commands.literal("stop").executes(ctx -> candidateIndexStop(ctx.getSource())))
+                        .then(Commands.literal("report").executes(ctx -> candidateIndexReport(ctx.getSource())))
+                        .then(Commands.literal("production")
+                                .then(Commands.literal("on").executes(ctx -> candidateIndexProduction(ctx.getSource(), true)))
+                                .then(Commands.literal("off").executes(ctx -> candidateIndexProduction(ctx.getSource(), false)))))
+                .then(Commands.literal("lastrecipeaudit")
+                        .then(Commands.literal("reset").executes(ctx -> lastRecipeAuditReset(ctx.getSource())))
+                        .then(Commands.literal("stop").executes(ctx -> lastRecipeAuditStop(ctx.getSource())))
+                        .then(Commands.literal("report").executes(ctx -> lastRecipeAuditReport(ctx.getSource()))))
+                .then(Commands.literal("blockwatch")
+                        .then(Commands.literal("start")
+                                .then(Commands.argument("path", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                        .executes(ctx -> blockWatchStart(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "path")))))
+                        .then(Commands.literal("stop").executes(ctx -> blockWatchStop(ctx.getSource())))
+                        .then(Commands.literal("status").executes(ctx -> blockWatchStatus(ctx.getSource())))
+                        .then(Commands.literal("clear").executes(ctx -> blockWatchClear(ctx.getSource())))
+                        .then(Commands.literal("addpos")
+                                .then(Commands.argument("x", IntegerArgumentType.integer())
+                                        .then(Commands.argument("y", IntegerArgumentType.integer())
+                                                .then(Commands.argument("z", IntegerArgumentType.integer())
+                                                        .executes(ctx -> blockWatchAddPos(ctx.getSource(),
+                                                                IntegerArgumentType.getInteger(ctx, "x"),
+                                                                IntegerArgumentType.getInteger(ctx, "y"),
+                                                                IntegerArgumentType.getInteger(ctx, "z"))))))))
                 .then(Commands.literal("joinburstreport").executes(ctx -> joinBurstReport(ctx.getSource())))
                 .then(Commands.literal("joinburstreset").executes(ctx -> joinBurstReset(ctx.getSource())))
                 .then(Commands.literal("chunkoutbound")
@@ -1433,6 +1498,193 @@ public final class NestworldCommand {
      *  (reproduced at 60-80 concurrent players: N synchronous dispatch calls in the same tick,
      *  each individually timeout-bounded, compounding with no shared cap). Also reports the max
      *  region mailbox depth across all active regions as a coarse backlog signal. */
+    /**
+     * 2026-08-30 -- entity-tick fairness diagnostics (point-hotspot investigation, see project
+     * memory: a dense single-cluster region like a chicken farm cannot be split by
+     * RegionSplitManager without slicing the cluster, so it round-robins its owned entities
+     * within {@link NestworldTuning#REGION_ENTITY_BUDGET_NANOS} per tick -- this reports not
+     * just the raw ticked/deferred counts (already visible in /nestworld status) but the REAL
+     * measured consequence: the actual observed gap between successive ticks of the SAME
+     * entity. Measurement-only, per the user's explicit direction -- does not touch the budget.
+     * Shown only for regions that actually own entities, worst (highest p95 interval) first.
+     */
+    private static int entityFairness(CommandSourceStack src) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        long now = System.nanoTime();
+        double budgetMs = NestworldTuning.REGION_ENTITY_BUDGET_NANOS / 1_000_000.0;
+        // Best CPU-pressure proxy currently available (true per-region/system CPU pressure is
+        // explicitly deferred, see CpuCapacityPlanner Phase 1's javadoc) -- global Netty/region
+        // thread oversubscription ratio, same signal /nestworld burstthreads exposes.
+        String census = net.nestworld.region.BurstAdmissionMetrics.threadCensus();
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("oversubscriptionRatio=([\\d.]+)").matcher(census);
+        String oversub = m.find() ? m.group(1) : "n/a";
+
+        var regions = new java.util.ArrayList<>(overworldRegion(NestworldRegionSystem.get()).getTree().getActiveRegions());
+        regions.removeIf(r -> r.getOwnedEntityIds().isEmpty());
+        regions.sort((a, b) -> Long.compare(
+                b.fairness.percentileIntervalNanos(0.95), a.fairness.percentileIntervalNanos(0.95)));
+
+        src.sendSuccess(() -> Component.literal(String.format(
+                "NW entity-fairness: budget=%.0fms globalOversub=%sx (%d region(s) with owned entities)",
+                budgetMs, oversub, regions.size())), false);
+        for (WorldRegion r : regions) {
+            RegionThread thread = r.owningThread;
+            int owned = r.getOwnedEntityIds().size();
+            int ticked = thread != null ? thread.getLastTickedCount() : 0;
+            int deferred = thread != null ? thread.getLastDeferredCount() : 0;
+            long p50 = r.fairness.percentileIntervalNanos(0.50);
+            long p95 = r.fairness.percentileIntervalNanos(0.95);
+            long p99 = r.fairness.percentileIntervalNanos(0.99);
+            long max = r.fairness.maxIntervalNanos();
+            long maxAge = r.fairness.maxAgeNanos(now, r.getOwnedEntityIds());
+            boolean freeRunning = r.isFreeRunning();
+            long tickDelta = freeRunning ? r.getLocalTickCount() - src.getServer().getTickCount() : 0;
+            src.sendSuccess(() -> Component.literal(String.format(
+                    "  Region %d: entities=%d ticked=%d deferred=%d%s | tickInterval p50=%.0fms p95=%.0fms p99=%.0fms max=%.0fms | maxCurrentAge=%.0fms",
+                    r.getId(), owned, ticked, deferred,
+                    freeRunning ? String.format(" localTickDelta=%+d", tickDelta) : "",
+                    p50 / 1e6, p95 / 1e6, p99 / 1e6, max / 1e6, maxAge / 1e6)), false);
+        }
+        return regions.size();
+    }
+
+    private static int entityFairnessReset(CommandSourceStack src) {
+        if (NestworldRegionSystem.isInitialised()) {
+            for (WorldRegion r : overworldRegion(NestworldRegionSystem.get()).getTree().getActiveRegions()) {
+                r.fairness.reset();
+            }
+        }
+        src.sendSuccess(() -> Component.literal("NW entity-fairness reset (all regions)"), true);
+        return 1;
+    }
+
+    /** 2026-08-31: reports {@link ScheduledTickHandoffMetrics} for every free-running region --
+     *  see that class's javadoc for the "FREE_RUNNING Scheduled Tick Loss" hypothesis this is
+     *  built to confirm or refute (comparators/redstone not firing on first trigger, fluid
+     *  flow silently stalling, single un-split region, no crash/exception). */
+    private static int scheduledTickLoss(CommandSourceStack src) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        var regions = new java.util.ArrayList<>(overworldRegion(NestworldRegionSystem.get()).getTree().getActiveRegions());
+        regions.removeIf(r -> !r.isFreeRunning());
+        regions.sort((a, b) -> Integer.compare(a.getId(), b.getId()));
+
+        src.sendSuccess(() -> Component.literal(String.format(
+                "NW scheduled-tick handoff loss: %d free-running region(s)", regions.size())), false);
+        for (WorldRegion r : regions) {
+            ScheduledTickHandoffMetrics m = r.scheduledTickHandoff;
+            long producedTotal = m.blockProduced() + m.fluidProduced() + m.otherProduced();
+            long consumedTotal = m.blockConsumed() + m.fluidConsumed() + m.otherConsumed();
+            long overwrittenTotal = m.blockOverwritten() + m.fluidOverwritten() + m.otherOverwritten();
+            src.sendSuccess(() -> Component.literal(String.format(
+                    "  Region %d: entries produced=%d consumed=%d OVERWRITTEN=%d",
+                    r.getId(), producedTotal, consumedTotal, overwrittenTotal)), false);
+            src.sendSuccess(() -> Component.literal(String.format(
+                    "    block produced=%d consumed=%d OVERWRITTEN=%d | fluid produced=%d consumed=%d OVERWRITTEN=%d | other produced=%d consumed=%d OVERWRITTEN=%d",
+                    m.blockProduced(), m.blockConsumed(), m.blockOverwritten(),
+                    m.fluidProduced(), m.fluidConsumed(), m.fluidOverwritten(),
+                    m.otherProduced(), m.otherConsumed(), m.otherOverwritten())), false);
+            src.sendSuccess(() -> Component.literal(String.format(
+                    "    batches posted=%d overwrittenUnread=%d | lastProducerTick=%d lastConsumerTick=%d lastPostedBatch=%d lastOverwrittenBatch=%d",
+                    m.batchesPosted(), m.batchesOverwritten(), m.lastProducerTick(), m.lastConsumerTick(),
+                    m.lastPostedBatchSize(), m.lastOverwrittenBatchSize())), false);
+        }
+        var recent = ScheduledTickHandoffMetrics.recentOverwrittenSnapshot();
+        src.sendSuccess(() -> Component.literal(String.format(
+                "  Recent overwritten entries (last %d, newest last):", recent.size())), false);
+        for (var e : recent) {
+            src.sendSuccess(() -> Component.literal(String.format(
+                    "    region=%d kind=%s pos=(%s) producerTick=%d gameTime=%d",
+                    e.regionId(), e.kindName(), e.posString(), e.producerTick(), e.gameTime())), false);
+        }
+        return regions.size();
+    }
+
+    /** 2026-08-31: controlled scheduled-tick producer for a minimal interior regression harness
+     *  (per the user's explicit P3 ask) -- deliberately bypasses real redstone/fluid geometry
+     *  entirely (three straight methodology footguns in a row: /setblock replace-mode suppressing
+     *  neighbor updates, RCON "run say" always returning empty, and DiodeBlock FACING orientation)
+     *  by calling {@code ServerLevel#scheduleTick} directly from the main thread, exactly like
+     *  vanilla's own scheduling call, for {@code count} distinct positions along +X from
+     *  (x,y,z). Uses {@code Blocks.REPEATER} as the scheduled block type purely as a stand-in --
+     *  no repeater needs to actually exist at these positions: {@code routeScheduledTick} tags
+     *  and counts the entry BEFORE {@code nestworldRunBlockTick}'s {@code state.is(block)} check,
+     *  so this exercises exactly the handoff being measured (main thread -> LevelTicks ->
+     *  routeScheduledTick -> free-running post/drain) without depending on any vanilla mechanic
+     *  actually firing. Reports which region/interior-vs-border-band the base position resolves
+     *  to, so the result is self-documenting instead of requiring a separate lookup. */
+    private static int scheduledTickStress(CommandSourceStack src, int x, int y, int z, int count) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        NestworldRegionSystem sys = NestworldRegionSystem.get();
+        NestworldDimensionRegion dr = overworldRegion(sys);
+        int cx = x >> 4, cz = z >> 4;
+        WorldRegion owning = dr.getGrid().getRegionForChunk(cx, cz);
+        WorldRegion interior = dr.interiorRegionFor(cx, cz);
+        src.sendSuccess(() -> Component.literal(String.format(
+                "NW scheduledtickstress: base=(%d,%d,%d) chunk=(%d,%d) owningRegion=%s interior=%s freeRunning=%s",
+                x, y, z, cx, cz,
+                owning != null ? String.valueOf(owning.getId()) : "none",
+                interior != null ? String.valueOf(interior.getId()) : "NO (border-band or unowned)",
+                owning != null ? String.valueOf(owning.isFreeRunning()) : "n/a")), false);
+
+        ServerLevel level = sys.getOverworld();
+        net.minecraft.core.BlockPos base = new net.minecraft.core.BlockPos(x, y, z);
+        for (int i = 0; i < count; i++) {
+            level.scheduleTick(base.offset(i, 0, 0), net.minecraft.world.level.block.Blocks.REPEATER, 1);
+        }
+        // 2026-08-31, Phase 2.2 dedup verification: checked synchronously, same command
+        // execution, zero RCON round-trip -- avoids the exact timing race that made a separate
+        // /nestworld scheduledtickdedupcheck call unreliable (a free-running region can drain a
+        // large synthetic (cheap no-op) batch within a single local tick, faster than two
+        // separate RCON round-trips apart).
+        boolean hasImmediately = level.getBlockTicks().hasScheduledTick(base, net.minecraft.world.level.block.Blocks.REPEATER);
+        src.sendSuccess(() -> Component.literal(String.format(
+                "NW scheduledtickstress: scheduled %d block ticks along +X from (%d,%d,%d) | hasScheduledTick(base)=%s (checked same-command, zero round-trip)",
+                count, x, y, z, hasImmediately)), true);
+        return count;
+    }
+
+    /** 2026-08-31: Phase 2.2 (docs/SCHEDULED_TICK_COMPATIBILITY_CONTRACT.md #2/#3) direct dedup
+     *  regression check -- calls vanilla's own {@code LevelTicks#hasScheduledTick}/
+     *  {@code #willTickThisTick} for {@code (pos, Blocks.REPEATER)}, exactly as
+     *  {@code DiodeBlock.checkTickOnNeighbor} would, and reports both booleans. Run this WHILE
+     *  a position is known to still be pending in a region's {@link RegionScheduledTicks} (e.g.
+     *  right after a large {@code scheduledtickstress} burst that hasn't fully drained yet) to
+     *  verify the patched lookup returns true -- i.e. vanilla no longer thinks "nothing
+     *  scheduled here" for an entry this codebase has already taken ownership of. */
+    private static int scheduledTickDedupCheck(CommandSourceStack src, int x, int y, int z) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        ServerLevel level = NestworldRegionSystem.get().getOverworld();
+        net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(x, y, z);
+        boolean has = level.getBlockTicks().hasScheduledTick(pos, net.minecraft.world.level.block.Blocks.REPEATER);
+        boolean will = level.getBlockTicks().willTickThisTick(pos, net.minecraft.world.level.block.Blocks.REPEATER);
+        src.sendSuccess(() -> Component.literal(String.format(
+                "NW scheduledtickdedupcheck: pos=(%d,%d,%d) type=REPEATER hasScheduledTick=%s willTickThisTick=%s | total dedupHits so far=%d",
+                x, y, z, has, will, NestworldScheduledTickLookup.dedupHitCount())), false);
+        return (has || will) ? 1 : 0;
+    }
+
+    private static int scheduledTickLossReset(CommandSourceStack src) {
+        if (NestworldRegionSystem.isInitialised()) {
+            for (WorldRegion r : overworldRegion(NestworldRegionSystem.get()).getTree().getActiveRegions()) {
+                r.scheduledTickHandoff.reset();
+            }
+        }
+        src.sendSuccess(() -> Component.literal("NW scheduled-tick handoff loss reset (all regions)"), true);
+        return 1;
+    }
+
     private static int interactionWaitBudget(CommandSourceStack src) {
         String result = "NW interaction-wait-budget: " + net.nestworld.region.PlayerInteractionWaitBudget.summary();
         int maxDepth = 0;
@@ -1584,6 +1836,185 @@ public final class NestworldCommand {
     private static int outboundBatchMaxSize(CommandSourceStack src, int n) {
         net.nestworld.region.OutboundBatchQueue.MAX_BUNDLE_SIZE = n;
         src.sendSuccess(() -> Component.literal("NW outbound-batch maxBundleSize=" + n), true);
+        return 1;
+    }
+
+    /** 2026-09-01 Recipe Lookup Lag ТЗ Phase 1 -- runtime census of RecipeManager.byType()
+     *  callers. See net.nestworld.region.RecipeLookupCensus's javadoc for why byType (not
+     *  getRecipeFor) is the hook point. */
+    private static int recipeCensusReset(CommandSourceStack src) {
+        net.nestworld.region.RecipeLookupCensus.reset();
+        src.sendSuccess(() -> Component.literal("NW recipe-census reset, window started"), true);
+        return 1;
+    }
+
+    private static int recipeCensusStop(CommandSourceStack src) {
+        net.nestworld.region.RecipeLookupCensus.stop();
+        src.sendSuccess(() -> Component.literal("NW recipe-census stopped"), true);
+        return 1;
+    }
+
+    private static int recipeCensusReport(CommandSourceStack src) {
+        String report = net.nestworld.region.RecipeLookupCensus.report();
+        for (String line : report.split("\n")) {
+            if (!line.isBlank()) src.sendSuccess(() -> Component.literal(line), false);
+        }
+        return 1;
+    }
+
+    private static int recipeCensusReportByThread(CommandSourceStack src) {
+        String report = net.nestworld.region.RecipeLookupCensus.reportByThreadClass();
+        for (String line : report.split("\n")) {
+            if (!line.isBlank()) src.sendSuccess(() -> Component.literal(line), false);
+        }
+        return 1;
+    }
+
+    /** 2026-09-02 BCLib bcl_sort single-pass patch validation -- see RecipeLookupTiming's
+     *  javadoc for why this hooks the CraftingMenu/ResultSlot call sites rather than inside
+     *  RecipeManager/BCLib. */
+    private static int recipeTimingReset(CommandSourceStack src) {
+        net.nestworld.region.RecipeLookupTiming.reset();
+        src.sendSuccess(() -> Component.literal("NW recipe-timing reset, window started"), true);
+        return 1;
+    }
+
+    private static int recipeTimingStop(CommandSourceStack src) {
+        net.nestworld.region.RecipeLookupTiming.stop();
+        src.sendSuccess(() -> Component.literal("NW recipe-timing stopped"), true);
+        return 1;
+    }
+
+    private static int recipeTimingReport(CommandSourceStack src) {
+        String report = net.nestworld.region.RecipeLookupTiming.report();
+        for (String line : report.split("\n")) {
+            if (!line.isBlank()) src.sendSuccess(() -> Component.literal(line), false);
+        }
+        return 1;
+    }
+
+    /** 2026-09-03 Transaction-Scoped Batching ТЗ -- see CraftingBatchMetrics's javadoc. */
+    private static int craftingBatchReset(CommandSourceStack src) {
+        net.nestworld.region.CraftingBatchMetrics.reset();
+        src.sendSuccess(() -> Component.literal("NW crafting-batch metrics reset"), true);
+        return 1;
+    }
+
+    private static int craftingBatchReport(CommandSourceStack src) {
+        String report = net.nestworld.region.CraftingBatchMetrics.report();
+        for (String line : report.split("\n")) {
+            if (!line.isBlank()) src.sendSuccess(() -> Component.literal(line), false);
+        }
+        return 1;
+    }
+
+    /** 2026-09-03 Candidate Recipe Index ТЗ Phase 0 -- see RecipeMatchProfiler's javadoc.
+     *  Only produces data when the deployed BCLib jar has the v2-profiling patch (which calls
+     *  RecipeMatchProfiler.isEnabled()/recordMatch() from inside its single-pass bcl_sort). */
+    private static int recipeMatchProfilerReset(CommandSourceStack src) {
+        net.nestworld.region.RecipeMatchProfiler.reset();
+        src.sendSuccess(() -> Component.literal("NW recipe-match-profiler reset, window started (adds real per-candidate timing overhead -- bounded window use only)"), true);
+        return 1;
+    }
+
+    private static int recipeMatchProfilerStop(CommandSourceStack src) {
+        net.nestworld.region.RecipeMatchProfiler.stop();
+        src.sendSuccess(() -> Component.literal("NW recipe-match-profiler stopped"), true);
+        return 1;
+    }
+
+    private static int recipeMatchProfilerReport(CommandSourceStack src) {
+        String report = net.nestworld.region.RecipeMatchProfiler.report();
+        for (String line : report.split("\n")) {
+            if (!line.isBlank()) src.sendSuccess(() -> Component.literal(line), false);
+        }
+        return 1;
+    }
+
+    /** 2026-09-03 Candidate Recipe Index ТЗ -- shadow-mode differential validation.
+     *  See RecipeCandidateIndexShadowStats's javadoc. Only produces data when the deployed
+     *  BCLib jar has the v3-shadow-index patch. */
+    private static int candidateIndexReset(CommandSourceStack src) {
+        net.nestworld.region.RecipeCandidateIndexShadowStats.reset();
+        src.sendSuccess(() -> Component.literal("NW candidate-index shadow stats reset, window started"), true);
+        return 1;
+    }
+
+    private static int candidateIndexStop(CommandSourceStack src) {
+        net.nestworld.region.RecipeCandidateIndexShadowStats.stop();
+        src.sendSuccess(() -> Component.literal("NW candidate-index shadow stats stopped"), true);
+        return 1;
+    }
+
+    private static int candidateIndexReport(CommandSourceStack src) {
+        String report = net.nestworld.region.RecipeCandidateIndexShadowStats.report();
+        for (String line : report.split("\n")) {
+            if (!line.isBlank()) src.sendSuccess(() -> Component.literal(line), false);
+        }
+        return 1;
+    }
+
+    private static int candidateIndexProduction(CommandSourceStack src, boolean enabled) {
+        net.nestworld.region.RecipeCandidateIndex.setProductionEnabled(enabled);
+        src.sendSuccess(() -> Component.literal("NW candidate-index production mode: " + (enabled ? "ON" : "OFF")), true);
+        return 1;
+    }
+
+    /** 2026-09-03 Last-Recipe Cache correctness audit -- research only, see
+     *  LastRecipeCacheAudit's javadoc. Never changes production behavior. */
+    private static int lastRecipeAuditReset(CommandSourceStack src) {
+        net.nestworld.region.LastRecipeCacheAudit.reset();
+        src.sendSuccess(() -> Component.literal("NW last-recipe cache audit reset, window started"), true);
+        return 1;
+    }
+
+    private static int lastRecipeAuditStop(CommandSourceStack src) {
+        net.nestworld.region.LastRecipeCacheAudit.stop();
+        src.sendSuccess(() -> Component.literal("NW last-recipe cache audit stopped"), true);
+        return 1;
+    }
+
+    private static int lastRecipeAuditReport(CommandSourceStack src) {
+        String report = net.nestworld.region.LastRecipeCacheAudit.report();
+        for (String line : report.split("\n")) {
+            if (!line.isBlank()) src.sendSuccess(() -> Component.literal(line), false);
+        }
+        return 1;
+    }
+
+    /** 2026-09-03 live redstone-desync investigation -- see BlockTickWatcher's javadoc.
+     *  Writes one line PER TICK (not RCON, a plain file) with tick/timestamp/mainMs/regionMs +
+     *  every watched block's full state string. */
+    private static int blockWatchStart(CommandSourceStack src, String path) {
+        net.nestworld.region.BlockTickWatcher.start(path);
+        boolean ok = net.nestworld.region.BlockTickWatcher.isEnabled();
+        src.sendSuccess(() -> Component.literal(ok
+                ? ("NW blockwatch started -> " + path + " (" + net.nestworld.region.BlockTickWatcher.positions().size() + " positions watched)")
+                : ("NW blockwatch FAILED to open " + path)), true);
+        return 1;
+    }
+
+    private static int blockWatchStop(CommandSourceStack src) {
+        net.nestworld.region.BlockTickWatcher.stop();
+        src.sendSuccess(() -> Component.literal("NW blockwatch stopped"), true);
+        return 1;
+    }
+
+    private static int blockWatchStatus(CommandSourceStack src) {
+        src.sendSuccess(() -> Component.literal(net.nestworld.region.BlockTickWatcher.status()), false);
+        return 1;
+    }
+
+    private static int blockWatchClear(CommandSourceStack src) {
+        net.nestworld.region.BlockTickWatcher.clearPositions();
+        src.sendSuccess(() -> Component.literal("NW blockwatch positions cleared"), true);
+        return 1;
+    }
+
+    private static int blockWatchAddPos(CommandSourceStack src, int x, int y, int z) {
+        net.nestworld.region.BlockTickWatcher.addPos(x, y, z);
+        src.sendSuccess(() -> Component.literal("NW blockwatch added position " + x + " " + y + " " + z
+                + " (" + net.nestworld.region.BlockTickWatcher.positions().size() + " total)"), true);
         return 1;
     }
 

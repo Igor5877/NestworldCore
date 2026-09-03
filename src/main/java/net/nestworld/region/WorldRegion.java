@@ -41,6 +41,12 @@ public class WorldRegion {
 
     public net.nestworld.chunk.RegionChunkScheduler getChunkScheduler() { return this.chunkScheduler; }
 
+    // NestWorld: 2026-08-30 per-region entity-tick fairness diagnostics (point-hotspot
+    // investigation) -- lives on the region so it naturally resets on split/merge (a fresh
+    // child region starts fresh tracking, no migration attempted, same convention as
+    // SplitMergeEventLog). Only ever touched by this region's own owning thread.
+    public final EntityFairnessMetrics fairness = new EntityFairnessMetrics();
+
     // Rolling TPS window: last 100 tick durations in nanoseconds
     private final long[] tickDurationsNs = new long[100];
     private int tickIndex = 0;
@@ -123,14 +129,51 @@ public class WorldRegion {
     private final java.util.concurrent.atomic.AtomicReference<java.util.List<Runnable>> pendingFreeRunningWork =
             new java.util.concurrent.atomic.AtomicReference<>();
 
+    /** 2026-08-31: instrumentation for the handoff below AND for {@link #scheduledTicks}
+     *  (see {@link ScheduledTickHandoffMetrics}) -- originally added to measure the "latest
+     *  batch wins" policy's loss rate; now also records the lossless path's produced/consumed
+     *  counts for the same regression proof going forward. */
+    public final ScheduledTickHandoffMetrics scheduledTickHandoff = new ScheduledTickHandoffMetrics();
+
+    /** Phase 2.1 (docs/SCHEDULED_TICK_COMPATIBILITY_CONTRACT.md) -- lossless, append-only queue
+     *  for BLOCK/FLUID scheduled ticks specifically. Replaces {@link #pendingFreeRunningWork} for
+     *  {@link RegionPhase#SCHEDULED_TICK} only; that field stays in use, unchanged, for
+     *  {@link RegionPhase#RANDOM_TICK}/{@link RegionPhase#BLOCK_EVENT}. */
+    public final RegionScheduledTicks scheduledTicks = new RegionScheduledTicks();
+
     /** Called from the main thread (RegionThreadPool). */
-    public void nestworldPostFreeRunningWork(java.util.List<Runnable> work) {
-        pendingFreeRunningWork.set(work);
+    public void nestworldPostFreeRunningWork(java.util.List<Runnable> work, long producerTick, long gameTime) {
+        java.util.List<Runnable> overwritten = pendingFreeRunningWork.getAndSet(work);
+        scheduledTickHandoff.recordPost(work, overwritten, producerTick, id, gameTime);
+    }
+
+    /** Phase 2.1: lossless counterpart of {@link #nestworldPostFreeRunningWork} for
+     *  {@link RegionPhase#SCHEDULED_TICK} only. Called from the main thread. Reuses
+     *  {@link ScheduledTickHandoffMetrics#recordPost} with {@code overwritten=null} -- nothing
+     *  is ever discarded on this path, so the existing produced/batches-posted counters keep
+     *  working unchanged and OVERWRITTEN stays structurally 0 for regression verification. */
+    public void nestworldPostScheduledTicks(java.util.List<Runnable> work, long producerTick, long gameTime) {
+        scheduledTicks.offerAll(work);
+        scheduledTickHandoff.recordPost(work, null, producerTick, id, gameTime);
+    }
+
+    /** Phase 2.1: lossless counterpart of {@link #nestworldPollFreeRunningWork}. Called from
+     *  this region's own thread only; non-blocking; drains everything currently pending. */
+    public java.util.List<Runnable> nestworldPollScheduledTicks() {
+        java.util.List<Runnable> work = scheduledTicks.drainAll();
+        if (!work.isEmpty()) {
+            scheduledTickHandoff.recordConsumed(work, localTickCount);
+        }
+        return work;
     }
 
     /** Called from this region's own thread only; non-blocking. */
     public java.util.List<Runnable> nestworldPollFreeRunningWork() {
-        return pendingFreeRunningWork.getAndSet(null);
+        java.util.List<Runnable> work = pendingFreeRunningWork.getAndSet(null);
+        if (work != null && !work.isEmpty()) {
+            scheduledTickHandoff.recordConsumed(work, localTickCount);
+        }
+        return work;
     }
 
     /**
@@ -158,6 +201,18 @@ public class WorldRegion {
     public void nestworldReleaseSaveRendezvous() {
         java.util.concurrent.CountDownLatch resume = saveRendezvousResume;
         if (resume != null) resume.countDown();
+    }
+
+    /** Fix for "#3" (2026-09-03, persistence-contract gap -- see project memory): cheap,
+     *  side-effect-free peek, true if a save rendezvous has been requested but not yet
+     *  honored. Lets {@link RegionThread#runFreeRunningTick()} fully drain {@link
+     *  #scheduledTicks} (and its own carried-over budget remainder) to empty BEFORE
+     *  actually pausing -- otherwise a lossless one-shot scheduled tick already removed
+     *  from vanilla's own persistence structures could sit here, invisible to save(),
+     *  across the pause. {@link #nestworldCheckSaveRendezvous()} still owns the actual
+     *  consume+block. */
+    public boolean nestworldSaveRendezvousPending() {
+        return saveRendezvousPaused != null;
     }
 
     /**

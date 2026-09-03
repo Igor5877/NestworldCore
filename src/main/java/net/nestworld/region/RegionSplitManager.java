@@ -353,6 +353,22 @@ public class RegionSplitManager {
         region.autoFreeRunning = false;
         region.freeRunPromoteChecks = 0;
         region.freeRunDemoteChecks = 0;
+
+        // Diagnostic only (2026-09-03, "#1 ~4s freeze" investigation -- see project memory).
+        // region.scheduledTicks (RegionScheduledTicks) has exactly one consumer in the whole
+        // codebase: RegionThread#runFreeRunningTick(), which only runs while region.isFreeRunning()
+        // is true. The next line flips that to false -- if anything is still sitting in the queue
+        // at this exact instant, nothing will drain it until this region is promoted back. This
+        // converts the "code-level mechanism" hypothesis for the freeze into a directly observed
+        // fact the next time it happens, without changing any behavior.
+        int strandedCount = region.scheduledTicks.size();
+        if (strandedCount > 0) {
+            LOGGER.warn("NestWorld DIAG (#1 freeze investigation): {} scheduled tick(s) still "
+                    + "pending in {}'s free-running queue at demote time -- will NOT run until "
+                    + "promoted back (no other consumer drains this queue): [{}]",
+                    strandedCount, region, region.scheduledTicks.diagnosticSnapshot(20));
+        }
+
         region.nestworldSetFreeRunning(false);
         LOGGER.info("Auto-demoted {} from free-running (cost {} ms)",
                 region, String.format("%.1f", region.getAvgTickMs()));

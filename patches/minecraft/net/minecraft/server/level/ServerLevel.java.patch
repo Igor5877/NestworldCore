@@ -22,12 +22,16 @@
     private final ServerChunkCache f_8547_;
     private final MinecraftServer f_8548_;
     private final ServerLevelData f_8549_;
-@@ -179,8 +_,14 @@
+@@ -177,10 +_,16 @@
+    private final SleepStatus f_143245_;
+    private int f_8551_;
     private final PortalForcer f_8552_;
-    private final LevelTicks<Block> f_8553_ = new LevelTicks<>(this::m_184110_, this.m_46658_());
-    private final LevelTicks<Fluid> f_184047_ = new LevelTicks<>(this::m_184110_, this.m_46658_());
+-   private final LevelTicks<Block> f_8553_ = new LevelTicks<>(this::m_184110_, this.m_46658_());
+-   private final LevelTicks<Fluid> f_184047_ = new LevelTicks<>(this::m_184110_, this.m_46658_());
 -   final Set<Mob> f_143246_ = new ObjectOpenHashSet<>();
 -   volatile boolean f_200893_;
++   private final LevelTicks<Block> f_8553_ = new LevelTicks<Block>(this::m_184110_, this.m_46658_()).nestworldWithLevel(this);
++   private final LevelTicks<Fluid> f_184047_ = new LevelTicks<Fluid>(this::m_184110_, this.m_46658_()).nestworldWithLevel(this);
 +   final Set<Mob> f_143246_ = java.util.concurrent.ConcurrentHashMap.newKeySet();
 +   // NestWorld: per-thread reentrancy guard. The original shared boolean false-positived
 +   // across region threads (spam: "recursive call to sendBlockUpdated" / "during navigation

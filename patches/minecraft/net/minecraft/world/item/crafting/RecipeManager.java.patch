@@ -38,6 +38,14 @@
              map.computeIfAbsent(recipe.m_6671_(), (p_44075_) -> {
                 return ImmutableMap.builder();
              }).put(resourcelocation, recipe);
+@@ -107,6 +_,7 @@
+    }
+ 
+    private <C extends Container, T extends Recipe<C>> Map<ResourceLocation, T> m_44054_(RecipeType<T> p_44055_) {
++      net.nestworld.region.RecipeLookupCensus.recordCall(p_44055_);
+       return (Map<ResourceLocation, T>)this.f_44007_.getOrDefault(p_44055_, Collections.emptyMap());
+    }
+ 
 @@ -141,11 +_,17 @@
        });
     }

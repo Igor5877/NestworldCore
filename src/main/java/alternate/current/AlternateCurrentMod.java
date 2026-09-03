@@ -16,5 +16,9 @@ public class AlternateCurrentMod {
 	public static final String MOD_VERSION = "1.9.0";
 	public static final Logger LOGGER = LogManager.getLogger(MOD_NAME);
 
-	public static boolean on = true;
+	/** 2026-08-31: diagnostic toggle (default unchanged, still true) -- lets us A/B whether AC's
+	 *  WireHandler is the source of a suspected diode-block (repeater/comparator) update loss,
+	 *  isolated from NestWorldCore's free-running scheduled-tick handoff, without a code revert
+	 *  between test runs. See net.nestworld.region.NestworldRedstone. */
+	public static boolean on = !Boolean.getBoolean("nestworld.disableAlternateCurrent");
 }

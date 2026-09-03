@@ -1,6 +1,27 @@
 --- a/net/minecraft/world/ticks/LevelTicks.java
 +++ b/net/minecraft/world/ticks/LevelTicks.java
-@@ -53,7 +_,8 @@
+@@ -48,12 +_,29 @@
+ 
+    };
+ 
++   // NestWorld (2026-08-31, Phase 2.2 -- docs/SCHEDULED_TICK_COMPATIBILITY_CONTRACT.md #2/#3):
++   // the owning ServerLevel, needed so hasScheduledTick/willTickThisTick can also consult a
++   // free-running region's own pending queue (RegionScheduledTicks) -- entries that have
++   // already left this class's own allContainers/toRunThisTickSet (see Finding A/B in the
++   // contract doc) but are still, from vanilla's perspective, "scheduled." Centralizing this
++   // check here (rather than patching each of the 8 vanilla block classes that call these two
++   // methods) also protects any MOD's own diode-like block calling the same vanilla API.
++   private net.minecraft.server.level.ServerLevel nestworldLevel;
++
++   /** Fluent so the two call sites (ServerLevel's blockTicks/fluidTicks field initializers) can
++    *  set this in the same expression without an extra statement. */
++   public LevelTicks<T> nestworldWithLevel(net.minecraft.server.level.ServerLevel level) {
++      this.nestworldLevel = level;
++      return this;
++   }
++
+    public LevelTicks(LongPredicate p_193211_, Supplier<ProfilerFiller> p_193212_) {
+       this.f_193200_ = p_193211_;
        this.f_193201_ = p_193212_;
     }
  
@@ -38,18 +59,30 @@
        ProfilerFiller profilerfiller = this.f_193201_.get();
        profilerfiller.m_6180_("collect");
        this.m_193221_(p_193226_, p_193227_, profilerfiller);
-@@ -205,12 +_,12 @@
+@@ -205,12 +_,24 @@
        this.f_193207_.clear();
     }
  
 -   public boolean m_183582_(BlockPos p_193254_, T p_193255_) {
 +   public synchronized boolean m_183582_(BlockPos p_193254_, T p_193255_) {
++      if (net.nestworld.region.NestworldScheduledTickLookup.isPendingInRegion(this.nestworldLevel, p_193254_, p_193255_)) {
++         return true;
++      }
        LevelChunkTicks<T> levelchunkticks = this.f_193202_.get(ChunkPos.m_151388_(p_193254_));
        return levelchunkticks != null && levelchunkticks.m_183582_(p_193254_, p_193255_);
     }
  
 -   public boolean m_183588_(BlockPos p_193282_, T p_193283_) {
 +   public synchronized boolean m_183588_(BlockPos p_193282_, T p_193283_) {
++      // NestWorld (Phase 2.2, docs/SCHEDULED_TICK_COMPATIBILITY_CONTRACT.md #2/#3): a tick
++      // already handed off to a free-running region's own pending queue is no longer in
++      // toRunThisTickSet (that set is cleared at the end of every tick() call -- see this
++      // class's own cleanupAfterTick) but vanilla callers (DiodeBlock.checkTickOnNeighbor and
++      // 7 other classes -- see the contract doc's table) still need "yes, already scheduled"
++      // for it, or they create a duplicate.
++      if (net.nestworld.region.NestworldScheduledTickLookup.isPendingInRegion(this.nestworldLevel, p_193282_, p_193283_)) {
++         return true;
++      }
        this.m_193287_();
        return this.f_193207_.contains(ScheduledTick.m_193397_(p_193283_, p_193282_));
     }

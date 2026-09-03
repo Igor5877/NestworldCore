@@ -1255,7 +1255,7 @@
     }
  
     protected PoiManager m_140424_() {
-@@ -1293,7 +_,14 @@
+@@ -1293,7 +_,25 @@
     }
  
     void m_287285_(ChunkPos p_287612_, FullChunkStatus p_287685_) {
@@ -1267,6 +1267,17 @@
 +      long nestworldT0 = System.nanoTime();
        this.f_143031_.m_156794_(p_287612_, p_287685_);
 +      net.nestworld.region.WorldgenGlueAttribution.recordMainGlue(System.nanoTime() - nestworldT0);
++
++      // NestWorld "#0" fix (2026-09-03 redstone investigation, see project memory): a chunk's
++      // block data is only genuinely queryable from the moment it FIRST reaches FULL --
++      // ChunkHolder#scheduleFullChunkPromotion only calls this method with FullChunkStatus.FULL
++      // on that one upward crossing, never again for the same load and never on the way back
++      // down -- so this fires exactly once per chunk-load lifecycle. See
++      // WireNetworkColdStart's own javadoc for why this is needed at all (AC's WireHandler never
++      // scans existing chunk data on its own).
++      if (p_287685_ == FullChunkStatus.FULL) {
++         net.nestworld.region.WireNetworkColdStart.seedChunk(this.f_140133_, p_287612_);
++      }
     }
  
     class DistanceManager extends net.minecraft.server.level.DistanceManager {

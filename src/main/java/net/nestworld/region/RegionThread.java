@@ -53,7 +53,12 @@ public class RegionThread extends Thread {
 
     // Timing diagnostics, logged every 200 ticks
     private long entNanos = 0;
-    private int timedTicks = 0, lastTickedCount = 0;
+    private int timedTicks = 0;
+    // NestWorld: 2026-08-30 -- made volatile + given a getter (matches lastDeferredCount's
+    // existing pattern) so the entity-fairness RCON report can read it cross-thread.
+    private volatile int lastTickedCount = 0;
+
+    public int getLastTickedCount() { return lastTickedCount; }
 
     // -----------------------------------------------------------------------
     // Per-thread chunk cache — read by ServerChunkCache.nestworldGetLoadedChunk
@@ -295,6 +300,40 @@ public class RegionThread extends Thread {
      * responsive to shutdown/toggle-off/incoming work rather than sleeping long stretches.
      */
     private void runFreeRunningTick() {
+        // Fix for "#3" (2026-09-03, persistence-contract gap -- see project memory): a lossless
+        // scheduled tick already removed from vanilla's own LevelChunkTicks (the moment vanilla
+        // decides it's due -- see LevelTicks.drainContainers()/LevelChunkTicks.poll()) sits ONLY
+        // in region.scheduledTicks (and, once drained here, possibly this thread's own
+        // runWorkBudgeted()-carried remainder) until this method gets around to it. The OLD
+        // ordering here called nestworldCheckSaveRendezvous() FIRST, which -- once a pause was
+        // pending -- blocked immediately, honoring the pause with that backlog still sitting
+        // undrained; the save proceeds having never seen it, and nothing else in this codebase
+        // ever persists that queue's contents. Fix: run scheduledTicks/carriedWork to true
+        // completion FIRST, unbudgeted (bypassing runWorkBudgeted's normal per-tick pacing --
+        // deliberate here: no new work can arrive in either while a rendezvous is pending, since
+        // the ONLY producer for both is frozen -- WorldRegion#nestworldPostScheduledTicks only
+        // ever runs from the main thread's runWorkRound, which cannot execute while that same
+        // main thread is blocked awaiting this pause; see nestworldPauseFreeRunningRegionsForSave
+        // -- so the total backlog is a fixed, finite quantity at the moment a pause is first
+        // observed, and this loop is guaranteed to terminate), ONLY THEN check/honor the pause.
+        if (region.nestworldSaveRendezvousPending()) {
+            // Exception safety (per the "#3" ТЗ's explicit requirement): run()'s outer loop has
+            // no surrounding try/catch around this method at all -- an uncaught exception here
+            // would not just skip nestworldCheckSaveRendezvous() this iteration (leaving the
+            // main thread's save coordinator to fall back on its bounded timeout, "saving
+            // anyway" with a residual backlog), it would kill this RegionThread outright, never
+            // to drain or tick again. drainOneScheduledTickBatch()'s actual tick EXECUTION is
+            // already exception-safe (runOneTick() has its own outer catch+finally, per Runnable
+            // besides) -- this guards the surrounding bookkeeping (queue-size checks, the
+            // diagnostic audit hooks) so a failure there can never cost the region its one path
+            // back to honoring the pause.
+            try {
+                drainScheduledTicksToCompletion();
+            } catch (Throwable t) {
+                LOGGER.warn("[{}] drainScheduledTicksToCompletion() failed unexpectedly -- "
+                        + "honoring the pending save rendezvous anyway: {}", getName(), t.toString());
+            }
+        }
         if (region.nestworldCheckSaveRendezvous()) {
             return;
         }
@@ -304,6 +343,13 @@ public class RegionThread extends Thread {
             RegionTimeCompatibility.noteWorkBatch(region, work.size(), level.getGameTime());
             runOneTick(null, work);
         }
+
+        // Phase 2.1 (docs/SCHEDULED_TICK_COMPATIBILITY_CONTRACT.md): lossless BLOCK/FLUID
+        // scheduled-tick queue, separate from the mailbox above -- drained fully every local
+        // tick (never partially, never skipped): everything in it already passed vanilla's own
+        // triggerTick <= gameTime check before being routed here, so there is no backlog that's
+        // "not due yet" to leave behind.
+        drainOneScheduledTickBatch();
 
         long now = System.nanoTime();
         if (freeRunningNextTickNanos == 0) {
@@ -325,6 +371,57 @@ public class RegionThread extends Thread {
                 java.util.concurrent.locks.LockSupport.parkNanos(parkNanos);
             }
         }
+    }
+
+    /** One normal, budgeted pass over {@link WorldRegion#scheduledTicks} -- extracted, ZERO
+     *  behavior change, so {@link #drainScheduledTicksToCompletion()} (the "#3" save-safety
+     *  fix) can reuse the exact same poll+audit+execute logic instead of duplicating it. */
+    private void drainOneScheduledTickBatch() {
+        java.util.List<Runnable> scheduledWork = region.nestworldPollScheduledTicks();
+        if (scheduledWork.isEmpty()) return;
+        // Diagnostic only (2026-09-03, "#2 both=true" investigation -- see project memory):
+        // records whether >=2 of BlockTickWatcher's watched positions land in this SAME
+        // batch, and their block state immediately before/after it runs. No effect on
+        // scheduledWork's execution either way -- see RedstoneBatchAudit's class javadoc.
+        RedstoneBatchAudit.PendingAudit nestworldBatchAudit = RedstoneBatchAudit.beforeBatch(level, scheduledWork);
+        runOneTick(null, scheduledWork);
+        RedstoneBatchAudit.afterBatch(level, nestworldBatchAudit);
+    }
+
+    /** Fix for "#3" (2026-09-03, persistence-contract gap -- see project memory): called ONLY
+     *  from {@link #runFreeRunningTick()}, ONLY when a save rendezvous is pending, BEFORE that
+     *  pause is actually honored. Unlike {@link #drainOneScheduledTickBatch()}'s normal single
+     *  budgeted pass, this loops until {@link WorldRegion#scheduledTicks} AND this thread's own
+     *  {@code runWorkBudgeted()}-carried remainder are BOTH genuinely empty -- a single pass
+     *  isn't enough on its own: if the drained batch is large enough to exceed
+     *  {@code REGION_ENTITY_BUDGET_NANOS} in one call, the leftover is deferred into this
+     *  thread's private {@code carriedWork} field (a THIRD transient, unpersisted location,
+     *  found auditing this exact fix) rather than executed -- which would otherwise still be
+     *  sitting there, silently, the instant this region pauses for save. Safe to run
+     *  unbudgeted/to-completion here specifically because no NEW work can be added to either
+     *  location while a rendezvous is pending (see the caller's comment for why) -- the total
+     *  is fixed and finite the moment this loop starts, so it is guaranteed to terminate. A
+     *  generous iteration cap is kept anyway, purely as a non-hanging safety net consistent
+     *  with this codebase's other bounded-wait conventions, not because unbounded growth is
+     *  actually possible here. */
+    private void drainScheduledTicksToCompletion() {
+        int guard = 100_000;
+        while (guard-- > 0) {
+            boolean hadQueueWork = region.scheduledTicks.size() > 0;
+            boolean hadCarriedWork = getLastWorkDeferred() > 0;
+            if (!hadQueueWork && !hadCarriedWork) return;
+            drainOneScheduledTickBatch();
+            // drainOneScheduledTickBatch() is a no-op (doesn't call runOneTick at all) when
+            // region.scheduledTicks is empty -- if only carriedWork remains, force one more
+            // budgeted pass so runWorkBudgeted() picks it back up (it does so for ANY non-null
+            // work list, including an empty one, whenever carriedWork is already set).
+            if (!hadQueueWork && hadCarriedWork) {
+                runOneTick(null, java.util.List.of());
+            }
+        }
+        LOGGER.warn("[{}] drainScheduledTicksToCompletion() hit its iteration guard -- "
+                + "region.scheduledTicks/carriedWork did not empty; save may proceed with a "
+                + "residual backlog for this region", getName());
     }
 
     /**
@@ -517,10 +614,19 @@ public class RegionThread extends Thread {
         long deadline = System.nanoTime() + NestworldTuning.REGION_ENTITY_BUDGET_NANOS;
         int done = 0;
         for (; done < all.size(); done++) {
+            Runnable r = all.get(done);
             try {
-                all.get(done).run();
+                r.run();
             } catch (Throwable t) {
                 LOGGER.warn("[{}] scheduled-tick error: {}", getName(), t.toString());
+            } finally {
+                // Phase 2.2 (docs/SCHEDULED_TICK_COMPATIBILITY_CONTRACT.md #2/#3): dedup index
+                // stays truthful until an entry has genuinely run, including on the exception
+                // path -- a tick that threw still "happened" from vanilla's perspective (it
+                // won't be retried), so leaving it marked pending here would be its own bug.
+                if (r instanceof ScheduledTickHandoffMetrics.Tagged t) {
+                    region.scheduledTicks.markExecuted(t.pos, t.kind);
+                }
             }
             if ((done & 7) == 7 && System.nanoTime() > deadline) {
                 done++;
@@ -832,7 +938,7 @@ public class RegionThread extends Thread {
         // pressure.
         for (java.util.UUID id : ids) {
             Entity e = level.getEntity(id);
-            if (e == null || e.isRemoved()) region.removeEntity(id);
+            if (e == null || e.isRemoved()) { region.removeEntity(id); region.fairness.forget(id); }
         }
         ids = region.getOwnedEntityIds().toArray(new java.util.UUID[0]);
         int n = ids.length;
@@ -875,14 +981,14 @@ public class RegionThread extends Thread {
             // each call. isPassenger() is deliberately NOT cleaned up here -- a
             // passenger is still a live, owned entity, just skipped for direct
             // ticking this pass (its vehicle ticks it).
-            if (entity == null || entity.isRemoved()) { region.removeEntity(uuid); continue; }
+            if (entity == null || entity.isRemoved()) { region.removeEntity(uuid); region.fairness.forget(uuid); continue; }
             if (entity.isPassenger()) continue;
 
             try {
                 entity.checkDespawn();
                 // NestWorld: checkDespawn() can itself remove the entity (natural
                 // despawn) -- same cleanup as the null/isRemoved() check above.
-                if (entity.isRemoved()) { region.removeEntity(uuid); continue; }
+                if (entity.isRemoved()) { region.removeEntity(uuid); region.fairness.forget(uuid); continue; }
                 // Mirror vanilla: only tick entities inside entity-ticking chunks,
                 // otherwise idle mobs at the edge of loaded terrain burn CPU on AI.
                 if (!level.isPositionEntityTicking(entity.blockPosition())) continue;
@@ -903,11 +1009,13 @@ public class RegionThread extends Thread {
                 TickAttribution.recordChunkCost(level.dimension().location().toString(),
                         entity.chunkPosition(), nestworldTickAttrNanos);
                 ticked++;
+                region.fairness.recordTick(uuid, nestworldTickAttrStart);
                 // Phase 2: track this owned entity now (region phase). Skip if the tick removed it.
                 if (entity.isRemoved()) {
                     // NestWorld: the MOST common death path -- fall/fire/void/combat
                     // damage taken during the entity's own tick call. Same cleanup.
                     region.removeEntity(uuid);
+                    region.fairness.forget(uuid);
                 } else if (nestworldTrack) {
                     nestworldChunkMap.nestworldTrackOwned(entity, nestworldTickNo, nestworldPlayers);
                 }

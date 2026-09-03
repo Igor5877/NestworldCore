@@ -261,13 +261,25 @@ public final class NestworldDimensionRegion {
 
     void routeScheduledTick(BlockPos pos, Runnable run,
                              Map<WorldRegion, List<Runnable>> buckets, List<Runnable> mainBucket) {
+        routeScheduledTick(pos, run, ScheduledTickHandoffMetrics.Tagged.OTHER, buckets, mainBucket);
+    }
+
+    /** {@code kind} is one of {@link ScheduledTickHandoffMetrics.Tagged}'s BLOCK/FLUID/OTHER --
+     *  see that class's javadoc for why this tag needs to survive past this bucketing step. */
+    void routeScheduledTick(BlockPos pos, Runnable run, int kind,
+                             Map<WorldRegion, List<Runnable>> buckets, List<Runnable> mainBucket) {
         int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
         blockTickHeat.recordVetoable(cx, cz);
         WorldRegion region = interiorRegionFor(cx, cz);
+        Runnable tagged = switch (kind) {
+            case ScheduledTickHandoffMetrics.Tagged.BLOCK -> ScheduledTickHandoffMetrics.tagBlock(run, pos);
+            case ScheduledTickHandoffMetrics.Tagged.FLUID -> ScheduledTickHandoffMetrics.tagFluid(run, pos);
+            default -> run;
+        };
         if (region != null) {
-            buckets.computeIfAbsent(region, r -> new ArrayList<>()).add(run);
+            buckets.computeIfAbsent(region, r -> new ArrayList<>()).add(tagged);
         } else {
-            mainBucket.add(run);
+            mainBucket.add(tagged);
         }
     }
 
@@ -350,9 +362,11 @@ public final class NestworldDimensionRegion {
         NestworldRegionSystem.nestworldLevelTicksIterating = true;
         try {
             level.getBlockTicks().tick(gameTime, 65536, (pos, block) ->
-                    routeScheduledTick(pos, () -> level.nestworldRunBlockTick(pos, block), buckets, mainBucket));
+                    routeScheduledTick(pos, () -> level.nestworldRunBlockTick(pos, block),
+                            ScheduledTickHandoffMetrics.Tagged.BLOCK, buckets, mainBucket));
             level.getFluidTicks().tick(gameTime, 65536, (pos, fluid) ->
-                    routeScheduledTick(pos, () -> level.nestworldRunFluidTick(pos, fluid), buckets, mainBucket));
+                    routeScheduledTick(pos, () -> level.nestworldRunFluidTick(pos, fluid),
+                            ScheduledTickHandoffMetrics.Tagged.FLUID, buckets, mainBucket));
         } finally {
             NestworldRegionSystem.nestworldLevelTicksIterating = false;
         }
@@ -971,6 +985,15 @@ public final class NestworldDimensionRegion {
         phaseNanosCumulative[4] += t5 - t4;
         phaseNanosCumulative[5] += t6 - t5;
         timedTicksCumulative++;
+
+        // 2026-09-03 live redstone-desync investigation: every-tick (not averaged) block-state
+        // + timing sample, for a user-configured watch list. Diagnostic-only, no-op unless
+        // explicitly started via /nestworld blockwatch. mainMs = this tick's full t0..t6 wall
+        // time for this dimension; regionMs = just the regionPool dispatch phase (t3..t4),
+        // matching the existing "Tick phases avg ms" breakdown's own phase boundaries.
+        if (net.nestworld.region.BlockTickWatcher.isEnabled()) {
+            net.nestworld.region.BlockTickWatcher.sample(level, (t6 - t0) / 1e6, (t4 - t3) / 1e6);
+        }
         if (++timedTicks >= TIMING_LOG_INTERVAL) {
             if (TIMING_LOG) {
                 LOGGER.info("[{}] Tick phases avg ms over {} ticks: vanilla={} signals={} entityXfer={} regionPool={} ghostZones={} splitMerge={}",
