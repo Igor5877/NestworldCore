@@ -10,6 +10,7 @@ import net.minecraft.world.level.storage.LevelResource;
 import java.io.File;
 import java.nio.file.Path;
 import java.util.function.BooleanSupplier;
+import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.server.ServerStartingEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
@@ -197,6 +198,23 @@ public class NestworldRegionSystem {
     @SubscribeEvent
     public static void onRegisterCommands(net.minecraftforge.event.RegisterCommandsEvent event) {
         NestworldCommand.register(event.getDispatcher());
+    }
+
+    // NestWorld: feeds TickDurationHistory's 10s/1m windows for /nestworld status|lag's
+    // "Tick (min/med/95%/max ms)" rows -- vanilla's own tickTimes[] ring buffer only
+    // covers the last 100 ticks (~5s), too short for spark-style multi-window display.
+    // END phase fires after MinecraftServer.tickServer() has already written this tick's
+    // duration into tickTimes[tickCount % 100] and updated averageTickTime, so reading it
+    // here gets the just-completed tick, not a stale one. Pure Forge event -- no vanilla
+    // source touched.
+    @SubscribeEvent
+    public static void onServerTick(TickEvent.ServerTickEvent event) {
+        if (event.phase != TickEvent.Phase.END) return;
+        if (INSTANCE == null || INSTANCE.server == null) return;
+        long[] tickTimes = INSTANCE.server.tickTimes;
+        int idx = (int) (INSTANCE.server.getTickCount() % 100);
+        if (idx < 0 || idx >= tickTimes.length) return;
+        TickDurationHistory.SERVER.record(System.currentTimeMillis(), tickTimes[idx]);
     }
 
     // NestWorld: see NestworldTuning.MAX_FALLING_BLOCKS's javadoc. Global live-count cap

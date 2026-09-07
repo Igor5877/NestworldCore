@@ -105,6 +105,40 @@ public class RegionThreadPool {
         }
     }
 
+    /** One phase's telemetry, already reduced to display-ready numbers -- same values
+     *  {@link #nestworldPhaseTelemetry()} formats into one opaque string, just structured
+     *  so the chat formatter can color/lay out each field instead of dumping a single
+     *  pre-formatted blob. {@code rounds == 0} means no data yet for this phase. */
+    public record PhaseSnapshot(RegionPhase phase, int rounds, double avgWorkers, double dispatchAvgMs,
+            double waitAvgMs, double pollAvgMs, double pollP95Ms, double regionTickAvgMs,
+            double regionTickP95Ms, double regionTickMaxMs, long timeouts, double avgPendingAtTimeout) {}
+
+    /** Structured equivalent of {@link #nestworldPhaseTelemetry()} for /nestworld regionpool
+     *  -- see NestworldCommand. Same underlying counters, same computation, just returned
+     *  as data instead of a pre-formatted string. */
+    public java.util.List<PhaseSnapshot> nestworldPhaseSnapshots() {
+        java.util.List<PhaseSnapshot> out = new java.util.ArrayList<>();
+        for (RegionPhase phase : RegionPhase.values()) {
+            PhaseStats s = nestworldPhaseStats[phase.ordinal()];
+            if (s.rounds == 0) {
+                out.add(new PhaseSnapshot(phase, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+                continue;
+            }
+            out.add(new PhaseSnapshot(phase, s.rounds,
+                    (double) s.workerCountAccum / s.rounds,
+                    s.dispatchNanos / 1e6 / s.rounds,
+                    s.waitNanos / 1e6 / s.rounds,
+                    s.pollTaskNanos / 1e6 / s.rounds,
+                    PhaseStats.p95(s.pollNanosSamples, s.sampleCount),
+                    s.workerCountAccum == 0 ? 0.0 : s.regionTickNanosSum / 1e6 / s.workerCountAccum,
+                    PhaseStats.p95(s.regionTickMaxSamples, s.sampleCount),
+                    s.regionTickNanosMax / 1e6,
+                    s.timeoutCount,
+                    s.timeoutCount == 0 ? 0.0 : (double) s.regionsPendingAtTimeoutSum / s.timeoutCount));
+        }
+        return out;
+    }
+
     /** Read-only snapshot for /nestworld regionpool -- see NestworldCommand. */
     public String nestworldPhaseTelemetry() {
         StringBuilder sb = new StringBuilder();
@@ -398,6 +432,29 @@ public class RegionThreadPool {
     }
     private final java.util.Map<Integer, RegionSlowStats> nestworldRegionSlowStats =
             new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** One region's slow-in-round ranking entry, already reduced to display-ready
+     *  numbers -- structured equivalent of one line of {@link
+     *  #nestworldRegionSlowTelemetry()}'s output. */
+    public record RegionSlowEntry(int regionId, long timesSlowestInRound, long tickCount,
+            double avgMs, double maxMs) {}
+
+    /** Structured equivalent of {@link #nestworldRegionSlowTelemetry()} for
+     *  /nestworld regionslow, sorted the same way (most-often-slowest first). Empty
+     *  before any round has completed. */
+    public java.util.List<RegionSlowEntry> nestworldRegionSlowEntries() {
+        java.util.List<java.util.Map.Entry<Integer, RegionSlowStats>> entries =
+                new java.util.ArrayList<>(nestworldRegionSlowStats.entrySet());
+        entries.sort((a, b) -> Long.compare(b.getValue().timesSlowestInRound, a.getValue().timesSlowestInRound));
+        java.util.List<RegionSlowEntry> out = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<Integer, RegionSlowStats> e : entries) {
+            RegionSlowStats s = e.getValue();
+            out.add(new RegionSlowEntry(e.getKey(), s.timesSlowestInRound, s.tickCount,
+                    s.tickCount == 0 ? 0.0 : s.tickNanosSum / 1e6 / s.tickCount,
+                    s.tickNanosMax / 1e6));
+        }
+        return out;
+    }
 
     /** Read-only snapshot for /nestworld regionslow -- see NestworldCommand. */
     public String nestworldRegionSlowTelemetry() {

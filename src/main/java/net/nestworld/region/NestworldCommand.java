@@ -489,6 +489,7 @@ public final class NestworldCommand {
             src.sendFailure(Component.literal("NestWorld region system is not active"));
             return 0;
         }
+        NestworldChat.Locale loc = NestworldChat.localeOf(src);
         NestworldRegionSystem sys = NestworldRegionSystem.get();
         NestworldDimensionRegion dr = overworldRegion(sys);
         java.util.List<RegionScheduler.Classification> classes =
@@ -497,20 +498,33 @@ public final class NestworldCommand {
         for (RegionScheduler.Classification c : classes) {
             counts.merge(c.state(), 1, Integer::sum);
         }
-        src.sendSuccess(() -> Component.literal(String.format(
-                "NestWorld scheduler: %d region(s) — idle=%d running=%d delayed=%d overloaded=%d",
-                classes.size(),
-                counts.getOrDefault(RegionScheduler.State.IDLE, 0),
-                counts.getOrDefault(RegionScheduler.State.RUNNING, 0),
-                counts.getOrDefault(RegionScheduler.State.DELAYED, 0),
-                counts.getOrDefault(RegionScheduler.State.OVERLOADED, 0))), false);
-        for (RegionScheduler.Classification c : classes) {
-            if (c.state() == RegionScheduler.State.IDLE) continue;
-            src.sendSuccess(() -> Component.literal(String.format(
-                    "  #%d [%s] avg=%.1fms deferredEntities=%d workDeferred=%d",
-                    c.region().getId(), c.state(), c.avgTickMs(),
-                    c.lastDeferredEntities(), c.lastWorkDeferred())), false);
+
+        java.util.List<Component> lines = new java.util.ArrayList<>();
+        lines.add(NestworldChat.title(NestworldChat.tr(loc, "Scheduler", "Планувальник")));
+        lines.add(NestworldChat.indent(1, NestworldChat.kv(
+                NestworldChat.tr(loc, "Regions", "Регіони"), String.valueOf(classes.size()))));
+        for (RegionScheduler.State s : RegionScheduler.State.values()) {
+            lines.add(NestworldChat.indent(1, NestworldChat.kv(
+                    NestworldChat.schedulerStateLabel(loc, s),
+                    String.valueOf(counts.getOrDefault(s, 0)), NestworldChat.fromSchedulerState(s))));
         }
+        boolean any = classes.stream().anyMatch(c -> c.state() != RegionScheduler.State.IDLE);
+        if (any) {
+            lines.add(NestworldChat.blank());
+            for (RegionScheduler.Classification c : classes) {
+                if (c.state() == RegionScheduler.State.IDLE) continue;
+                lines.add(NestworldChat.indent(1, Component.literal("#" + c.region().getId() + " ")
+                        .withStyle(net.minecraft.ChatFormatting.YELLOW)
+                        .append(NestworldChat.schedulerStateText(loc, c.state()))));
+                lines.add(NestworldChat.indent(2, NestworldChat.treeLine(true, Component.literal(String.format(
+                        "%s %.1f%s  %s %d  %s %d",
+                        NestworldChat.tr(loc, "avg", "сер."), c.avgTickMs(), NestworldChat.tr(loc, "ms", "мс"),
+                        NestworldChat.tr(loc, "deferredEntities", "відкладено_сутностей"), c.lastDeferredEntities(),
+                        NestworldChat.tr(loc, "workDeferred", "відкл.робота"), c.lastWorkDeferred()))
+                        .withStyle(net.minecraft.ChatFormatting.GRAY))));
+            }
+        }
+        NestworldChat.send(src, false, lines.toArray(new Component[0]));
         return classes.size();
     }
 
@@ -632,31 +646,64 @@ public final class NestworldCommand {
             src.sendFailure(Component.literal("NestWorld region system is not active"));
             return 0;
         }
+        NestworldChat.Locale loc = NestworldChat.localeOf(src);
         NestworldRegionSystem sys = NestworldRegionSystem.get();
         NestworldDimensionRegion dr = overworldRegion(sys);
         var regions = dr.getTree().getActiveRegions();
         double serverMspt = src.getServer().getAverageTickTime();
         double tps = Math.min(20.0, 1000.0 / Math.max(serverMspt, 0.001));
-        src.sendSuccess(() -> Component.literal(String.format(
-                "NestWorld lag report — server %.1f ms/tick (%.1f TPS)", serverMspt, tps)), false);
+        NestworldChat.Health overall = NestworldChat.classifyMsPerTick(serverMspt);
+        boolean periodicSpike = NestworldChat.hasPeriodicSpike(
+                src.getServer(), NestworldChat.PERIODIC_SPIKE_MS_DEFAULT);
+
+        java.util.List<Component> lines = new java.util.ArrayList<>();
+        lines.add(NestworldChat.title("NestWorld — " + NestworldChat.tr(loc, "Lag report", "Звіт про лаги")));
+        lines.add(NestworldChat.indent(1, NestworldChat.healthText(loc, overall, periodicSpike)));
+        lines.add(NestworldChat.indent(1, NestworldChat.kv("TPS",
+                String.format("%.1f", tps), NestworldChat.classifyTps(tps))));
+        lines.add(NestworldChat.indent(1, NestworldChat.kv(NestworldChat.tr(loc, "Server tick", "Тік сервера"),
+                String.format("%.1f ms", serverMspt), overall)));
+        double avgMainMsLag = dr.getAvgTickWallMs();
+        if (avgMainMsLag > 0) {
+            lines.add(NestworldChat.indent(1, NestworldChat.kv(
+                    NestworldChat.tr(loc, "Main thread", "Головний потік"),
+                    String.format(NestworldChat.tr(loc, "%.1f ms (avg since boot)", "%.1f мс (сер. з моменту старту)"),
+                            avgMainMsLag))));
+        }
+        if (periodicSpike) {
+            lines.add(NestworldChat.indent(1, NestworldChat.kv(
+                    NestworldChat.tr(loc, "Peak tick", "Пік тіку"),
+                    String.format("%.0f ms", NestworldChat.maxTickMs(src.getServer())),
+                    NestworldChat.Health.WARNING)));
+        }
+        lines.addAll(NestworldChat.tickDurationRows(loc, TickDurationHistory.SERVER));
 
         WorldRegion slow = null;
         for (WorldRegion r : regions) {
             if (slow == null || r.getAvgTickMs() > slow.getAvgTickMs()) slow = r;
         }
         if (slow == null) {
-            src.sendSuccess(() -> Component.literal("  no active regions"), false);
+            lines.add(NestworldChat.blank());
+            lines.add(NestworldChat.indent(1, Component.literal(
+                            NestworldChat.tr(loc, "no active regions", "немає активних регіонів"))
+                    .withStyle(net.minecraft.ChatFormatting.GRAY)));
+            NestworldChat.send(src, false, lines.toArray(new Component[0]));
             return 0;
         }
         final WorldRegion hot = slow;
+        lines.add(NestworldChat.blank());
 
         // Server lagging but the worst region is cheap => the cost is on the main
         // thread, which the sharding does not touch (commands, redstone, mod ticks).
         if (serverMspt > 50.0 && hot.getAvgTickMs() < serverMspt * 0.4) {
-            src.sendSuccess(() -> Component.literal(String.format(
-                    "  ⚠ lag is MAIN-THREAD, not a region (worst region only %.1fms). Check "
-                  + "commands (/fill,/clone,/forceload), redstone, or a mod's server-tick handler.",
-                    hot.getAvgTickMs())), false);
+            lines.add(Component.literal(String.format(
+                    NestworldChat.tr(loc,
+                            "Lag is MAIN-THREAD, not a region (worst region only %.1fms). Check "
+                          + "commands (/fill,/clone,/forceload), redstone, or a mod's server-tick handler.",
+                            "Лаг на ГОЛОВНОМУ ПОТОЦІ, а не в регіоні (найгірший регіон лише %.1fмс). "
+                          + "Перевір команди (/fill,/clone,/forceload), редстоун або тік мода."),
+                    hot.getAvgTickMs())).withStyle(net.minecraft.ChatFormatting.GOLD));
+            lines.add(NestworldChat.blank());
         }
 
         net.minecraft.server.level.ServerLevel level = src.getServer().overworld();
@@ -670,9 +717,15 @@ public final class NestworldCommand {
             typeCounts.merge(t, 1, Integer::sum);
         }
 
-        src.sendSuccess(() -> Component.literal(String.format(
-                "  slowest: region #%d  cost=%.1fms  entities=%d",
-                hot.getId(), hot.getAvgTickMs(), hot.getOwnedEntityIds().size())), false);
+        lines.add(NestworldChat.title(NestworldChat.tr(loc, "Slowest region", "Найповільніший регіон")));
+        lines.add(NestworldChat.indent(1, NestworldChat.regionMainLine(loc, hot.getId(),
+                hot.getMinChunkX(), hot.getMinChunkZ(), hot.getMaxChunkX(), hot.getMaxChunkZ(),
+                hot.getAvgTickMs(), hot.getOwnedEntityIds().size())));
+        if (hot.isFreeRunning()) {
+            Component hotFreeRunTag = NestworldChat.freeRunTag(hot.tickHistory.compute(10_000));
+            if (hotFreeRunTag != null) lines.add(NestworldChat.indent(2, NestworldChat.treeLine(true, hotFreeRunTag)));
+        }
+        lines.add(NestworldChat.blank());
 
         long hotChunk = 0;
         int hotCount = 0;
@@ -681,44 +734,59 @@ public final class NestworldCommand {
         }
         if (hotCount > 0) {
             net.minecraft.world.level.ChunkPos cp = new net.minecraft.world.level.ChunkPos(hotChunk);
-            final int hc = hotCount;
-            src.sendSuccess(() -> Component.literal(String.format(
-                    "  hottest chunk: (%d,%d) — %d entities (block %d,%d)",
-                    cp.x, cp.z, hc, cp.getMinBlockX(), cp.getMinBlockZ())), false);
+            String entitiesWord = NestworldChat.tr(loc, "entities", "сутностей");
+            String blockWord = NestworldChat.tr(loc, "block", "блок");
+            lines.add(NestworldChat.indent(1, NestworldChat.kv(
+                    NestworldChat.tr(loc, "Hottest chunk", "Найгарячіший чанк"),
+                    String.format("(%d,%d) — %d %s (%s %d,%d)",
+                            cp.x, cp.z, hotCount, entitiesWord, blockWord, cp.getMinBlockX(), cp.getMinBlockZ()))));
+            typeCounts.entrySet().stream()
+                    .sorted((a, b) -> b.getValue() - a.getValue()).limit(4)
+                    .forEach(en -> lines.add(NestworldChat.indent(2, Component.literal(
+                            String.format("%s ×%d", en.getKey(), en.getValue()))
+                            .withStyle(net.minecraft.ChatFormatting.GRAY))));
         }
-
-        typeCounts.entrySet().stream()
-                .sorted((a, b) -> b.getValue() - a.getValue()).limit(4)
-                .forEach(en -> src.sendSuccess(() -> Component.literal(
-                        String.format("    %s ×%d", en.getKey(), en.getValue())), false));
 
         BlockTickHeat heat = dr.getBlockTickHeat();
         double regionHeat = heat.totalInRegion(hot);
         if (regionHeat >= 1.0) {
-            src.sendSuccess(() -> Component.literal(String.format(
-                    "  block-tick heat=%.0f [%s] (redstone/farms)", regionHeat, heat.hotspotSummary(hot, 3))), false);
+            lines.add(NestworldChat.indent(1, NestworldChat.kv(
+                    NestworldChat.tr(loc, "Block-tick heat", "Нагрів блок-тіків"), String.format(
+                    "%.0f [%s] (%s)", regionHeat, heat.hotspotSummary(hot, 3),
+                    NestworldChat.tr(loc, "redstone/farms", "редстоун/ферми")))));
         }
 
         double bx = ((hot.getMinChunkX() + hot.getMaxChunkX()) / 2) * 16 + 8;
         double bz = ((hot.getMinChunkZ() + hot.getMaxChunkZ()) / 2) * 16 + 8;
         net.minecraft.world.entity.player.Player near = level.getNearestPlayer(bx, 128.0, bz, -1.0, false);
+        String nearestLabel = NestworldChat.tr(loc, "Nearest player", "Найближчий гравець");
         if (near != null) {
             double d = Math.sqrt(near.distanceToSqr(bx, near.getY(), bz));
-            src.sendSuccess(() -> Component.literal(String.format(
-                    "  nearest player: %s (%.0f blocks from region centre)", near.getName().getString(), d)), false);
+            net.minecraft.core.BlockPos nearPos = near.blockPosition();
+            lines.add(NestworldChat.indent(1, NestworldChat.kv(nearestLabel, String.format(
+                    NestworldChat.tr(loc, "%s at (%d, %d, %d) -- %.0f blocks from region centre",
+                            "%s на (%d, %d, %d) -- %.0f блоків від центру регіону"),
+                    near.getName().getString(), nearPos.getX(), nearPos.getY(), nearPos.getZ(), d))));
         } else {
-            src.sendSuccess(() -> Component.literal(
-                    "  nearest player: none nearby (chunks kept loaded by force-load/spawn?)"), false);
+            lines.add(NestworldChat.indent(1, NestworldChat.kv(nearestLabel, NestworldChat.tr(loc,
+                    "none nearby (chunks kept loaded by force-load/spawn?)",
+                    "нікого поруч (чанки завантажені через force-load/spawn?)"))));
         }
+        NestworldChat.send(src, false, lines.toArray(new Component[0]));
         return 1;
     }
 
     private static int toggleBorders(CommandSourceStack src) {
+        NestworldChat.Locale loc = NestworldChat.localeOf(src);
         NestworldRegionSystem.showBorders = !NestworldRegionSystem.showBorders;
         boolean on = NestworldRegionSystem.showBorders;
-        src.sendSuccess(() -> Component.literal(
-                on ? "Region borders: VISIBLE (END_ROD particles, range 96)"
-                   : "Region borders: hidden"), true);
+        Component value = on
+                ? Component.literal(NestworldChat.tr(loc, "VISIBLE (END_ROD particles, range 96)",
+                        "ВИДИМІ (частинки END_ROD, радіус 96)")).withStyle(net.minecraft.ChatFormatting.GREEN)
+                : Component.literal(NestworldChat.tr(loc, "hidden", "приховані")).withStyle(net.minecraft.ChatFormatting.GRAY);
+        Component line = Component.literal(NestworldChat.tr(loc, "Region borders", "Межі регіонів") + ": ")
+                .withStyle(net.minecraft.ChatFormatting.GRAY).append(value);
+        NestworldChat.send(src, true, line);
         return on ? 1 : 0;
     }
 
@@ -735,6 +803,7 @@ public final class NestworldCommand {
             src.sendFailure(Component.literal("NestWorld region system is not active"));
             return 0;
         }
+        NestworldChat.Locale loc = NestworldChat.localeOf(src);
         NestworldRegionSystem sys = NestworldRegionSystem.get();
         NestworldDimensionRegion dr = overworldRegion(sys);
         var regions = dr.getTree().getActiveRegions();
@@ -742,10 +811,47 @@ public final class NestworldCommand {
         // actual tick health (region cost alone says nothing about redstone
         // and other main-thread work).
         double serverMspt = src.getServer().getAverageTickTime();
-        src.sendSuccess(() -> Component.literal(String.format(
-                "NestWorld: %d active region(s), server %.1f ms/tick (%.1f TPS)",
-                regions.size(), serverMspt, Math.min(20.0, 1000.0 / Math.max(serverMspt, 0.001)))), false);
+        double tps = Math.min(20.0, 1000.0 / Math.max(serverMspt, 0.001));
+        NestworldChat.Health overall = NestworldChat.classifyMsPerTick(serverMspt);
+        boolean periodicSpike = NestworldChat.hasPeriodicSpike(
+                src.getServer(), NestworldChat.PERIODIC_SPIKE_MS_DEFAULT);
         BlockTickHeat heat = dr.getBlockTickHeat();
+
+        WorldRegion worst = null;
+        for (WorldRegion r : regions) {
+            if (worst == null || r.getAvgTickMs() > worst.getAvgTickMs()) worst = r;
+        }
+
+        java.util.List<Component> lines = new java.util.ArrayList<>();
+        // Most important first (rule: "сервер зараз працює нормально?" answered in 1-3s).
+        lines.add(NestworldChat.title("NestWorld"));
+        lines.add(NestworldChat.indent(1, NestworldChat.healthText(loc, overall, periodicSpike)));
+        lines.add(NestworldChat.indent(1, NestworldChat.kv("TPS",
+                String.format("%.1f", tps), NestworldChat.classifyTps(tps))));
+        lines.add(NestworldChat.indent(1, NestworldChat.kv(NestworldChat.tr(loc, "Server tick", "Тік сервера"),
+                String.format("%.1f ms", serverMspt), overall)));
+        double avgMainMs = dr.getAvgTickWallMs();
+        if (avgMainMs > 0) {
+            lines.add(NestworldChat.indent(1, NestworldChat.kv(
+                    NestworldChat.tr(loc, "Main thread", "Головний потік"),
+                    String.format(NestworldChat.tr(loc, "%.1f ms (avg since boot)", "%.1f мс (сер. з моменту старту)"),
+                            avgMainMs))));
+        }
+        if (periodicSpike) {
+            lines.add(NestworldChat.indent(1, NestworldChat.kv(
+                    NestworldChat.tr(loc, "Peak tick", "Пік тіку"),
+                    String.format("%.0f ms", NestworldChat.maxTickMs(src.getServer())),
+                    NestworldChat.Health.WARNING)));
+        }
+        if (overall != NestworldChat.Health.OK && worst != null) {
+            lines.add(NestworldChat.indent(1, NestworldChat.kv(
+                    NestworldChat.tr(loc, "Worst region", "Найгірший регіон"),
+                    String.format("#%d (%.1f ms)", worst.getId(), worst.getAvgTickMs()),
+                    NestworldChat.classifyRegionCost(worst.getAvgTickMs()))));
+        }
+        lines.addAll(NestworldChat.tickDurationRows(loc, TickDurationHistory.SERVER));
+        lines.add(NestworldChat.blank());
+
         var shown = regions;
         int hidden = 0;
         if (!full && regions.size() > STATUS_COMPACT_TOP_N) {
@@ -754,55 +860,79 @@ public final class NestworldCommand {
             hidden = shown.size() - STATUS_COMPACT_TOP_N;
             shown = shown.subList(0, STATUS_COMPACT_TOP_N);
         }
+        lines.add(Component.literal(NestworldChat.tr(loc, "Regions", "Регіони") + ": ")
+                .withStyle(net.minecraft.ChatFormatting.WHITE)
+                .append(Component.literal(regions.size() + " " + NestworldChat.tr(loc, "active", "активних")
+                        + (hidden > 0 ? " (" + NestworldChat.tr(loc, "showing top", "показано топ") + " "
+                                + STATUS_COMPACT_TOP_N + " " + NestworldChat.tr(loc, "by cost", "за вартістю") + ")" : ""))
+                        .withStyle(net.minecraft.ChatFormatting.AQUA)));
+        lines.add(NestworldChat.blank());
+
         for (WorldRegion r : shown) {
             RegionThread thread = r.owningThread;
             int deferred = thread != null ? thread.getLastDeferredCount() : 0;
             int workDeferred = thread != null ? thread.getLastWorkDeferred() : 0;
             double regionHeat = heat.totalInRegion(r);
-            // NestWorld: Stage 4.5 — show p95 only when it noticeably diverges from the
-            // average (long tail hiding behind a healthy-looking mean); a well-behaved
-            // region's p95 tracks its average closely and would just be noise here.
             double avgMs = r.getAvgTickMs();
-            double p95Ms = r.getPercentileTickMs(0.95);
-            boolean showP95 = p95Ms > avgMs * 1.5 && p95Ms > 2.0;
-            // NestWorld: Stage 5.3 design v3 "budgeted drain" fix — a mailbox that still
-            // has messages queued AFTER the barrier pass (nestworldDrainMailboxBudgeted
-            // hit its time budget) is only expected under a genuine flood; 0 the rest of
-            // the time, so shown only when non-zero instead of every tick.
+            // Stage 5.3 v3 "budgeted drain" fix — a mailbox that still has messages
+            // queued AFTER the barrier pass is only expected under a genuine flood.
             int mailboxDepth = r.nestworldMailboxSize();
-            // Stage 5.3 v3 Fix 3 (docs/LOCAL_TICK_STAGE4.md, "backpressure without message
-            // loss"): messages THIS region wanted to send but held back at its own side
-            // because the destination was over MAILBOX_BACKPRESSURE_THRESHOLD — 0 the
-            // overwhelming rest of the time, same "shown only when non-zero" convention
-            // as mailbox= above; a nonzero pending= is the live signal that backpressure
-            // is actively engaged, not just designed-for.
+            // Stage 5.3 v3 Fix 3 — messages THIS region held back because the
+            // destination was over MAILBOX_BACKPRESSURE_THRESHOLD.
             int pendingDepth = r.nestworldOutboundPendingSize();
-            // Step 3 (docs/LOCAL_TICK_STAGE4.md): a free-running region's localTickCount
-            // diverging from server.tickCount is expected and exactly what to watch —
-            // shown only for regions actually toggled free-running, zero-cost otherwise.
             boolean freeRunning = r.isFreeRunning();
-            long tickDelta = freeRunning ? r.getLocalTickCount() - src.getServer().getTickCount() : 0;
-            src.sendSuccess(() -> Component.literal(String.format(
-                    "  #%d chunks(%d,%d)-(%d,%d) cost=%.1fms%s entities=%d%s%s%s%s%s%s",
-                    r.getId(), r.getMinChunkX(), r.getMinChunkZ(),
-                    r.getMaxChunkX(), r.getMaxChunkZ(),
-                    avgMs, showP95 ? String.format(" p95=%.1fms", p95Ms) : "",
-                    r.getOwnedEntityIds().size(),
-                    deferred > 0 ? " deferred=" + deferred : "",
-                    workDeferred > 0 ? " workDeferred=" + workDeferred : "",
-                    mailboxDepth > 0 ? " mailbox=" + mailboxDepth : "",
-                    pendingDepth > 0 ? " pending=" + pendingDepth : "",
-                    regionHeat >= 1.0
-                            ? String.format(" heat=%.0f[%s]", regionHeat, heat.hotspotSummary(r, 3))
-                            : "",
-                    freeRunning ? String.format(" FREE-RUNNING%s localTick=%d (%+d)",
-                            r.autoFreeRunning ? "(auto)" : "", r.getLocalTickCount(), tickDelta) : "")), false);
+
+            lines.add(NestworldChat.indent(1, NestworldChat.regionMainLine(loc, r.getId(),
+                    r.getMinChunkX(), r.getMinChunkZ(), r.getMaxChunkX(), r.getMaxChunkZ(),
+                    avgMs, r.getOwnedEntityIds().size())));
+
+            // Tree-connector sub-lines: free-running badge (only when free-running),
+            // queue-depth (deferred/workDeferred/mailbox/pending, combined, only when any
+            // is non-zero), heat (only when >=1.0), stats (always when data exists) --
+            // whichever is actually present gets assembled here so the LAST one gets the
+            // closing "└─" connector.
+            java.util.List<Component> subLines = new java.util.ArrayList<>();
+            if (freeRunning) {
+                Component freeRunTag = NestworldChat.freeRunTag(r.tickHistory.compute(10_000));
+                if (freeRunTag != null) subLines.add(freeRunTag);
+            }
+            StringBuilder queueLine = new StringBuilder();
+            if (deferred > 0) queueLine.append(NestworldChat.tr(loc, "deferred", "відкладено")).append(' ').append(deferred);
+            if (workDeferred > 0) {
+                if (queueLine.length() > 0) queueLine.append("  ");
+                queueLine.append(NestworldChat.tr(loc, "workDeferred", "відкл.робота")).append(' ').append(workDeferred);
+            }
+            if (mailboxDepth > 0) {
+                if (queueLine.length() > 0) queueLine.append("  ");
+                queueLine.append(NestworldChat.tr(loc, "mailbox", "скринька")).append(' ').append(mailboxDepth);
+            }
+            if (pendingDepth > 0) {
+                if (queueLine.length() > 0) queueLine.append("  ");
+                queueLine.append(NestworldChat.tr(loc, "pending", "очікує")).append(' ').append(pendingDepth);
+            }
+            if (queueLine.length() > 0) {
+                subLines.add(Component.literal(queueLine.toString()).withStyle(net.minecraft.ChatFormatting.GRAY));
+            }
+            if (regionHeat >= 1.0) {
+                subLines.add(NestworldChat.heatLine(loc, regionHeat, heat.hotspotSummary(r, 3)));
+            }
+            // Every region ticks on its own RegionThread independently of the main
+            // server tick (free-running or barrier-synced alike) -- the "Tick:" value
+            // above is only the average, this is the same min/med/95%/max breakdown
+            // TickDurationHistory already tracks for this region's tickHistory.
+            subLines.addAll(NestworldChat.compactTickLine(loc, r.tickHistory));
+
+            for (int i = 0; i < subLines.size(); i++) {
+                lines.add(NestworldChat.indent(2, NestworldChat.treeLine(i == subLines.size() - 1, subLines.get(i))));
+            }
         }
         if (hidden > 0) {
-            int hiddenFinal = hidden;
-            src.sendSuccess(() -> Component.literal(String.format(
-                    "  ... and %,d more region(s) (sorted by cost) -- /nestworld status full for all", hiddenFinal)), false);
+            lines.add(NestworldChat.indent(1, Component.literal(String.format(
+                    NestworldChat.tr(loc, "... and %,d more region(s) -- /nestworld status full for all",
+                            "... ще %,d регіон(ів) -- /nestworld status full для всіх"), hidden))
+                    .withStyle(net.minecraft.ChatFormatting.GRAY)));
         }
+        NestworldChat.send(src, false, lines.toArray(new Component[0]));
         return regions.size();
     }
 
@@ -1062,10 +1192,50 @@ public final class NestworldCommand {
      * P0_REGIONTHREADPOOL_REDESIGN_SPEC.md). Read-only, no behavior change.
      */
     private static int regionPoolStats(CommandSourceStack src) {
+        NestworldChat.Locale loc = NestworldChat.localeOf(src);
         net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
         net.nestworld.region.NestworldDimensionRegion dr = overworldRegion(sys);
-        String result = dr.getPool().nestworldPhaseTelemetry();
-        src.sendSuccess(() -> Component.literal("NW RegionThreadPool per-phase telemetry:\n" + result), false);
+        java.util.List<RegionThreadPool.PhaseSnapshot> snapshots = dr.getPool().nestworldPhaseSnapshots();
+
+        java.util.List<Component> lines = new java.util.ArrayList<>();
+        lines.add(NestworldChat.title(NestworldChat.tr(loc, "RegionThreadPool telemetry", "Телеметрія RegionThreadPool")));
+        boolean firstPhase = true;
+        for (RegionThreadPool.PhaseSnapshot s : snapshots) {
+            if (!firstPhase) lines.add(NestworldChat.blank());
+            firstPhase = false;
+            if (s.rounds() == 0) {
+                lines.add(NestworldChat.indent(1, Component.literal(s.phase().name() + ": "
+                        + NestworldChat.tr(loc, "no rounds yet", "ще немає раундів"))
+                        .withStyle(net.minecraft.ChatFormatting.DARK_GRAY)));
+                continue;
+            }
+            lines.add(NestworldChat.indent(1, Component.literal(s.phase().name()).withStyle(net.minecraft.ChatFormatting.YELLOW)));
+            lines.add(NestworldChat.indent(2, NestworldChat.treeLine(false, Component.literal(String.format(
+                    "%s %,d  %s %.1f",
+                    NestworldChat.tr(loc, "rounds", "раундів"), s.rounds(),
+                    NestworldChat.tr(loc, "avg workers", "сер. воркерів"), s.avgWorkers()))
+                    .withStyle(net.minecraft.ChatFormatting.GRAY))));
+            lines.add(NestworldChat.indent(2, NestworldChat.treeLine(false, Component.literal(String.format(
+                    "%s %.3fms  %s %.3fms  %s %.3fms (p95 %.3fms)",
+                    NestworldChat.tr(loc, "dispatch", "диспетч."), s.dispatchAvgMs(),
+                    NestworldChat.tr(loc, "wait", "очікування"), s.waitAvgMs(),
+                    NestworldChat.tr(loc, "poll", "опитування"), s.pollAvgMs(), s.pollP95Ms()))
+                    .withStyle(net.minecraft.ChatFormatting.GRAY))));
+            NestworldChat.Health maxHealth = NestworldChat.classifyRegionCost(s.regionTickMaxMs());
+            NestworldChat.Health timeoutHealth = s.timeouts() == 0 ? NestworldChat.Health.OK : NestworldChat.Health.CRITICAL;
+            net.minecraft.network.chat.MutableComponent tickLine = Component.literal(String.format(
+                    "%s %.3fms  %s %.3fms  %s ",
+                    NestworldChat.tr(loc, "region tick avg", "тік регіону сер."), s.regionTickAvgMs(),
+                    NestworldChat.tr(loc, "p95", "p95"), s.regionTickP95Ms(),
+                    NestworldChat.tr(loc, "max", "макс")))
+                    .withStyle(net.minecraft.ChatFormatting.GRAY)
+                    .append(NestworldChat.coloredValue(String.format("%.3fms", s.regionTickMaxMs()), maxHealth))
+                    .append(Component.literal("  " + NestworldChat.tr(loc, "timeouts", "таймаутів") + " ")
+                            .withStyle(net.minecraft.ChatFormatting.GRAY))
+                    .append(NestworldChat.coloredValue(String.valueOf(s.timeouts()), timeoutHealth));
+            lines.add(NestworldChat.indent(2, NestworldChat.treeLine(true, tickLine)));
+        }
+        NestworldChat.send(src, false, lines.toArray(new Component[0]));
         return 0;
     }
 
@@ -1074,10 +1244,39 @@ public final class NestworldCommand {
      * THIS region the slowest in its round" ranking. Read-only, no behavior change.
      */
     private static int regionSlowStats(CommandSourceStack src) {
+        NestworldChat.Locale loc = NestworldChat.localeOf(src);
         net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
         net.nestworld.region.NestworldDimensionRegion dr = overworldRegion(sys);
-        String result = dr.getPool().nestworldRegionSlowTelemetry();
-        src.sendSuccess(() -> Component.literal("NW per-region slowest-in-round ranking:\n" + result), false);
+        java.util.List<RegionThreadPool.RegionSlowEntry> entries = dr.getPool().nestworldRegionSlowEntries();
+
+        java.util.List<Component> lines = new java.util.ArrayList<>();
+        lines.add(NestworldChat.title(
+                NestworldChat.tr(loc, "Per-region slowest-in-round ranking", "Рейтинг найповільніших регіонів за раунд")));
+        if (entries.isEmpty()) {
+            lines.add(NestworldChat.indent(1, Component.literal(
+                    NestworldChat.tr(loc, "no rounds yet", "ще немає раундів"))
+                    .withStyle(net.minecraft.ChatFormatting.DARK_GRAY)));
+        } else {
+            for (RegionThreadPool.RegionSlowEntry e : entries) {
+                lines.add(NestworldChat.indent(1, Component.literal("#" + e.regionId() + "  ")
+                        .withStyle(net.minecraft.ChatFormatting.YELLOW)
+                        .append(Component.literal(NestworldChat.tr(loc, "slowest-in-round", "найповільніший_у_раунді") + " ")
+                                .withStyle(net.minecraft.ChatFormatting.GRAY))
+                        .append(Component.literal(String.format("%,d", e.timesSlowestInRound()))
+                                .withStyle(net.minecraft.ChatFormatting.WHITE))));
+                lines.add(NestworldChat.indent(2, NestworldChat.treeLine(true, Component.literal(String.format(
+                        "%s %,d  %s ", NestworldChat.tr(loc, "ticks", "тіків"), e.tickCount(),
+                        NestworldChat.tr(loc, "avg", "сер.")))
+                        .withStyle(net.minecraft.ChatFormatting.GRAY)
+                        .append(NestworldChat.coloredValue(String.format("%.3fms", e.avgMs()),
+                                NestworldChat.classifyRegionCost(e.avgMs())))
+                        .append(Component.literal("  " + NestworldChat.tr(loc, "max", "макс") + " ")
+                                .withStyle(net.minecraft.ChatFormatting.GRAY))
+                        .append(NestworldChat.coloredValue(String.format("%.3fms", e.maxMs()),
+                                NestworldChat.classifyRegionCost(e.maxMs()))))));
+            }
+        }
+        NestworldChat.send(src, false, lines.toArray(new Component[0]));
         return 0;
     }
 
@@ -1513,6 +1712,7 @@ public final class NestworldCommand {
             src.sendFailure(Component.literal("NestWorld region system is not active"));
             return 0;
         }
+        NestworldChat.Locale loc = NestworldChat.localeOf(src);
         long now = System.nanoTime();
         double budgetMs = NestworldTuning.REGION_ENTITY_BUDGET_NANOS / 1_000_000.0;
         // Best CPU-pressure proxy currently available (true per-region/system CPU pressure is
@@ -1527,9 +1727,15 @@ public final class NestworldCommand {
         regions.sort((a, b) -> Long.compare(
                 b.fairness.percentileIntervalNanos(0.95), a.fairness.percentileIntervalNanos(0.95)));
 
-        src.sendSuccess(() -> Component.literal(String.format(
-                "NW entity-fairness: budget=%.0fms globalOversub=%sx (%d region(s) with owned entities)",
-                budgetMs, oversub, regions.size())), false);
+        java.util.List<Component> lines = new java.util.ArrayList<>();
+        lines.add(NestworldChat.title(NestworldChat.tr(loc, "Entity fairness", "Справедливість тіку сутностей")));
+        lines.add(NestworldChat.indent(1, NestworldChat.kv(NestworldChat.tr(loc, "Budget", "Бюджет"),
+                String.format("%.0f" + NestworldChat.tr(loc, "ms", "мс"), budgetMs))));
+        lines.add(NestworldChat.indent(1, NestworldChat.kv(
+                NestworldChat.tr(loc, "Global oversubscription", "Глобальне перенавантаження"), oversub + "x")));
+        lines.add(NestworldChat.indent(1, NestworldChat.kv(
+                NestworldChat.tr(loc, "Regions with entities", "Регіони із сутностями"), String.valueOf(regions.size()))));
+        lines.add(NestworldChat.blank());
         for (WorldRegion r : regions) {
             RegionThread thread = r.owningThread;
             int owned = r.getOwnedEntityIds().size();
@@ -1541,23 +1747,55 @@ public final class NestworldCommand {
             long max = r.fairness.maxIntervalNanos();
             long maxAge = r.fairness.maxAgeNanos(now, r.getOwnedEntityIds());
             boolean freeRunning = r.isFreeRunning();
-            long tickDelta = freeRunning ? r.getLocalTickCount() - src.getServer().getTickCount() : 0;
-            src.sendSuccess(() -> Component.literal(String.format(
-                    "  Region %d: entities=%d ticked=%d deferred=%d%s | tickInterval p50=%.0fms p95=%.0fms p99=%.0fms max=%.0fms | maxCurrentAge=%.0fms",
-                    r.getId(), owned, ticked, deferred,
-                    freeRunning ? String.format(" localTickDelta=%+d", tickDelta) : "",
-                    p50 / 1e6, p95 / 1e6, p99 / 1e6, max / 1e6, maxAge / 1e6)), false);
+
+            lines.add(NestworldChat.indent(1, Component.literal("#" + r.getId() + " ")
+                    .withStyle(net.minecraft.ChatFormatting.YELLOW)
+                    .append(Component.literal(String.format("%s %d  %s %d  %s %d",
+                            NestworldChat.tr(loc, "Entities", "Сутності"), owned,
+                            NestworldChat.tr(loc, "Ticked", "Тіковано"), ticked,
+                            NestworldChat.tr(loc, "Deferred", "Відкладено"), deferred))
+                            .withStyle(net.minecraft.ChatFormatting.WHITE))));
+
+            java.util.List<Component> subLines = new java.util.ArrayList<>();
+            String unit = NestworldChat.tr(loc, "ms", "мс");
+            double p50Ms = p50 / 1e6, p95Ms = p95 / 1e6, p99Ms = p99 / 1e6, maxMs = max / 1e6;
+            subLines.add(Component.literal(NestworldChat.tr(loc, "Interval", "Інтервал") + " ")
+                    .withStyle(net.minecraft.ChatFormatting.GRAY)
+                    .append(Component.literal("p50 ").withStyle(net.minecraft.ChatFormatting.GRAY))
+                    .append(NestworldChat.coloredValue(String.format("%.0f%s", p50Ms, unit), NestworldChat.classifyEntityIntervalMs(p50Ms)))
+                    .append(Component.literal(" p95 ").withStyle(net.minecraft.ChatFormatting.GRAY))
+                    .append(NestworldChat.coloredValue(String.format("%.0f%s", p95Ms, unit), NestworldChat.classifyEntityIntervalMs(p95Ms)))
+                    .append(Component.literal(" p99 ").withStyle(net.minecraft.ChatFormatting.GRAY))
+                    .append(NestworldChat.coloredValue(String.format("%.0f%s", p99Ms, unit), NestworldChat.classifyEntityIntervalMs(p99Ms)))
+                    .append(Component.literal(" max ").withStyle(net.minecraft.ChatFormatting.GRAY))
+                    .append(NestworldChat.coloredValue(String.format("%.0f%s", maxMs, unit), NestworldChat.classifyEntityIntervalMs(maxMs))));
+            double maxAgeMs = maxAge / 1e6;
+            subLines.add(Component.literal(NestworldChat.tr(loc, "Max age", "Макс. вік") + " ")
+                    .withStyle(net.minecraft.ChatFormatting.GRAY)
+                    .append(NestworldChat.coloredValue(String.format("%.0f%s", maxAgeMs, unit),
+                            NestworldChat.classifyEntityIntervalMs(maxAgeMs))));
+            if (freeRunning) {
+                Component tag = NestworldChat.freeRunTag(r.tickHistory.compute(10_000));
+                if (tag != null) subLines.add(tag);
+            }
+            for (int i = 0; i < subLines.size(); i++) {
+                lines.add(NestworldChat.indent(2, NestworldChat.treeLine(i == subLines.size() - 1, subLines.get(i))));
+            }
         }
+        NestworldChat.send(src, false, lines.toArray(new Component[0]));
         return regions.size();
     }
 
     private static int entityFairnessReset(CommandSourceStack src) {
+        NestworldChat.Locale loc = NestworldChat.localeOf(src);
         if (NestworldRegionSystem.isInitialised()) {
             for (WorldRegion r : overworldRegion(NestworldRegionSystem.get()).getTree().getActiveRegions()) {
                 r.fairness.reset();
             }
         }
-        src.sendSuccess(() -> Component.literal("NW entity-fairness reset (all regions)"), true);
+        NestworldChat.send(src, true, Component.literal(
+                NestworldChat.tr(loc, "Entity fairness reset (all regions)", "Справедливість тіку скинуто (усі регіони)"))
+                .withStyle(net.minecraft.ChatFormatting.GREEN));
         return 1;
     }
 
@@ -2307,9 +2545,35 @@ public final class NestworldCommand {
             src.sendFailure(Component.literal("NestWorld region system is not active"));
             return 0;
         }
+        NestworldChat.Locale loc = NestworldChat.localeOf(src);
         net.nestworld.region.NestworldRegionSystem sys0 = net.nestworld.region.NestworldRegionSystem.get();
-        String result = overworldRegion(sys0).tickPhaseReport();
-        src.sendSuccess(() -> Component.literal(result), false);
+        NestworldDimensionRegion dr0 = overworldRegion(sys0);
+        java.util.List<NestworldDimensionRegion.TickPhaseEntry> entries = dr0.tickPhaseEntries();
+
+        java.util.List<Component> lines = new java.util.ArrayList<>();
+        lines.add(NestworldChat.title(NestworldChat.tr(loc, "Tick phases", "Фази тіку")));
+        if (entries.isEmpty()) {
+            lines.add(NestworldChat.indent(1, Component.literal(
+                    NestworldChat.tr(loc, "no ticks recorded yet", "ще немає записаних тіків"))
+                    .withStyle(net.minecraft.ChatFormatting.DARK_GRAY)));
+        } else {
+            lines.add(NestworldChat.indent(1, NestworldChat.kv(
+                    NestworldChat.tr(loc, "Avg tick wall", "Сер. тік стіни"),
+                    String.format(NestworldChat.tr(loc, "%.3fms (%,d ticks, avg since boot)",
+                            "%.3fмс (%,d тіків, сер. з моменту старту)"),
+                            dr0.getAvgTickWallMs(), dr0.getTimedTicksCumulative()))));
+            lines.add(NestworldChat.blank());
+            for (int i = 0; i < entries.size(); i++) {
+                NestworldDimensionRegion.TickPhaseEntry e = entries.get(i);
+                lines.add(NestworldChat.indent(1, NestworldChat.treeLine(i == entries.size() - 1, Component.literal(
+                        e.name() + "  ").withStyle(net.minecraft.ChatFormatting.YELLOW)
+                        .append(NestworldChat.coloredValue(String.format("%.4fms", e.avgMs()),
+                                NestworldChat.classifyRegionCost(e.avgMs())))
+                        .append(Component.literal(String.format("  (%.1f%%)", e.pct()))
+                                .withStyle(net.minecraft.ChatFormatting.GRAY)))));
+            }
+        }
+        NestworldChat.send(src, false, lines.toArray(new Component[0]));
         return 0;
     }
 
@@ -2810,37 +3074,63 @@ public final class NestworldCommand {
             src.sendFailure(Component.literal("NestWorld region system is not active"));
             return 0;
         }
+        NestworldChat.Locale loc = NestworldChat.localeOf(src);
         java.util.List<HotspotDetector.Hotspot> found = HotspotDetector.compute(NestworldRegionSystem.get(), 10);
         if (found.isEmpty()) {
-            src.sendSuccess(() -> Component.literal("No hotspots detected right now — load is flat."), false);
+            NestworldChat.send(src, false, Component.literal(
+                    NestworldChat.tr(loc, "No hotspots detected right now — load is flat.",
+                            "Гарячих точок зараз немає — навантаження рівне."))
+                    .withStyle(net.minecraft.ChatFormatting.GREEN));
             return 1;
         }
-        StringBuilder sb = new StringBuilder("TOP HOTSPOTS\n");
+        java.util.List<Component> lines = new java.util.ArrayList<>();
+        lines.add(NestworldChat.title(NestworldChat.tr(loc, "Top hotspots", "Топ гарячих точок")));
+        lines.add(NestworldChat.blank());
         for (HotspotDetector.Hotspot h : found) {
-            sb.append(String.format("#%d region=#%s heat=%.1f (block/fluid=%.1f, entities=%.1f)\n",
-                    h.rank(), h.region() != null ? String.valueOf(h.region().getId()) : "?",
-                    h.totalHeat(), h.blockTickHeat(), h.entityHeat()));
+            String regionLabel = h.region() != null ? "#" + h.region().getId() : "?";
+            lines.add(NestworldChat.indent(1, Component.literal("#" + h.rank() + " ")
+                    .withStyle(net.minecraft.ChatFormatting.YELLOW)
+                    .append(Component.literal(NestworldChat.tr(loc, "region", "регіон") + " " + regionLabel + "  ")
+                            .withStyle(net.minecraft.ChatFormatting.WHITE))
+                    .append(Component.literal(NestworldChat.tr(loc, "heat", "нагрів") + " ")
+                            .withStyle(net.minecraft.ChatFormatting.GRAY))
+                    .append(Component.literal(String.format("%.1f", h.totalHeat()))
+                            .withStyle(net.minecraft.ChatFormatting.YELLOW))));
+
+            java.util.List<Component> subLines = new java.util.ArrayList<>();
+            subLines.add(Component.literal(String.format("%s: %s %.1f, %s %.1f",
+                    NestworldChat.tr(loc, "Breakdown", "Розбивка"),
+                    NestworldChat.tr(loc, "block/fluid", "блок/рідина"), h.blockTickHeat(),
+                    NestworldChat.tr(loc, "entities", "сутності"), h.entityHeat()))
+                    .withStyle(net.minecraft.ChatFormatting.GRAY));
             if (!h.topEntityTypes().isEmpty()) {
-                StringBuilder types = new StringBuilder("   dominant: ");
+                StringBuilder types = new StringBuilder(NestworldChat.tr(loc, "Dominant", "Домінують") + ": ");
                 boolean first = true;
                 for (var e : h.topEntityTypes()) {
                     if (!first) types.append(", ");
                     types.append(e.getKey()).append(" x").append(e.getValue());
                     first = false;
                 }
-                sb.append(types).append('\n');
+                subLines.add(Component.literal(types.toString()).withStyle(net.minecraft.ChatFormatting.GRAY));
             } else if (h.blockTickHeat() > 0) {
-                sb.append("   dominant: block/fluid ticks\n");
+                subLines.add(Component.literal(NestworldChat.tr(loc, "Dominant: block/fluid ticks", "Домінує: тіки блоків/рідини"))
+                        .withStyle(net.minecraft.ChatFormatting.GRAY));
             }
-            sb.append(String.format("   at (%d, %d, %d) — chunk (%d, %d)\n",
-                    h.position().getX(), h.position().getY(), h.position().getZ(),
-                    h.chunk().x, h.chunk().z));
+            subLines.add(Component.literal(String.format("%s (%d, %d, %d) %s (%d, %d)",
+                    NestworldChat.tr(loc, "At", "У"), h.position().getX(), h.position().getY(), h.position().getZ(),
+                    NestworldChat.tr(loc, "chunk", "чанк"), h.chunk().x, h.chunk().z))
+                    .withStyle(net.minecraft.ChatFormatting.GRAY));
             if (h.region() != null) {
-                sb.append(String.format("   region avg cost: %.1fms\n", h.region().getAvgTickMs()));
+                double avg = h.region().getAvgTickMs();
+                subLines.add(NestworldChat.kv(NestworldChat.tr(loc, "Region cost", "Вартість регіону"),
+                        String.format("%.1f" + NestworldChat.tr(loc, "ms", "мс"), avg),
+                        NestworldChat.classifyRegionCost(avg)));
+            }
+            for (int i = 0; i < subLines.size(); i++) {
+                lines.add(NestworldChat.indent(2, NestworldChat.treeLine(i == subLines.size() - 1, subLines.get(i))));
             }
         }
-        String out = sb.toString();
-        src.sendSuccess(() -> Component.literal(out), false);
+        NestworldChat.send(src, false, lines.toArray(new Component[0]));
         return found.size();
     }
 
@@ -2848,25 +3138,41 @@ public final class NestworldCommand {
      *  (точна інструментація, не семпл), накопичено з моменту старту сервера.
      *  Джерело: {@link TickAttribution}, хуки в RegionThread/NestworldDimensionRegion/Level. */
     private static int modLoad(CommandSourceStack src) {
+        NestworldChat.Locale loc = NestworldChat.localeOf(src);
         var entityTop = TickAttribution.topMods("entity", 15);
         var beTop = TickAttribution.topMods("blockentity", 15);
         if (entityTop.isEmpty() && beTop.isEmpty()) {
-            src.sendSuccess(() -> Component.literal("No tick attribution data yet — server just started or no entities/block-entities have ticked."), false);
+            NestworldChat.send(src, false, Component.literal(NestworldChat.tr(loc,
+                    "No tick attribution data yet — server just started or no entities/block-entities have ticked.",
+                    "Ще немає даних атрибуції тіку — сервер щойно стартував або жодна сутність/блок-сутність ще не тікала."))
+                    .withStyle(net.minecraft.ChatFormatting.GRAY));
             return 1;
         }
-        StringBuilder sb = new StringBuilder("MOD LOAD (cumulative measured tick time since boot)\n");
-        sb.append("-- entities --\n");
+        java.util.List<Component> lines = new java.util.ArrayList<>();
+        lines.add(NestworldChat.title(NestworldChat.tr(loc,
+                "Mod load (cumulative measured tick time since boot)",
+                "Навантаження модів (сумарний вимірюваний час тіку з моменту старту)")));
+        lines.add(NestworldChat.blank());
+        lines.add(NestworldChat.indent(1, Component.literal(NestworldChat.tr(loc, "Entities", "Сутності"))
+                .withStyle(net.minecraft.ChatFormatting.WHITE)));
+        String unit = NestworldChat.tr(loc, "ms", "мс");
         for (var m : entityTop) {
-            sb.append(String.format("  %-24s total=%9.2fms count=%,-9d avg=%.4fms%n",
-                    m.modId(), m.ms(), m.count(), m.count() == 0 ? 0.0 : m.ms() / m.count()));
+            lines.add(NestworldChat.indent(2, Component.literal(String.format("%-24s ", m.modId()))
+                    .withStyle(net.minecraft.ChatFormatting.AQUA)
+                    .append(Component.literal(String.format("total=%9.2f%s count=%,-9d avg=%.4f%s",
+                            m.ms(), unit, m.count(), m.count() == 0 ? 0.0 : m.ms() / m.count(), unit))
+                            .withStyle(net.minecraft.ChatFormatting.WHITE))));
         }
-        sb.append("-- block entities --\n");
+        lines.add(NestworldChat.indent(1, Component.literal(NestworldChat.tr(loc, "Block entities", "Блок-сутності"))
+                .withStyle(net.minecraft.ChatFormatting.WHITE)));
         for (var m : beTop) {
-            sb.append(String.format("  %-24s total=%9.2fms count=%,-9d avg=%.4fms%n",
-                    m.modId(), m.ms(), m.count(), m.count() == 0 ? 0.0 : m.ms() / m.count()));
+            lines.add(NestworldChat.indent(2, Component.literal(String.format("%-24s ", m.modId()))
+                    .withStyle(net.minecraft.ChatFormatting.AQUA)
+                    .append(Component.literal(String.format("total=%9.2f%s count=%,-9d avg=%.4f%s",
+                            m.ms(), unit, m.count(), m.count() == 0 ? 0.0 : m.ms() / m.count(), unit))
+                            .withStyle(net.minecraft.ChatFormatting.WHITE))));
         }
-        String out = sb.toString();
-        src.sendSuccess(() -> Component.literal(out), false);
+        NestworldChat.send(src, false, lines.toArray(new Component[0]));
         return 1;
     }
 
@@ -2877,21 +3183,34 @@ public final class NestworldCommand {
      *  На відміну від {@code /nestworld hotspots} (миттєвий density-скан), це РЕАЛЬНО
      *  виміряний час, накопичений з точних хуків, а не оцінка по кількості ентіті. */
     private static int tickChunks(CommandSourceStack src) {
+        NestworldChat.Locale loc = NestworldChat.localeOf(src);
         var top = TickAttribution.topChunks(15);
         lastTickChunks = top;
         if (top.isEmpty()) {
-            src.sendSuccess(() -> Component.literal("No chunk tick-cost data in the current window."), false);
+            NestworldChat.send(src, false, Component.literal(NestworldChat.tr(loc,
+                    "No chunk tick-cost data in the current window.", "Немає даних про вартість тіку чанків у поточному вікні."))
+                    .withStyle(net.minecraft.ChatFormatting.GRAY));
             return 1;
         }
-        StringBuilder sb = new StringBuilder("TOP TICK-COST CHUNKS (measured, current window)\n");
+        java.util.List<Component> lines = new java.util.ArrayList<>();
+        lines.add(NestworldChat.title(NestworldChat.tr(loc,
+                "Top tick-cost chunks (measured, current window)", "Топ чанків за вартістю тіку (виміряно, поточне вікно)")));
+        lines.add(NestworldChat.blank());
         int rank = 1;
         for (var c : top) {
-            sb.append(String.format("#%d [%s] chunk (%d, %d) — %.2fms\n",
-                    rank++, c.dimensionKey(), c.chunkX(), c.chunkZ(), c.ms()));
+            lines.add(NestworldChat.indent(1, Component.literal("#" + rank++ + " ")
+                    .withStyle(net.minecraft.ChatFormatting.YELLOW)
+                    .append(Component.literal("[" + c.dimensionKey() + "] " + NestworldChat.tr(loc, "chunk", "чанк")
+                            + " (" + c.chunkX() + ", " + c.chunkZ() + ") ").withStyle(net.minecraft.ChatFormatting.GRAY))
+                    .append(NestworldChat.coloredValue(String.format("%.2f" + NestworldChat.tr(loc, "ms", "мс"), c.ms()),
+                            NestworldChat.classifyRegionCost(c.ms())))));
         }
-        sb.append("Use /nestworld goto tickchunk <id> (overworld only) to teleport.\n");
-        String out = sb.toString();
-        src.sendSuccess(() -> Component.literal(out), false);
+        lines.add(NestworldChat.blank());
+        lines.add(NestworldChat.indent(1, Component.literal(NestworldChat.tr(loc,
+                "Use /nestworld goto tickchunk <id> (overworld only) to teleport.",
+                "Використай /nestworld goto tickchunk <id> (лише overworld) щоб телепортуватись."))
+                .withStyle(net.minecraft.ChatFormatting.GRAY)));
+        NestworldChat.send(src, false, lines.toArray(new Component[0]));
         return top.size();
     }
 
@@ -2991,11 +3310,17 @@ public final class NestworldCommand {
     }
 
     private static int teleportTo(CommandSourceStack src, BlockPos pos, String label) throws CommandSyntaxException {
+        NestworldChat.Locale loc = NestworldChat.localeOf(src);
         ServerPlayer player = src.getPlayerOrException();
         ServerLevel overworld = NestworldRegionSystem.get().getOverworld();
         player.teleportTo(overworld, pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5,
                 player.getYRot(), player.getXRot());
-        src.sendSuccess(() -> Component.literal("Teleported to " + label + " at " + pos.toShortString()), true);
+        Component line = Component.literal(NestworldChat.tr(loc, "Teleported to ", "Телепортовано до "))
+                .withStyle(net.minecraft.ChatFormatting.GREEN)
+                .append(Component.literal(label).withStyle(net.minecraft.ChatFormatting.WHITE))
+                .append(Component.literal(NestworldChat.tr(loc, " at ", " на ")).withStyle(net.minecraft.ChatFormatting.GREEN))
+                .append(Component.literal(pos.toShortString()).withStyle(net.minecraft.ChatFormatting.GRAY));
+        NestworldChat.send(src, true, line);
         return 1;
     }
 

@@ -30,6 +30,11 @@ import net.minecraft.world.item.ItemStack;
  * #dispatch} blocks the calling (main) thread on a bounded wait, falling back to {@code
  * Optional.empty()} (caller runs {@code gameMode.useItem()} itself) on timeout, ownership
  * mismatch, a missing player, or any exception on the region side.
+ *
+ * <p><b>§41.C split (2026-09-05):</b> this class is CORE -- ownership resolution, the
+ * synchronous-result wait budget, mailbox posting/draining -- and knows nothing about how a
+ * Minecraft version actually applies an item use. The one vanilla call that does is
+ * {@link net.nestworld.adapter.PlayerUseItemAdapter#invoke}.
  */
 public final class PlayerUseItemDispatcher {
     private static final Logger LOGGER = LogManager.getLogger("NestWorld/DIAG");
@@ -123,7 +128,8 @@ public final class PlayerUseItemDispatcher {
             }
             ItemStack itemstack = player.getItemInHand(useItem.hand());
             long t0 = System.nanoTime();
-            InteractionResult result = player.gameMode.useItem(player, level, itemstack, useItem.hand());
+            InteractionResult result = net.nestworld.adapter.PlayerUseItemAdapter.invoke(
+                    player, level, itemstack, useItem.hand());
             PlayerUseItemTiming.recordRegion(System.nanoTime() - t0);
             useItem.resultRef().set(result);
         } catch (Throwable t) {

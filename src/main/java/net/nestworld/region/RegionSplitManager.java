@@ -38,8 +38,11 @@ public class RegionSplitManager {
     // --- Thresholds ---
     // Counters advance once per evaluation (every 20 game ticks), so the design
     // targets "100 ticks above 25 ms" = 5 evaluations, "500 ticks under 10 ms" = 25.
-    private static final double SPLIT_MS_THRESHOLD = 25.0; // half the 50 ms tick budget
-    private static final double MERGE_MS_THRESHOLD = 10.0;
+    // Package-private (not private) so NestworldChat can reuse the exact same bands to
+    // color displayed region cost -- presentation reads the engine's own threshold
+    // rather than duplicating a second number that could drift out of sync.
+    static final double SPLIT_MS_THRESHOLD = 25.0; // half the 50 ms tick budget
+    static final double MERGE_MS_THRESHOLD = 10.0;
     private static final int    SPLIT_CHECKS_REQUIRED = 5;  // 100 game ticks
     private static final int    MERGE_CHECKS_REQUIRED = 25; // 500 game ticks
 

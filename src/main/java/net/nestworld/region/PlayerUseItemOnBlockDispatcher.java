@@ -50,6 +50,12 @@ import net.minecraft.world.phys.BlockHitResult;
  * placement decision is always made from current block state read on the executing thread, never
  * from this routing snapshot (this is the "main-side context is a routing hint, not a source of
  * truth for execution" guard the user asked for).
+ *
+ * <p><b>§41.C split (2026-09-05):</b> this class is CORE -- owner-position resolution, the
+ * synchronous-result wait budget, mailbox posting/draining -- and knows nothing about how a
+ * Minecraft version actually applies an item-on-block use (including its creative-mode count
+ * quirk). The one vanilla call that does is
+ * {@link net.nestworld.adapter.PlayerUseItemOnBlockAdapter#invoke}.
  */
 public final class PlayerUseItemOnBlockDispatcher {
     private static final Logger LOGGER = LogManager.getLogger("NestWorld/DIAG");
@@ -174,16 +180,8 @@ public final class PlayerUseItemOnBlockDispatcher {
                 return;
             }
             long t0 = System.nanoTime();
-            InteractionResult result;
-            // NestWorld: replicates ServerPlayerGameMode.useItemOn()'s own creative-mode count-
-            // preservation wrapper verbatim, so this behaves identically to the main-thread path.
-            if (player.gameMode.isCreative()) {
-                int i = itemstack.getCount();
-                result = itemstack.useOn(useoncontext);
-                itemstack.setCount(i);
-            } else {
-                result = itemstack.useOn(useoncontext);
-            }
+            InteractionResult result = net.nestworld.adapter.PlayerUseItemOnBlockAdapter.invoke(
+                    player, itemstack, useoncontext);
             PlayerUseItemOnBlockTiming.recordRegion(System.nanoTime() - t0);
             useItemOnBlock.resultRef().set(result);
         } catch (Throwable t) {

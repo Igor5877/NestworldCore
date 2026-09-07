@@ -24,6 +24,12 @@ import net.minecraft.world.entity.Entity;
  * EntityMutationHelper#redirectFromMainThread} (used throughout {@code Player.attack()} for
  * every target hit) already detects "caller is a region thread that already owns this target"
  * and falls through to a direct, cheaper mutation in that case -- see its own javadoc.
+ *
+ * <p><b>§41.C split (2026-09-05):</b> this class is CORE -- ownership resolution, mailbox
+ * posting/draining, reroute-hop bookkeeping -- and knows nothing about how a Minecraft version
+ * actually performs an attack. The one vanilla call that does is
+ * {@link net.nestworld.adapter.PlayerAttackAdapter#invoke}. See
+ * docs/CORE_ADAPTER_CLASSIFICATION.md and docs/DEPENDENCY_DIRECTION_AUDIT.md.
  */
 public final class PlayerAttackDispatcher {
     private static final Logger LOGGER = LogManager.getLogger("NestWorld/DIAG");
@@ -97,7 +103,7 @@ public final class PlayerAttackDispatcher {
         }
         try {
             long t0 = System.nanoTime();
-            attacker.attack(target);
+            net.nestworld.adapter.PlayerAttackAdapter.invoke(attacker, target);
             PlayerAttackTiming.recordRegion(System.nanoTime() - t0);
         } catch (Throwable t) {
             LOGGER.warn("[#31.4 experiment] Player {} region-thread attack error: {}",

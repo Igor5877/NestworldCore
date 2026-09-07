@@ -625,12 +625,19 @@ public class WorldRegion {
 
     // --- TPS tracking ---
 
+    /** Wall-clock-windowed history (10s/1m) for this region's own tick, feeding
+     *  {@code /nestworld status}'s per-free-running-region "Tick" rows -- same idea as
+     *  {@link TickDurationHistory#SERVER}, one instance per region since free-running
+     *  regions tick independently of the main server loop and of each other. */
+    public final TickDurationHistory tickHistory = new TickDurationHistory();
+
     /** Called by RegionThread at the end of each tick with measured duration. */
     public void recordTickDuration(long durationNs) {
         long old = tickDurationsNs[tickIndex];
         tickDurationsNs[tickIndex] = durationNs;
         tickIndex = (tickIndex + 1) % tickDurationsNs.length;
         windowSumNs.addAndGet(durationNs - old);
+        tickHistory.record(System.currentTimeMillis(), durationNs);
     }
 
     /** Returns estimated TPS (0–20). */

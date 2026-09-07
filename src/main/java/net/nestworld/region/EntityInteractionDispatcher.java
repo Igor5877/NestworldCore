@@ -36,6 +36,12 @@ import net.minecraft.world.phys.Vec3;
  * NOT specially handled here — they still run wherever this dispatcher routes them (main or
  * region); container/menu lifecycle across region execution is an explicitly separate, harder,
  * not-yet-started future step.
+ *
+ * <p><b>§41.C split (2026-09-05):</b> this class is CORE -- target-ownership resolution, the
+ * synchronous-result wait budget, mailbox posting/draining -- and knows nothing about how a
+ * Minecraft/Forge version actually runs an entity interaction. The vanilla/Forge call that does
+ * (formerly the private {@code runInteraction} helper here) is
+ * {@link net.nestworld.adapter.EntityInteractionAdapter#invoke}.
  */
 public final class EntityInteractionDispatcher {
     private static final Logger LOGGER = LogManager.getLogger("NestWorld/DIAG");
@@ -47,24 +53,6 @@ public final class EntityInteractionDispatcher {
             return null;
         }
         return NestworldRegionSystem.get().getDimensionRegion(level).getGrid().findOwningRegion(target.getUUID());
-    }
-
-    /** Replicates the vanilla/Forge call verbatim for whichever branch this is — {@code atPos ==
-     *  null} -> {@code player.interactOn(target, hand)} (matches {@code Player::interactOn}, the
-     *  method reference {@code handleInteract}'s plain-interact branch uses); {@code atPos !=
-     *  null} -> the Forge hook then {@code target.interactAt(player, atPos, hand)} (matches
-     *  {@code handleInteract}'s interactAt-branch lambda exactly). Called identically from both
-     *  the main-thread fallback and the region-side apply, so behavior never depends on which
-     *  thread actually ran it. */
-    private static InteractionResult runInteraction(ServerPlayer player, Entity target, InteractionHand hand, Vec3 atPos) {
-        if (atPos == null) {
-            return player.interactOn(target, hand);
-        }
-        InteractionResult forgeResult = net.minecraftforge.common.ForgeHooks.onInteractEntityAt(player, target, atPos, hand);
-        if (forgeResult != null) {
-            return forgeResult;
-        }
-        return target.interactAt(player, atPos, hand);
     }
 
     /**
@@ -151,7 +139,8 @@ public final class EntityInteractionDispatcher {
                 return;
             }
             long t0 = System.nanoTime();
-            InteractionResult result = runInteraction(player, target, interact.hand(), interact.atPos());
+            InteractionResult result = net.nestworld.adapter.EntityInteractionAdapter.invoke(
+                    player, target, interact.hand(), interact.atPos());
             EntityInteractionTiming.recordRegion(System.nanoTime() - t0);
             interact.resultRef().set(result);
         } catch (Throwable t) {

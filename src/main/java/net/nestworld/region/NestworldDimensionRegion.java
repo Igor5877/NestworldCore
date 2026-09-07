@@ -825,6 +825,47 @@ public final class NestworldDimensionRegion {
         }
     }
 
+    /** Cumulative-since-boot average of the same 6-phase sum {@link #tickPhaseReport()}
+     *  breaks down -- i.e. how much of a tick THIS dimension's own main-thread call
+     *  (vanilla+signals+entityXfer+regionPool+ghostZones+splitMerge) costs, as opposed to
+     *  region-thread work that runs in parallel off the main thread. {@code 0.0} before the
+     *  first tick is recorded. Presentation callers (e.g. {@code /nestworld status}) should
+     *  label this "avg since boot", not "current" -- there's no rolling window for it, same
+     *  cumulative-only data {@link #tickPhaseReport()} already exposed. */
+    public double getAvgTickWallMs() {
+        if (timedTicksCumulative == 0) return 0.0;
+        double totalMs = 0;
+        for (long v : phaseNanosCumulative) totalMs += v / 1e6;
+        return totalMs / timedTicksCumulative;
+    }
+
+    /** One tick phase's cumulative-since-boot average + share of the total, already
+     *  reduced to display-ready numbers -- structured equivalent of one line of {@link
+     *  #tickPhaseReport()}'s output. */
+    public record TickPhaseEntry(String name, double avgMs, double pct) {}
+
+    /** How many ticks {@link #tickPhaseReport()}/{@link #tickPhaseEntries()} have been
+     *  averaged over since boot -- 0 before the first tick is recorded. */
+    public long getTimedTicksCumulative() {
+        return timedTicksCumulative;
+    }
+
+    /** Structured equivalent of {@link #tickPhaseReport()} for /nestworld tickphases --
+     *  same underlying counters, same computation, just returned as data. Empty before
+     *  the first tick is recorded. */
+    public java.util.List<TickPhaseEntry> tickPhaseEntries() {
+        if (timedTicksCumulative == 0) return java.util.List.of();
+        double totalMs = 0;
+        for (long v : phaseNanosCumulative) totalMs += v / 1e6;
+        java.util.List<TickPhaseEntry> out = new java.util.ArrayList<>();
+        for (int i = 0; i < 6; i++) {
+            double avgMs = phaseNanosCumulative[i] / 1e6 / timedTicksCumulative;
+            double pct = totalMs > 0 ? (phaseNanosCumulative[i] / 1e6) / totalMs * 100.0 : 0.0;
+            out.add(new TickPhaseEntry(NESTWORLD_PHASE_NAMES[i], avgMs, pct));
+        }
+        return out;
+    }
+
     /** Cumulative-since-boot breakdown of the 6 sequential tick phases for THIS dimension —
      *  the metric Stage 1's own acceptance bar needs ("Overworld's timing stays flat while a
      *  second dimension is under load" is only checkable with a per-dimension breakdown). */

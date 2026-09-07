@@ -20,6 +20,12 @@ import net.minecraft.server.level.ServerPlayer;
  * region has no race to fix (their {@code completeUsingItem()} already runs on the same thread
  * -- main -- as these packet handlers), so the vanilla direct call remains exactly correct for
  * them, unchanged.
+ *
+ * <p><b>§41.C split (2026-09-05):</b> this class is CORE -- opt-in gating, ownership resolution,
+ * reroute-hop bookkeeping, mailbox posting/draining -- and knows nothing about how a Minecraft
+ * version actually releases/stops item use. The two vanilla calls that do are
+ * {@link net.nestworld.adapter.PlayerUseControlAdapter#release} and
+ * {@link net.nestworld.adapter.PlayerUseControlAdapter#stop}.
  */
 public final class PlayerUseControlDispatcher {
     private static final Logger LOGGER = LogManager.getLogger("NestWorld/DIAG");
@@ -101,8 +107,8 @@ public final class PlayerUseControlDispatcher {
         }
         try {
             switch (control.op()) {
-                case RELEASE -> player.releaseUsingItem();
-                case STOP -> player.stopUsingItem();
+                case RELEASE -> net.nestworld.adapter.PlayerUseControlAdapter.release(player);
+                case STOP -> net.nestworld.adapter.PlayerUseControlAdapter.stop(player);
             }
             PlayerUseControlTiming.recordExecuted(queueLatencyNanos);
         } catch (Throwable t) {

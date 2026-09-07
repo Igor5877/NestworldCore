@@ -36,6 +36,11 @@ import net.minecraft.world.phys.BlockHitResult;
  * mismatch, a missing player, or any exception on the region side -- same "safe direct fallback"
  * precedent as every other #31 dispatcher, just surfaced through {@code Optional} instead of a
  * boolean return.
+ *
+ * <p><b>§41.C split (2026-09-05):</b> this class is CORE -- ownership resolution, the
+ * synchronous-result wait budget, mailbox posting/draining -- and knows nothing about how a
+ * Minecraft version actually applies a block interaction. The one vanilla call that does is
+ * {@link net.nestworld.adapter.PlayerInteractionAdapter#invoke}.
  */
 public final class PlayerInteractionDispatcher {
     private static final Logger LOGGER = LogManager.getLogger("NestWorld/DIAG");
@@ -142,7 +147,8 @@ public final class PlayerInteractionDispatcher {
             }
             BlockState state = level.getBlockState(interaction.pos());
             long t0 = System.nanoTime();
-            InteractionResult result = state.use(level, player, interaction.hand(), interaction.hit());
+            InteractionResult result = net.nestworld.adapter.PlayerInteractionAdapter.invoke(
+                    state, level, player, interaction.hand(), interaction.hit());
             PlayerInteractionTiming.recordRegion(System.nanoTime() - t0);
             interaction.resultRef().set(result);
         } catch (Throwable t) {
