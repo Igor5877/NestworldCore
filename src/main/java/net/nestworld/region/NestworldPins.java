@@ -3,6 +3,10 @@ package net.nestworld.region;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.EntityType;
+import net.minecraftforge.fml.ModList;
+import net.minecraftforge.forgespi.language.IModFileInfo;
+import net.minecraftforge.forgespi.language.IModInfo;
+import net.minecraftforge.forgespi.language.ModFileScanData;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -11,10 +15,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Registry of entity types pinned to main-thread ticking.
@@ -70,6 +76,7 @@ public final class NestworldPins {
      *  pinned to main. The escape hatch for a whole mod that isn't thread-safe. */
     private final Set<String> pinnedMods = ConcurrentHashMap.newKeySet();
     private Path modFile;
+    private Path errorCountsFile;
 
     // Auto-pin: when an entity type repeatedly throws on a region thread, pin it
     // to main so one bad mod can't keep crashing a region. OFF by default — a
@@ -82,6 +89,33 @@ public final class NestworldPins {
             new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicInteger> beErrorCounts =
             new ConcurrentHashMap<>();
+
+    /** Auto-pin, mod-namespace variant: for a Throwable caught somewhere that ISN'T an
+     *  entity's or block-entity's own tick call (e.g. a player-tick catch whose real cause
+     *  is a mod's GUI/menu code racing its own background state across threads -- see
+     *  "toms_storage TerminalSyncManager ConcurrentModificationException", 2026-09-07 --
+     *  neither {@link #noteEntityTickError} nor {@link #noteBlockEntityTickError} ever see
+     *  this class of bug, because the throwing frame belongs to neither ticking entity type).
+     *  Keyed by mod id resolved from the stack trace via {@link #resolveModId}, threshold-pinned
+     *  through the same {@link #pinnedMods} set {@code /nestworld pinmod} uses. */
+    private final ConcurrentHashMap<String, AtomicInteger> modCallbackErrorCounts =
+            new ConcurrentHashMap<>();
+
+    /** Throttle for {@link #saveErrorCounts()}: a bug firing many times per second (the
+     *  toms_storage storm that motivated this whole file was ~1 call/tick in bursts) would
+     *  otherwise do a synchronous full-file rewrite on EVERY occurrence, on whatever thread
+     *  caught it -- for the main-thread player-tick catch, that's a self-inflicted tick spike
+     *  from the diagnostic code meant to survive one. Capped to at most one write/second;
+     *  losing up to a second of the most recent increments on a true crash is an acceptable
+     *  trade against turning error-storm handling into its own performance incident. */
+    private final java.util.concurrent.atomic.AtomicLong lastErrorCountsSaveNanos =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final long ERROR_COUNTS_SAVE_INTERVAL_NANOS = 1_000_000_000L;
+
+    /** Lazily-built, cached class-name -> mod-id map, from every loaded mod's ASM scan data.
+     *  Built once on first use (nothing here runs unless auto-pin is on), not at construction --
+     *  {@code ModList.get()} isn't populated yet this early in some call orders. */
+    private static final AtomicReference<Map<String, String>> CLASS_TO_MOD_ID = new AtomicReference<>();
 
     /** True when auto-pin is enabled (lets the BE phase skip wrapping tickers). */
     public boolean isAutoPinEnabled() { return autoPin; }
@@ -232,6 +266,7 @@ public final class NestworldPins {
     public boolean noteEntityTickError(EntityType<?> type) {
         if (!autoPin || type == null || pinnedTypes.contains(type)) return false;
         int count = errorCounts.computeIfAbsent(type, k -> new AtomicInteger()).incrementAndGet();
+        saveErrorCountsThrottled(); // persist progress -- see saveErrorCounts()/throttle javadoc
         if (count < autoPinThreshold) return false;
         ResourceLocation id = BuiltInRegistries.ENTITY_TYPE.getKey(type);
         if (!pinnedTypes.add(type)) return false; // pinned concurrently
@@ -253,6 +288,7 @@ public final class NestworldPins {
     public boolean noteBlockEntityTickError(String typeId) {
         if (!autoPin || typeId == null || pinnedBeIds.contains(typeId)) return false;
         int count = beErrorCounts.computeIfAbsent(typeId, k -> new AtomicInteger()).incrementAndGet();
+        saveErrorCountsThrottled();
         if (count < autoPinThreshold) return false;
         if (!pinnedBeIds.add(typeId)) return false; // pinned concurrently
         saveBe();
@@ -260,6 +296,82 @@ public final class NestworldPins {
                 + "tick errors. Restore parallelism with /nestworld unpin {} once fixed.",
                 typeId, count, typeId);
         return true;
+    }
+
+    /**
+     * Records that {@code t} was caught somewhere that isn't an entity/BE's own tick call
+     * (currently: the two player-tick catches in {@link NestworldDimensionRegion#tick}) and,
+     * if its stack trace resolves to a loaded mod, counts an error against that mod's
+     * namespace -- auto-pinning it (via the same {@link #pinMod} escape hatch
+     * {@code /nestworld pinmod} uses) once the threshold is crossed. This is what
+     * {@link #noteEntityTickError}/{@link #noteBlockEntityTickError} structurally cannot do:
+     * those only ever see a throw during the misbehaving type's OWN tick; a mod whose GUI/menu
+     * code races its own background state across threads (the toms_storage
+     * ConcurrentModificationException this was built for) throws from inside a vanilla
+     * player's tick, not its own -- so the type at fault was never the one ticking.
+     * No-op unless auto-pin is enabled. Thread-safe.
+     */
+    public boolean noteCallbackError(Throwable t) {
+        if (!autoPin || t == null) return false;
+        String modId = resolveModId(t);
+        if (modId == null || pinnedMods.contains(modId)) return false;
+        int count = modCallbackErrorCounts.computeIfAbsent(modId, k -> new AtomicInteger()).incrementAndGet();
+        saveErrorCountsThrottled();
+        if (count < autoPinThreshold) return false;
+        if (!pinnedMods.add(modId)) return false; // pinned concurrently
+        saveMods();
+        LOGGER.warn("AUTO-PINNED mod {} to the main thread after {} errors attributed to its "
+                + "code via caught-elsewhere stack traces (not its own entity/BE tick -- a "
+                + "cross-thread race in its GUI/menu/background code). Restore parallelism "
+                + "with /nestworld unpin {} once fixed.", modId, count, modId);
+        return true;
+    }
+
+    /**
+     * Best-effort: walks {@code t}'s stack trace top-down and returns the mod id owning the
+     * first frame that belongs to a loaded mod's classes, or {@code null} if none does (pure
+     * vanilla/Forge/JVM exception, or a mod not found in the scan -- e.g. Mixin-injected
+     * synthetic frames). Built once, lazily, from every mod's ASM scan data -- cheap per call
+     * after that (one HashMap get per frame), and this whole path only runs when auto-pin is
+     * explicitly opted into.
+     */
+    private static String resolveModId(Throwable t) {
+        Map<String, String> map = CLASS_TO_MOD_ID.get();
+        if (map == null) {
+            map = buildClassToModIdMap();
+            CLASS_TO_MOD_ID.compareAndSet(null, map);
+            map = CLASS_TO_MOD_ID.get();
+        }
+        for (StackTraceElement frame : t.getStackTrace()) {
+            String modId = map.get(frame.getClassName());
+            if (modId != null) return modId;
+        }
+        Throwable cause = t.getCause();
+        return cause != null && cause != t ? resolveModId(cause) : null;
+    }
+
+    private static Map<String, String> buildClassToModIdMap() {
+        Map<String, String> map = new java.util.HashMap<>();
+        try {
+            for (IModFileInfo fileInfo : ModList.get().getModFiles()) {
+                List<IModInfo> mods = fileInfo.getMods();
+                if (mods.isEmpty()) continue;
+                String modId = mods.get(0).getModId();
+                // Skip Minecraft/Forge/library "mods" themselves -- never worth auto-pinning,
+                // and would otherwise shadow genuinely offending third-party classes if two
+                // mod files happened to declare an overlapping class (jar-in-jar shading).
+                if (modId.equals("minecraft") || modId.equals("forge")) continue;
+                ModFileScanData scan = fileInfo.getFile().getScanResult();
+                if (scan == null) continue;
+                for (ModFileScanData.ClassData classData : scan.getClasses()) {
+                    map.putIfAbsent(classData.clazz().getClassName(), modId);
+                }
+            }
+        } catch (Throwable ignored) {
+            // Best-effort diagnostic aid -- never let a scan-data quirk break tick error
+            // logging itself. An empty map just means noteCallbackError never fires.
+        }
+        return map;
     }
 
     /** Unpins an id (entity or block-entity); returns true if it was pinned. */
@@ -337,6 +449,80 @@ public final class NestworldPins {
                 + "be: below={} at={} pinned={} idem={})", ok ? "PASS" : "FAIL",
                 !below, atThreshold, isPinnedNow, idempotent,
                 !beBelow, beAt, beIsPinned, beIdem);
+
+        selfTestPersistence();
+    }
+
+    /**
+     * A crash that repeatedly kills the server before ONE run reaches the auto-pin threshold
+     * must still eventually pin, by accumulating the count across restarts (this is what
+     * {@link #loadErrorCounts}/{@link #saveErrorCounts} exist for -- see that javadoc; added
+     * 2026-09-07 after the user pointed out the in-memory-only counters could never fire for
+     * a bug whose failure mode IS crashing the server).
+     *
+     * <p>One increment per simulated "run" (a fresh {@code NestworldPins} instance, discarded
+     * without a clean shutdown, standing in for a crash) -- deliberately not several
+     * increments in one run: {@link #saveErrorCountsThrottled()} caps real disk writes to
+     * ~1/second, so a tight loop of several calls on the SAME instance would mostly get
+     * throttled and this test would flake against wall-clock timing instead of testing the
+     * actual guarantee. A real crash only ever gives a process one shot at persisting its
+     * last increment anyway, so this is the realistic case, not a simplification.
+     */
+    private static void selfTestPersistence() {
+        Path tmp;
+        try {
+            tmp = Files.createTempFile("nestworld-autopin-selftest", ".txt");
+        } catch (IOException e) {
+            LOGGER.warn("[AUTOPIN PERSISTENCE SELF-TEST] SKIPPED (could not create temp file: {})", e.toString());
+            return;
+        }
+        try {
+            EntityType<?> type = EntityType.ZOMBIE;
+
+            // Runs 1-4: one increment each (cumulative 1,2,3,4), all below threshold=5 --
+            // each is a fresh instance so its own first save is never throttled (a brand-new
+            // instance's lastErrorCountsSaveNanos starts at 0), giving a deterministic disk
+            // state after each "crash" without depending on wall-clock timing.
+            boolean everPrematurelyPinned = false;
+            for (int i = 0; i < 4; i++) {
+                NestworldPins run = new NestworldPins(true, 5);
+                run.loadErrorCounts(tmp);
+                run.noteEntityTickError(type);
+                if (run.isPinned(type)) everPrematurelyPinned = true;
+            }
+
+            // Run 5: resumes at 4, this run's own increment crosses the threshold in-process.
+            NestworldPins run5 = new NestworldPins(true, 5);
+            run5.loadErrorCounts(tmp);
+            run5.noteEntityTickError(type);
+            boolean pinnedOnCumulativeThreshold = run5.isPinned(type);
+
+            // Retroactive-at-load, tested independently of the above (a separate file):
+            // simulates a crash that landed the threshold-crossing count on disk but died
+            // before the in-process pin logic ran. A fresh load must pin BEFORE any tick call.
+            Path tmp2 = Files.createTempFile("nestworld-autopin-selftest-retro", ".txt");
+            boolean retroactivelyPinnedAtLoad;
+            try {
+                Files.write(tmp2, List.of("entity:minecraft:zombie=5"));
+                NestworldPins run6 = new NestworldPins(true, 5);
+                run6.loadErrorCounts(tmp2);
+                retroactivelyPinnedAtLoad = run6.isPinned(type);
+            } finally {
+                Files.deleteIfExists(tmp2);
+            }
+
+            boolean ok = !everPrematurelyPinned && pinnedOnCumulativeThreshold && retroactivelyPinnedAtLoad;
+            LOGGER.info("[AUTOPIN PERSISTENCE SELF-TEST] {} (never_premature={} "
+                    + "cumulative_pin_at_threshold={} retroactive_pin_at_load={})",
+                    ok ? "PASS" : "FAIL", !everPrematurelyPinned,
+                    pinnedOnCumulativeThreshold, retroactivelyPinnedAtLoad);
+        } catch (IOException e) {
+            LOGGER.warn("[AUTOPIN PERSISTENCE SELF-TEST] FAILED with I/O error: {}", e.toString());
+        } finally {
+            try {
+                Files.deleteIfExists(tmp);
+            } catch (IOException ignored) { }
+        }
     }
 
     private void save() {
@@ -475,6 +661,147 @@ public final class NestworldPins {
             Files.write(modFile, lines);
         } catch (IOException e) {
             LOGGER.warn("Could not write pinned-mods file {}: {}", modFile, e.toString());
+        }
+    }
+
+    /**
+     * Loads auto-pin error counts (entity/BE/mod-callback, all three) left over from a
+     * PREVIOUS server run.
+     *
+     * <p><b>Why this exists:</b> the counters {@code errorCounts}/{@code beErrorCounts}/
+     * {@code modCallbackErrorCounts} are plain in-memory maps -- fine for a bug that keeps
+     * throwing without taking the server down, but useless for a bug whose failure mode IS
+     * killing the server (a hard crash, a watchdog kill, an OOM) before {@code
+     * autoPinThreshold} is ever reached in a single run. That bug then never gets pinned: it
+     * crashes at count 3, the process dies, next boot starts back at 0, crashes at count 4,
+     * dies again, forever -- the exact "past crashes" pattern the user flagged
+     * 2026-09-07 that this load/save pair exists to break. Persisting the raw counts (not
+     * just the final pinned-or-not state) means every crash's partial count is retained, so
+     * the cumulative total across restarts eventually crosses the threshold even if no single
+     * run does -- and if the very error that crossed it was also the one that killed the
+     * process, the check below pins retroactively at the NEXT boot, before the dimension
+     * even starts ticking, breaking the loop for good.
+     *
+     * <p>Called once at startup, after {@link #loadMods} (so a threshold-crossing entry
+     * pins immediately without racing a first {@code save}/{@code saveBe}/{@code saveMods}
+     * that hasn't run yet). No-op if auto-pin is off -- counts are still loaded (so enabling
+     * the flag later inherits prior history) but nothing gets auto-pinned from stale data
+     * while the operator hasn't opted in.
+     */
+    public void loadErrorCounts(Path file) {
+        this.errorCountsFile = file;
+        if (!Files.isRegularFile(file)) return;
+        try {
+            for (String line : Files.readAllLines(file)) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+                int colon = trimmed.indexOf(':');
+                int eq = trimmed.lastIndexOf('=');
+                if (colon < 0 || eq < colon) continue;
+                String kind = trimmed.substring(0, colon);
+                String key = trimmed.substring(colon + 1, eq);
+                int count;
+                try {
+                    count = Integer.parseInt(trimmed.substring(eq + 1).trim());
+                } catch (NumberFormatException e) {
+                    continue;
+                }
+                switch (kind) {
+                    case "entity" -> {
+                        ResourceLocation id = ResourceLocation.tryParse(key);
+                        EntityType<?> type = id == null ? null : BuiltInRegistries.ENTITY_TYPE.getOptional(id).orElse(null);
+                        if (type != null) errorCounts.computeIfAbsent(type, k -> new AtomicInteger()).set(count);
+                    }
+                    case "be" -> beErrorCounts.computeIfAbsent(key, k -> new AtomicInteger()).set(count);
+                    case "mod" -> modCallbackErrorCounts.computeIfAbsent(key, k -> new AtomicInteger()).set(count);
+                    default -> { }
+                }
+            }
+        } catch (IOException e) {
+            LOGGER.warn("Could not read error-counts file {}: {}", file, e.toString());
+            return;
+        }
+        if (!autoPin) return;
+        // Retroactive pin: an entry already at/above threshold from a previous run (most
+        // likely the crash that ended it) gets pinned NOW, before anything ticks.
+        errorCounts.forEach((type, counter) -> {
+            if (counter.get() >= autoPinThreshold && pinnedTypes.add(type)) {
+                ResourceLocation id = BuiltInRegistries.ENTITY_TYPE.getKey(type);
+                pinnedIds.add(id);
+                save();
+                LOGGER.warn("AUTO-PINNED {} to the main thread at startup -- {} region-thread "
+                        + "tick errors carried over from a previous run crossed the threshold. "
+                        + "Restore parallelism with /nestworld unpin {} once fixed.", id, counter.get(), id);
+            }
+        });
+        beErrorCounts.forEach((typeId, counter) -> {
+            if (counter.get() >= autoPinThreshold && pinnedBeIds.add(typeId)) {
+                saveBe();
+                LOGGER.warn("AUTO-PINNED block entity {} to the main thread at startup -- {} "
+                        + "region-thread tick errors carried over from a previous run crossed "
+                        + "the threshold. Restore parallelism with /nestworld unpin {} once fixed.",
+                        typeId, counter.get(), typeId);
+            }
+        });
+        modCallbackErrorCounts.forEach((modId, counter) -> {
+            if (counter.get() >= autoPinThreshold && pinnedMods.add(modId)) {
+                saveMods();
+                LOGGER.warn("AUTO-PINNED mod {} to the main thread at startup -- {} errors "
+                        + "carried over from a previous run crossed the threshold (this is "
+                        + "very likely what was crashing/kicking players before this boot). "
+                        + "Restore parallelism with /nestworld unpin {} once fixed.",
+                        modId, counter.get(), modId);
+            }
+        });
+    }
+
+    /**
+     * Throttled entry point for the three {@code note*Error} methods -- at most one actual
+     * {@link #saveErrorCounts()} disk write per {@link #ERROR_COUNTS_SAVE_INTERVAL_NANOS}
+     * regardless of how many increments arrive in that window (see {@link
+     * #lastErrorCountsSaveNanos}'s javadoc for why: an unthrottled write-per-increment turns a
+     * fast-firing bug's error storm into a self-inflicted synchronous-disk-I/O storm on the
+     * SAME thread that just caught the original error -- for the main-thread player-tick
+     * catch, that's exactly the tick-spike class of problem this whole project exists to
+     * avoid). The CAS ensures concurrent callers within one window don't all redundantly
+     * write; losing at most ~1 second of the most recent counts on a true crash is the
+     * accepted trade.
+     */
+    private void saveErrorCountsThrottled() {
+        long now = System.nanoTime();
+        long last = lastErrorCountsSaveNanos.get();
+        if (now - last < ERROR_COUNTS_SAVE_INTERVAL_NANOS) return;
+        if (lastErrorCountsSaveNanos.compareAndSet(last, now)) {
+            saveErrorCounts();
+        }
+    }
+
+    /**
+     * Rewrites the error-counts file from the current in-memory state of all three counters.
+     * Called (throttled, via {@link #saveErrorCountsThrottled()}) after increments -- see
+     * {@link #loadErrorCounts} javadoc for why partial progress must survive a crash. The
+     * combined map is expected to stay small (a handful of distinct offending types/mods at
+     * most; a healthy server pins nothing), so a full rewrite per call is cheap by itself --
+     * it's the CALL FREQUENCY that needed bounding, not this method's own cost.
+     */
+    private void saveErrorCounts() {
+        if (errorCountsFile == null) return;
+        try {
+            Path parent = errorCountsFile.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            List<String> lines = new ArrayList<>();
+            lines.add("# NestWorld auto-pin error counts — survives a crash/restart so a bug");
+            lines.add("# that crashes the server before one run reaches the threshold still");
+            lines.add("# accumulates toward it across runs. Format: kind:key=count");
+            errorCounts.forEach((type, counter) -> {
+                ResourceLocation id = BuiltInRegistries.ENTITY_TYPE.getKey(type);
+                if (id != null) lines.add("entity:" + id + "=" + counter.get());
+            });
+            beErrorCounts.forEach((typeId, counter) -> lines.add("be:" + typeId + "=" + counter.get()));
+            modCallbackErrorCounts.forEach((modId, counter) -> lines.add("mod:" + modId + "=" + counter.get()));
+            Files.write(errorCountsFile, lines);
+        } catch (IOException e) {
+            LOGGER.warn("Could not write error-counts file {}: {}", errorCountsFile, e.toString());
         }
     }
 }

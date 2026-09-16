@@ -187,7 +187,7 @@
              this.m_6988_();
           }
  
-@@ -691,6 +_,68 @@
+@@ -691,6 +_,76 @@
  
     }
  
@@ -215,6 +215,14 @@
 +    */
 +   private boolean nestworldOnTickFailure(Throwable p_nw_failure) {
 +      f_129750_.error("NestWorld: tick failed, skipping this tick and continuing (see tick-loop-catch-and-continue)", p_nw_failure);
++      // NestWorld: feed the SAME mod-attribution auto-pin the player-tick catches use (see
++      // NestworldPins#noteCallbackError) -- this is the ONE call site where a bug that keeps
++      // firing genuinely threatens the whole server (5 more within 60s = full crash below), so
++      // it's the highest-value place for auto-pin to identify and pin the offending mod BEFORE
++      // the circuit breaker trips, not after.
++      if (net.nestworld.region.NestworldRegionSystem.isInitialised()) {
++         net.nestworld.region.NestworldRegionSystem.get().getPins().noteCallbackError(p_nw_failure);
++      }
 +      // NestWorld: a lighter-weight report file, same CrashReport machinery as the real
 +      // crash path below (constructOrExtractCrashReport/fillSystemReport/saveToFile) but
 +      // named distinctly ("tick-skipped-", not "crash-") so operators scanning

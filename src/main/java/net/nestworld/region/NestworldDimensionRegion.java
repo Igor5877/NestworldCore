@@ -46,6 +46,13 @@ public final class NestworldDimensionRegion {
 
     private static final Logger LOGGER = LogManager.getLogger("NestWorld/RegionSystem");
 
+    /** Player-tick errors (both the main-thread path and the #31.3 region-thread experiment)
+     *  logged only "tick error: null" forever -- {@code Throwable.getMessage()} on a bare NPE
+     *  is null, so the actual cause was never captured. Mirrors {@link RegionThread}'s
+     *  TICK_ERROR_STACKS: full stack for the first few occurrences, then just class+message. */
+    private static final java.util.concurrent.atomic.AtomicInteger PLAYER_TICK_ERROR_STACKS =
+            new java.util.concurrent.atomic.AtomicInteger();
+
     private final ServerLevel level;
     private final ResourceKey<Level> key;
 
@@ -960,8 +967,15 @@ public final class NestworldDimensionRegion {
                         try {
                             level.tickNonPassenger(player);
                         } catch (Throwable t) {
-                            LOGGER.warn("[#31.3 experiment] Player {} region-thread tick error: {}",
-                                    player.getGameProfile().getName(), t.getMessage());
+                            if (PLAYER_TICK_ERROR_STACKS.getAndIncrement() < 10) {
+                                LOGGER.warn("[#31.3 experiment] Player {} region-thread tick error (full stack)",
+                                        player.getGameProfile().getName(), t);
+                            } else {
+                                LOGGER.warn("[#31.3 experiment] Player {} region-thread tick error: {}: {}",
+                                        player.getGameProfile().getName(),
+                                        t.getClass().getSimpleName(), t.getMessage());
+                            }
+                            pins.noteCallbackError(t);
                         }
                     });
                     continue;
@@ -972,7 +986,13 @@ public final class NestworldDimensionRegion {
             try {
                 level.tickNonPassenger(player);
             } catch (Throwable t) {
-                LOGGER.warn("Player {} tick error: {}", player.getGameProfile().getName(), t.getMessage());
+                if (PLAYER_TICK_ERROR_STACKS.getAndIncrement() < 10) {
+                    LOGGER.warn("Player {} tick error (full stack)", player.getGameProfile().getName(), t);
+                } else {
+                    LOGGER.warn("Player {} tick error: {}: {}", player.getGameProfile().getName(),
+                            t.getClass().getSimpleName(), t.getMessage());
+                }
+                pins.noteCallbackError(t);
             }
         }
         if (playerTickBuckets != null) {

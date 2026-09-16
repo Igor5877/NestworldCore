@@ -1,11 +1,19 @@
 --- a/net/minecraft/server/network/ServerHandshakePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerHandshakePacketListenerImpl.java
-@@ -21,6 +_,8 @@
+@@ -21,6 +_,16 @@
     }
  
     public void m_7322_(ClientIntentionPacket p_9975_) {
-+      if (!net.nestworld.region.NestworldTuning.BYPASS_FORGE_HANDSHAKE
-+            && !net.minecraftforge.server.ServerLifecycleHooks.handleServerLogin(p_9975_, this.f_9966_)) return;
++      if (net.nestworld.region.NestworldTuning.BYPASS_FORGE_HANDSHAKE) {
++         // test-only: skipping the real FML2 handshake also skips whatever normally sets this
++         // channel attribute, which net.minecraftforge.network.NetworkHooks.getConnectionType()
++         // (called on every player join, not just modded-negotiation code) reads unconditionally
++         // -- a null read there throws inside String.startsWith, kicking the bypassed client with
++         // "invalid_player_data" on login. AttributeKey.valueOf is a canonical/idempotent lookup
++         // by name, so this resolves to the exact same key Forge's own (package-private)
++         // NetworkConstants.FML_NETVERSION uses, without needing an access-transformer.
++         this.f_9966_.channel().attr(io.netty.util.AttributeKey.<String>valueOf("fml:netversion")).set("VANILLA");
++      } else if (!net.minecraftforge.server.ServerLifecycleHooks.handleServerLogin(p_9975_, this.f_9966_)) return;
        switch (p_9975_.m_134735_()) {
           case LOGIN:
              this.f_9966_.m_129498_(ConnectionProtocol.LOGIN);

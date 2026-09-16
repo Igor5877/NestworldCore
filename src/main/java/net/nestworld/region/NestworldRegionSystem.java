@@ -183,6 +183,11 @@ public class NestworldRegionSystem {
                 if (warn) cpuLogger.warn(line); else cpuLogger.info(line);
             }
         }
+        // Race detector Stage A (static candidate scan) -- opt-in, OFF by default. Runs on its
+        // own background thread inside CandidateRegistry, never blocks server startup.
+        if (net.nestworld.racedetect.RaceDetectTuning.MODE != net.nestworld.racedetect.RaceDetectTuning.Mode.OFF) {
+            net.nestworld.racedetect.CandidateRegistry.scanIfNeeded(event.getServer());
+        }
     }
 
     @SubscribeEvent
@@ -277,6 +282,9 @@ public class NestworldRegionSystem {
         pins.loadBe(bePinsFile());
         pins.loadMods(pinnedModsFile());
         pins.loadCascadeSafeBe(cascadeSafeBeFile());
+        // Must run AFTER loadMods/loadBe/load above (see its own javadoc): a count already at
+        // threshold from a previous crashed run pins retroactively right here, at startup.
+        pins.loadErrorCounts(errorCountsFile());
 
         // Stage 1: managed dimensions = Overworld (always) + whatever the dark-launch flag
         // adds (see NestworldTuning.SHARDED_DIMENSIONS_RAW's javadoc). Each gets its own
@@ -355,6 +363,14 @@ public class NestworldRegionSystem {
     private Path pinnedModsFile() {
         return server.getWorldPath(LevelResource.ROOT)
                 .resolve("data").resolve("nestworld-pinned-mods.txt");
+    }
+
+    /** Text file persisting auto-pin error counts across restarts (see
+     *  {@link NestworldPins#loadErrorCounts} for why this survives a crash, not just a
+     *  clean shutdown). */
+    private Path errorCountsFile() {
+        return server.getWorldPath(LevelResource.ROOT)
+                .resolve("data").resolve("nestworld-autopin-error-counts.txt");
     }
 
     /** Text file listing block-entity type ids the operator asserts are cascade-safe

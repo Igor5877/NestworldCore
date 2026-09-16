@@ -279,6 +279,22 @@ public final class NestworldCommand {
                         .then(Commands.literal("reset").executes(ctx -> lastRecipeAuditReset(ctx.getSource())))
                         .then(Commands.literal("stop").executes(ctx -> lastRecipeAuditStop(ctx.getSource())))
                         .then(Commands.literal("report").executes(ctx -> lastRecipeAuditReport(ctx.getSource()))))
+                // Race Detector Stage A (2026-09-10) -- static-only candidate discovery. See
+                // docs plan "NestWorld Race Detector -- Stage A". WATCH/DEEP/CONFIRMED modes
+                // are accepted but currently behave identically to DISCOVERY -- the runtime
+                // instrumentation stages those modes are meant to unlock don't exist yet.
+                .then(Commands.literal("race")
+                        .then(Commands.literal("status").executes(ctx -> raceStatus(ctx.getSource())))
+                        .then(Commands.literal("scan").executes(ctx -> raceScan(ctx.getSource())))
+                        .then(Commands.literal("candidates")
+                                .executes(ctx -> raceCandidates(ctx.getSource(), null))
+                                .then(Commands.argument("modid", com.mojang.brigadier.arguments.StringArgumentType.string())
+                                        .executes(ctx -> raceCandidates(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "modid")))))
+                        .then(Commands.literal("mode")
+                                .then(Commands.argument("value", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                        .executes(ctx -> raceMode(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "value"))))))
                 .then(Commands.literal("blockwatch")
                         .then(Commands.literal("start")
                                 .then(Commands.argument("path", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
@@ -2036,6 +2052,81 @@ public final class NestworldCommand {
     private static int trackingReset(CommandSourceStack src) {
         net.nestworld.region.TrackingMetrics.reset();
         src.sendSuccess(() -> Component.literal("NW tracking metrics reset"), true);
+        return 1;
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Race Detector Stage A (2026-09-10) -- see docs plan "NestWorld Race Detector -- Stage A".
+    // ------------------------------------------------------------------------------------------
+
+    private static int raceStatus(CommandSourceStack src) {
+        net.nestworld.racedetect.RaceDetectTuning.Mode mode = net.nestworld.racedetect.RaceDetectTuning.MODE;
+        boolean running = net.nestworld.racedetect.CandidateRegistry.isScanRunning();
+        int count = net.nestworld.racedetect.CandidateRegistry.count();
+        net.nestworld.racedetect.CandidateRegistry.ScanStats stats = net.nestworld.racedetect.CandidateRegistry.lastScanStats();
+
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        lines.add("Race Detector");
+        lines.add("  mode: " + mode);
+        lines.add("  scan running: " + running);
+        lines.add("  candidates: " + count);
+        if (stats != null) {
+            lines.add("  last scan: " + stats.jarsScanned + " jars (" + stats.cacheHits + " cache hits, "
+                    + stats.cacheMisses + " misses), " + stats.durationMillis + " ms");
+        } else {
+            lines.add("  last scan: none yet");
+        }
+        for (String line : lines) {
+            src.sendSuccess(() -> Component.literal(line), false);
+        }
+        return 1;
+    }
+
+    private static int raceScan(CommandSourceStack src) {
+        if (net.nestworld.racedetect.CandidateRegistry.isScanRunning()) {
+            src.sendFailure(Component.literal("Race-detect scan already in progress"));
+            return 0;
+        }
+        net.nestworld.racedetect.CandidateRegistry.forceRescan(src.getServer());
+        src.sendSuccess(() -> Component.literal("Race-detect scan started in background"), true);
+        return 1;
+    }
+
+    private static int raceCandidates(CommandSourceStack src, String modId) {
+        java.util.List<net.nestworld.racedetect.Candidate> list = modId == null
+                ? net.nestworld.racedetect.CandidateRegistry.all()
+                : net.nestworld.racedetect.CandidateRegistry.byModId(modId);
+        if (list.isEmpty()) {
+            src.sendSuccess(() -> Component.literal("Race Detector: 0 candidates" + (modId != null ? " for " + modId : "")), false);
+            return 1;
+        }
+        int cap = 60;
+        src.sendSuccess(() -> Component.literal("Race Detector: " + list.size() + " candidate(s)"
+                + (modId != null ? " for " + modId : "") + (list.size() > cap ? " (showing first " + cap + ")" : "")), false);
+        for (net.nestworld.racedetect.Candidate c : list.subList(0, Math.min(cap, list.size()))) {
+            String line = "  " + c.id().className().replace('/', '.') + "." + c.id().fieldName()
+                    + " [" + c.id().hazardType() + "] in " + c.id().methodName()
+                    + " status=" + c.status() + " modId=" + c.modId() + " -- " + c.detailNote();
+            src.sendSuccess(() -> Component.literal(line), false);
+        }
+        return 1;
+    }
+
+    private static int raceMode(CommandSourceStack src, String value) {
+        net.nestworld.racedetect.RaceDetectTuning.Mode parsed;
+        try {
+            parsed = net.nestworld.racedetect.RaceDetectTuning.Mode.valueOf(value.toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            src.sendFailure(Component.literal("Unknown mode '" + value + "' -- valid values: "
+                    + java.util.Arrays.toString(net.nestworld.racedetect.RaceDetectTuning.Mode.values())));
+            return 0;
+        }
+        net.nestworld.racedetect.RaceDetectTuning.MODE = parsed;
+        String suffix = (parsed != net.nestworld.racedetect.RaceDetectTuning.Mode.OFF
+                && parsed != net.nestworld.racedetect.RaceDetectTuning.Mode.DISCOVERY)
+                ? " -- note: WATCH/DEEP/CONFIRMED currently behave identically to DISCOVERY (runtime instrumentation stages not yet implemented)"
+                : "";
+        src.sendSuccess(() -> Component.literal("Race Detector mode set to " + parsed + suffix), true);
         return 1;
     }
 
