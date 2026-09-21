@@ -24,6 +24,9 @@
   and exception semantics. NeoForge adapter must pass the same Core contract tests.
 - Confirm Forgified Fabric's original chunk-unload Mixin applies against the built `ChunkMap`;
   no NestWorld error handler may downgrade its failures or call its event as a replacement.
+- Canary alone is the authorized config exception: when its JAR is detected, only the four
+  overlapping collection/POI options become false before Mixin loading. Verify an already-safe
+  config is untouched, unrelated options survive, and a late detection requires restart.
 - Run original mod JARs, verify unchanged hashes, and disable legacy transformers for the GMEIL
   acceptance workload. Reuse current Mekanism, AE2, Draconic, Flux, Sophisticated Core, Tom's
   Storage, and Industrial Foregoing regressions as behavior oracles.

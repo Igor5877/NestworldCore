@@ -40,8 +40,9 @@ preserving the callback's synchronous, phase, ordering, and ownership contract.
 6. Do not suppress or replace mod Mixins at load time. Fix structural conflicts in Core source
    and verify the original mod callback remains responsible for its own behavior.
 7. The old `ModCallbackRouter` next-tick isolation flag is disabled until a main bridge can
-   preserve synchronous completion and phase order. The startup compatibility guard logs Canary
-   conflicts but does not rewrite that mod's configuration.
+   preserve synchronous completion and phase order. Canary is a user-authorized exception: the
+   loader disables only its four overlapping collection/POI options before Mixin loading, and a
+   late detection refuses to run until those options can take effect after restart.
 
 `MAIN_COMPAT` restores server-thread affinity and conservative serialization. It does not by
 itself reproduce every vanilla temporal ordering; tick, phase, causal order, and owner exclusion

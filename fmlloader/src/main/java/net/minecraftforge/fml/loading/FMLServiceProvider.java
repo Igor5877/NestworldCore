@@ -61,6 +61,17 @@ public class FMLServiceProvider implements ITransformationService
     public void initialize(IEnvironment environment) {
         LOGGER.debug(CORE, "Setting up basic FML game directories");
         FMLPaths.setup(environment);
+        // Canary is the one user-authorized exception to the no-mod-behavior-change rule:
+        // turn off only its overlapping, unsafe Mixins before any mod class is transformed.
+        try {
+            if (NestworldCanaryConfigGuard.containsCanaryJar(FMLPaths.MODSDIR.get())
+                    && NestworldCanaryConfigGuard.ensureDisabled(
+                            FMLPaths.CONFIGDIR.get().resolve("canary.properties"))) {
+                LOGGER.warn(CORE, "NestWorld disabled Canary's overlapping collection/POI Mixins before mod loading");
+            }
+        } catch (java.io.IOException canaryConfigFailure) {
+            throw new IllegalStateException("Cannot verify Canary compatibility configuration", canaryConfigFailure);
+        }
         LOGGER.debug(CORE, "Loading configuration");
         FMLConfig.load();
         LOGGER.debug(CORE, "Preparing ModFile");

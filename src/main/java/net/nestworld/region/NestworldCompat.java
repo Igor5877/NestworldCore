@@ -1,10 +1,11 @@
 package net.nestworld.region;
 
 import net.minecraftforge.fml.ModList;
+import net.minecraftforge.fml.loading.FMLPaths;
+import net.minecraftforge.fml.loading.NestworldCanaryConfigGuard;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -24,9 +25,10 @@ import java.util.List;
  * {@code NearestAttackableTargetGoal} -> {@code getEntitiesOfClass} against the
  * same section from several region threads).
  *
- * <p>This guard detects the <em>active-unsafe</em> state (not merely the mod's
- * presence) and logs the conflicting options without editing the mod's config.
- * Pass {@code -Dnestworld.strictCompat=true} to refuse to run in that state.
+ * <p>Canary is an explicit user-authorized exception: its overlapping Mixins
+ * are disabled in its config before mod loading. If the early check missed a
+ * renamed JAR, this guard writes the same config and requires a restart rather
+ * than running with the unsafe Mixins active. Other mods' configs stay untouched.
  */
 public final class NestworldCompat {
 
@@ -55,14 +57,21 @@ public final class NestworldCompat {
     private NestworldCompat() {}
 
     public static void check() {
-        if (!isUnsafeEntityCollectionActive()) {
-            return; // mod absent, or its conflicting optimization already disabled
+        if (ModList.get().isLoaded("canary")) {
+            Path config = FMLPaths.CONFIGDIR.get().resolve("canary.properties");
+            try {
+                if (!NestworldCanaryConfigGuard.allDisabled(config)) {
+                    NestworldCanaryConfigGuard.ensureDisabled(config);
+                    throw new IllegalStateException("Canary's overlapping Mixins were not disabled before loading; "
+                            + "NestworldCore updated config/canary.properties. Restart to apply it safely.");
+                }
+            } catch (java.io.IOException failure) {
+                throw new IllegalStateException("Cannot verify Canary compatibility configuration", failure);
+            }
         }
+        if (!ModList.get().isLoaded("radium") && !ModList.get().isLoaded("lithium")) return;
 
-        String mod = ModList.get().isLoaded("canary") ? "Canary"
-                   : ModList.get().isLoaded("radium") ? "radium"
-                   : ModList.get().isLoaded("lithium") ? "lithium"
-                   : "a Lithium-family mod";
+        String mod = ModList.get().isLoaded("radium") ? "radium" : "lithium";
         LOGGER.error("==================== NestworldCore COMPAT ====================");
         LOGGER.error("Mod '{}' applies THREAD-UNSAFE entity-collection optimizations.", mod);
         LOGGER.error("It overwrites ClassInstanceMultiMap / EntitySection by-type indexes");
@@ -77,34 +86,6 @@ public final class NestworldCompat {
             throw new IllegalStateException("NestworldCore strictCompat: refusing to run with "
                     + "thread-unsafe " + mod + " entity-collection optimizations active "
                     + "(NestworldCore did not alter the mod's config).");
-        }
-    }
-
-    /**
-     * Is a Lithium-family mod present with its thread-unsafe entity-collection
-     * optimization still enabled? Detected by mod presence plus config rather
-     * than by reflecting on the mixin-merged class (whose method signatures
-     * reference the mod's own types and can make {@code getDeclaredMethods}
-     * throw): if Canary is loaded and its conflicting mixins are not disabled in
-     * its config, the unsafe optimization is live.
-     */
-    private static boolean isUnsafeEntityCollectionActive() {
-        boolean lithiumFamily = ModList.get().isLoaded("canary")
-                || ModList.get().isLoaded("radium")
-                || ModList.get().isLoaded("lithium");
-        if (!lithiumFamily) return false;
-        // Canary we can verify precisely from its config; if already disabled, safe.
-        if (ModList.get().isLoaded("canary") && canaryConflictDisabled()) return false;
-        return true;
-    }
-
-    private static boolean canaryConflictDisabled() {
-        try {
-            Path cfg = Path.of("config", "canary.properties");
-            return Files.exists(cfg)
-                    && Files.readString(cfg).contains("mixin.collections.entity_by_type=false");
-        } catch (Throwable t) {
-            return false;
         }
     }
 
