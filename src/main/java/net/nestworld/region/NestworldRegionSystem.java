@@ -433,6 +433,7 @@ public class NestworldRegionSystem {
     void drainDeferredGatewayTeleports() {
         PendingGatewayTeleport pending;
         while ((pending = pendingGatewayTeleports.poll()) != null) {
+            DimensionChangeScope.enter();
             try {
                 if (!pending.entity.isRemoved() && !pending.blockEntity.isRemoved()) {
                     net.minecraft.world.level.block.entity.TheEndGatewayBlockEntity.nestworldDoTeleportEntity(
@@ -440,6 +441,8 @@ public class NestworldRegionSystem {
                 }
             } catch (Throwable t) {
                 LOGGER.warn("Deferred gateway teleport failed: {}", t.toString());
+            } finally {
+                DimensionChangeScope.exit();
             }
         }
     }

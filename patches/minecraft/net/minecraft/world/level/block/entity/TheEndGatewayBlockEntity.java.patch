@@ -1,6 +1,6 @@
 --- a/net/minecraft/world/level/block/entity/TheEndGatewayBlockEntity.java
 +++ b/net/minecraft/world/level/block/entity/TheEndGatewayBlockEntity.java
-@@ -154,39 +_,64 @@
+@@ -154,39 +_,70 @@
     public static void m_155828_(Level p_155829_, BlockPos p_155830_, BlockState p_155831_, Entity p_155832_, TheEndGatewayBlockEntity p_155833_) {
        if (p_155829_ instanceof ServerLevel serverlevel && !p_155833_.m_59972_()) {
           p_155833_.f_59927_ = 100;
@@ -43,7 +43,13 @@
 -               } else {
 -                  entity = p_155832_;
 -               }
-+         nestworldDoTeleportEntity(serverlevel, p_155830_, p_155831_, p_155832_, p_155833_);
++         // exit-portal search + platform/teleport touch the destination chunk immediately (see DimensionChangeScope)
++         net.nestworld.region.DimensionChangeScope.enter();
++         try {
++            nestworldDoTeleportEntity(serverlevel, p_155830_, p_155831_, p_155832_, p_155833_);
++         } finally {
++            net.nestworld.region.DimensionChangeScope.exit();
++         }
 +      }
 +   }
 +

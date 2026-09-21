@@ -123,7 +123,7 @@
           for(int j = 0; j < 4; ++j) {
              if (i == this.f_8337_[j] && p_8362_ == this.f_8338_[j]) {
                 ChunkAccess chunkaccess = this.f_8339_[j];
-@@ -128,7 +_,113 @@
+@@ -128,7 +_,122 @@
  
           profilerfiller.m_6174_("getChunkCacheMiss");
           CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> completablefuture = this.m_8456_(p_8360_, p_8361_, p_8362_, p_8363_);
@@ -137,7 +137,7 @@
 +         // completely untouched — vanilla-identical for every OTHER call shape.
 +         if (p_8362_ == ChunkStatus.f_62326_ && p_8363_ && net.nestworld.region.NestworldTuning.GETCHUNK_WAIT_TIMEOUT_MS > 0) {
 +            net.minecraft.world.level.chunk.LevelChunk.NestworldProxyLevelChunk nestworldProxy = this.nestworldPendingProxies.get(i);
-+            if (nestworldProxy != null) {
++            if (nestworldProxy != null && !net.nestworld.region.DimensionChangeScope.isActive()) {
 +               // Someone else is already waiting on this exact position — return the SAME
 +               // proxy reference (not a new one), so both callers transparently see it
 +               // resolve to the real chunk together once ready.
@@ -158,7 +158,14 @@
 +            // "not resolved yet" transparently (chunk keeps generating in the background;
 +            // the proxy resolves once it's ready) — this only changes WHEN that path is
 +            // taken, reusing 100% of the existing machinery, not adding a new one.
-+            if ((net.nestworld.region.NestworldTuning.GETCHUNK_ZERO_WAIT_MAIN_THREAD
++            // NestWorld: a cross-dimension teleport (portal/End platform/gateway) reads AND writes
++            // blocks in the destination chunk right away; a VOID_AIR proxy that drops writes makes
++            // the player fall into the void and the destination portal never appear. Inside
++            // DimensionChangeScope wait for the real chunk (bounded by GETCHUNK_WAIT_TIMEOUT_MS,
++            // burst budget ignored) instead of degrading to a proxy.
++            boolean nestworldInDimensionChange = net.nestworld.region.DimensionChangeScope.isActive();
++            if (!nestworldInDimensionChange
++                    && (net.nestworld.region.NestworldTuning.GETCHUNK_ZERO_WAIT_MAIN_THREAD
 +                    || this.nestworldBurstBudgetRemainingNanos <= 0) && !completablefuture.isDone()) {
 +               nestworldProxyCreations.incrementAndGet();
 +               net.minecraft.world.level.chunk.LevelChunk.NestworldProxyLevelChunk nestworldBurstProxy = new net.minecraft.world.level.chunk.LevelChunk.NestworldProxyLevelChunk(
@@ -180,7 +187,9 @@
 +            // though no individual call exceeded its own nominal bound. This closes that gap:
 +            // now EVERY call in a tick, including the first, is bounded by whatever's left of
 +            // the shared per-tick budget, not just its own standalone timeout.
-+            long nestworldCallBudgetNanos = Math.min(
++            long nestworldCallBudgetNanos = nestworldInDimensionChange
++                    ? net.nestworld.region.NestworldTuning.GETCHUNK_WAIT_TIMEOUT_MS * 1_000_000L
++                    : Math.min(
 +                    net.nestworld.region.NestworldTuning.GETCHUNK_WAIT_TIMEOUT_MS * 1_000_000L,
 +                    Math.max(this.nestworldBurstBudgetRemainingNanos, 0L));
 +            long nestworldDeadline = System.nanoTime() + nestworldCallBudgetNanos;
