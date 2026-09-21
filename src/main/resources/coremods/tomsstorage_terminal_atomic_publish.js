@@ -50,12 +50,47 @@
 var ASMAPI = Java.type('net.minecraftforge.coremod.api.ASMAPI');
 var Opcodes = Java.type('org.objectweb.asm.Opcodes');
 var FieldNode = Java.type('org.objectweb.asm.tree.FieldNode');
+var MethodNode = Java.type('org.objectweb.asm.tree.MethodNode');
 var FieldInsnNode = Java.type('org.objectweb.asm.tree.FieldInsnNode');
 var TypeInsnNode = Java.type('org.objectweb.asm.tree.TypeInsnNode');
 var MethodInsnNode = Java.type('org.objectweb.asm.tree.MethodInsnNode');
 var VarInsnNode = Java.type('org.objectweb.asm.tree.VarInsnNode');
 var InsnNode = Java.type('org.objectweb.asm.tree.InsnNode');
 var InsnList = Java.type('org.objectweb.asm.tree.InsnList');
+var ArrayList = Java.type('java.util.ArrayList');
+
+// Forge's production Nashorn class filter deliberately does not expose ClassNode.
+// Build a detached structural view from the node types it does expose, run the
+// complete transformation there, and touch the real input only after it succeeds.
+function cloneClassView(classNode) {
+    var view = {name: classNode.name, fields: new ArrayList(), methods: new ArrayList()};
+
+    for (var f = 0; f < classNode.fields.size(); f++) {
+        var field = classNode.fields.get(f);
+        view.fields.add(new FieldNode(
+                field.access,
+                field.name,
+                field.desc,
+                field.signature,
+                field.value));
+    }
+
+    for (var m = 0; m < classNode.methods.size(); m++) {
+        var original = classNode.methods.get(m);
+
+        var method = new MethodNode(
+                original.access,
+                original.name,
+                original.desc,
+                original.signature,
+                null);
+
+        original.accept(method);
+        view.methods.add(method);
+    }
+
+    return view;
+}
 
 var TARGET_CLASS = 'com/tom/storagemod/tile/StorageTerminalBlockEntity';
 var UPDATE_SERVER = 'updateServer';
@@ -152,51 +187,11 @@ function initializeCoreMod() {
                 }
             },
             'transformer': function (classNode) {
-                // Work on a detached tree: Forge catches transformer exceptions and can
-                // retain the input. Mutating that input would leak a half-applied patch.
-                var ClassNode = Java.type('org.objectweb.asm.tree.ClassNode');
-                var copy = new ClassNode();
-                classNode.accept(copy);
                 try {
-                    var updates = [], lambdas = [];
-                    for (var m = 0; m < copy.methods.size(); m++) {
-                        var method = copy.methods.get(m);
-                        if (method.name == UPDATE_SERVER && method.desc == '()V') updates.push(method);
-                        if (method.name == MERGE_LAMBDA && method.desc ==
-                                '(Lcom/tom/storagemod/util/StoredItemStack;)V') lambdas.push(method);
-                    }
-                    if (updates.length != 1 || lambdas.length != 1
-                            || (updates[0].access & Opcodes.ACC_STATIC) != 0
-                            || (lambdas[0].access & Opcodes.ACC_STATIC) != 0)
-                        throw new Error('Expected instance updateServer and merge lambda signatures');
-                    var update = updates[0], lambda = lambdas[0];
-                    if (!addVolatileAndBuildingField(copy)
-                            || !patchClearToLocalBuild(update) || !patchAtomicPublish(update)
-                            || !patchLambdaField(lambda)) throw new Error('Incomplete snapshot pattern');
-                    // Reject duplicates too, including a second publication point. Run
-                    // probes on a disposable copy, so checking cannot alter the result.
-                    var probe = new ClassNode();
-                    copy.accept(probe);
-                    for (var p = 0; p < probe.methods.size(); p++) {
-                        var pm = probe.methods.get(p);
-                        if (pm.name == UPDATE_SERVER && pm.desc == '()V') {
-                            if (patchClearToLocalBuild(pm)) throw new Error('Multiple clear sites');
-                            // The original publication marker remains after insertion.
-                            var markers = 0;
-                            var nodes = pm.instructions.toArray();
-                            for (var n = 0; n < nodes.length; n++) {
-                                var insn = nodes[n];
-                                if (insn.getOpcode() == Opcodes.PUTFIELD && insn.owner == TARGET_CLASS
-                                        && insn.name == 'updateItems' && insn.desc == 'Z') markers++;
-                            }
-                            if (markers != 1) throw new Error('Ambiguous publication marker');
-                        }
-                        if (pm.name == MERGE_LAMBDA && patchLambdaField(pm))
-                            throw new Error('Multiple merge field reads');
-                    }
-                    ASMAPI.log('INFO', '[NestWorld] toms_storage atomic-publish fix applied to '
-                            + classNode.name + ': 4/4 edit(s) patched');
-                    return copy;
+                    // First run on a detached view. All failure paths are exhausted
+                    // before the production ClassNode is changed.
+                    transformTom(cloneClassView(classNode), false);
+                    return transformTom(classNode, true);
                 } catch (error) {
                     ASMAPI.log('ERROR', '[NestWorld] COMPATIBILITY FIX NOT APPLIED to '
                             + classNode.name + ': ' + error
@@ -206,4 +201,45 @@ function initializeCoreMod() {
             }
         }
     };
+}
+
+function transformTom(copy, emitLog) {
+    var updates = [], lambdas = [];
+    for (var m = 0; m < copy.methods.size(); m++) {
+        var method = copy.methods.get(m);
+        if (method.name == UPDATE_SERVER && method.desc == '()V') updates.push(method);
+        if (method.name == MERGE_LAMBDA && method.desc ==
+                '(Lcom/tom/storagemod/util/StoredItemStack;)V') lambdas.push(method);
+    }
+    if (updates.length != 1 || lambdas.length != 1
+            || (updates[0].access & Opcodes.ACC_STATIC) != 0
+            || (lambdas[0].access & Opcodes.ACC_STATIC) != 0)
+        throw new Error('Expected instance updateServer and merge lambda signatures');
+    var update = updates[0], lambda = lambdas[0];
+    if (!addVolatileAndBuildingField(copy)
+            || !patchClearToLocalBuild(update) || !patchAtomicPublish(update)
+            || !patchLambdaField(lambda)) throw new Error('Incomplete snapshot pattern');
+    // Reject duplicates too, including a second publication point.
+    // This mutates only the detached preflight view when malformed input
+    // is present; supported input has no remaining match.
+    for (var p = 0; p < copy.methods.size(); p++) {
+        var pm = copy.methods.get(p);
+        if (pm.name == UPDATE_SERVER && pm.desc == '()V') {
+            if (patchClearToLocalBuild(pm)) throw new Error('Multiple clear sites');
+            // The original publication marker remains after insertion.
+            var markers = 0;
+            var nodes = pm.instructions.toArray();
+            for (var n = 0; n < nodes.length; n++) {
+                var insn = nodes[n];
+                if (insn.getOpcode() == Opcodes.PUTFIELD && insn.owner == TARGET_CLASS
+                        && insn.name == 'updateItems' && insn.desc == 'Z') markers++;
+            }
+            if (markers != 1) throw new Error('Ambiguous publication marker');
+        }
+        if (pm.name == MERGE_LAMBDA && patchLambdaField(pm))
+            throw new Error('Multiple merge field reads');
+    }
+    if (emitLog) ASMAPI.log('INFO', '[NestWorld] toms_storage atomic-publish fix applied to '
+            + copy.name + ': 4/4 edit(s) patched');
+    return copy;
 }

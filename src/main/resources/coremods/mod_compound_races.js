@@ -3,9 +3,6 @@
 // No mod file is changed. See docs/MOD_COMPATIBILITY_FIXES.md for scope and tests.
 var ASMAPI = Java.type('net.minecraftforge.coremod.api.ASMAPI');
 var O = Java.type('org.objectweb.asm.Opcodes');
-var ClassNode = Java.type('org.objectweb.asm.tree.ClassNode');
-var ClassReader = Java.type('org.objectweb.asm.ClassReader');
-var ClassWriter = Java.type('org.objectweb.asm.ClassWriter');
 var MethodNode = Java.type('org.objectweb.asm.tree.MethodNode');
 var MethodInsnNode = Java.type('org.objectweb.asm.tree.MethodInsnNode');
 var TypeInsnNode = Java.type('org.objectweb.asm.tree.TypeInsnNode');
@@ -18,6 +15,7 @@ var LabelNode = Java.type('org.objectweb.asm.tree.LabelNode');
 var JumpInsnNode = Java.type('org.objectweb.asm.tree.JumpInsnNode');
 var FrameNode = Java.type('org.objectweb.asm.tree.FrameNode');
 var TryCatchBlockNode = Java.type('org.objectweb.asm.tree.TryCatchBlockNode');
+var ArrayList = Java.type('java.util.ArrayList');
 
 var PATHS = 'mekanism/common/content/transporter/PathfinderCache';
 var RECIPES = 'net/p3pp3rf1y/sophisticatedcore/util/RecipeHelper';
@@ -26,6 +24,40 @@ var CRYSTAL_TILE = 'com/brandon3055/draconicevolution/blocks/energynet/tileentit
 var MAP = 'Ljava/util/Map;';
 var FLUX = 'sonar/fluxnetworks/common/connection/FluxNetwork';
 var SERVER_FLUX = 'sonar/fluxnetworks/common/connection/ServerFluxNetwork';
+
+// Forge exposes individual ASM tree nodes to coremods, but intentionally blocks
+// ClassNode/ClassReader/ClassWriter in Nashorn. This detached structural view is
+// sufficient to run every validation and mutation path before touching the real
+// transformer input.
+function cloneClassView(classNode) {
+    var view = {name: classNode.name, fields: new ArrayList(), methods: new ArrayList()};
+
+    for (var f = 0; f < classNode.fields.size(); f++) {
+        var field = classNode.fields.get(f);
+        view.fields.add(new FieldNode(
+                field.access,
+                field.name,
+                field.desc,
+                field.signature,
+                field.value));
+    }
+
+    for (var m = 0; m < classNode.methods.size(); m++) {
+        var original = classNode.methods.get(m);
+
+        var method = new MethodNode(
+                original.access,
+                original.name,
+                original.desc,
+                original.signature,
+                null);
+
+        original.accept(method);
+        view.methods.add(method);
+    }
+
+    return view;
+}
 
 function requireMethod(c, name, desc, isStatic) {
     var found = null;
@@ -152,21 +184,42 @@ function patchBatch(c) {
     if (reads != 4) throw new Error('Expected four batch reads, got ' + reads);
     sync(enqueue);
     field.access = field.access & ~O.ACC_FINAL;
-    // Move original serialization to sendBatch(Map). Expanded stack-map frames
-    // and local slots gain the Map argument at slot zero; no branch is added.
+    // Move original serialization to sendBatch(Map). Local variable indexes gain
+    // one slot for the Map argument. The supported jar has four relative stack
+    // frames (append Iterator, same, chop, same). They inherit the new argument
+    // from the method descriptor; explicit full frames would require rewriting.
     send.name = 'nestworld$sendBatch';
     send.desc = '(' + MAP + ')V';
     send.access = O.ACC_PRIVATE | O.ACC_STATIC | O.ACC_SYNTHETIC;
-    var nodes = send.instructions.toArray();
+    var nodes = send.instructions.toArray(), frameIndex = 0;
     for (var i = 0; i < nodes.length; i++) {
         var n = nodes[i];
-        if (n.getType() == 2 || n.getType() == 10) n.var = n.var + 1; // VAR / IINC
-        if (n.getType() == 14) { // expanded F_NEW frame
-            n.local.add(0, 'java/util/Map');
+
+        if (n.getType() == 2 || n.getType() == 10) {
+            // VAR / IINC: the new Map parameter occupies local slot 0.
+            n.var = n.var + 1;
         }
-        if (n.getOpcode() == O.GETSTATIC && n.owner == BATCH && n.name == 'batchQue')
+
+        if (n.getType() == 14) {
+            var locals = n.local;
+            if (frameIndex == 0) {
+                if (locals == null || locals.size() != 1 || locals.get(0) != 'java/util/Iterator')
+                    throw new Error('Unexpected first tickEnd frame');
+            } else if (frameIndex == 2) {
+                if (locals == null || locals.size() != 1 || locals.get(0) != null)
+                    throw new Error('Unexpected chop tickEnd frame');
+            } else if (locals != null && !locals.isEmpty()) {
+                throw new Error('Unexpected locals in tickEnd frame ' + frameIndex);
+            }
+            frameIndex++;
+        }
+
+        if (n.getOpcode() == O.GETSTATIC
+                && n.owner == BATCH
+                && n.name == 'batchQue')
             send.instructions.set(n, new VarInsnNode(O.ALOAD, 0));
     }
+    if (frameIndex != 4) throw new Error('Expected four relative tickEnd frames, got ' + frameIndex);
     if (send.localVariables != null) {
         for (var l = 0; l < send.localVariables.size(); l++) send.localVariables.get(l).index++;
     }
@@ -215,9 +268,8 @@ function patchBatch(c) {
     tick.instructions.add(tryEnd);
     tick.visitInsn(O.RETURN);
     tick.instructions.add(handler);
-    tick.instructions.add(new FrameNode(O.F_NEW, 1,
-            Java.to(['java/util/Map'], 'java.lang.Object[]'), 1,
-            Java.to(['java/lang/Throwable'], 'java.lang.Object[]')));
+    tick.instructions.add(new FrameNode(O.F_FULL, 1,
+            ['java/util/Map'], 1, ['java/lang/Throwable']));
     tick.visitVarInsn(O.ASTORE, 1);
     tick.visitVarInsn(O.ALOAD, 0);
     tick.visitMethodInsn(O.INVOKESTATIC, BATCH, 'nestworld$restoreBatch', '(' + MAP + ')V', false);
@@ -431,9 +483,9 @@ function patchFluxDeletion(c, deletion, add, remove) {
         if (g == 0) { prefix.add(new InsnNode(O.ICONST_0)); prefix.add(new InsnNode(O.IRETURN)); }
         else prefix.add(new InsnNode(O.RETURN));
         prefix.add(live);
-        var locals = [SERVER_FLUX, 'sonar/fluxnetworks/common/device/TileFluxDevice'];
-        if (g == 1) locals.push(O.INTEGER);
-        prefix.add(new FrameNode(O.F_NEW, locals.length, Java.to(locals, 'java.lang.Object[]'), 0, null));
+        // The new branch target has the same locals and an empty operand stack
+        // as the original method entry, so encode it as F_SAME.
+        prefix.add(new FrameNode(O.F_SAME, 0, null, 0, null));
         method.instructions.insert(prefix);
     }
     var valid = requireMethod(c, 'isValid', '()Z', false);
@@ -448,13 +500,9 @@ function patchFluxDeletion(c, deletion, add, remove) {
     sync(valid);
 }
 
-function transformCompound(input) {
-    // Expand frames without resolving Minecraft classes; operate on a new tree.
-    var writer = new ClassWriter(0);
-    input.accept(writer);
-    var c = new ClassNode();
-    new ClassReader(writer.toByteArray()).accept(c, ClassReader.EXPAND_FRAMES);
+function transformCompound(c, emitLog) {
     noHelperCollision(c);
+
     if (c.name == PATHS) patchPaths(c);
     else if (c.name == RECIPES) patchRecipes(c);
     else if (c.name == BATCH) patchBatch(c);
@@ -462,7 +510,12 @@ function transformCompound(input) {
     else if (c.name == FLUX) patchFluxBase(c);
     else if (c.name == SERVER_FLUX) patchFluxServer(c);
     else throw new Error('Unknown target ' + c.name);
-    ASMAPI.log('INFO', '[NestWorld] compound-operation compatibility fix applied to ' + c.name);
+
+    if (emitLog) {
+        ASMAPI.log('INFO',
+                '[NestWorld] compound-operation compatibility fix applied to ' + c.name);
+    }
+
     return c;
 }
 
@@ -470,10 +523,16 @@ function initializeCoreMod() {
     return { 'nestworld_mod_compound_races': {
         'target': { 'type': 'CLASS', 'names': function () { return [PATHS, RECIPES, BATCH, CRYSTAL_TILE, FLUX, SERVER_FLUX]; } },
         'transformer': function (input) {
-            try { return transformCompound(input); }
-            catch (error) {
-                ASMAPI.log('ERROR', '[NestWorld] COMPATIBILITY FIX NOT APPLIED to ' + input.name
-                        + ': ' + error + '. Original class retained; this mod/version is not protected.');
+            try {
+                // Exhaust validation and mutation paths on a detached structural view.
+                // The production ClassNode is touched only after preflight succeeds.
+                transformCompound(cloneClassView(input), false);
+                return transformCompound(input, true);
+            } catch (error) {
+                ASMAPI.log('ERROR',
+                        '[NestWorld] COMPATIBILITY FIX NOT APPLIED to ' + input.name
+                        + ': ' + error
+                        + '. Original class retained; this mod/version is not protected.');
                 return input;
             }
         }

@@ -40,7 +40,10 @@ python3 tests/coremods/run.py \
   --mods /path/to/mods
 ```
 
-The harness executes Forge's Nashorn version, transforms the real mod classes, checks rejection
-paths for changed and ambiguous bytecode, verifies transformed methods with ASM, and exercises
-the recovered concurrency contracts with controlled game/network stubs. It never writes to the
-mod JARs.
+The harness executes Forge's Nashorn version with the CoreMods 5.2.4 class filter, transforms
+the real mod classes, checks rejection paths for changed and ambiguous bytecode, verifies
+transformed methods with ASM, and exercises the recovered concurrency contracts with controlled
+game/network stubs. It never writes to the mod JARs. The class filter matters: `ClassNode`,
+`ClassReader`, `ClassWriter`, and `java.lang.Object[]` are not exposed to scripts despite the
+corresponding JVM classes being present. The 47.4.223 bootstrap regression came from using
+those blocked classes in coremods; a classpath-only Nashorn harness did not catch it.

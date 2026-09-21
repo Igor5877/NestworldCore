@@ -1,6 +1,7 @@
 import net.minecraftforge.coremod.api.ASMAPI;
 import org.openjdk.nashorn.api.scripting.NashornScriptEngineFactory;
 import org.openjdk.nashorn.api.scripting.ScriptObjectMirror;
+import org.openjdk.nashorn.api.scripting.ClassFilter;
 import org.objectweb.asm.*;
 import org.objectweb.asm.tree.*;
 import org.objectweb.asm.tree.analysis.*;
@@ -12,6 +13,30 @@ import java.util.jar.JarFile;
 
 public final class CoremodRegression {
     static int assertions;
+    // Mirror the Forge CoreMods 5.2.4 Nashorn allowlist. In particular, ASM's
+    // ClassNode, ClassReader and ClassWriter are not visible to scripts even
+    // though they are on the JVM classpath.
+    static final Set<String> COREMOD_CLASSES = Set.of(
+            "net.minecraftforge.coremod.api.ASMAPI",
+            "org.objectweb.asm.Opcodes",
+            "org.objectweb.asm.Handle",
+            "org.objectweb.asm.tree.AbstractInsnNode",
+            "org.objectweb.asm.tree.FieldInsnNode",
+            "org.objectweb.asm.tree.FieldNode",
+            "org.objectweb.asm.tree.FrameNode",
+            "org.objectweb.asm.tree.InsnList",
+            "org.objectweb.asm.tree.InsnNode",
+            "org.objectweb.asm.tree.JumpInsnNode",
+            "org.objectweb.asm.tree.LabelNode",
+            "org.objectweb.asm.tree.MethodInsnNode",
+            "org.objectweb.asm.tree.MethodNode",
+            "org.objectweb.asm.tree.TryCatchBlockNode",
+            "org.objectweb.asm.tree.TypeInsnNode",
+            "org.objectweb.asm.tree.VarInsnNode");
+    static final ClassFilter COREMOD_FILTER = name ->
+            name.startsWith("java.util.") || name.startsWith("java.util.function.")
+                    || name.startsWith("org.objectweb.asm.util.")
+                    || COREMOD_CLASSES.contains(name);
     static void check(boolean ok, String message) {
         assertions++;
         if (!ok) throw new AssertionError(message);
@@ -38,7 +63,8 @@ public final class CoremodRegression {
         }
     }
     static ScriptObjectMirror transformer(Path root, String script) throws Exception {
-        ScriptEngine engine = new NashornScriptEngineFactory().getScriptEngine();
+        ScriptEngine engine = new NashornScriptEngineFactory().getScriptEngine(
+                new String[]{"--language=es6"}, Thread.currentThread().getContextClassLoader(), COREMOD_FILTER);
         ASMAPI.engine = engine;
         ASMAPI.resources = root.resolve("src/main/resources");
         engine.eval(Files.readString(ASMAPI.resources.resolve("coremods/" + script)));
@@ -71,6 +97,12 @@ public final class CoremodRegression {
     }
     public static void main(String[] args) throws Exception {
         Path root = Path.of(args[0]), mods = Path.of(args[1]);
+        check(!COREMOD_FILTER.exposeToScripts("org.objectweb.asm.tree.ClassNode"),
+                "Forge Nashorn filter unexpectedly exposes ClassNode");
+        check(!COREMOD_FILTER.exposeToScripts("org.objectweb.asm.ClassReader"),
+                "Forge Nashorn filter unexpectedly exposes ClassReader");
+        check(!COREMOD_FILTER.exposeToScripts("org.objectweb.asm.ClassWriter"),
+                "Forge Nashorn filter unexpectedly exposes ClassWriter");
         String[][] cases = {
             {"static_collection_race_transformer.js", "exdeorum-1.50.jar", "thedarkcolour/exdeorum/network/VisualUpdateTracker"},
             {"static_collection_race_transformer.js", "forestry-1.20.1-2.10.2.jar", "forestry/core/blocks/TileStreamUpdateTracker"},
@@ -88,11 +120,28 @@ public final class CoremodRegression {
         for (String[] test : cases) {
             ScriptObjectMirror fn = transformer(root, test[0]);
             ClassNode input = load(mods, test[1], test[2]);
+
             byte[] before = bytes(input);
             int errors = ASMAPI.errors;
             ClassNode output = transform(fn, input);
-            check(output != input && ASMAPI.errors == errors, "Supported jar was not patched: " + test[2]);
-            check(Arrays.equals(before, bytes(input)), "Input tree mutated: " + test[2]);
+            check(ASMAPI.errors == errors, "Supported jar emitted an error: " + test[2]);
+
+            boolean inPlace = test[0].equals("static_collection_race_transformer.js")
+                    || test[0].equals("tomsstorage_terminal_atomic_publish.js")
+                    || test[0].equals("mod_compound_races.js");
+
+            if (inPlace) {
+                check(output == input,
+                        "In-place transformer replaced input tree: " + test[2]);
+                check(!Arrays.equals(before, bytes(input)),
+                        "Supported jar was not patched in-place: " + test[2]);
+            } else {
+                check(output != input,
+                        "Detached transformer did not return a new tree: " + test[2]);
+                check(Arrays.equals(before, bytes(input)),
+                        "Detached transformer mutated input tree: " + test[2]);
+            }
+
             verify(output);
             // A second pass may be idempotent (monitor flags) or reject, but must
             // never insert a second helper/field or corrupt the bytecode.

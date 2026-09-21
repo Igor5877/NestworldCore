@@ -107,12 +107,9 @@ function resolveEdit(classNode, edit) {
 }
 
 function transformCollections(classNode, site) {
-    var ClassNode = Java.type('org.objectweb.asm.tree.ClassNode');
-    var copy = new ClassNode();
-    classNode.accept(copy);
     var resolved = [];
     for (var e = 0; e < site.edits.length; e++) {
-        var match = resolveEdit(copy, site.edits[e]);
+        var match = resolveEdit(classNode, site.edits[e]);
         for (var j = 0; j < resolved.length; j++) {
             if (resolved[j].node === match.node) throw new Error('Overlapping allocation edits');
         }
@@ -128,7 +125,7 @@ function transformCollections(classNode, site) {
     ASMAPI.log('INFO', '[NestWorld] static-collection race fix applied to ' + classNode.name
             + ' (' + site.mod + '): ' + resolved.length + '/' + site.edits.length
             + ' allocation site(s) patched');
-    return copy;
+    return classNode;
 }
 
 function initializeCoreMod() {
