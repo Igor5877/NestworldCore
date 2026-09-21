@@ -185,8 +185,9 @@ ownership) whose entire *purpose* is mod compatibility (the escape hatch, per it
 
 ### Adapter
 
-`NestworldMod.java` (Forge mod entry point/bootstrap), `NestworldMixinErrorHandler.java` (mixin
-integration), `NestworldFabricChunkEventsCompat.java` (cross-loader compat shim).
+`NestworldMod.java` (Forge mod entry point/bootstrap). The old Mixin-error override and
+replacement Fabric chunk event shim were removed: loader Mixins now retain their own failure
+and callback behavior.
 
 ### Compatibility
 

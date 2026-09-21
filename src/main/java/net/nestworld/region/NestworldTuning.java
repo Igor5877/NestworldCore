@@ -5,6 +5,9 @@ package net.nestworld.region;
  */
 public final class NestworldTuning {
 
+    /** GMEIL Phase 1: observe callback identity, thread, duration and outcome only. */
+    public static final boolean GMEIL_OBSERVE = Boolean.getBoolean("nestworld.gmeil.observe");
+
     /**
      * Explicit Netty EventLoopGroup worker-thread count for the server's connection listener
      * (both epoll and NIO variants). {@code 0} = vanilla/Netty default (2x

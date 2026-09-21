@@ -19,7 +19,7 @@
     private final ProcessorHandle<ChunkTaskPriorityQueueSorter.Message<Runnable>> f_140143_;
     private final ChunkProgressListener f_140144_;
     private final ChunkStatusUpdateListener f_143031_;
-@@ -143,6 +_,389 @@
+@@ -143,6 +_,393 @@
     private final Long2LongMap f_202981_ = new Long2LongOpenHashMap();
     private final Queue<Runnable> f_140125_ = Queues.newConcurrentLinkedQueue();
     int f_140126_;
@@ -292,7 +292,8 @@
 +      CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> gate(
 +            java.util.function.Supplier<CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>>> real) {
 +         CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>> pendingFuture = new CompletableFuture<>();
-+         Runnable task = () -> {
++         Runnable task = new Runnable() {
++            @Override public void run() {
 +            // NestWorld (Phase 1, docs/CHUNK_GEN_PIPELINE_OBSERVABILITY_SPEC.md): timing
 +            // starts here, at admission (task actually running), not at gate()'s own call
 +            // time -- a task that sat in `pending` waiting for a free slot already has
@@ -305,17 +306,20 @@
 +            } catch (Throwable t) {
 +               net.nestworld.region.GenerationAttribution.recordCompletion(
 +                     System.nanoTime() - nestworldGenStart, false);
-+               this.release();
++               NestworldGenPool.this.release();
 +               pendingFuture.completeExceptionally(t);
 +               return;
 +            }
-+            realFuture.whenComplete((r, e) -> {
++            realFuture.whenComplete(new java.util.function.BiConsumer<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>, Throwable>() {
++               @Override public void accept(Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure> r, Throwable e) {
 +               net.nestworld.region.GenerationAttribution.recordCompletion(
 +                     System.nanoTime() - nestworldGenStart, e == null);
-+               this.release();
++               NestworldGenPool.this.release();
 +               if (e != null) pendingFuture.completeExceptionally(e);
 +               else pendingFuture.complete(r);
++               }
 +            });
++            }
 +         };
 +         boolean runNow;
 +         synchronized (this.pending) {
@@ -598,20 +602,10 @@
     }
  
     private void m_140181_(long p_140182_, ChunkHolder p_140183_) {
-@@ -503,6 +_,17 @@
+@@ -503,6 +_,7 @@
              if (this.f_140131_.remove(p_140182_, p_140183_) && p_203002_ != null) {
                 if (p_203002_ instanceof LevelChunk) {
                    ((LevelChunk)p_203002_).m_62913_(false);
-+                  // NestWorld: fires Forgified Fabric API's ServerChunkEvents.CHUNK_UNLOAD
-+                  // directly (source-level, not a Mixin) at the exact point
-+                  // fabric-lifecycle-events-v1's own Mixin used to inject (confirmed via
-+                  // its @At(INVOKE, target=LevelChunk.setLoaded(Z)V, shift=AFTER)) --
-+                  // that Mixin targets this lambda by its vanilla compiler-assigned
-+                  // ordinal (lambda$scheduleUnload$14 / SRG lambda$scheduleUnload$14), which NestWorld's
-+                  // own earlier-declared lambdas shift to $16, permanently breaking the
-+                  // Mixin's injection target. See NestworldFabricChunkEventsCompat and
-+                  // project memory for the full trace. No-op when that mod isn't present.
-+                  net.nestworld.region.NestworldFabricChunkEventsCompat.fireChunkUnload(this.f_140133_, (LevelChunk)p_203002_);
 +                  net.minecraftforge.common.MinecraftForge.EVENT_BUS.post(new net.minecraftforge.event.level.ChunkEvent.Unload(p_203002_));
                 }
  

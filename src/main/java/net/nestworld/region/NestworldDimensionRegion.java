@@ -45,6 +45,14 @@ import org.apache.logging.log4j.Logger;
 public final class NestworldDimensionRegion {
 
     private static final Logger LOGGER = LogManager.getLogger("NestWorld/RegionSystem");
+    private static final net.nestworld.gmeil.ExecutionGateway GMEIL_GATEWAY =
+            new net.nestworld.gmeil.ExecutionGateway(net.nestworld.gmeil.PolicyRegistry.conservative());
+
+    /** Phase 1 OBSERVE counters; this does not change where callbacks execute. */
+    public static java.util.Map<net.nestworld.gmeil.ExecutionKey, net.nestworld.gmeil.ExecutionMetrics.Snapshot>
+    gmeilObservationSnapshot() {
+        return GMEIL_GATEWAY.metrics().snapshot();
+    }
 
     /** Player-tick errors (both the main-thread path and the #31.3 region-thread experiment)
      *  logged only "tick error: null" forever -- {@code Throwable.getMessage()} on a bare NPE
@@ -439,7 +447,21 @@ public final class NestworldDimensionRegion {
             }
             try {
                 long nestworldTickAttrStart = System.nanoTime();
-                ticker.tick();
+                if (NestworldTuning.GMEIL_OBSERVE) {
+                    String typeId = ticker.getType();
+                    int separator = typeId.indexOf(':');
+                    String modId = separator < 0 ? "unknown" : typeId.substring(0, separator);
+                    var key = new net.nestworld.gmeil.ExecutionKey("forge",
+                            net.nestworld.gmeil.ExecutionSource.BLOCK_ENTITY_TICK, modId,
+                            ticker.getClass().getName(), "tick", "()V");
+                    int regionId = Thread.currentThread() instanceof RegionThread regionThread
+                            ? regionThread.getRegion().getId()
+                            : net.nestworld.gmeil.ExecutionContext.NO_REGION;
+                    GMEIL_GATEWAY.observe(key, level.getServer().getTickCount(), "BLOCK_ENTITY",
+                            regionId, level.getServer().isSameThread(), ticker::tick);
+                } else {
+                    ticker.tick();
+                }
                 long nestworldTickAttrNanos = System.nanoTime() - nestworldTickAttrStart;
                 String nestworldBeType = ticker.getType();
                 int nestworldNsCut = nestworldBeType.indexOf(':');

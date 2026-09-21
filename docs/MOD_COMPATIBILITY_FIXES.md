@@ -1,9 +1,20 @@
 # Mod compatibility fixes
 
-These fixes adapt known single-threaded mod assumptions to NestWorld region execution without
-changing a mod JAR. They target the exact class and method shapes from the installed 1.20.1 mod
-pack. A structural mismatch leaves the original class untouched and emits
-`COMPATIBILITY FIX NOT APPLIED`; no transformer may return a partially edited class.
+These are **offline legacy research oracles**, not active production fixes. The user's GMEIL
+requirement forbids changing mod code or behavior even through runtime bytecode transformation,
+so the three NestWorld mod transformers are absent from production `META-INF/coremods.json`.
+Their tests remain useful to reproduce known single-thread assumptions and to validate a future
+GMEIL execution-only replacement. Until that replacement passes the workloads, an unpatched
+modpack is **not** established as safe for concurrent region execution.
+
+The old Mixin error handler that skipped a failing Fabric lifecycle injection and fired its
+event from NestWorld code was also removed. The underlying `ChunkMap` lambda ordinal is restored
+in core source so the original mod Mixin can apply and execute normally; this still requires
+validation with that mod installed.
+
+The scripts target exact class and method shapes from the installed 1.20.1 modpack without
+changing a mod JAR on disk. In offline tests, a structural mismatch leaves the original class
+untouched and emits `COMPATIBILITY FIX NOT APPLIED`.
 
 ## Covered contracts
 
@@ -26,9 +37,9 @@ pack. A structural mismatch leaves the original class untouched and emits
 - **Industrial Foregoing 3.5.22:** use copy-on-write active-process lists so processes persist
   across ticks while registration and dead-process removal remain safe.
 
-These fixes do not turn every mod callback into a main-thread callback. They protect only the
-shared-state contracts recovered from the inspected bytecode. Unknown versions fail visibly so
-an operator can pin that mod until its new contract is reviewed.
+These legacy scripts did not turn every mod callback into a main-thread callback. Their offline
+regressions cover only the shared-state contracts recovered from inspected bytecode; they are
+not a production safety mechanism for the current unmodified modpack.
 
 ## Regression test
 
