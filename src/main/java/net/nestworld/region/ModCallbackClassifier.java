@@ -24,7 +24,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * every mod we haven't looked at, including ones not yet discovered to have a problem.
  */
 public final class ModCallbackClassifier {
-    public static final boolean ENABLED = Boolean.getBoolean("nestworld.modCallbackIsolation");
+    /** The legacy next-tick router cannot preserve synchronous callback semantics. */
+    public static final boolean ENABLED = false;
 
     public enum Classification { REGION_SAFE, MAIN_THREAD_ONLY }
 

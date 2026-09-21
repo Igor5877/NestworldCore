@@ -12,6 +12,10 @@ event from NestWorld code was also removed. The underlying `ChunkMap` lambda ord
 in core source so the original mod Mixin can apply and execute normally; this still requires
 validation with that mod installed.
 
+The startup Canary compatibility check is now read-only: it reports unsafe options but never
+rewrites the mod's config. The old opt-in, next-tick `ContainerListener` router is disabled until
+GMEIL has a main-thread bridge that preserves the callback's synchronous timing contract.
+
 The scripts target exact class and method shapes from the installed 1.20.1 modpack without
 changing a mod JAR on disk. In offline tests, a structural mismatch leaves the original class
 untouched and emits `COMPATIBILITY FIX NOT APPLIED`.

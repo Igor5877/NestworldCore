@@ -25,9 +25,8 @@ import java.util.List;
  * same section from several region threads).
  *
  * <p>This guard detects the <em>active-unsafe</em> state (not merely the mod's
- * presence), auto-writes the disable lines into the mod's config, and logs a
- * loud warning. The disable takes effect on the next restart; pass
- * {@code -Dnestworld.strictCompat=true} to refuse to run until then.
+ * presence) and logs the conflicting options without editing the mod's config.
+ * Pass {@code -Dnestworld.strictCompat=true} to refuse to run in that state.
  */
 public final class NestworldCompat {
 
@@ -64,27 +63,20 @@ public final class NestworldCompat {
                    : ModList.get().isLoaded("radium") ? "radium"
                    : ModList.get().isLoaded("lithium") ? "lithium"
                    : "a Lithium-family mod";
-        boolean autoFixed = "Canary".equals(mod) && writeCanaryDisable();
-
         LOGGER.error("==================== NestworldCore COMPAT ====================");
         LOGGER.error("Mod '{}' applies THREAD-UNSAFE entity-collection optimizations.", mod);
         LOGGER.error("It overwrites ClassInstanceMultiMap / EntitySection by-type indexes");
         LOGGER.error("with single-thread-only structures that RACE under the core's parallel");
         LOGGER.error("region ticking and FREEZE the server under a mob crowd targeting a");
         LOGGER.error("player. These functions are ALREADY provided thread-safely by the core.");
-        if (autoFixed) {
-            LOGGER.error(" -> The core disabled them in config/canary.properties.");
-            LOGGER.error(" -> RESTART the server to apply. This run remains at risk until then.");
-        } else {
-            LOGGER.error(" -> Disable these in the mod's config and restart:");
-            for (String s : CANARY_UNSAFE_MIXINS) LOGGER.error("      {}", s);
-        }
+        LOGGER.error(" -> Review these options in the mod's config before restarting:");
+        for (String s : CANARY_UNSAFE_MIXINS) LOGGER.error("      {}", s);
         LOGGER.error("=============================================================");
 
         if (Boolean.getBoolean("nestworld.strictCompat")) {
             throw new IllegalStateException("NestworldCore strictCompat: refusing to run with "
                     + "thread-unsafe " + mod + " entity-collection optimizations active "
-                    + "(config fixed where possible — restart the server).");
+                    + "(NestworldCore did not alter the mod's config).");
         }
     }
 
@@ -116,24 +108,4 @@ public final class NestworldCompat {
         }
     }
 
-    private static boolean writeCanaryDisable() {
-        try {
-            Path cfg = Path.of("config", "canary.properties");
-            String existing = Files.exists(cfg) ? Files.readString(cfg) : "";
-            if (existing.contains("mixin.collections.entity_by_type")) {
-                return false; // user already configured this line — don't fight them
-            }
-            StringBuilder sb = new StringBuilder(existing);
-            if (!existing.isEmpty() && !existing.endsWith("\n")) sb.append('\n');
-            sb.append("\n# Added by NestworldCore: these optimizations are not thread-safe under\n");
-            sb.append("# parallel region ticking; the core already provides them thread-safely.\n");
-            for (String s : CANARY_UNSAFE_MIXINS) sb.append(s).append('\n');
-            Files.createDirectories(cfg.getParent());
-            Files.writeString(cfg, sb.toString());
-            return true;
-        } catch (Throwable t) {
-            LOGGER.warn("Could not auto-write config/canary.properties: {}", t.toString());
-            return false;
-        }
-    }
 }
