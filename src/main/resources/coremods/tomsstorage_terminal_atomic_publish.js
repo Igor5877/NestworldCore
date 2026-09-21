@@ -67,7 +67,11 @@ function addVolatileAndBuildingField(classNode) {
         var f = classNode.fields.get(i);
         if (f.name.equals('items')) { itemsField = f; break; }
     }
-    if (itemsField == null) return false;
+    if (itemsField == null || itemsField.desc != 'Ljava/util/Map;'
+            || (itemsField.access & (Opcodes.ACC_STATIC | Opcodes.ACC_FINAL)) != 0) return false;
+    for (var j = 0; j < classNode.fields.size(); j++) {
+        if (classNode.fields.get(j).name == 'items_building') return false;
+    }
     itemsField.access = itemsField.access | Opcodes.ACC_VOLATILE;
     var buildingField = new FieldNode(Opcodes.ACC_PRIVATE, 'items_building', itemsField.desc, itemsField.signature, null);
     classNode.fields.add(buildingField);
@@ -82,9 +86,9 @@ function patchClearToLocalBuild(method) {
         var n0 = nodes[i], n1 = nodes[i + 1], n2 = nodes[i + 2];
         if (n0.getOpcode() != Opcodes.ALOAD || n0.var != 0) continue;
         if (n1.getOpcode() != Opcodes.GETFIELD) continue;
-        if (!n1.owner.equals(TARGET_CLASS) || !n1.name.equals('items')) continue;
+        if (!n1.owner.equals(TARGET_CLASS) || !n1.name.equals('items') || n1.desc != 'Ljava/util/Map;') continue;
         if (n2.getOpcode() != Opcodes.INVOKEINTERFACE) continue;
-        if (!n2.owner.equals('java/util/Map') || !n2.name.equals('clear')) continue;
+        if (!n2.owner.equals('java/util/Map') || !n2.name.equals('clear') || n2.desc != '()V') continue;
 
         var repl = new InsnList();
         repl.add(new VarInsnNode(Opcodes.ALOAD, 0));
@@ -111,7 +115,7 @@ function patchAtomicPublish(method) {
         if (n0.getOpcode() != Opcodes.ALOAD || n0.var != 0) continue;
         if (n1.getOpcode() != Opcodes.ICONST_0) continue;
         if (n2.getOpcode() != Opcodes.PUTFIELD) continue;
-        if (!n2.owner.equals(TARGET_CLASS) || !n2.name.equals('updateItems')) continue;
+        if (!n2.owner.equals(TARGET_CLASS) || !n2.name.equals('updateItems') || n2.desc != 'Z') continue;
 
         var repl = new InsnList();
         repl.add(new VarInsnNode(Opcodes.ALOAD, 0));
@@ -130,7 +134,7 @@ function patchLambdaField(method) {
     var insns = method.instructions;
     for (var i = 0; i < insns.size(); i++) {
         var n = insns.get(i);
-        if (n.getOpcode() == Opcodes.GETFIELD && n.owner.equals(TARGET_CLASS) && n.name.equals('items')) {
+        if (n.getOpcode() == Opcodes.GETFIELD && n.owner.equals(TARGET_CLASS) && n.name.equals('items') && n.desc == 'Ljava/util/Map;') {
             n.name = 'items_building';
             return true;
         }
@@ -148,34 +152,57 @@ function initializeCoreMod() {
                 }
             },
             'transformer': function (classNode) {
-                var applied = 0;
-                if (addVolatileAndBuildingField(classNode)) applied++;
-
-                var updateServerMethod = null, lambdaMethod = null;
-                for (var m = 0; m < classNode.methods.size(); m++) {
-                    var method = classNode.methods.get(m);
-                    if (method.name.equals(UPDATE_SERVER)) updateServerMethod = method;
-                    else if (method.name.equals(MERGE_LAMBDA)) lambdaMethod = method;
+                // Work on a detached tree: Forge catches transformer exceptions and can
+                // retain the input. Mutating that input would leak a half-applied patch.
+                var ClassNode = Java.type('org.objectweb.asm.tree.ClassNode');
+                var copy = new ClassNode();
+                classNode.accept(copy);
+                try {
+                    var updates = [], lambdas = [];
+                    for (var m = 0; m < copy.methods.size(); m++) {
+                        var method = copy.methods.get(m);
+                        if (method.name == UPDATE_SERVER && method.desc == '()V') updates.push(method);
+                        if (method.name == MERGE_LAMBDA && method.desc ==
+                                '(Lcom/tom/storagemod/util/StoredItemStack;)V') lambdas.push(method);
+                    }
+                    if (updates.length != 1 || lambdas.length != 1
+                            || (updates[0].access & Opcodes.ACC_STATIC) != 0
+                            || (lambdas[0].access & Opcodes.ACC_STATIC) != 0)
+                        throw new Error('Expected instance updateServer and merge lambda signatures');
+                    var update = updates[0], lambda = lambdas[0];
+                    if (!addVolatileAndBuildingField(copy)
+                            || !patchClearToLocalBuild(update) || !patchAtomicPublish(update)
+                            || !patchLambdaField(lambda)) throw new Error('Incomplete snapshot pattern');
+                    // Reject duplicates too, including a second publication point. Run
+                    // probes on a disposable copy, so checking cannot alter the result.
+                    var probe = new ClassNode();
+                    copy.accept(probe);
+                    for (var p = 0; p < probe.methods.size(); p++) {
+                        var pm = probe.methods.get(p);
+                        if (pm.name == UPDATE_SERVER && pm.desc == '()V') {
+                            if (patchClearToLocalBuild(pm)) throw new Error('Multiple clear sites');
+                            // The original publication marker remains after insertion.
+                            var markers = 0;
+                            var nodes = pm.instructions.toArray();
+                            for (var n = 0; n < nodes.length; n++) {
+                                var insn = nodes[n];
+                                if (insn.getOpcode() == Opcodes.PUTFIELD && insn.owner == TARGET_CLASS
+                                        && insn.name == 'updateItems' && insn.desc == 'Z') markers++;
+                            }
+                            if (markers != 1) throw new Error('Ambiguous publication marker');
+                        }
+                        if (pm.name == MERGE_LAMBDA && patchLambdaField(pm))
+                            throw new Error('Multiple merge field reads');
+                    }
+                    ASMAPI.log('INFO', '[NestWorld] toms_storage atomic-publish fix applied to '
+                            + classNode.name + ': 4/4 edit(s) patched');
+                    return copy;
+                } catch (error) {
+                    ASMAPI.log('ERROR', '[NestWorld] COMPATIBILITY FIX NOT APPLIED to '
+                            + classNode.name + ': ' + error
+                            + '. Original class retained; this mod/version is not protected.');
+                    return classNode;
                 }
-
-                if (updateServerMethod != null) {
-                    if (patchClearToLocalBuild(updateServerMethod)) applied++;
-                    if (patchAtomicPublish(updateServerMethod)) applied++;
-                } else {
-                    ASMAPI.log('ERROR', '[NestWorld] toms_storage atomic-publish fix: '
-                            + UPDATE_SERVER + ' not found in ' + classNode.name);
-                }
-
-                if (lambdaMethod != null) {
-                    if (patchLambdaField(lambdaMethod)) applied++;
-                } else {
-                    ASMAPI.log('ERROR', '[NestWorld] toms_storage atomic-publish fix: '
-                            + MERGE_LAMBDA + ' not found in ' + classNode.name);
-                }
-
-                ASMAPI.log('INFO', '[NestWorld] toms_storage atomic-publish fix applied to '
-                        + classNode.name + ': ' + applied + '/4 edit(s) patched');
-                return classNode;
             }
         }
     };

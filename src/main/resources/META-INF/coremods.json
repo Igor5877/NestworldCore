@@ -4,5 +4,6 @@
   "add_bouncer_method": "coremods/add_bouncer_method.js",
   "method_redirector": "coremods/method_redirector.js",
   "nestworld_static_collection_race_transformer": "coremods/static_collection_race_transformer.js",
-  "nestworld_tomsstorage_atomic_publish": "coremods/tomsstorage_terminal_atomic_publish.js"
+  "nestworld_tomsstorage_atomic_publish": "coremods/tomsstorage_terminal_atomic_publish.js",
+  "nestworld_mod_compound_races": "coremods/mod_compound_races.js"
 }

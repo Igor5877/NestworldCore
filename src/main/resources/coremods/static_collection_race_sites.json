@@ -4,10 +4,22 @@
     "class": "thedarkcolour/exdeorum/network/VisualUpdateTracker",
     "note": "root-caused 2026-08-22, coremod written 2026-09-07 -- see project memory exdeorum-visualupdatetracker-race",
     "edits": [
-      { "in": "<clinit>", "kind": "ctor-swap", "from": "java/util/WeakHashMap", "to": "java/util/concurrent/ConcurrentHashMap" },
-      { "in": "sendVisualUpdate", "kind": "ctor-to-factory", "from": "java/util/HashSet",
-        "toOwner": "java/util/concurrent/ConcurrentHashMap", "toName": "newKeySet",
-        "toDesc": "()Ljava/util/concurrent/ConcurrentHashMap$KeySetView;" }
+      {
+        "in": "<clinit>",
+        "kind": "ctor-swap",
+        "from": "java/util/WeakHashMap",
+        "to": "java/util/concurrent/ConcurrentHashMap",
+        "methodDesc": "()V"
+      },
+      {
+        "in": "sendVisualUpdate",
+        "kind": "ctor-to-factory",
+        "from": "java/util/HashSet",
+        "toOwner": "java/util/concurrent/ConcurrentHashMap",
+        "toName": "newKeySet",
+        "toDesc": "()Ljava/util/concurrent/ConcurrentHashMap$KeySetView;",
+        "methodDesc": "(Lthedarkcolour/exdeorum/blockentity/EBlockEntity;)V"
+      }
     ]
   },
   {
@@ -15,10 +27,22 @@
     "class": "forestry/core/blocks/TileStreamUpdateTracker",
     "note": "found 2026-09-09 -- byte-for-byte identical shape to exdeorum's VisualUpdateTracker (confirmed by direct decompile, not just report), same fix",
     "edits": [
-      { "in": "<clinit>", "kind": "ctor-swap", "from": "java/util/WeakHashMap", "to": "java/util/concurrent/ConcurrentHashMap" },
-      { "in": "sendVisualUpdate", "kind": "ctor-to-factory", "from": "java/util/HashSet",
-        "toOwner": "java/util/concurrent/ConcurrentHashMap", "toName": "newKeySet",
-        "toDesc": "()Ljava/util/concurrent/ConcurrentHashMap$KeySetView;" }
+      {
+        "in": "<clinit>",
+        "kind": "ctor-swap",
+        "from": "java/util/WeakHashMap",
+        "to": "java/util/concurrent/ConcurrentHashMap",
+        "methodDesc": "()V"
+      },
+      {
+        "in": "sendVisualUpdate",
+        "kind": "ctor-to-factory",
+        "from": "java/util/HashSet",
+        "toOwner": "java/util/concurrent/ConcurrentHashMap",
+        "toName": "newKeySet",
+        "toDesc": "()Ljava/util/concurrent/ConcurrentHashMap$KeySetView;",
+        "methodDesc": "(Lforestry/core/tiles/TileForestry;)V"
+      }
     ]
   },
   {
@@ -26,10 +50,47 @@
     "class": "mekanism/common/content/transporter/TransporterManager",
     "note": "P0 flowingStacks race -- contract recovered 2026-09-10 (docs/RACE_CLASSIFICATION.md, memory flowingstacks-contract-recovered-2026-09-10), C1 confirmed: staleness provably tolerated by LogisticalTransporterBase's own delivery-time reject/reroute fallback. Nested two-level allocation (outer Object2ObjectOpenHashMap in <clinit>, inner ObjectOpenHashSet in the computeIfAbsent lambda's synthetic method lambda$add$0, NOT inline in add()) -- both confirmed via independent javap disassembly before adding this entry, both plain no-arg ()V ctors, existing transformer needed zero changes. additionalFlowingStacks (a separate Map parameter of getPredictedInsert, NOT this field) left UNKNOWN, not in scope here.",
     "edits": [
-      { "in": "<clinit>", "kind": "ctor-swap", "from": "it/unimi/dsi/fastutil/objects/Object2ObjectOpenHashMap", "to": "java/util/concurrent/ConcurrentHashMap" },
-      { "in": "lambda$add$0", "kind": "ctor-to-factory", "from": "it/unimi/dsi/fastutil/objects/ObjectOpenHashSet",
-        "toOwner": "java/util/concurrent/ConcurrentHashMap", "toName": "newKeySet",
-        "toDesc": "()Ljava/util/concurrent/ConcurrentHashMap$KeySetView;" }
+      {
+        "in": "<clinit>",
+        "kind": "ctor-swap",
+        "from": "it/unimi/dsi/fastutil/objects/Object2ObjectOpenHashMap",
+        "to": "java/util/concurrent/ConcurrentHashMap",
+        "methodDesc": "()V"
+      },
+      {
+        "in": "lambda$add$0",
+        "kind": "ctor-to-factory",
+        "from": "it/unimi/dsi/fastutil/objects/ObjectOpenHashSet",
+        "toOwner": "java/util/concurrent/ConcurrentHashMap",
+        "toName": "newKeySet",
+        "toDesc": "()Ljava/util/concurrent/ConcurrentHashMap$KeySetView;",
+        "methodDesc": "(Lmekanism/api/Coord4D;)Ljava/util/Set;"
+      }
+    ]
+  },
+  {
+    "mod": "industrialforegoing",
+    "class": "com/buuz135/industrial/utils/explosion/ExplosionTickHandler",
+    "note": "Snapshot lists preserve active processes across ticks while allowing concurrent registration. Only the two shared lists are replaced, not temporary tick snapshots.",
+    "edits": [
+      {
+        "in": "<clinit>",
+        "methodDesc": "()V",
+        "kind": "ctor-swap",
+        "from": "java/util/ArrayList",
+        "to": "java/util/concurrent/CopyOnWriteArrayList",
+        "field": "removalProcessList",
+        "fieldDesc": "Ljava/util/List;"
+      },
+      {
+        "in": "<clinit>",
+        "methodDesc": "()V",
+        "kind": "ctor-swap",
+        "from": "java/util/ArrayList",
+        "to": "java/util/concurrent/CopyOnWriteArrayList",
+        "field": "processExplosionList",
+        "fieldDesc": "Ljava/util/List;"
+      }
     ]
   }
 ]

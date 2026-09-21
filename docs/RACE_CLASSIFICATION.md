@@ -50,7 +50,7 @@ Live proof:
 
 ## C1 transformer — PRODUCTION-READY (2026-09-09)
 
-Both current C1 config entries (exdeorum, forestry) cleared the full deployment pipeline
+The original C1 config entries (exdeorum, forestry) cleared the full deployment pipeline
 (source proof, bytecode proof, clean startup, targeted reproduction, ownership churn, live
 stress with entityGuard, zero CME, zero ownership violations — see each race's own "Live
 proof" section below). Per the user's own stated gate: two independent C1 fixes PASS ->
@@ -68,8 +68,9 @@ Still NOT deployed to the actual SkyBlock production server -- validated on the
 
 `src/main/resources/coremods/static_collection_race_transformer.js` +
 `static_collection_race_sites.json`. One config-driven ASM coremod, not a hand-written coremod
-per mod. Each JSON entry names a target class and a list of `{in: <method>, kind: <edit
-kind>, from: <type>, to...}` edits. Two edit kinds implemented so far:
+per mod. Each JSON entry names a target class and a list of `{in: <method>, methodDesc:
+<descriptor>, kind: <edit kind>, from: <type>, to...}` edits. A site must resolve exactly once
+before any copy of the class is edited. Two edit kinds are implemented so far:
 - `ctor-swap` — `new X()` → `new Y()` at a `<clinit>` (or any method) allocation site, same
   no-arg constructor shape (e.g. `WeakHashMap` → `ConcurrentHashMap`).
 - `ctor-to-factory` — `new X()` → a static factory call with the same net stack effect (e.g.
@@ -327,9 +328,11 @@ Required guarantee:
     confirmed immutable/thread-safe once published, not just the outer map.
 
 Live proof:
-    Not yet fixed. Needs the exact compound-operation call sites re-read before writing
-    anything (per this file's own C1-vs-C2 discipline) -- do not add this class to the
-    generic C1 transformer's JSON.
+    Fixed from the core side for Sophisticated Core 1.3.40.1925. Cache creation, lookup,
+    publication, and invalidation share the RecipeHelper class monitor; listener callbacks run
+    after it is released. Consumers copy the cached result stack before mutation and create new
+    remaining-item lists. The transformed methods pass ASM verification and a forced
+    compute-versus-reload ordering test.
 ```
 
 ### sophisticatedcore — `ServerStorageSoundHandler.worldStorageSoundInfos`
@@ -534,13 +537,15 @@ Race: Mekanism content.transporter.PathfinderCache.cachedPaths
     writers: TransporterPathfinder.getPath() -> getCache()/addCachedPath(), from
              TransporterStack.recalculatePath(), a transporter's own per-tick pathing
 
-Fix class: C2 (tentative) -- computeIfAbsent-shaped per-network cache; also needs the cached
+Fix class: C2 -- computeIfAbsent-shaped per-network cache; also needs the cached
     value type (Map<PathData,CachedPath> per network) checked for its own thread-safety
     separately from the outer map, and an explicit invalidation-safety check (does removing a
     stale path race a concurrent read of it?).
 
 Live proof:
-    Not yet fixed.
+    Fixed from the core side for Mekanism 10.4.16.80. The transformer puts get/add/remove/reset
+    behind the same class monitor. The real transformed methods pass ASM verification and a
+    concurrent add/invalidate test followed by 1,000 deterministic cache hits.
 ```
 
 ### Mekanism — `FrequencyManager.frequencies`
@@ -570,19 +575,20 @@ Race: Draconic Evolution network.CrystalUpdateBatcher.batchQue
     readers: DEEventHandler.serverTick(ServerTickEvent) -> tickEnd(), main thread,
              iterates then clears
 
-Fix class: C1 for the outer HashMap<ServerPlayer,List<...>> access pattern, BUT the per-player
+Fix class: C3 for the outer HashMap<ServerPlayer,List<...>> access pattern and per-player
     List<BatchedCrystalUpdate> value also needs to become concurrent-safe AND the
     iterate-then-clear needs to become an atomic drain (e.g. swap in a fresh empty list per
     player and hand back the old one in one step, not two) -- a straight ConcurrentHashMap
     swap on the outer map alone does not fix the inner List race or the non-atomic drain.
-    Reclassify as C1+C2 compound; do not add to the plain C1 transformer as-is.
+    Implemented as atomic batch detachment; do not add to the plain C1 transformer.
 
 Required guarantee:
     Every enqueued update gets delivered exactly once, no update lost or duplicated across a
     concurrent enqueue-during-drain window.
 
 Live proof:
-    Not yet fixed.
+    Fixed from the core side for 3.1.2.621. Regression coverage verifies 20,000 concurrent
+    updates with no loss, duplicate, or packet-count mismatch, plus restore after send failure.
 ```
 
 ### Draconic Evolution — `CrystalUpdateBatcher.ID_CRYSTAL_MAP`
@@ -638,13 +644,12 @@ NestWorld violation:
     A genuinely different thread (a region thread) can call the enqueue methods concurrently
     with the main thread's drain -- a case the author's own guard was never built to cover.
 
-Fix class: C1 for mToAdd/mToRemove (plain LinkedList -> ConcurrentLinkedQueue, natural FIFO
-    replacement) -- but check add+remove-of-the-same-connection-in-one-tick ordering
-    semantics before assuming a lock-free queue preserves them. mConnectionMap needs its own
-    check (C1 likely, but confirm no compound op).
+Fix class: C6 because queue cancellation and the connection map form one lifecycle invariant;
+    a container-only replacement does not preserve it.
 
 Live proof:
-    Not yet fixed.
+    Fixed from the core side for 7.2.1.15. Regression coverage exercises concurrent registration,
+    stable reader snapshots, unloaded phantom replacement, deletion, and callbacks outside locks.
 ```
 
 ### industrial-foregoing — `ExplosionTickHandler.processExplosionList` / `removalProcessList`
@@ -654,13 +659,12 @@ Race: industrial-foregoing utils.explosion.ExplosionTickHandler.{processExplosio
     writers: InfinityNukeEntity.tick(), region-threadable entity tick
     readers: ExplosionTickHandler.serverTick(ServerTickEvent), main thread, iterates+removes
 
-Fix class: C1, plain ArrayList -> ConcurrentLinkedQueue with an atomic drain loop (poll-until-
-    null rather than iterate-then-remove) -- straightforward once confirmed no ordering
-    dependency between explosion ticks.
+Fix class: C1, plain active ArrayList -> CopyOnWriteArrayList. These are persistent active-process
+    lists, so an atomic drain would incorrectly discard live processes after one tick.
 
 Live proof:
-    Not yet fixed. Narrowest blast radius of the confirmed set (only live while an Infinity
-    Nuke entity is actively exploding) -- lowest priority despite being mechanically simple.
+    Fixed from the core side for 3.5.22. Regression coverage verifies persistence, dead-process
+    removal, phase behavior, and concurrent registration.
 ```
 
 ---

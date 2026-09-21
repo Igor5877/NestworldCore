@@ -75,22 +75,60 @@ function applyCtorToFactory(insns, node, edit) {
     return true;
 }
 
-function applyEditsInMethod(method, edits) {
-    var insns = method.instructions;
-    var appliedCount = 0;
-    for (var e = 0; e < edits.length; e++) {
-        var edit = edits[e];
+// Resolve every site before touching the input. Descriptors and (where needed) the
+// destination field distinguish overloads and repeated allocations of the same type.
+function resolveEdit(classNode, edit) {
+    var matches = [];
+    for (var m = 0; m < classNode.methods.size(); m++) {
+        var method = classNode.methods.get(m);
+        if (method.name != edit['in'] || method.desc != edit.methodDesc) continue;
+        var insns = method.instructions;
         for (var i = 0; i < insns.size(); i++) {
             var node = insns.get(i);
-            if (node.getOpcode() != Opcodes.NEW || !node.desc.equals(edit.from)) continue;
-            var ok;
-            if (edit.kind == 'ctor-swap') ok = applyCtorSwap(insns, node, edit);
-            else if (edit.kind == 'ctor-to-factory') ok = applyCtorToFactory(insns, node, edit);
-            else ok = false;
-            if (ok) { appliedCount++; break; } // one allocation site per edit entry, by design
+            if (node.getOpcode() != Opcodes.NEW || node.desc != edit.from) continue;
+            var dup = node.getNext(), ctor = dup == null ? null : dup.getNext();
+            if (dup == null || dup.getOpcode() != Opcodes.DUP || ctor == null
+                    || ctor.getOpcode() != Opcodes.INVOKESPECIAL || ctor.owner != edit.from
+                    || ctor.name != '<init>' || ctor.desc != '()V') continue;
+            if (edit.field != null) {
+                var store = ctor.getNext();
+                if (store == null || store.getOpcode() != Opcodes.PUTSTATIC
+                        || store.owner != classNode.name || store.name != edit.field
+                        || store.desc != edit.fieldDesc) continue;
+            }
+            matches.push({insns: insns, node: node, edit: edit});
         }
     }
-    return appliedCount;
+    if (matches.length != 1) throw new Error('Expected exactly one allocation for '
+            + edit['in'] + edit.methodDesc + ', found ' + matches.length);
+    if (edit.kind != 'ctor-swap' && edit.kind != 'ctor-to-factory')
+        throw new Error('Unknown edit kind: ' + edit.kind);
+    return matches[0];
+}
+
+function transformCollections(classNode, site) {
+    var ClassNode = Java.type('org.objectweb.asm.tree.ClassNode');
+    var copy = new ClassNode();
+    classNode.accept(copy);
+    var resolved = [];
+    for (var e = 0; e < site.edits.length; e++) {
+        var match = resolveEdit(copy, site.edits[e]);
+        for (var j = 0; j < resolved.length; j++) {
+            if (resolved[j].node === match.node) throw new Error('Overlapping allocation edits');
+        }
+        resolved.push(match);
+    }
+    for (var i = 0; i < resolved.length; i++) {
+        var r = resolved[i];
+        var ok = r.edit.kind == 'ctor-swap'
+                ? applyCtorSwap(r.insns, r.node, r.edit)
+                : applyCtorToFactory(r.insns, r.node, r.edit);
+        if (!ok) throw new Error('Allocation changed after preflight');
+    }
+    ASMAPI.log('INFO', '[NestWorld] static-collection race fix applied to ' + classNode.name
+            + ' (' + site.mod + '): ' + resolved.length + '/' + site.edits.length
+            + ' allocation site(s) patched');
+    return copy;
 }
 
 function initializeCoreMod() {
@@ -108,19 +146,14 @@ function initializeCoreMod() {
             'transformer': function (classNode) {
                 var site = sites[classNode.name];
                 if (site == null) return classNode; // shouldn't happen, target list is exact
-                var totalApplied = 0;
-                for (var m = 0; m < classNode.methods.size(); m++) {
-                    var method = classNode.methods.get(m);
-                    var edits = [];
-                    for (var e = 0; e < site.edits.length; e++) {
-                        if (site.edits[e]['in'] == method.name) edits.push(site.edits[e]);
-                    }
-                    if (edits.length > 0) totalApplied += applyEditsInMethod(method, edits);
+                try {
+                    return transformCollections(classNode, site);
+                } catch (error) {
+                    ASMAPI.log('ERROR', '[NestWorld] COMPATIBILITY FIX NOT APPLIED to '
+                            + classNode.name + ' (' + site.mod + '): ' + error
+                            + '. Original class retained; this mod/version is not protected.');
+                    return classNode;
                 }
-                ASMAPI.log('INFO', '[NestWorld] static-collection race fix applied to ' + classNode.name
-                        + ' (' + site.mod + '): ' + totalApplied + '/' + site.edits.length
-                        + ' allocation site(s) patched');
-                return classNode;
             }
         }
     };
