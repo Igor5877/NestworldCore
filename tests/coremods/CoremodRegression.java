@@ -75,13 +75,15 @@ public final class CoremodRegression {
             {"static_collection_race_transformer.js", "exdeorum-1.50.jar", "thedarkcolour/exdeorum/network/VisualUpdateTracker"},
             {"static_collection_race_transformer.js", "forestry-1.20.1-2.10.2.jar", "forestry/core/blocks/TileStreamUpdateTracker"},
             {"static_collection_race_transformer.js", "Mekanism-1.20.1-10.4.16.80.jar", "mekanism/common/content/transporter/TransporterManager"},
+            {"static_collection_race_transformer.js", "appliedenergistics2-forge-15.4.10.jar", "appeng/me/GridEventBus"},
             {"static_collection_race_transformer.js", "industrial-foregoing-1.20.1-3.5.22.jar", "com/buuz135/industrial/utils/explosion/ExplosionTickHandler"},
             {"tomsstorage_terminal_atomic_publish.js", "toms_storage-1.20-1.7.1.jar", "com/tom/storagemod/tile/StorageTerminalBlockEntity"},
             {"mod_compound_races.js", "Mekanism-1.20.1-10.4.16.80.jar", "mekanism/common/content/transporter/PathfinderCache"},
             {"mod_compound_races.js", "sophisticatedcore-1.20.1-1.3.40.1925.jar", "net/p3pp3rf1y/sophisticatedcore/util/RecipeHelper"},
             {"mod_compound_races.js", "FluxNetworks-1.20.1-7.2.1.15.jar", "sonar/fluxnetworks/common/connection/FluxNetwork"},
             {"mod_compound_races.js", "FluxNetworks-1.20.1-7.2.1.15.jar", "sonar/fluxnetworks/common/connection/ServerFluxNetwork"},
-            {"mod_compound_races.js", "Draconic-Evolution-1.20.1-3.1.2.621-universal.jar", "com/brandon3055/draconicevolution/network/CrystalUpdateBatcher"}
+            {"mod_compound_races.js", "Draconic-Evolution-1.20.1-3.1.2.621-universal.jar", "com/brandon3055/draconicevolution/network/CrystalUpdateBatcher"},
+            {"mod_compound_races.js", "Draconic-Evolution-1.20.1-3.1.2.621-universal.jar", "com/brandon3055/draconicevolution/blocks/energynet/tileentity/TileCrystalBase"}
         };
         for (String[] test : cases) {
             ScriptObjectMirror fn = transformer(root, test[0]);
@@ -103,6 +105,7 @@ public final class CoremodRegression {
             } else {
                 String name = test[2].endsWith("RecipeHelper") ? "getFromCache"
                         : test[2].endsWith("PathfinderCache") ? "reset"
+                        : test[2].endsWith("TileCrystalBase") ? "onLoad"
                         : test[2].endsWith("FluxNetwork") ? "onDelete" : "tickEnd";
                 method(broken, name).name = "changedMethod";
             }

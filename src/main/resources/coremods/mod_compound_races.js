@@ -22,6 +22,7 @@ var TryCatchBlockNode = Java.type('org.objectweb.asm.tree.TryCatchBlockNode');
 var PATHS = 'mekanism/common/content/transporter/PathfinderCache';
 var RECIPES = 'net/p3pp3rf1y/sophisticatedcore/util/RecipeHelper';
 var BATCH = 'com/brandon3055/draconicevolution/network/CrystalUpdateBatcher';
+var CRYSTAL_TILE = 'com/brandon3055/draconicevolution/blocks/energynet/tileentity/TileCrystalBase';
 var MAP = 'Ljava/util/Map;';
 var FLUX = 'sonar/fluxnetworks/common/connection/FluxNetwork';
 var SERVER_FLUX = 'sonar/fluxnetworks/common/connection/ServerFluxNetwork';
@@ -101,6 +102,31 @@ function patchRecipes(c) {
 }
 
 function patchBatch(c) {
+    // This public map is populated by TileCrystalBase.onLoad/onChunkUnloaded on
+    // both logical sides. Dedicated servers never consume it, but region
+    // threads still mutate the same global HashMap concurrently. Make the
+    // container safe before replacing the torn lifecycle operations below.
+    requireField(c, 'ID_CRYSTAL_MAP', MAP, true);
+    var clinit = requireMethod(c, '<clinit>', '()V', true);
+    var initNodes = clinit.instructions.toArray(), registryAllocations = 0;
+    for (var ai = 0; ai < initNodes.length; ai++) {
+        var allocation = initNodes[ai];
+        if (allocation.getOpcode() != O.NEW || allocation.desc != 'java/util/HashMap') continue;
+        var dup = allocation.getNext(), ctor = dup == null ? null : dup.getNext();
+        var store = ctor == null ? null : ctor.getNext();
+        if (dup == null || dup.getOpcode() != O.DUP || ctor == null
+                || ctor.getOpcode() != O.INVOKESPECIAL || ctor.owner != 'java/util/HashMap'
+                || ctor.name != '<init>' || ctor.desc != '()V' || store == null
+                || store.getOpcode() != O.PUTSTATIC || store.owner != BATCH
+                || store.name != 'ID_CRYSTAL_MAP' || store.desc != MAP) continue;
+        clinit.instructions.set(allocation, new TypeInsnNode(O.NEW, 'java/util/concurrent/ConcurrentHashMap'));
+        clinit.instructions.set(ctor, new MethodInsnNode(O.INVOKESPECIAL,
+                'java/util/concurrent/ConcurrentHashMap', '<init>', '()V', false));
+        registryAllocations++;
+    }
+    if (registryAllocations != 1)
+        throw new Error('Expected one ID_CRYSTAL_MAP HashMap allocation, got ' + registryAllocations);
+
     var field = requireField(c, 'batchQue', MAP, true);
     var enqueue = requireMethod(c, 'queData', '(L' + BATCH + '$BatchedCrystalUpdate;Lnet/minecraft/server/level/ServerPlayer;)V', true);
     var send = requireMethod(c, 'tickEnd', '()V', true);
@@ -200,6 +226,73 @@ function patchBatch(c) {
     tick.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, 'java/lang/Throwable'));
     tick.visitMaxs(1, 2);
     c.methods.add(tick);
+}
+
+function removeContainsGuard(method, expectedJump) {
+    var nodes = method.instructions.toArray(), match = null;
+    for (var i = 0; i < nodes.length; i++) {
+        var call = nodes[i];
+        if (call.getOpcode() != O.INVOKEINTERFACE || call.owner != 'java/util/Map'
+                || call.name != 'containsKey' || call.desc != '(Ljava/lang/Object;)Z') continue;
+        var jump = call.getNext();
+        while (jump != null && jump.getOpcode() < 0) jump = jump.getNext();
+        if (jump == null || jump.getOpcode() != expectedJump)
+            throw new Error('Unexpected containsKey branch in ' + method.name);
+        var start = call.getPrevious();
+        while (start != null && !(start.getOpcode() == O.GETSTATIC && start.owner == BATCH
+                && start.name == 'ID_CRYSTAL_MAP' && start.desc == MAP)) start = start.getPrevious();
+        if (start == null || match != null) throw new Error('Ambiguous containsKey guard in ' + method.name);
+        match = {start: start, end: jump};
+    }
+    if (match == null) throw new Error('Missing containsKey guard in ' + method.name);
+    var cursor = match.start;
+    while (cursor != null) {
+        var next = cursor.getNext(), done = cursor === match.end;
+        method.instructions.remove(cursor);
+        if (done) break;
+        cursor = next;
+    }
+}
+
+function patchCrystalTile(c) {
+    var load = requireMethod(c, 'onLoad', '()V', false);
+    var unload = requireMethod(c, 'onChunkUnloaded', '()V', false);
+    var position = null, puts = 0;
+    var loadNodes = load.instructions.toArray();
+    for (var i = 0; i < loadNodes.length; i++) {
+        var node = loadNodes[i];
+        if (node.getOpcode() == O.GETFIELD && node.desc == 'Lnet/minecraft/core/BlockPos;') {
+            if (position != null) throw new Error('Ambiguous crystal position field');
+            position = node;
+        }
+        if (node.getOpcode() == O.INVOKEINTERFACE && node.owner == 'java/util/Map'
+                && node.name == 'put' && node.desc == '(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;') {
+            node.name = 'putIfAbsent';
+            puts++;
+        }
+    }
+    if (position == null || puts != 1) throw new Error('Unsupported crystal registration shape');
+    // containsKey + put is a torn compound operation. putIfAbsent preserves the
+    // original first-position-wins behavior even when hash collisions race.
+    removeContainsGuard(load, O.IFNE);
+
+    var removes = 0, unloadNodes = unload.instructions.toArray();
+    for (var j = 0; j < unloadNodes.length; j++) {
+        var remove = unloadNodes[j];
+        if (remove.getOpcode() != O.INVOKEINTERFACE || remove.owner != 'java/util/Map'
+                || remove.name != 'remove' || remove.desc != '(Ljava/lang/Object;)Ljava/lang/Object;') continue;
+        var value = new InsnList();
+        value.add(new VarInsnNode(O.ALOAD, 0));
+        value.add(new FieldInsnNode(O.GETFIELD, position.owner, position.name, position.desc));
+        unload.instructions.insertBefore(remove, value);
+        remove.desc = '(Ljava/lang/Object;Ljava/lang/Object;)Z';
+        removes++;
+    }
+    if (removes != 1) throw new Error('Unsupported crystal removal shape');
+    unload.maxStack++;
+    // remove(key, position) prevents an unloading stale tile from deleting a
+    // newer tile that won registration for the same integer hash.
+    removeContainsGuard(unload, O.IFEQ);
 }
 
 // Snapshot the collection returned at each ARETURN without changing its public
@@ -365,6 +458,7 @@ function transformCompound(input) {
     if (c.name == PATHS) patchPaths(c);
     else if (c.name == RECIPES) patchRecipes(c);
     else if (c.name == BATCH) patchBatch(c);
+    else if (c.name == CRYSTAL_TILE) patchCrystalTile(c);
     else if (c.name == FLUX) patchFluxBase(c);
     else if (c.name == SERVER_FLUX) patchFluxServer(c);
     else throw new Error('Unknown target ' + c.name);
@@ -374,7 +468,7 @@ function transformCompound(input) {
 
 function initializeCoreMod() {
     return { 'nestworld_mod_compound_races': {
-        'target': { 'type': 'CLASS', 'names': function () { return [PATHS, RECIPES, BATCH, FLUX, SERVER_FLUX]; } },
+        'target': { 'type': 'CLASS', 'names': function () { return [PATHS, RECIPES, BATCH, CRYSTAL_TILE, FLUX, SERVER_FLUX]; } },
         'transformer': function (input) {
             try { return transformCompound(input); }
             catch (error) {

@@ -16,7 +16,11 @@ pack. A structural mismatch leaves the original class untouched and emits
   invalidation. Recipe-change callbacks execute after releasing the cache monitor.
 - **Draconic Evolution 3.1.2.621:** atomically detach a complete per-player update batch before
   packet serialization. New updates go to the next batch. A failed send restores the detached
-  entries ahead of newer arrivals before rethrowing the failure.
+  entries ahead of newer arrivals before rethrowing the failure. The crystal-ID registry uses a
+  concurrent map, atomic first-writer registration, and value-conditional unload so a stale tile
+  cannot remove a newer position with the same integer hash.
+- **Applied Energistics 2 15.4.10:** use a concurrent event-type registry. Subscriber invocation
+  remains outside map computation, preserving the original callback and reentrancy behavior.
 - **Flux Networks 7.2.1.15:** serialize queue/map lifecycle operations, return stable connection
   snapshots to readers, and invoke disconnect callbacks after releasing the network monitor.
 - **Industrial Foregoing 3.5.22:** use copy-on-write active-process lists so processes persist

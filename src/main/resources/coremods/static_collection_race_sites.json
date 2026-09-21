@@ -69,6 +69,22 @@
     ]
   },
   {
+    "mod": "appliedenergistics2",
+    "class": "appeng/me/GridEventBus",
+    "note": "Grid events can be posted concurrently by machines in different regions. Subscription callbacks run after computeIfAbsent returns, so only the event-type registry needs a concurrent allocation.",
+    "edits": [
+      {
+        "in": "<clinit>",
+        "methodDesc": "()V",
+        "kind": "ctor-swap",
+        "from": "java/util/HashMap",
+        "to": "java/util/concurrent/ConcurrentHashMap",
+        "field": "EVENTS",
+        "fieldDesc": "Ljava/util/Map;"
+      }
+    ]
+  },
+  {
     "mod": "industrialforegoing",
     "class": "com/buuz135/industrial/utils/explosion/ExplosionTickHandler",
     "note": "Snapshot lists preserve active processes across ticks while allowing concurrent registration. Only the two shared lists are replaced, not temporary tick snapshots.",

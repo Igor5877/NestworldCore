@@ -184,5 +184,6 @@ public final class ConcurrencyRegression {
         recipes(root, mods);
         FluxRegression.run(root, mods);
         MekanismPathfinderRegression.run(root, mods);
+        CrystalRegistryRegression.run(root, mods);
     }
 }

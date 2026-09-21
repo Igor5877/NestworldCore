@@ -599,13 +599,15 @@ Race: Draconic Evolution network.CrystalUpdateBatcher.ID_CRYSTAL_MAP
              lifecycle -- concurrent WRITERS if two crystal tiles in different regions
              load/unload the same tick
 
-Fix class: C2 (containsKey-then-put is the exact torn-compound-op shape) OR C6 (a lifecycle
-    lock around load/unload might be simpler here than reworking to computeIfAbsent, given
-    this is identity/registration bookkeeping, not a cache) -- needs a short design decision,
-    not a default C1 swap.
+Fix class: C2. The registry allocation becomes ConcurrentHashMap, registration becomes
+    putIfAbsent, and unload becomes remove(hash, position). The conditional removal is required:
+    an old tile unloading after a hash collision must not remove the position that actually won
+    registration.
 
 Live proof:
-    Not yet fixed.
+    Fixed from the core side for 3.1.2.621. The real transformed classes pass ASM BasicVerifier.
+    Regression coverage verifies collision ownership and 10,000 concurrent load/unload pairs
+    without lost registrations or stale entries. Clean-server stress is still pending.
 ```
 
 ### AE2 — `GridEventBus.EVENTS`
@@ -617,14 +619,15 @@ Race: appliedenergistics2 me.GridEventBus.EVENTS
              ChestBlockEntity confirmed callers) -- NOT confined to AE2's own serialized
              TickHandler loop
 
-Fix class: C1 for the map itself, tentatively -- BUT postEvent() calling listeners directly
-    during the same call raises a reentrancy question (a listener triggering more AE2 state
-    mutation while still inside the concurrent map's computeIfAbsent) that needs checking
-    before this is a safe drop-in C1 fix. Confirm no reentrant postEvent()-inside-listener
-    pattern exists before adding to the transformer JSON.
+Fix class: C1. Bytecode inspection resolved the reentrancy question: getSubscriptions()
+    completes computeIfAbsent and returns before Subscriptions.invoke() calls any listener.
+    Replacing only EVENTS' HashMap allocation with ConcurrentHashMap therefore protects
+    concurrent first publication without holding a map operation across mod callbacks.
 
 Live proof:
-    Not yet fixed.
+    Fixed from the core side for AE2 15.4.10. The transformer resolves exactly one field-bound
+    allocation in the real jar, rejects missing/duplicate shapes without partial edits, and the
+    transformed class passes ASM BasicVerifier. Clean-server stress is still pending.
 ```
 
 ### Flux Networks — `ServerFluxNetwork.mToAdd` / `mToRemove` / `mConnectionMap`
@@ -680,14 +683,14 @@ Live proof:
 **P1 — mechanical, well-isolated, C1-shaped:**
 5. exdeorum `VisualUpdateTracker` — DONE, in generic transformer
 6. forestry `TileStreamUpdateTracker` — DONE, in generic transformer
-7. Draconic `CrystalUpdateBatcher.batchQue` — needs C1+C2 compound treatment, not plain C1
-8. industrial-foregoing `ExplosionTickHandler`
-9. Flux Networks queues
+7. Draconic `CrystalUpdateBatcher.batchQue` — DONE, atomic detached batches
+8. industrial-foregoing `ExplosionTickHandler` — DONE
+9. Flux Networks queues — DONE
 
 **P2 — needs semantic/design work:**
 10. Mekanism `FrequencyManager.frequencies`
-11. AE2 `GridEventBus.EVENTS`
-12. Draconic `CrystalUpdateBatcher.ID_CRYSTAL_MAP`
+11. AE2 `GridEventBus.EVENTS` — DONE, pending clean-server stress
+12. Draconic `CrystalUpdateBatcher.ID_CRYSTAL_MAP` — DONE, pending clean-server stress
 13. sophisticatedcore `ServerStorageSoundHandler.worldStorageSoundInfos`
 
 ## Deployment discipline (standing rule, not per-fix)
