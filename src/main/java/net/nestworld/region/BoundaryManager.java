@@ -38,14 +38,12 @@ public class BoundaryManager {
     }
 
     /**
-     * Called from the main thread after region threads finish each tick — every
-     * region has released its write lock and is parked waiting for the next tick
-     * signal at this exact point (see {@code RegionThread.run()}: the write lock
-     * unlocks before the tick's completion latch counts down, and this method
-     * only runs after {@code RegionThreadPool.tickAllRegions()} returns, i.e.
-     * after every latch has counted down). Nothing else touches game state
-     * concurrently here, so it is safe to call {@code BlockEntity.saveWithFullMetadata()}
-     * directly on live, owner-mutated block entities.
+     * Called from the main thread after barrier-dispatched region ticks finish.
+     * Free-running regions do not join that barrier and may still mutate their
+     * chunks, so their block entities must be snapshotted under the owner's
+     * chunk read lock. A bounded lock attempt retains the previous published
+     * snapshot when an owner is busy, rather than reading a live HashMap during
+     * its tick or stalling the server thread indefinitely.
      *
      * <p>NestWorld: Folia-style Stage 1 "Region Mailbox" pilot (see project memory
      * folia-actor-model-staged-plan.md) — publishes a fresh ghost-zone block-entity
@@ -68,57 +66,96 @@ public class BoundaryManager {
     private int nestworldGhostChunksSerialized = 0;
     private int nestworldGhostBlockEntitiesSerialized = 0;
     private long nestworldGhostCalls = 0;
+    private long nestworldGhostLockMisses = 0;
+    private long nestworldGhostConcurrentChanges = 0;
 
     public String nestworldGhostZoneStats() {
         return String.format(
-                "calls=%,d avg=%.3fms max=%.3fms nbt_avg=%.3fms last_scanned=%,d last_serialized_chunks=%,d last_serialized_bes=%,d",
+                "calls=%,d avg=%.3fms max=%.3fms nbt_avg=%.3fms last_scanned=%,d last_serialized_chunks=%,d last_serialized_bes=%,d lock_misses=%,d concurrent_changes=%,d",
                 nestworldGhostCalls,
                 nestworldGhostCalls == 0 ? 0.0 : (nestworldGhostTotalNanos / 1e6) / nestworldGhostCalls,
                 nestworldGhostMaxNanos / 1e6,
                 nestworldGhostCalls == 0 ? 0.0 : (nestworldGhostNbtNanos / 1e6) / nestworldGhostCalls,
-                nestworldGhostChunksScanned, nestworldGhostChunksSerialized, nestworldGhostBlockEntitiesSerialized);
+                nestworldGhostChunksScanned, nestworldGhostChunksSerialized,
+                nestworldGhostBlockEntitiesSerialized, nestworldGhostLockMisses,
+                nestworldGhostConcurrentChanges);
     }
 
     public void syncGhostZones() {
         long nestworldStart = System.nanoTime();
         long nestworldNbtNanos = 0;
         int nestworldScanned = 0, nestworldSerializedChunks = 0, nestworldSerializedBes = 0;
-        java.util.Map<WorldRegion, java.util.Map<Long, net.minecraft.nbt.CompoundTag>> perRegion =
+        java.util.Map<WorldRegion, java.util.List<LevelChunk>> chunksByRegion =
                 new java.util.IdentityHashMap<>();
         for (LevelChunk chunk : level.getChunkSource().nestworldLoadedFull.values()) {
             nestworldScanned++;
-            if (chunk.getBlockEntities().isEmpty()) continue;
             net.minecraft.world.level.ChunkPos pos = chunk.getPos();
             WorldRegion owner = grid.getRegionForChunk(pos.x, pos.z);
             if (owner == null || !withinGhostDepth(owner, pos.x, pos.z)) continue;
-            nestworldSerializedChunks++;
-            java.util.Map<Long, net.minecraft.nbt.CompoundTag> snapshot =
-                    perRegion.computeIfAbsent(owner, r -> new java.util.HashMap<>());
-            for (java.util.Map.Entry<BlockPos, BlockEntity> e : chunk.getBlockEntities().entrySet()) {
-                long nestworldNbtStart = System.nanoTime();
+            chunksByRegion.computeIfAbsent(owner, r -> new java.util.ArrayList<>()).add(chunk);
+        }
+        for (WorldRegion owner : grid.getAllRegions()) {
+            java.util.List<LevelChunk> chunks = chunksByRegion.get(owner);
+            if (chunks == null) {
+                owner.nestworldPublishGhostSnapshot(java.util.Map.of());
+                continue;
+            }
+            java.util.Map<Long, net.minecraft.nbt.CompoundTag> snapshot = new java.util.HashMap<>();
+            long stamp = 0L;
+            if (owner.isFreeRunning()) {
                 try {
-                    snapshot.put(e.getKey().asLong(), e.getValue().saveWithFullMetadata());
-                    nestworldSerializedBes++;
-                } catch (Throwable t) {
-                    // A misbehaving mod's BE serialization must not break every other
-                    // region's ghost-zone reads this tick — skip just this one entry.
-                    // Carry the last successfully-published tag forward instead of
-                    // dropping the position entirely: a dropped entry makes
-                    // ChunkSnapshot.getBlockEntity() return null (looks like "no BE
-                    // here" to a caller), which is a worse lie than one extra tick of
-                    // staleness on an already-abnormal (throwing) block entity.
-                    net.minecraft.nbt.CompoundTag prev = owner.nestworldGetGhostSnapshot().get(e.getKey().asLong());
-                    if (prev != null) snapshot.put(e.getKey().asLong(), prev);
-                    LOGGER.warn("Ghost-zone snapshot: failed to save block entity at {}: {}",
-                            e.getKey(), t.toString());
-                } finally {
-                    nestworldNbtNanos += System.nanoTime() - nestworldNbtStart;
+                    stamp = owner.getChunkLock().tryReadLock(
+                            NestworldTuning.CROSS_REGION_READ_LOCK_TIMEOUT_NANOS,
+                            java.util.concurrent.TimeUnit.NANOSECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                if (stamp == 0L) {
+                    nestworldGhostLockMisses++;
+                    continue;
                 }
             }
-        }
-        for (WorldRegion region : grid.getAllRegions()) {
-            region.nestworldPublishGhostSnapshot(
-                    perRegion.getOrDefault(region, java.util.Map.of()));
+            boolean complete = false;
+            try {
+                for (LevelChunk chunk : chunks) {
+                    // Copy entries before invoking mod serialization: saveWithFullMetadata()
+                    // may itself change the chunk's BE map on this same thread.
+                    java.util.List<java.util.Map.Entry<BlockPos, BlockEntity>> entries = new java.util.ArrayList<>();
+                    for (java.util.Map.Entry<BlockPos, BlockEntity> e : chunk.getBlockEntities().entrySet()) {
+                        entries.add(new java.util.AbstractMap.SimpleImmutableEntry<>(e));
+                    }
+                    if (entries.isEmpty()) continue;
+                    nestworldSerializedChunks++;
+                    for (java.util.Map.Entry<BlockPos, BlockEntity> e : entries) {
+                        long nestworldNbtStart = System.nanoTime();
+                        try {
+                            snapshot.put(e.getKey().asLong(), e.getValue().saveWithFullMetadata());
+                            nestworldSerializedBes++;
+                        } catch (Throwable t) {
+                            // Preserve the last valid value if a mod's serialization fails.
+                            net.minecraft.nbt.CompoundTag prev = owner.nestworldGetGhostSnapshot().get(e.getKey().asLong());
+                            if (prev != null) snapshot.put(e.getKey().asLong(), prev);
+                            LOGGER.warn("Ghost-zone snapshot: failed to save block entity at {}: {}",
+                                    e.getKey(), t.toString());
+                        } finally {
+                            nestworldNbtNanos += System.nanoTime() - nestworldNbtStart;
+                        }
+                    }
+                }
+                complete = true;
+            } catch (java.util.ConcurrentModificationException e) {
+                // An async writer outside the region lock can still change the live
+                // HashMap. Never publish an incomplete region snapshot or crash the
+                // whole world tick because that writer ignored the ownership lock.
+                if (++nestworldGhostConcurrentChanges == 1 || nestworldGhostConcurrentChanges % 100 == 0) {
+                    LOGGER.warn("Ghost-zone block-entity map changed outside region {} lock; "
+                            + "retaining previous snapshot ({} occurrences)",
+                            owner.getId(), nestworldGhostConcurrentChanges);
+                }
+            } finally {
+                if (stamp != 0L) owner.getChunkLock().unlockRead(stamp);
+            }
+            if (complete) owner.nestworldPublishGhostSnapshot(snapshot);
         }
         long nestworldElapsed = System.nanoTime() - nestworldStart;
         nestworldGhostCalls++;

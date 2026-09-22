@@ -292,9 +292,9 @@ public class WorldRegion {
 
     // NestWorld: Folia-style Stage 1 "Region Mailbox" pilot (see project memory
     // folia-actor-model-staged-plan.md). Published once per tick by BoundaryManager.
-    // syncGhostZones() (main thread, called right after the region barrier — every
-    // region thread has released its write lock and is parked waiting for the next
-    // tick signal at that point, so this publish never races a region's own writes).
+    // syncGhostZones() (main thread, called right after the region barrier).
+    // Free-running regions do not join that barrier; BoundaryManager holds their
+    // chunk read lock while collecting and serializing the live block entities.
     // Keyed by BlockPos.asLong() -> a full NBT snapshot (BlockEntity.saveWithFullMetadata())
     // of every block entity in this region's chunks within BoundaryManager.GHOST_DEPTH
     // of a border. Readers on OTHER region threads reconstruct a DETACHED copy via
