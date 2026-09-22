@@ -70,7 +70,7 @@
 # ── Мод-сумісність (Pins / Compat) [TUNE] ─────────────────────────────────
 -Dnestworld.autoPin=false                       # авто-пінити тип, що повторно крашить region-потік
 -Dnestworld.autoPinThreshold=20                  # к-сть помилок до авто-піну
--Dnestworld.strictCompat=false                   # hard-stop при виявленні Lithium-родини (замість авто-фіксу конфігів)
+-Dnestworld.strictCompat=false                   # hard-stop для radium/lithium; Canary 4 конфліктні опції вимикаються до Mixin
 
 # ── Auto-spark [ON за замовчуванням, потребує spark.jar] ──────────────────
 -Dnestworld.autoSpark=true

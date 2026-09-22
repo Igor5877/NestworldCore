@@ -204,8 +204,10 @@
 # -Dnestworld.autoPin=false
 # -Dnestworld.autoPinThreshold=20
 
-# Hard-stop замість авто-фіксу конфігів при виявленні Lithium-родини (Canary/radium/lithium).
-# Hard-stop instead of auto-fixing configs when the Lithium family (Canary/radium/lithium) is detected.
+# Canary: лише 4 конфліктні опції вимикаються ДО завантаження Mixin-ів.
+# Для radium/lithium прапорець strictCompat зупиняє запуск замість попередження.
+# Canary: only 4 conflicting options are disabled BEFORE Mixin loading.
+# For radium/lithium, strictCompat stops startup instead of warning.
 # -Dnestworld.strictCompat=false
 
 # ── Auto-spark ──────────────────────────────────────────────────────────────

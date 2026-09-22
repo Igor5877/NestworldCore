@@ -12,12 +12,13 @@
 (ConcurrentHashMap+CopyOnWriteArrayList), АЛЕ Canary mixin'ами
 `collections.entity_by_type`/`entity_filtering`/`chunk.entity_class_groups`
 ПІДМІНЯЄ її непотокобезпечним fastutil-мапом → наша безпека анульована.
-**Фікс:** `NestworldCompat` (src/main/java/net/nestworld/region/NestworldCompat.java) —
-на старті детектить Canary/radium/lithium без disable-конфіга → гучний лог
-(«мод THREAD-UNSAFE, функції в ядрі потокобезпечно, RESTART») + авто-вписує
-`mixin.collections.entity_by_type=false` тощо в `canary.properties`.
-`-Dnestworld.strictCompat=true` → hard-stop. Валідовано: рестарт → Canary «3
-override» → гонка зникла (AIOOBE=0).
+**Фікс:** Forge loader перед завантаженням Mixin-ів вимикає чотири конфліктні
+опції Canary у `canary.properties`; якщо JAR Canary був перейменований і ранній
+детектор його пропустив, `NestworldCompat` дописує ті самі опції й вимагає
+перезапуск. Для radium/lithium ядро лишає конфігурацію незмінною, попереджає,
+а `-Dnestworld.strictCompat=true` зупиняє запуск. Попередній тест після
+перезапуску Canary показав зникнення цієї гонки (AIOOBE=0); новий ранній
+шлях потребує окремої перевірки з установленим Canary.
 
 ## #3 — over-split на щільному натовпі — ВИПРАВЛЕНО
 **Симптом:** ~500 зомбі купою → hard-split у 30 дрібних регіонів на 8 ядрах →

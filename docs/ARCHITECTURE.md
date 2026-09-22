@@ -126,13 +126,13 @@ region can't blow the whole tick. Layout is persisted across restarts.
 
 ## Mod compatibility
 
-- **`NestworldCompat`** name-denylists the Lithium family (Canary/lithium/radium): they *replace* the
-  core's thread-safe structures with single-thread ones, so they corrupt or contend under parallel
-  ticking. Their optimisations are already provided thread-safely by the core, so they are disabled
-  with a loud log.
-- **Everything else is welcome.** The core does **not** police mods by which classes they touch
-  (that would break legitimate feature mods). Robustness comes from the core's own thread-safety, so
-  arbitrary mods that touch these classes from region threads are safe.
+- **`NestworldCompat`** detects Lithium-family overlap. Canary is an explicit compatibility
+  exception: the loader disables only four conflicting collection/POI options before Mixin
+  loading. Radium/lithium receive a warning or a strict-mode startup failure; their configs are
+  not rewritten.
+- **Unknown mod callbacks are not proven parallel-safe.** The GMEIL policy layer described in
+  [docs/gmeil/ARCHITECTURE.md](gmeil/ARCHITECTURE.md) starts with conservative observation.
+  Full safe execution still requires the main bridge and entrypoint coverage.
 - **`NestworldPins`** is the escape hatch: a genuinely-incompatible mod's entities/block-entities can
   be pinned to main-thread ticking (vanilla behaviour, just not parallelised) via
   `/nestworld pin`/`pinmod` or `nestworld-pinned-mods.txt` — isolate, don't block.
