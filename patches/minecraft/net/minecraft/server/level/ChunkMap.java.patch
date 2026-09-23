@@ -492,7 +492,7 @@
        ProfilerFiller profilerfiller = this.f_140133_.m_46473_();
        profilerfiller.m_6180_("poi");
        this.f_140138_.m_6202_(p_140281_);
-@@ -482,15 +_,100 @@
+@@ -482,15 +_,137 @@
           runnable.run();
        }
  
@@ -532,25 +532,62 @@
 +      // ever stale (it can't be here -- see below), the loop would just correctly do nothing
 +      // for a chunk that turned out not to be eligible -- never a stale/incomplete save.
 +      boolean nestworldHasCandidate = this.nestworldHasSaveCandidate();
-+      java.util.List<net.nestworld.region.WorldRegion> nestworldPaused = nestworldHasCandidate
-+            ? net.nestworld.region.NestworldRegionSystem.nestworldPauseFreeRunningRegionsForSave(this.f_140133_)
-+            : java.util.List.of();
-+      try {
-+         int l = 0;
-+         ObjectIterator<ChunkHolder> objectiterator = this.f_140130_.values().iterator();
++      // Save-rendezvous duty cycle (net.nestworld.region.SaveRendezvousThrottle). Measured with
++      // thread dumps under a 13k-entity load: the main thread spent >50% of every tick parked in
++      // nestworldPauseFreeRunningRegionsForSave, waiting for the slowest (~40 ms) free-running
++      // region to reach a safe point -- and paid that wait even on ticks with no vanilla time
++      // budget left, where the loop below runs zero iterations. DATA-SAFETY INVARIANT (unchanged):
++      // this loop only ever saves chunks INSIDE a rendezvous window. On a tick where the window is
++      // not opened the loop is skipped ENTIRELY (never run unpaused), so nothing is saved without
++      // the rendezvous; the chunks stay unsaved and a later window picks them up. Explicit saves
++      // (ServerLevel#save), autosave/shutdown and the unload path are not touched.
++      long nestworldWindowStart = System.nanoTime();
++      boolean nestworldOpenWindow = true;
++      if (nestworldHasCandidate) {
++         if (!p_140354_.getAsBoolean()) {
++            // No vanilla time budget: the loop below would run zero iterations, so pausing every
++            // region would only stall main for nothing. Equivalent to the old behaviour minus the wait.
++            nestworldOpenWindow = false;
++            this.nestworldSaveThrottle.recordNoTime();
++         } else if (!this.nestworldSaveThrottle.mayOpenWindow(nestworldWindowStart)) {
++            nestworldOpenWindow = false;
++            this.nestworldSaveThrottle.recordThrottled();
++         }
++      }
++      if (nestworldOpenWindow) {
++         java.util.List<net.nestworld.region.WorldRegion> nestworldPaused = nestworldHasCandidate
++               ? net.nestworld.region.NestworldRegionSystem.nestworldPauseFreeRunningRegionsForSave(this.f_140133_)
++               : java.util.List.of();
++         int nestworldSaved = 0;
++         try {
++            int l = 0;
++            int nestworldLimit = nestworldHasCandidate ? this.nestworldSaveThrottle.saveLimit() : 20;
++            ObjectIterator<ChunkHolder> objectiterator = this.f_140130_.values().iterator();
 +
-+         while(l < 20 && p_140354_.getAsBoolean() && objectiterator.hasNext()) {
-+            if (this.m_198874_(objectiterator.next())) {
-+               ++l;
++            while(l < nestworldLimit && p_140354_.getAsBoolean() && objectiterator.hasNext()) {
++               if (this.m_198874_(objectiterator.next())) {
++                  ++l;
++               }
++            }
++            nestworldSaved = l;
++         } finally {
++            if (nestworldHasCandidate) {
++               net.nestworld.region.NestworldRegionSystem.nestworldResumeFreeRunningRegionsAfterSave(nestworldPaused);
++               this.nestworldSaveThrottle.closeWindow(nestworldWindowStart, System.nanoTime(), nestworldSaved);
 +            }
 +         }
-+      } finally {
-+         if (nestworldHasCandidate) {
-+            net.nestworld.region.NestworldRegionSystem.nestworldResumeFreeRunningRegionsAfterSave(nestworldPaused);
-+         }
++      }
++      long nestworldLogNow = System.nanoTime();
++      if (this.nestworldSaveThrottle.logDue(nestworldLogNow)) {
++         this.nestworldSaveThrottle.log(this.f_140133_.m_46472_().m_135782_().toString(), nestworldLogNow);
 +      }
 +
 +   }
++
++   // NestWorld: per-ChunkMap (i.e. per-dimension) duty-cycle state for the rendezvous above.
++   // Main-thread only, like processUnloads() itself.
++   private final net.nestworld.region.SaveRendezvousThrottle nestworldSaveThrottle =
++         new net.nestworld.region.SaveRendezvousThrottle();
 +
 +   // NestWorld "#4" fix: cheap, side-effect-free, short-circuiting scan -- stops at the first
 +   // chunk found eligible, does not walk the whole map on the (overwhelmingly common) tick
