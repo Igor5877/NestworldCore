@@ -8,7 +8,7 @@
        boolean flag = this.m_9236_().m_46469_().m_46207_(GameRules.f_46142_);
        if (flag) {
           Component component = this.m_21231_().m_19293_();
-@@ -716,11 +_,23 @@
+@@ -716,11 +_,27 @@
     }
  
     @Nullable
@@ -16,11 +16,15 @@
 +   public Entity changeDimension(ServerLevel p_9180_, net.minecraftforge.common.util.ITeleporter teleporter) {
 +      // NestWorld: portal search/creation and the End platform read+write the destination chunk
 +      // immediately -- must not get a VOID_AIR proxy (see DimensionChangeScope).
++      net.nestworld.region.DimensionChangeDiagnostics.Token nestworldDiag = net.nestworld.region.DimensionChangeDiagnostics.begin(this);
++      Entity nestworldResult = null;
 +      net.nestworld.region.DimensionChangeScope.enter();
 +      try {
-+         return this.nestworldChangeDimensionInner(p_9180_, teleporter);
++         nestworldResult = this.nestworldChangeDimensionInner(p_9180_, teleporter);
++         return nestworldResult;
 +      } finally {
 +         net.nestworld.region.DimensionChangeScope.exit();
++         net.nestworld.region.DimensionChangeDiagnostics.end(nestworldDiag, this, p_9180_, nestworldResult);
 +      }
 +   }
 +   @Nullable
