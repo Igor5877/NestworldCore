@@ -833,7 +833,7 @@ public class RegionThread extends Thread {
                 // destination as ground truth -- see EntityMutationDispatcher.applyQueued's
                 // javadoc for why (a split/merge/handover between send and apply used to be
                 // silently ignored here).
-                EntityMutationDispatcher.applyQueued(mutate.entityId(), mutate.op(), mutate.rerouteHops(), region, level);
+                EntityMutationDispatcher.applyQueued(mutate.entityId(), mutate.op(), mutate.rerouteHops(), mutate.opId(), region, level);
             } catch (Throwable t) {
                 LOGGER.warn("Deferred entity mutation on {} failed: {}", mutate.entityId(), t.toString());
             }
@@ -1127,7 +1127,7 @@ public class RegionThread extends Thread {
                 // Feed the auto-pin detector: a type that keeps throwing here
                 // gets pinned to main (no-op unless -Dnestworld.autoPin=true).
                 if (NestworldRegionSystem.isInitialised()) {
-                    NestworldRegionSystem.get().getPins().noteEntityTickError(entity.getType());
+                    NestworldRegionSystem.get().getPins().noteEntityTickError(entity.getType(), t);
                 }
             }
             // Check the budget every 4 entities, not every 16: a single dense-pack

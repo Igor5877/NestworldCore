@@ -3,6 +3,7 @@ package net.nestworld.region;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.Vec3;
 
 import javax.annotation.Nullable;
 
@@ -24,12 +25,19 @@ import javax.annotation.Nullable;
  * (whose payload is the whole {@code Explosion} object, itself holding a live {@code source}
  * Entity field) — Gemini's independent review flagged carrying live Entity references inside
  * a message payload as a theoretical residual read-hazard (whoever the payload's entity
- * reference points at may be foreign to the APPLYING thread too), but this exact shape has
- * run clean through 44,000+ real ENTITY_IMPACT messages under heavy cross-region TNT-flood
- * testing on both a repro world and a 419-mod real pack with zero observed corruption or
- * exceptions. Empirical precedent in THIS codebase over-rides the abstract caution here;
- * revisit with UUID-based reconstruction if {@link EntityOwnershipGuard} or soak testing
- * ever actually surfaces an issue traceable to it.
+ * reference points at may be foreign to the APPLYING thread too). <b>Confirmed cross-owner
+ * write, currently rare in practice</b> — see the API-1A.3 gate audit
+ * ({@code docs/NESTWORLD_API_ARCHITECTURE.md}) for the direct-trace proof: {@code Damage}'s
+ * {@code source.getEntity()} ends up passed to {@code awardKillScore}
+ * ({@code LivingEntity.java:1309} → {@code ServerPlayer.java:637-654}), which mutates the
+ * CAUSING entity's own scoreboard/stat/criteria state on the TARGET's owner thread, with no
+ * ownership check on the causing entity. The 44,000+ clean ENTITY_IMPACT runs under
+ * cross-region TNT-flood testing reflect that attacker/target region-split is an uncommon
+ * runtime condition in that workload, not that this write is absent or safe — do not read
+ * that empirical precedent as having ruled this out. Revisit with UUID-based reconstruction
+ * plus a bounded second-hop reroute to the causing entity's actual owner (see
+ * {@link EntityOwnershipGuard}, and API-1A.3's write-up) rather than treating this as merely
+ * theoretical.
  */
 public sealed interface EntityMutationOp {
     record Damage(DamageSource source, float amount) implements EntityMutationOp {}
@@ -54,4 +62,16 @@ public sealed interface EntityMutationOp {
      *  death event/drops/advancement triggers (vanilla's own distinction between "killed" and
      *  "discarded" -- see {@code Entity.RemovalReason}). */
     record Discard() implements EntityMutationOp {}
+    /** API-1A.6: {@code Entity.setDeltaMovement(Vec3)} -- backs the public Mod API primitive
+     *  {@code net.nestworld.modapi.entity.NestWorldEntities.setVelocity(Entity, Vec3)}
+     *  (docs/contracts/SetVelocityPrimitive.md). {@code Vec3} is genuinely immutable (three
+     *  final doubles, no back-references) -- unlike {@link Damage}'s {@code DamageSource}, it
+     *  carries zero live-reference hazard, confirmed during that primitive's contract audit;
+     *  no UUID-based reconstruction step is needed for this payload.
+     *  <p>API-1A.8: {@code intentVersion} is assigned at the public API call site (submission
+     *  time, see {@code net.nestworld.modapi.entity.SetVelocityIntentTracker}) and checked
+     *  immediately before the actual mutation in {@code EntityMutationDispatcher.applyDirect} --
+     *  an older intent that arrives after a newer one already applied is silently dropped
+     *  (LATEST_INTENT_WINS), not applied out of order over the newer state. */
+    record SetVelocity(Vec3 velocity, long intentVersion) implements EntityMutationOp {}
 }

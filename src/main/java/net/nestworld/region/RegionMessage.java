@@ -276,7 +276,16 @@ public record RegionMessage<T>(
      *  target and re-routes to the entity's actual current owner. Bounded by {@link
      *  NestworldTuning#ENTITY_MUTATE_MAX_REROUTE_HOPS} — a target ping-ponging ownership faster
      *  than the mailbox drains must not turn into an unbounded A→B→C→A… loop. */
-    public record EntityMutate(UUID entityId, EntityMutationOp op, int rerouteHops) {
+    public record EntityMutate(UUID entityId, EntityMutationOp op, int rerouteHops, long opId) {
+        // API-1A.7 TEMP INSTRUMENTATION (2026-09-29): opId is a pure diagnostic correlation id
+        // for the verification pass's phase-trace logging -- it never participates in routing,
+        // scheduling, dedup, or ordering. On reroute, EntityMutationDispatcher carries the SAME
+        // opId forward explicitly (see its applyQueued reroute branch); the delegating
+        // constructors below only cover the ORIGINAL pre-existing call sites, which don't need
+        // opId continuity across a reroute since they don't use the reroute-carrying overload.
+        public EntityMutate(UUID entityId, EntityMutationOp op, int rerouteHops) {
+            this(entityId, op, rerouteHops, MailboxAudit.nextId());
+        }
         public EntityMutate(UUID entityId, EntityMutationOp op) {
             this(entityId, op, 0);
         }

@@ -48,11 +48,110 @@ public final class NestworldCommand {
         return sys.getDimensionRegion(sys.getOverworld());
     }
 
+    /** API-1A.7 test scaffolding: built as its own local variable (not inlined into the giant
+     *  fluent chain below) specifically to avoid the paren-nesting ambiguity that a deeply
+     *  nested inline {@code .then(...).then(...).then(...)} block invites -- verified against
+     *  an isolated Brigadier reproduction before landing this shape. */
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> buildSetVelocityTestNode() {
+        return Commands.literal("setvelocity")
+                .then(Commands.argument("uuid", UuidArgument.uuid())
+                        .then(Commands.argument("x", DoubleArgumentType.doubleArg())
+                                .then(Commands.argument("y", DoubleArgumentType.doubleArg())
+                                        .then(Commands.argument("z", DoubleArgumentType.doubleArg())
+                                                .executes(ctx -> testSetVelocity(ctx.getSource(),
+                                                        UuidArgument.getUuid(ctx, "uuid"),
+                                                        DoubleArgumentType.getDouble(ctx, "x"),
+                                                        DoubleArgumentType.getDouble(ctx, "y"),
+                                                        DoubleArgumentType.getDouble(ctx, "z")))))));
+    }
+
+    /** API-1A.7 Phase B/C: deterministic barrier-driven test scenarios (see
+     *  {@link Api1A7DeterministicTests}), following the same extracted-builder-method
+     *  discipline {@link #buildSetVelocityTestNode()} already established. */
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> buildDeterministicTestNode() {
+        return Commands.literal("det")
+                .then(Commands.argument("scenario", com.mojang.brigadier.arguments.StringArgumentType.word())
+                        .executes(ctx -> testDeterministic(ctx.getSource(),
+                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "scenario"))));
+    }
+
+    /**
+     * API-1A.7 Phase B+C harness fix (2026-09-29, this pass): the scenario body MUST NOT run
+     * on the calling (RCON/command) thread, which is the main/Server thread. Region threads
+     * that are NOT free-running only advance via {@code awaitDispatch()}, which the MAIN
+     * thread services once per server tick (see {@code RegionThread.run()}/
+     * {@code RegionThreadPool}) -- if the main thread is blocked inside a test's
+     * {@code CountDownLatch.await}/{@code Thread.sleep}, NO region thread can ever be
+     * dispatched a tick, so it can never reach {@code applyQueued()} and hit barrier B/C. This
+     * was root-caused from the first Phase B+C pass's log timing (see
+     * docs/contracts/api-1a7-findings.md's "CONTROLLER harness has a threading flaw" section)
+     * and is a TEST-HARNESS fix, not a change to any production routing/scheduling/ordering
+     * logic -- the command now only kicks off a background thread and returns immediately;
+     * the main thread is free to keep ticking (and therefore keep dispatching region threads)
+     * for the scenario's entire duration.
+     */
+    private static int testDeterministic(CommandSourceStack src, String scenario) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        NestworldRegionSystem sys = NestworldRegionSystem.get();
+        java.util.function.Supplier<java.util.List<String>> runner = switch (scenario) {
+            case "migration" -> () -> safeRun(() -> Api1A7DeterministicTests.runMigrationTest(sys));
+            case "removed" -> () -> safeRun(() -> Api1A7DeterministicTests.runRemovedBeforeApplyTest(sys));
+            case "reroutelimit" -> () -> safeRun(() -> Api1A7DeterministicTests.runRerouteLimitTest(sys));
+            case "ordering" -> () -> safeRun(() -> Api1A7DeterministicTests.runOrderingTest(sys));
+            case "visibility" -> () -> safeRun(() -> Api1A7DeterministicTests.runVisibilityMatrix(sys));
+            case "sameowner" -> () -> safeRun(() -> Api1A7DeterministicTests.runSameOwnerVisibilityTest(sys));
+            case "controlflow" -> () -> Api1A7DeterministicTests.controlFlowInventory();
+            default -> null;
+        };
+        if (runner == null) {
+            src.sendFailure(Component.literal("Unknown scenario: " + scenario
+                    + " (expected migration|removed|reroutelimit|ordering|visibility|sameowner|controlflow)"));
+            return 0;
+        }
+        Thread t = new Thread(() -> {
+            org.apache.logging.log4j.Logger diag = org.apache.logging.log4j.LogManager.getLogger("NestWorld/DIAG");
+            diag.info("[API1A7-DET] scenario={} STARTED on background thread {}", scenario, Thread.currentThread().getName());
+            for (String line : runner.get()) {
+                diag.info("[API1A7-DET] {}", line);
+            }
+            diag.info("[API1A7-DET] scenario={} FINISHED", scenario);
+        }, "API1A7-det-controller-" + scenario);
+        t.setDaemon(true);
+        t.start();
+        src.sendSuccess(() -> Component.literal("scenario " + scenario
+                + " started on background thread -- main thread NOT blocked, region ticks continue normally; "
+                + "tail server log for '[API1A7-DET]' lines"), false);
+        return 1;
+    }
+
+    private interface ThrowingSupplier { java.util.List<String> get() throws Exception; }
+
+    private static java.util.List<String> safeRun(ThrowingSupplier s) {
+        try {
+            return s.get();
+        } catch (Exception e) {
+            java.util.List<String> out = new java.util.ArrayList<>();
+            out.add("EXCEPTION: " + e);
+            for (StackTraceElement el : e.getStackTrace()) out.add("  at " + el);
+            return out;
+        }
+    }
+
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("nestworld")
                 .requires(src -> src.hasPermission(2))
                 .then(Commands.literal("status").executes(ctx -> status(ctx.getSource(), false))
-                        .then(Commands.literal("full").executes(ctx -> status(ctx.getSource(), true))))
+                        .then(Commands.literal("full").executes(ctx -> status(ctx.getSource(), true)))
+                        .then(Commands.literal("all").executes(ctx -> statusAll(ctx.getSource(), false))
+                                .then(Commands.literal("full").executes(ctx -> statusAll(ctx.getSource(), true))))
+                        .then(Commands.argument("dimension", net.minecraft.commands.arguments.DimensionArgument.dimension())
+                                .executes(ctx -> statusDimension(ctx.getSource(),
+                                        net.minecraft.commands.arguments.DimensionArgument.getDimension(ctx, "dimension"), false))
+                                .then(Commands.literal("full").executes(ctx -> statusDimension(ctx.getSource(),
+                                        net.minecraft.commands.arguments.DimensionArgument.getDimension(ctx, "dimension"), true)))))
                 .then(Commands.literal("lag").executes(ctx -> lag(ctx.getSource())))
                 .then(Commands.literal("borders").executes(ctx -> toggleBorders(ctx.getSource())))
                 .then(Commands.literal("split")
@@ -70,6 +169,11 @@ public final class NestworldCommand {
                                 .executes(ctx -> dumpRegistries(ctx.getSource(),
                                         com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "path")))))
                 .then(Commands.literal("pins").executes(ctx -> listPins(ctx.getSource())))
+                .then(Commands.literal("pinreasons").executes(ctx -> listPinReasons(ctx.getSource())))
+                .then(Commands.literal("pinreason")
+                        .then(Commands.argument("key", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                .executes(ctx -> pinReason(ctx.getSource(),
+                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "key")))))
                 .then(Commands.literal("pin")
                         .then(Commands.argument("type", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
                                 .executes(ctx -> pin(ctx.getSource(),
@@ -86,6 +190,10 @@ public final class NestworldCommand {
                         .then(Commands.argument("namespace", com.mojang.brigadier.arguments.StringArgumentType.word())
                                 .executes(ctx -> unpinMod(ctx.getSource(),
                                         com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "namespace")))))
+                .then(Commands.literal("debugcrashtest")
+                        .then(Commands.argument("count", IntegerArgumentType.integer(1, 20))
+                                .executes(ctx -> debugCrashTest(ctx.getSource(),
+                                        IntegerArgumentType.getInteger(ctx, "count")))))
                 .then(Commands.literal("debugsync")
                         .then(Commands.argument("x", IntegerArgumentType.integer())
                                 .then(Commands.argument("z", IntegerArgumentType.integer())
@@ -367,7 +475,9 @@ public final class NestworldCommand {
                 .then(Commands.literal("connectionadmissionbudget")
                         .then(Commands.argument("n", IntegerArgumentType.integer(1))
                                 .executes(ctx -> connectionAdmissionBudget(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "n")))))
-                .then(Commands.literal("cpuplanner").executes(ctx -> cpuPlannerReport(ctx.getSource())))
+                .then(Commands.literal("cpuplanner").executes(ctx -> cpuPlannerReport(ctx.getSource()))
+                        .then(Commands.literal("recommend").executes(ctx -> cpuPlannerRecommend(ctx.getSource())))
+                        .then(Commands.literal("apply").executes(ctx -> cpuPlannerApply(ctx.getSource()))))
                 .then(Commands.literal("nearestplayerverify").executes(ctx -> nearestPlayerVerifyReport(ctx.getSource())))
                 .then(Commands.literal("nearestplayerverifyreset").executes(ctx -> nearestPlayerVerifyReset(ctx.getSource())))
                 .then(Commands.literal("nearestplayermismatches").executes(ctx -> nearestPlayerMismatches(ctx.getSource())))
@@ -478,7 +588,9 @@ public final class NestworldCommand {
                         .then(Commands.literal("discard")
                                 .then(Commands.argument("uuid", UuidArgument.uuid())
                                         .executes(ctx -> testMutate(ctx.getSource(),
-                                                UuidArgument.getUuid(ctx, "uuid"), new EntityMutationOp.Discard()))))));
+                                                UuidArgument.getUuid(ctx, "uuid"), new EntityMutationOp.Discard()))))
+                        .then(buildSetVelocityTestNode())
+                        .then(buildDeterministicTestNode())));
 
         // /spark — in-game access to the spark standalone agent (see SparkBridge).
         // Only when the real spark mod is absent (dev runtime can't load it);
@@ -814,31 +926,81 @@ public final class NestworldCommand {
      *  per-region dump for when you actually need everything (e.g. scripted polling). */
     private static final int STATUS_COMPACT_TOP_N = 5;
 
+    /** {@code /nestworld status[/full]} -- defaults to wherever the EXECUTOR currently is (a
+     *  player's own dimension when run in-game; the console's associated level, normally
+     *  Overworld, over RCON) -- "what's happening right here", not a dump of every dimension.
+     *  Use {@code /nestworld status all} for the full multi-dimension view, or {@code /nestworld
+     *  status <dimension>} to name one explicitly regardless of where the executor is standing. */
     private static int status(CommandSourceStack src, boolean full) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        return statusDimension(src, src.getLevel(), full);
+    }
+
+    /** {@code /nestworld status all[/full]} -- every managed dimension (Overworld always;
+     *  Nether/End too once {@code -Dnestworld.shardedDimensions} adds them), Overworld section
+     *  first, then the rest sorted by dimension location for determinism. */
+    private static int statusAll(CommandSourceStack src, boolean full) {
         if (!NestworldRegionSystem.isInitialised()) {
             src.sendFailure(Component.literal("NestWorld region system is not active"));
             return 0;
         }
         NestworldChat.Locale loc = NestworldChat.localeOf(src);
         NestworldRegionSystem sys = NestworldRegionSystem.get();
-        NestworldDimensionRegion dr = overworldRegion(sys);
-        var regions = dr.getTree().getActiveRegions();
-        // Server-wide MSPT so the per-region costs can be read against the
-        // actual tick health (region cost alone says nothing about redstone
-        // and other main-thread work).
+        java.util.List<NestworldDimensionRegion> drs = new java.util.ArrayList<>(sys.allDimensionRegions());
+        drs.sort((a, b) -> {
+            boolean aOw = a.getKey().equals(net.minecraft.world.level.Level.OVERWORLD);
+            boolean bOw = b.getKey().equals(net.minecraft.world.level.Level.OVERWORLD);
+            if (aOw != bOw) return aOw ? -1 : 1;
+            return a.getKey().location().toString().compareTo(b.getKey().location().toString());
+        });
+
+        java.util.List<Component> lines = new java.util.ArrayList<>();
+        appendGlobalHeader(lines, loc, src);
+        int totalRegions = 0;
+        for (NestworldDimensionRegion dr : drs) {
+            totalRegions += appendDimensionSection(lines, loc, dr, full, true);
+        }
+        NestworldChat.send(src, false, lines.toArray(new Component[0]));
+        return totalRegions;
+    }
+
+    /** {@code /nestworld status <dimension>[/full]} -- one specific managed dimension, e.g.
+     *  {@code /nestworld status the_nether}. Fails clearly (not silently empty) if that
+     *  dimension isn't currently managed -- most likely {@code -Dnestworld.shardedDimensions}
+     *  doesn't include it. */
+    private static int statusDimension(CommandSourceStack src, ServerLevel level, boolean full) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        NestworldChat.Locale loc = NestworldChat.localeOf(src);
+        NestworldDimensionRegion dr = NestworldRegionSystem.get().getDimensionRegion(level);
+        if (dr == null) {
+            src.sendFailure(Component.literal("Dimension " + level.dimension().location()
+                    + " is not NestWorld-managed (not Overworld, and not listed in "
+                    + "-Dnestworld.shardedDimensions)"));
+            return 0;
+        }
+        java.util.List<Component> lines = new java.util.ArrayList<>();
+        appendGlobalHeader(lines, loc, src);
+        int count = appendDimensionSection(lines, loc, dr, full, false);
+        NestworldChat.send(src, false, lines.toArray(new Component[0]));
+        return count;
+    }
+
+    /** Server-wide lines (TPS, server tick, peak tick): the server has exactly one tick loop
+     *  shared by every managed dimension, so these are not per-dimension data. */
+    private static void appendGlobalHeader(java.util.List<Component> lines, NestworldChat.Locale loc,
+                                            CommandSourceStack src) {
         double serverMspt = src.getServer().getAverageTickTime();
         double tps = Math.min(20.0, 1000.0 / Math.max(serverMspt, 0.001));
         NestworldChat.Health overall = NestworldChat.classifyMsPerTick(serverMspt);
         boolean periodicSpike = NestworldChat.hasPeriodicSpike(
                 src.getServer(), NestworldChat.PERIODIC_SPIKE_MS_DEFAULT);
-        BlockTickHeat heat = dr.getBlockTickHeat();
 
-        WorldRegion worst = null;
-        for (WorldRegion r : regions) {
-            if (worst == null || r.getAvgTickMs() > worst.getAvgTickMs()) worst = r;
-        }
-
-        java.util.List<Component> lines = new java.util.ArrayList<>();
         // Most important first (rule: "сервер зараз працює нормально?" answered in 1-3s).
         lines.add(NestworldChat.title("NestWorld"));
         lines.add(NestworldChat.indent(1, NestworldChat.healthText(loc, overall, periodicSpike)));
@@ -846,6 +1008,33 @@ public final class NestworldCommand {
                 String.format("%.1f", tps), NestworldChat.classifyTps(tps))));
         lines.add(NestworldChat.indent(1, NestworldChat.kv(NestworldChat.tr(loc, "Server tick", "Тік сервера"),
                 String.format("%.1f ms", serverMspt), overall)));
+        if (periodicSpike) {
+            lines.add(NestworldChat.indent(1, NestworldChat.kv(
+                    NestworldChat.tr(loc, "Peak tick", "Пік тіку"),
+                    String.format("%.0f ms", NestworldChat.maxTickMs(src.getServer())),
+                    NestworldChat.Health.WARNING)));
+        }
+        lines.addAll(NestworldChat.tickDurationRows(loc, TickDurationHistory.SERVER));
+        lines.add(NestworldChat.blank());
+    }
+
+    /** Appends one dimension's section (main-thread avg, worst region, region list) to
+     *  {@code lines}. Returns that dimension's active region count. {@code withHeader} adds a
+     *  dimension-name line -- only needed when more than one dimension is being shown at once. */
+    private static int appendDimensionSection(java.util.List<Component> lines, NestworldChat.Locale loc,
+                                               NestworldDimensionRegion dr, boolean full, boolean withHeader) {
+        var regions = dr.getTree().getActiveRegions();
+        BlockTickHeat heat = dr.getBlockTickHeat();
+
+        WorldRegion worst = null;
+        for (WorldRegion r : regions) {
+            if (worst == null || r.getAvgTickMs() > worst.getAvgTickMs()) worst = r;
+        }
+
+        if (withHeader) {
+            lines.add(Component.literal("== " + dr.getKey().location() + " ==")
+                    .withStyle(net.minecraft.ChatFormatting.GOLD, net.minecraft.ChatFormatting.BOLD));
+        }
         double avgMainMs = dr.getAvgTickWallMs();
         if (avgMainMs > 0) {
             lines.add(NestworldChat.indent(1, NestworldChat.kv(
@@ -853,20 +1042,12 @@ public final class NestworldCommand {
                     String.format(NestworldChat.tr(loc, "%.1f ms (avg since boot)", "%.1f мс (сер. з моменту старту)"),
                             avgMainMs))));
         }
-        if (periodicSpike) {
-            lines.add(NestworldChat.indent(1, NestworldChat.kv(
-                    NestworldChat.tr(loc, "Peak tick", "Пік тіку"),
-                    String.format("%.0f ms", NestworldChat.maxTickMs(src.getServer())),
-                    NestworldChat.Health.WARNING)));
-        }
-        if (overall != NestworldChat.Health.OK && worst != null) {
+        if (worst != null) {
             lines.add(NestworldChat.indent(1, NestworldChat.kv(
                     NestworldChat.tr(loc, "Worst region", "Найгірший регіон"),
                     String.format("#%d (%.1f ms)", worst.getId(), worst.getAvgTickMs()),
                     NestworldChat.classifyRegionCost(worst.getAvgTickMs()))));
         }
-        lines.addAll(NestworldChat.tickDurationRows(loc, TickDurationHistory.SERVER));
-        lines.add(NestworldChat.blank());
 
         var shown = regions;
         int hidden = 0;
@@ -948,7 +1129,7 @@ public final class NestworldCommand {
                             "... ще %,d регіон(ів) -- /nestworld status full для всіх"), hidden))
                     .withStyle(net.minecraft.ChatFormatting.GRAY)));
         }
-        NestworldChat.send(src, false, lines.toArray(new Component[0]));
+        lines.add(NestworldChat.blank());
         return regions.size();
     }
 
@@ -965,6 +1146,31 @@ public final class NestworldCommand {
      * coordinates (converted to chunk coordinates here) to match how a player
      * position is normally specified.
      */
+    /**
+     * TEST-ONLY: schedules {@code count} uncaught exceptions on the main thread via
+     * {@code server.execute()}, spread across the next {@code count} ticks (one per tick, so
+     * they land within the tick-failure circuit breaker's 60s window without the game running
+     * in a tight enough loop to blow the queue). Exists to deliberately exercise the
+     * catch-and-continue path (see {@code MinecraftServer.java.patch}'s {@code
+     * nestworldOnTickFailure}) and, at count >= 6, the "5 failures/60s -> full crash ->
+     * NestWorld-Crash-Forced-Exit-Watchdog" fallback -- both otherwise only reachable by
+     * waiting for a real, unpredictable mod race to actually fire. Never call this on a
+     * server anyone cares about staying up.
+     */
+    private static int debugCrashTest(CommandSourceStack src, int count) {
+        var server = src.getServer();
+        for (int i = 1; i <= count; i++) {
+            int n = i;
+            server.execute(() -> {
+                throw new RuntimeException(
+                        "NestWorld debugcrashtest: deliberately forced tick failure " + n + "/" + count);
+            });
+        }
+        src.sendSuccess(() -> Component.literal(
+                "debugcrashtest: scheduled " + count + " forced tick failure(s) -- watch the log"), true);
+        return count;
+    }
+
     private static int debugSyncGetChunk(CommandSourceStack src, int blockX, int blockZ) {
         net.minecraft.server.level.ServerLevel level = src.getServer().overworld();
         int chunkX = blockX >> 4;
@@ -2564,6 +2770,34 @@ public final class NestworldCommand {
         return 1;
     }
 
+    /** Dry-run: what the planner would independently choose, without changing anything. */
+    private static int cpuPlannerRecommend(CommandSourceStack src) {
+        var recs = net.nestworld.region.CpuCapacityPlanner.computeRecommendations();
+        src.sendSuccess(() -> Component.literal(
+                "CPU planner independent recommendations (not applied, dry-run):"), false);
+        for (var r : recs) {
+            src.sendSuccess(() -> Component.literal(r.format()), false);
+        }
+        return recs.size();
+    }
+
+    /** Actually applies every live-applicable recommendation and reports a real before/after,
+     *  plus the resulting full capacity report so the oversubscription delta is visible too. */
+    private static int cpuPlannerApply(CommandSourceStack src) {
+        String before = net.nestworld.region.CpuCapacityPlanner.buildFullReport().format();
+        var recs = net.nestworld.region.CpuCapacityPlanner.applyRecommendations();
+        String after = net.nestworld.region.CpuCapacityPlanner.buildFullReport().format();
+
+        src.sendSuccess(() -> Component.literal("=== BEFORE ==="), true);
+        for (String line : before.split("\n")) src.sendSuccess(() -> Component.literal(line), false);
+        src.sendSuccess(() -> Component.literal("=== Applied " + recs.stream().filter(r -> r.liveApplicable()).count()
+                + " live-applicable parameter(s); " + recs.stream().filter(r -> !r.liveApplicable()).count()
+                + " need a restart (see /nestworld cpuplanner recommend) ==="), true);
+        src.sendSuccess(() -> Component.literal("=== AFTER ==="), true);
+        for (String line : after.split("\n")) src.sendSuccess(() -> Component.literal(line), false);
+        return 1;
+    }
+
     private static int nearestPlayerVerifyReport(CommandSourceStack src) {
         String report = net.nestworld.region.NearestPlayerIndex.verifyReport();
         src.sendSuccess(() -> Component.literal(report), false);
@@ -3098,6 +3332,63 @@ public final class NestworldCommand {
         return entityPins.size() + bePins.size() + modPinsEarly.size();
     }
 
+    /** All recorded pin reasons, newest first — {@code /nestworld pinreasons}. */
+    private static int listPinReasons(CommandSourceStack src) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        var reasons = NestworldRegionSystem.get().getPins().allPinReasons();
+        if (reasons.isEmpty()) {
+            src.sendSuccess(() -> Component.literal(
+                    "No pin reasons recorded (nothing auto-pinned yet, or all current pins were set manually)."), false);
+            return 0;
+        }
+        src.sendSuccess(() -> Component.literal(reasons.size() + " recorded pin reason(s):"), false);
+        for (var reason : reasons) {
+            src.sendSuccess(() -> Component.literal("  " + reason.describe()), false);
+        }
+        return reasons.size();
+    }
+
+    /** Full explanation for one pin — {@code /nestworld pinreason <key>}. {@code key} may be
+     *  a bare namespace/id (tried as mod, then entity, then block-entity) or explicitly
+     *  {@code mod:x} / {@code entity:x} / {@code be:x}. */
+    private static int pinReason(CommandSourceStack src, String key) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        NestworldPins p = NestworldRegionSystem.get().getPins();
+        String trimmed = key.trim();
+        NestworldPins.PinReason reason = null;
+        String kind = null, lookupKey = trimmed;
+        for (String prefix : new String[]{"mod:", "entity:", "be:"}) {
+            if (trimmed.startsWith(prefix)) {
+                kind = prefix.substring(0, prefix.length() - 1);
+                lookupKey = trimmed.substring(prefix.length());
+                break;
+            }
+        }
+        if (kind != null) {
+            reason = p.getPinReason(kind, lookupKey);
+        } else {
+            for (String tryKind : new String[]{"mod", "entity", "be"}) {
+                reason = p.getPinReason(tryKind, trimmed);
+                if (reason != null) break;
+            }
+        }
+        if (reason == null) {
+            src.sendFailure(Component.literal("No recorded pin reason for '" + trimmed
+                    + "' (either it isn't pinned, was pinned manually via /nestworld pin(mod), "
+                    + "or was pinned before this reporting feature existed)."));
+            return 0;
+        }
+        NestworldPins.PinReason finalReason = reason;
+        src.sendSuccess(() -> Component.literal(finalReason.describe()), false);
+        return 1;
+    }
+
     private static int pinMod(CommandSourceStack src, String ns) {
         if (!NestworldRegionSystem.isInitialised()) {
             src.sendFailure(Component.literal("NestWorld region system is not active"));
@@ -3384,6 +3675,28 @@ public final class NestworldCommand {
         }
         EntityMutationDispatcher.dispatch(target, op);
         src.sendSuccess(() -> Component.literal("Dispatched " + op.getClass().getSimpleName() + " for " + uuid), true);
+        return 1;
+    }
+
+    /** API-1A.7 test-only entry point: exercises the REAL PUBLIC Mod API facade
+     *  ({@code net.nestworld.modapi.entity.NestWorldEntities.setVelocity}), not
+     *  {@code EntityMutationOp} directly -- unlike {@link #testMutate}, the point here is to
+     *  verify the actual end-to-end public API path (facade -> backend registry -> Core peer
+     *  -> EntityMutationDispatcher), not just the internal dispatcher. Always invoked from the
+     *  MAIN/command thread (RCON), same as {@link #testMutate}. */
+    private static int testSetVelocity(CommandSourceStack src, java.util.UUID uuid, double x, double y, double z) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        net.minecraft.world.entity.Entity target = NestworldRegionSystem.get().getOverworld().getEntity(uuid);
+        if (target == null) {
+            src.sendFailure(Component.literal("No live entity with UUID " + uuid));
+            return 0;
+        }
+        net.nestworld.modapi.entity.NestWorldEntities.setVelocity(target, new net.minecraft.world.phys.Vec3(x, y, z));
+        src.sendSuccess(() -> Component.literal("NestWorldEntities.setVelocity dispatched for " + uuid
+                + " (" + x + ", " + y + ", " + z + ")"), true);
         return 1;
     }
 

@@ -168,6 +168,12 @@ public class NestworldRegionSystem {
     public static void onServerStarting(ServerStartingEvent event) {
         INSTANCE = new NestworldRegionSystem();
         INSTANCE.init(event.getServer());
+        // API-1A.6 (docs/contracts/SetVelocityPrimitive.md): install the region-aware
+        // setVelocity backend for THIS server instance. VelocityBackendRegistry's server-token
+        // check means a stale uninstall from a previous integrated-server session (same JVM)
+        // can never clobber this install.
+        net.nestworld.modapi.entity.VelocityBackendRegistry.install(
+                event.getServer(), net.nestworld.region.NestworldVelocityBackend.INSTANCE);
         // Start the always-on profiler (no-op unless AUTO_SPARK + spark present).
         SparkBridge.autoStart(event.getServer());
         // CPU Capacity Planner (2026-08-30, Phase 1) -- full parameter inventory + demand model +
@@ -194,6 +200,13 @@ public class NestworldRegionSystem {
     public static void onServerStopping(ServerStoppingEvent event) {
         // Capture the session's profile link to spark-history.txt before everything tears down.
         SparkBridge.writeHistoryOnShutdown(event.getServer());
+        // API-1A.6: uninstall unconditionally on every stop -- VelocityBackendRegistry's own
+        // token check makes this safe even if it races a fresh install for a brand-new server.
+        net.nestworld.modapi.entity.VelocityBackendRegistry.uninstall(event.getServer());
+        // API-1A.8: clear setVelocity's per-target intent-version state on every stop -- a new
+        // server generation (including an integrated-server world restart in the same JVM)
+        // must never see stale version counters from a previous world.
+        net.nestworld.modapi.entity.SetVelocityIntentTracker.resetAll();
         if (INSTANCE != null) {
             INSTANCE.shutdown();
             INSTANCE = null;
@@ -284,6 +297,9 @@ public class NestworldRegionSystem {
         pins.loadCascadeSafeBe(cascadeSafeBeFile());
         // Must run AFTER loadMods/loadBe/load above (see its own javadoc): a count already at
         // threshold from a previous crashed run pins retroactively right here, at startup.
+        // Must run BEFORE loadErrorCounts: a retroactive pin inside that call records its
+        // reason immediately, which needs pinReasonsFile already set to actually persist.
+        pins.loadPinReasons(pinReasonsFile());
         pins.loadErrorCounts(errorCountsFile());
 
         // Stage 1: managed dimensions = Overworld (always) + whatever the dark-launch flag
@@ -371,6 +387,13 @@ public class NestworldRegionSystem {
     private Path errorCountsFile() {
         return server.getWorldPath(LevelResource.ROOT)
                 .resolve("data").resolve("nestworld-autopin-error-counts.txt");
+    }
+
+    /** Text file persisting WHY each auto-pin fired (see {@link NestworldPins.PinReason}),
+     *  for {@code /nestworld pinreason}. */
+    private Path pinReasonsFile() {
+        return server.getWorldPath(LevelResource.ROOT)
+                .resolve("data").resolve("nestworld-pin-reasons.txt");
     }
 
     /** Text file listing block-entity type ids the operator asserts are cascade-safe
@@ -851,6 +874,15 @@ public class NestworldRegionSystem {
      *  separate {@link Level}/{@link ServerLevel} reference in scope. */
     public NestworldDimensionRegion getDimensionRegionByKey(net.minecraft.resources.ResourceKey<Level> key) {
         return dimensions.get(key);
+    }
+
+    /** Every currently-managed dimension's region state (Overworld always; Nether/End too once
+     *  {@code -Dnestworld.shardedDimensions} adds them) -- for commands that must report across
+     *  all of them rather than assuming Overworld is the only one (see {@code
+     *  NestworldCommand#overworldRegion}'s own javadoc: "a legitimate follow-up once Nether/End
+     *  are actually enabled"). Defensive copy; iteration order not guaranteed. */
+    public java.util.Collection<NestworldDimensionRegion> allDimensionRegions() {
+        return new java.util.ArrayList<>(dimensions.values());
     }
 
     /**

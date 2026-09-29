@@ -117,30 +117,15 @@
           }
 +         net.minecraftforge.server.ServerLifecycleHooks.handleServerStopping(this);
 +         net.minecraftforge.server.ServerLifecycleHooks.expectServerStopped(); // Forge: Has to come before MinecraftServer#onServerCrash to avoid race conditions
-       } catch (Throwable throwable1) {
-          f_129750_.error("Encountered an unexpected exception", throwable1);
-+         // NestWorld: guaranteed forced exit if the JVM is somehow still alive 90s after a
-+         // crash -- a safety net, not the primary shutdown path. stopServer() below (world
-+         // save, region-thread shutdown via the ServerStoppingEvent fix a few lines down)
-+         // is expected to finish in well under this window even on a heavy modpack; this
-+         // only fires if something UNRELATED to our own shutdown code -- a third-party
-+         // mod's own non-daemon thread pool, e.g. an HTTP client or executor it never
-+         // shuts down -- is left holding the JVM open, which was previously observed live
-+         // (region threads kept ticking indefinitely after a crash while the "Server
-+         // thread" itself had already finished cleanly). Runs on a daemon thread so it can
-+         // never itself be what keeps the JVM alive; a normal/successful exit races it
-+         // harmlessly. See project memory "orphaned-region-threads-crash-shutdown-gap".
-+         Thread nestworldForcedExit = new Thread(() -> {
-+            try {
-+               Thread.sleep(90_000L);
-+            } catch (InterruptedException ignored) {
-+               return;
-+            }
-+            f_129750_.error("NestWorld: JVM still alive 90s after a crash-driven shutdown attempt -- forcing exit (see orphaned-region-threads-crash-shutdown-gap)");
-+            Runtime.getRuntime().halt(1);
-+         }, "NestWorld-Crash-Forced-Exit-Watchdog");
-+         nestworldForcedExit.setDaemon(true);
-+         nestworldForcedExit.start();
++         // NestWorld: graceful /stop gets the SAME forced-exit guarantee as the crash path
++         // below -- live-reproduced 2026-09-24, a plain /stop hung just as often as a crash did
++         // (root cause: a leaked non-daemon thread from a mod, unrelated to which path is
++         // taken -- see NestworldShutdownWatchdog's own javadoc for the jstack-confirmed
++         // culprit found that day). Armed here, on normal completion, not in the catch below.
++         net.nestworld.region.NestworldShutdownWatchdog.arm("graceful /stop", f_129750_);
++      } catch (Throwable throwable1) {
++         f_129750_.error("Encountered an unexpected exception", throwable1);
++         net.nestworld.region.NestworldShutdownWatchdog.arm("crash-driven shutdown", f_129750_);
 +         // NestWorld: tell any still-connected players BEFORE stopServer() below cuts the
 +         // network connection and clears the player list -- otherwise a crash looks to
 +         // them like a silent freeze/timeout rather than a server-initiated, recoverable

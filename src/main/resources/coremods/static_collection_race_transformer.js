@@ -19,6 +19,18 @@
 // transformer or a different fix class entirely. See docs/RACE_CLASSIFICATION.md for the C1-C7
 // fix-class taxonomy; this transformer implements C1 (concurrent container swap) ONLY.
 //
+// ANOTHER HARD REQUIREMENT, found the hard way 2026-09-23 (draconicevolution DEEventHandler
+// attempt -- VerifyError, whole modpack failed to boot): the FIELD's declared descriptor must
+// already be an interface (e.g. `Map`, `Set`) or a common supertype of both <from> and <to>, not
+// the concrete <from> class itself. A ctor-swap only changes what gets NEW'd and PUTSTATIC'd; it
+// does not (and cannot, this is pure bytecode substitution, no field-descriptor rewriting) touch
+// the field's own declared type in the class file. `putstatic`/`putfield` into a field declared
+// as `Ljava/util/WeakHashMap;` with a `ConcurrentHashMap` on the stack is bytecode-illegal --
+// they're unrelated sibling classes, not sub/supertype -- and the JVM verifier rejects the whole
+// class at load time (fails BEFORE any code runs, not a runtime exception). Always confirm the
+// field's declared type via `javap -p` (not just the collection interface it happens to satisfy)
+// before adding a site here; if it's a concrete class, this transformer cannot fix it as-is.
+//
 // Two edit kinds, both pure 1:1 bytecode substitutions with no stack-shape change:
 //   "ctor-swap": NEW <from>; DUP; INVOKESPECIAL <from>.<init>()V
 //             -> NEW <to>;   DUP; INVOKESPECIAL <to>.<init>()V

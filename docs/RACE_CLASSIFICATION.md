@@ -670,6 +670,101 @@ Live proof:
     removal, phase behavior, and concurrent registration.
 ```
 
+### Vanilla Minecraft (Core) — `Scoreboard` + `SimpleCriterionTrigger.players` — unowned global singletons (NEW, 2026-09-28, NOT YET FIXED)
+
+Found via static analysis during unrelated Mod API primitive-boundary work
+(`docs/NESTWORLD_API_ARCHITECTURE.md`, "API-1A.4 — Primitive Boundary Inventory"), not from a
+stress-test sweep like every entry above. **Different in kind from every race above this line**:
+every prior entry is a THIRD-PARTY MOD's shared state, and every hazard has TWO identifiable
+owners (e.g. `awardKillScore`'s target vs. actor, ride-linkage's mount vs. rider) — region-
+ownership dispatch (Fix class C5) is at least conceptually available because there is always a
+right region to route the call to. This entry is neither: the racing state is VANILLA
+Minecraft's own code, and the structures are GLOBAL, SERVER-WIDE SINGLETONS with no owning
+region at all — N region threads write into ONE unowned structure, not two threads racing over
+which of two owners should win. Filed here per the audit's own recommendation since the
+underlying bug mechanism (single-tick-thread invariant broken by region-parallel ticking) is the
+same one this file already tracks. Tagged `GLOBAL_SHARED_UNOWNED` to name this distinct shape —
+not a replacement for the C1-C7 fix-class axis (a fix class still applies once one is chosen),
+but a note that **C5 (region-ownership dispatch) is categorically unavailable here**, unlike
+every mod race above.
+
+```
+Race: vanilla Scoreboard (server-wide singleton) + SimpleCriterionTrigger.players (per-trigger-
+      type singleton, one instance per registered advancement-criterion type)
+    writers:
+      - ServerPlayer.awardStat(Stat, int) (ServerPlayer.java:1054-1058) and resetStat
+        (ServerPlayer.java:1061-1064) call this.getScoreboard().forAllObjectives(...), which
+        resolves to MinecraftServer.getScoreboard() (MinecraftServer.java:1637-1639) returning
+        the ONE `private final ServerScoreboard scoreboard = new ServerScoreboard(this);` field
+        (MinecraftServer.java:232) — one instance for the whole server, not per-dimension/per-
+        region. Scoreboard.forAllObjectives() (Scoreboard.java:65-69) calls
+        getOrCreatePlayerScore() (Scoreboard.java:81-90), a COMPOUND nested
+        playerScores.computeIfAbsent(...).computeIfAbsent(...) over plain `Maps.newHashMap()`
+        fields (objectivesByCriteria line 30, playerScores line 31 — plain HashMap, not
+        ConcurrentHashMap, not synchronized; confirmed by reading the field declarations
+        directly, Scoreboard.java:29-34). Fires from whichever region thread currently owns the
+        awarding player — every player-tick/kill/craft/sleep/drop path that calls awardStat
+        (ServerPlayer.java:566,609,643,646,662,885,1553,1556), i.e. any region, concurrently,
+        any tick.
+      - SimpleCriterionTrigger.addPlayerListener/removePlayerListener
+        (SimpleCriterionTrigger.java:19-34) do compound computeIfAbsent(...).add(...) and
+        get()-then-remove()-then-conditional-remove() over
+        `private final Map<PlayerAdvancements, Set<Listener<T>>> players =
+        Maps.newIdentityHashMap();` (SimpleCriterionTrigger.java:17 — plain IdentityHashMap, not
+        thread-safe). One SimpleCriterionTrigger subclass instance exists PER trigger type
+        (CriteriaTriggers registers dozens as static singletons), each with its own `players`
+        map shared by every player on the server for that one criterion type.
+    readers:
+      SimpleCriterionTrigger.trigger() (SimpleCriterionTrigger.java:47-72) does
+      this.players.get(playeradvancements) then iterates the returned Set directly (no
+      defensive copy) — fires from CriteriaTriggers.*.trigger(player, ...), called from
+      wherever that player's own game-logic path currently executes (region thread).
+
+Vanilla invariant:
+    Only the single server tick thread ever calls awardStat/resetStat/trigger for any player, so
+    the compound computeIfAbsent chains on Scoreboard's HashMaps and the add/remove/iterate
+    sequence on SimpleCriterionTrigger's IdentityHashMap could never interleave with each other
+    or with themselves.
+
+Why vanilla is safe:
+    No second thread exists in vanilla to run two players' awardStat/trigger calls (or a
+    register/unregister and a fire) at the same real-time instant.
+
+NestWorld violation:
+    Under region-parallel ticking, Player A's stat/criterion path can run on Region A's thread
+    at the same instant Player B's runs on Region B's thread. Both go through the SAME single
+    MinecraftServer.scoreboard instance and the SAME per-trigger-type players map — unlike every
+    other race in this file, there is no "owning region" for either structure to route through;
+    every region thread has equal, simultaneous, legitimate reason to touch them.
+
+Fix class: NOT YET DETERMINED (tentative only — no full contract trace done yet, matching this
+    file's own precedent for FrequencyManager above: "needs full register/lookup contract read
+    before committing to a fix class"). C5 is ruled out categorically (no owning region exists
+    for either structure). C2 (atomic compound op) is the closest fit for the nested
+    computeIfAbsent chains and the addPlayerListener/removePlayerListener compound ops, but
+    Scoreboard alone has 5 interacting HashMap fields (objectivesByName, objectivesByCriteria,
+    playerScores, teamsByName, teamsByPlayer — Scoreboard.java:29-34) with team-assignment/
+    score-lookup cross-field invariants not traced this pass — C6 (lock) may be required instead
+    of a bare per-map compound-op fix if those invariants turn out to span fields. Not evaluated
+    deeply enough yet to commit either way.
+
+Required guarantee:
+    Not yet derived — needs the same writers→readers→vanilla-invariant→consistency-model
+    sequence this file required for Mekanism's flowingStacks before any fix class is finalized.
+
+Live proof:
+    Not yet run. This entry is STATIC ANALYSIS ONLY — found while tracing awardStat/
+    CriteriaTriggers for an unrelated Mod API primitive-boundary audit (API-1A.4), not
+    reproduced under load, not stress-tested, not mitigated. No existing NestworldCore mechanism
+    touches either structure today (grep -rn "Scoreboard\|CriterionTrigger\|awardStat"
+    src/main/java/net/nestworld/ and src/main/resources/coremods/ — zero matches, confirmed
+    this pass). **Explicitly NOT blocking the separate NestWorldEntities.setVelocity Mod API
+    primitive work** (API-1A's actual recommended first primitive) — different, unrelated
+    subsystem (entity velocity vs. global stat/scoreboard singletons). Filed here for
+    tracking/future-prioritization only, per the source audit's own recommendation; no fix
+    attempted, no priority decision made.
+```
+
 ---
 
 ## Priority order (user-set, 2026-09-09)
@@ -692,6 +787,27 @@ Live proof:
 11. AE2 `GridEventBus.EVENTS` — DONE, pending clean-server stress
 12. Draconic `CrystalUpdateBatcher.ID_CRYSTAL_MAP` — DONE, pending clean-server stress
 13. sophisticatedcore `ServerStorageSoundHandler.worldStorageSoundInfos`
+
+**Untriaged — new hazard shape, not yet assigned a P0-P2 bucket (2026-09-28):**
+14. Vanilla `Scoreboard` + `SimpleCriterionTrigger.players` (`GLOBAL_SHARED_UNOWNED`) — found via
+    static analysis, not yet fix-classified, not yet prioritized against the mod races above; see
+    its own entry above for why it doesn't cleanly fit the P0-P2 mod-race ordering (no owning
+    region to route through, unlike every item 1-13).
+15. `RegionThread.shutdown()` does not drain in-flight `EntityMutationDispatcher` mailbox
+    messages before exiting (`RegionThread.java:236-239,251-253`,
+    `NestworldDimensionRegion.java:1125-1130` — `shutdown()` sets `running=false` and notifies,
+    `NestworldDimensionRegion.shutdown()` calls `saveLayout()` then `thread.shutdown()` per
+    thread, with no drain/apply/log step anywhere in that path). Not a data race in the usual
+    sense — no two threads touch the same memory concurrently here — but a confirmed **runtime
+    reliability gap**: any queued mutation of ANY `EntityMutationDispatcher` op type
+    (`Damage`, `Ignite`, a future `SetVelocity`, etc.) still sitting in a region's mailbox at
+    shutdown is silently dropped, with no crash and no log. Found 2026-09-28 during the
+    `setVelocity` (API-1A.5) contract verification pass — confirmed pre-existing, Core-wide,
+    not introduced by that work. `docs/contracts/SetVelocityPrimitive.md` already documents this
+    as an accepted best-effort/at-most-once delivery characteristic for that one primitive; this
+    entry exists so the underlying dispatcher-wide debt has its own tracked record, independent
+    of any single primitive's contract, and doesn't get treated as fixed the day one contract
+    stops mentioning it. NOT blocking any current API-1A work. No fix scheduled.
 
 ## Deployment discipline (standing rule, not per-fix)
 

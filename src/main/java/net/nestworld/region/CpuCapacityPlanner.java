@@ -158,6 +158,118 @@ public final class CpuCapacityPlanner {
         return list;
     }
 
+    // -------------------------------------------------------------------------------------
+    // Independent recommendation + live-apply experiment (2026-09-23, user-requested "what
+    // would the analyzer set everything to on its own, and what changes if it actually does").
+    // -------------------------------------------------------------------------------------
+    //
+    // Two honest categories, not glossed over:
+    //  - Boot-time-only parameters (nettyWorkerThreads, regionThreads target parallelism,
+    //    worldgenShards, chunkGenMaxConcurrent) size an actual OS thread pool or are read once
+    //    into a `static final` at class-init. Recommending a number for these is real, but
+    //    APPLYING it live is not -- resizing a running thread pool safely is out of scope here
+    //    (this Phase 1 planner's own class javadoc already defers "adaptive... throttling" to a
+    //    later phase). Reported as "recommended (needs restart)".
+    //  - The six admission/outbound budgets are already `public static volatile int`, read fresh
+    //    every tick by design (existing individual RCON setters already mutate them live) --
+    //    genuinely safe to apply immediately, no restart needed.
+    //
+    // Budget recommendation formula: scale each CURRENT default proportionally to detected
+    // physicalCores against REFERENCE_PHYSICAL_CORES -- the box these specific default numbers
+    // (64/200/200/8/8/512) were empirically tuned on across the #31 admission-gate sweep
+    // (burst-admission-step1/2/3, 2026-08-29/30, see project memory), which was the same class of
+    // machine CpuHardwareInfo's own javadoc describes (16 physical / 20 logical). This is a
+    // transparent, defensible scale factor, not an invented formula -- on hardware matching that
+    // reference box, it recommends "no change" (scale ~1.0), which is itself a real, checkable
+    // experimental result, not just an assumption. Rounded up (Math.ceil) so a scaled-DOWN
+    // recommendation on smaller hardware still never rounds to zero and disables the mechanism.
+    private static final double REFERENCE_PHYSICAL_CORES = 16.0;
+
+    private static double budgetScaleFactor() {
+        int physical = CpuHardwareInfo.detect().physicalCores;
+        if (physical <= 0) return 1.0;
+        return physical / REFERENCE_PHYSICAL_CORES;
+    }
+
+    private static int scaledBudget(int current) {
+        return Math.max(1, (int) Math.ceil(current * budgetScaleFactor()));
+    }
+
+    /** One recommendation: current value, planner's independent recommendation, whether it was
+     *  (or could be) applied live without a restart, and why/why-not in one short phrase. */
+    public record Recommendation(String name, double current, double recommended,
+                                  boolean liveApplicable, String basis) {
+        public String format() {
+            String delta = Math.abs(recommended - current) < 0.05 ? "no change"
+                    : String.format("%+.1f", recommended - current);
+            return String.format("  %-32s current=%-8.1f recommended=%-8.1f (%s) [%s]%s",
+                    name, current, recommended, delta, basis,
+                    liveApplicable ? "" : " -- needs restart");
+        }
+    }
+
+    /** Computes what this planner would independently choose for every known parameter, without
+     *  changing anything. Pure/side-effect-free -- see {@link #applyRecommendations()} for the
+     *  version that actually mutates live state. */
+    public static List<Recommendation> computeRecommendations() {
+        List<Recommendation> out = new ArrayList<>();
+        CpuHardwareInfo hw = CpuHardwareInfo.detect();
+
+        out.add(new Recommendation("nettyWorkerThreads",
+                NestworldTuning.NETTY_WORKER_THREADS > 0 ? NestworldTuning.NETTY_WORKER_THREADS : 2.0 * hw.logicalCpus,
+                quickNettyRecommendation(), false,
+                "physicalCores * benchmark-scaling-factor (I/O-bound anchor)"));
+
+        int currentRegionThreads = Math.max(1,
+                Integer.getInteger("nestworld.splitTargetParallelism", Math.max(1, hw.logicalCpus - 1)));
+        out.add(new Recommendation("regionThreads(targetParallelism)",
+                currentRegionThreads, quickNettyRecommendation(), false,
+                "same physicalCores-anchored formula as Netty, compute-bound region ticking"));
+
+        out.add(new Recommendation("worldgenShards", NestworldTuning.WORLDGEN_SHARDS,
+                NestworldTuning.WORLDGEN_SHARDS, false,
+                "no independent formula built yet -- static final, reported only"));
+        out.add(new Recommendation("chunkGenMaxConcurrent", NestworldTuning.CHUNK_GEN_MAX_CONCURRENT,
+                NestworldTuning.CHUNK_GEN_MAX_CONCURRENT, false,
+                "no independent formula built yet -- static final, reported only"));
+
+        out.add(new Recommendation("pairingAdmissionGlobalBudget", PairingAdmissionGate.GLOBAL_BUDGET_PER_TICK,
+                scaledBudget(64), true, "64 (reference default) * physicalCores/16"));
+        out.add(new Recommendation("chunkOutboundBudget", ChunkOutboundQueue.BUDGET_PER_TICK,
+                scaledBudget(200), true, "200 (reference default) * physicalCores/16"));
+        out.add(new Recommendation("pairingOutboundBudget", PairingOutboundQueue.BUDGET_PER_TICK,
+                scaledBudget(200), true, "200 (reference default) * physicalCores/16"));
+        out.add(new Recommendation("outboundBatchMaxBundleSize", OutboundBatchQueue.MAX_BUNDLE_SIZE,
+                scaledBudget(512), true, "512 (reference default) * physicalCores/16"));
+        out.add(new Recommendation("joinAdmissionBudget", AdmissionController.BUDGET_PER_TICK,
+                scaledBudget(8), true, "8 (reference default) * physicalCores/16"));
+        out.add(new Recommendation("connectionAdmissionMaxPerWindow", ConnectionAdmissionGate.MAX_NEW_CONNECTIONS_PER_WINDOW,
+                scaledBudget(8), true, "8 (reference default) * physicalCores/16"));
+        return out;
+    }
+
+    /** Actually applies every LIVE-APPLICABLE recommendation from {@link #computeRecommendations()}
+     *  (the six volatile admission/outbound budgets) and returns the same list so the caller can
+     *  show a true before/after. Boot-time-only parameters (Netty, region threads, worldgen
+     *  shards) are left untouched -- see the class-level note above for why. */
+    public static List<Recommendation> applyRecommendations() {
+        List<Recommendation> recs = computeRecommendations();
+        for (Recommendation r : recs) {
+            if (!r.liveApplicable()) continue;
+            int v = (int) Math.round(r.recommended());
+            switch (r.name()) {
+                case "pairingAdmissionGlobalBudget" -> PairingAdmissionGate.GLOBAL_BUDGET_PER_TICK = v;
+                case "chunkOutboundBudget" -> ChunkOutboundQueue.BUDGET_PER_TICK = v;
+                case "pairingOutboundBudget" -> PairingOutboundQueue.BUDGET_PER_TICK = v;
+                case "outboundBatchMaxBundleSize" -> OutboundBatchQueue.MAX_BUNDLE_SIZE = v;
+                case "joinAdmissionBudget" -> AdmissionController.BUDGET_PER_TICK = v;
+                case "connectionAdmissionMaxPerWindow" -> ConnectionAdmissionGate.MAX_NEW_CONNECTIONS_PER_WINDOW = v;
+                default -> { }
+            }
+        }
+        return recs;
+    }
+
     public static final class Report {
         public final CpuHardwareInfo hardware;
         public final CpuBenchmark benchmark;

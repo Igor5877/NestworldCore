@@ -117,6 +117,47 @@ public final class NestworldPins {
      *  {@code ModList.get()} isn't populated yet this early in some call orders. */
     private static final AtomicReference<Map<String, String>> CLASS_TO_MOD_ID = new AtomicReference<>();
 
+    /**
+     * Why a given pin exists: captured once, at the moment the pin actually fires, so an
+     * operator running {@code /nestworld pinreason <key>} days later gets the real triggering
+     * exception instead of having to go spelunking through old log files (which may have
+     * rotated away). Purely informational -- never consulted to decide whether something IS
+     * pinned; {@link #pinnedTypes}/{@link #pinnedBeIds}/{@link #pinnedMods} remain sole source
+     * of truth for that. Keyed identically to the error-count maps ({@code "kind:key"}, e.g.
+     * {@code "mod:toms_storage"}) so the two files line up.
+     */
+    public record PinReason(String kind, String key, String mechanism, int errorCount,
+                             int threshold, String exceptionClass, String exceptionMessage,
+                             String topFrame, long timestampMillis) {
+        /** Human-readable one-paragraph explanation, for chat/RCON output. */
+        public String describe() {
+            StringBuilder sb = new StringBuilder();
+            sb.append(kind).append(' ').append(key).append(" was pinned after ")
+                    .append(errorCount).append('/').append(threshold)
+                    .append(" errors (").append(mechanism).append(')');
+            if (!exceptionClass.isEmpty()) {
+                sb.append(" -- last seen: ").append(exceptionClass);
+                if (!exceptionMessage.isEmpty() && !"null".equals(exceptionMessage)) {
+                    sb.append(": ").append(exceptionMessage);
+                }
+                if (!topFrame.isEmpty()) sb.append(" at ").append(topFrame);
+            }
+            long ageSec = Math.max(0, (System.currentTimeMillis() - timestampMillis) / 1000L);
+            sb.append(" (").append(formatAge(ageSec)).append(" ago)");
+            return sb.toString();
+        }
+
+        private static String formatAge(long sec) {
+            if (sec < 60) return sec + "s";
+            if (sec < 3600) return (sec / 60) + "m";
+            if (sec < 86400) return (sec / 3600) + "h";
+            return (sec / 86400) + "d";
+        }
+    }
+
+    private final ConcurrentHashMap<String, PinReason> pinReasons = new ConcurrentHashMap<>();
+    private Path pinReasonsFile;
+
     /** True when auto-pin is enabled (lets the BE phase skip wrapping tickers). */
     public boolean isAutoPinEnabled() { return autoPin; }
 
@@ -262,8 +303,11 @@ public final class NestworldPins {
      * thread. When auto-pin is enabled and a type crosses the error threshold,
      * it is pinned to the main thread and {@code true} is returned. Thread-safe
      * (called from region threads). No-op unless {@code -Dnestworld.autoPin=true}.
+     *
+     * @param t the throwable that triggered this call, for {@link #getPinReason} reporting;
+     *          may be {@code null} (report will just omit exception detail).
      */
-    public boolean noteEntityTickError(EntityType<?> type) {
+    public boolean noteEntityTickError(EntityType<?> type, Throwable t) {
         if (!autoPin || type == null || pinnedTypes.contains(type)) return false;
         int count = errorCounts.computeIfAbsent(type, k -> new AtomicInteger()).incrementAndGet();
         saveErrorCountsThrottled(); // persist progress -- see saveErrorCounts()/throttle javadoc
@@ -272,6 +316,7 @@ public final class NestworldPins {
         if (!pinnedTypes.add(type)) return false; // pinned concurrently
         pinnedIds.add(id);
         save();
+        recordPinReason("entity", String.valueOf(id), "own-tick error (region thread)", count, t);
         LOGGER.warn("AUTO-PINNED {} to the main thread after {} region-thread tick "
                 + "errors — it now ticks on main (vanilla parity) so a region thread "
                 + "stops crashing on it. Restore parallelism with /nestworld unpin {} "
@@ -284,14 +329,18 @@ public final class NestworldPins {
      * {@link net.minecraft.world.level.block.entity.TickingBlockEntity#getType()}
      * registry-id string) threw on a region thread. Pins the BE type to main at
      * the threshold. No-op unless auto-pin is enabled. Thread-safe.
+     *
+     * @param t the throwable that triggered this call, for {@link #getPinReason} reporting;
+     *          may be {@code null} (report will just omit exception detail).
      */
-    public boolean noteBlockEntityTickError(String typeId) {
+    public boolean noteBlockEntityTickError(String typeId, Throwable t) {
         if (!autoPin || typeId == null || pinnedBeIds.contains(typeId)) return false;
         int count = beErrorCounts.computeIfAbsent(typeId, k -> new AtomicInteger()).incrementAndGet();
         saveErrorCountsThrottled();
         if (count < autoPinThreshold) return false;
         if (!pinnedBeIds.add(typeId)) return false; // pinned concurrently
         saveBe();
+        recordPinReason("be", typeId, "own-tick error (region thread)", count, t);
         LOGGER.warn("AUTO-PINNED block entity {} to the main thread after {} region-thread "
                 + "tick errors. Restore parallelism with /nestworld unpin {} once fixed.",
                 typeId, count, typeId);
@@ -320,6 +369,7 @@ public final class NestworldPins {
         if (count < autoPinThreshold) return false;
         if (!pinnedMods.add(modId)) return false; // pinned concurrently
         saveMods();
+        recordPinReason("mod", modId, "caught-elsewhere (cross-thread callback, not own tick)", count, t);
         LOGGER.warn("AUTO-PINNED mod {} to the main thread after {} errors attributed to its "
                 + "code via caught-elsewhere stack traces (not its own entity/BE tick -- a "
                 + "cross-thread race in its GUI/menu/background code). Restore parallelism "
@@ -430,18 +480,18 @@ public final class NestworldPins {
     public static void selfTest() {
         NestworldPins p = new NestworldPins(true, 3);
         EntityType<?> type = EntityType.ARMOR_STAND;
-        boolean below = p.noteEntityTickError(type) | p.noteEntityTickError(type); // 1,2 < 3
-        boolean atThreshold = p.noteEntityTickError(type);                          // 3 -> pin
+        boolean below = p.noteEntityTickError(type, null) | p.noteEntityTickError(type, null); // 1,2 < 3
+        boolean atThreshold = p.noteEntityTickError(type, null);                          // 3 -> pin
         boolean isPinnedNow = p.isPinned(type);
-        boolean idempotent = !p.noteEntityTickError(type);                          // already pinned
+        boolean idempotent = !p.noteEntityTickError(type, null);                          // already pinned
 
         // Same threshold path for block-entity types (id strings).
         NestworldPins pb = new NestworldPins(true, 3);
         String be = "minecraft:hopper";
-        boolean beBelow = pb.noteBlockEntityTickError(be) | pb.noteBlockEntityTickError(be);
-        boolean beAt = pb.noteBlockEntityTickError(be);
+        boolean beBelow = pb.noteBlockEntityTickError(be, null) | pb.noteBlockEntityTickError(be, null);
+        boolean beAt = pb.noteBlockEntityTickError(be, null);
         boolean beIsPinned = pb.isBePinned(be);
-        boolean beIdem = !pb.noteBlockEntityTickError(be);
+        boolean beIdem = !pb.noteBlockEntityTickError(be, null);
 
         boolean ok = !below && atThreshold && isPinnedNow && idempotent
                 && !beBelow && beAt && beIsPinned && beIdem;
@@ -487,14 +537,14 @@ public final class NestworldPins {
             for (int i = 0; i < 4; i++) {
                 NestworldPins run = new NestworldPins(true, 5);
                 run.loadErrorCounts(tmp);
-                run.noteEntityTickError(type);
+                run.noteEntityTickError(type, null);
                 if (run.isPinned(type)) everPrematurelyPinned = true;
             }
 
             // Run 5: resumes at 4, this run's own increment crosses the threshold in-process.
             NestworldPins run5 = new NestworldPins(true, 5);
             run5.loadErrorCounts(tmp);
-            run5.noteEntityTickError(type);
+            run5.noteEntityTickError(type, null);
             boolean pinnedOnCumulativeThreshold = run5.isPinned(type);
 
             // Retroactive-at-load, tested independently of the above (a separate file):
@@ -729,6 +779,8 @@ public final class NestworldPins {
                 ResourceLocation id = BuiltInRegistries.ENTITY_TYPE.getKey(type);
                 pinnedIds.add(id);
                 save();
+                recordPinReason("entity", String.valueOf(id),
+                        "own-tick error, carried over across a restart/crash", counter.get(), null);
                 LOGGER.warn("AUTO-PINNED {} to the main thread at startup -- {} region-thread "
                         + "tick errors carried over from a previous run crossed the threshold. "
                         + "Restore parallelism with /nestworld unpin {} once fixed.", id, counter.get(), id);
@@ -737,6 +789,8 @@ public final class NestworldPins {
         beErrorCounts.forEach((typeId, counter) -> {
             if (counter.get() >= autoPinThreshold && pinnedBeIds.add(typeId)) {
                 saveBe();
+                recordPinReason("be", typeId,
+                        "own-tick error, carried over across a restart/crash", counter.get(), null);
                 LOGGER.warn("AUTO-PINNED block entity {} to the main thread at startup -- {} "
                         + "region-thread tick errors carried over from a previous run crossed "
                         + "the threshold. Restore parallelism with /nestworld unpin {} once fixed.",
@@ -746,6 +800,10 @@ public final class NestworldPins {
         modCallbackErrorCounts.forEach((modId, counter) -> {
             if (counter.get() >= autoPinThreshold && pinnedMods.add(modId)) {
                 saveMods();
+                recordPinReason("mod", modId,
+                        "caught-elsewhere, carried over across a restart/crash "
+                                + "(likely what was crashing/kicking players before this boot)",
+                        counter.get(), null);
                 LOGGER.warn("AUTO-PINNED mod {} to the main thread at startup -- {} errors "
                         + "carried over from a previous run crossed the threshold (this is "
                         + "very likely what was crashing/kicking players before this boot). "
@@ -802,6 +860,92 @@ public final class NestworldPins {
             Files.write(errorCountsFile, lines);
         } catch (IOException e) {
             LOGGER.warn("Could not write error-counts file {}: {}", errorCountsFile, e.toString());
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Pin reasons -- "why is this pinned" report, see PinReason javadoc
+    // -------------------------------------------------------------------
+
+    /** Records why a pin just fired and persists it immediately (pins are rare enough —
+     *  at most one per distinct mod/type/BE — that this doesn't need the throttle
+     *  {@link #saveErrorCountsThrottled} uses for the much hotter per-error counters). */
+    private void recordPinReason(String kind, String key, String mechanism, int count, Throwable t) {
+        String exClass = "";
+        String exMsg = "";
+        String topFrame = "";
+        if (t != null) {
+            exClass = t.getClass().getName();
+            String msg = t.getMessage();
+            exMsg = msg == null ? "" : msg.replace('|', '/').replace('\n', ' ').replace('\r', ' ');
+            StackTraceElement[] trace = t.getStackTrace();
+            if (trace.length > 0) topFrame = trace[0].toString().replace('|', '/');
+        }
+        pinReasons.put(kind + ":" + key, new PinReason(kind, key, mechanism, count,
+                autoPinThreshold, exClass, exMsg, topFrame, System.currentTimeMillis()));
+        savePinReasons();
+    }
+
+    /** Reason for one pinned key ({@code "entity:minecraft:zombie"}, {@code "be:..."},
+     *  {@code "mod:toms_storage"}), or {@code null} if it was pinned manually (no auto-pin
+     *  trigger ever recorded one) or before this feature existed. */
+    public PinReason getPinReason(String kind, String key) {
+        return pinReasons.get(kind + ":" + key);
+    }
+
+    /** All recorded pin reasons, most-recent first. */
+    public List<PinReason> allPinReasons() {
+        List<PinReason> list = new ArrayList<>(pinReasons.values());
+        list.sort((a, b) -> Long.compare(b.timestampMillis(), a.timestampMillis()));
+        return list;
+    }
+
+    /** Loads persisted pin reasons from a previous run — same file layout {@link
+     *  #savePinReasons} writes. Purely informational; never affects whether anything is
+     *  actually pinned. Malformed lines are skipped, not fatal (matches every other loader
+     *  in this class). */
+    public void loadPinReasons(Path file) {
+        this.pinReasonsFile = file;
+        if (!Files.isRegularFile(file)) return;
+        try {
+            for (String line : Files.readAllLines(file)) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+                String[] parts = trimmed.split("\\|", 8);
+                if (parts.length < 8) continue;
+                int colon = parts[0].indexOf(':');
+                if (colon < 0) continue;
+                String kind = parts[0].substring(0, colon);
+                String key = parts[0].substring(colon + 1);
+                try {
+                    int count = Integer.parseInt(parts[2]);
+                    int threshold = Integer.parseInt(parts[3]);
+                    long ts = Long.parseLong(parts[7]);
+                    pinReasons.put(kind + ":" + key, new PinReason(kind, key, parts[1], count,
+                            threshold, parts[4], parts[5], parts[6], ts));
+                } catch (NumberFormatException e) {
+                    // skip malformed line
+                }
+            }
+        } catch (IOException e) {
+            LOGGER.warn("Could not read pin-reasons file {}: {}", file, e.toString());
+        }
+    }
+
+    private void savePinReasons() {
+        if (pinReasonsFile == null) return;
+        try {
+            Path parent = pinReasonsFile.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            List<String> lines = new ArrayList<>();
+            lines.add("# NestWorld auto-pin reasons — why each pin fired, for /nestworld pinreason.");
+            lines.add("# Format: kind:key|mechanism|errorCount|threshold|exceptionClass|exceptionMessage|topFrame|timestampMillis");
+            pinReasons.forEach((k, reason) -> lines.add(k + "|" + reason.mechanism() + "|"
+                    + reason.errorCount() + "|" + reason.threshold() + "|" + reason.exceptionClass()
+                    + "|" + reason.exceptionMessage() + "|" + reason.topFrame() + "|" + reason.timestampMillis()));
+            Files.write(pinReasonsFile, lines);
+        } catch (IOException e) {
+            LOGGER.warn("Could not write pin-reasons file {}: {}", pinReasonsFile, e.toString());
         }
     }
 }

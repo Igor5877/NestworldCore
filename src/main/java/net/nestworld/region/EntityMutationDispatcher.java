@@ -5,6 +5,7 @@ import java.util.UUID;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.nestworld.modapi.entity.SetVelocityIntentTracker;
 
 /**
  * Phase 9.2 (docs/REGION_OWNERSHIP_CROSS_REGION_SPEC.md §4/§6/§7) — the consolidated entity-
@@ -55,28 +56,50 @@ public final class EntityMutationDispatcher {
      * otherwise posts to the owner's mailbox for later application via {@link #applyQueued}.
      */
     public static void dispatch(Entity target, EntityMutationOp op) {
+        dispatch(target, op, MailboxAudit.nextId());
+    }
+
+    /**
+     * API-1A.7 TEMP INSTRUMENTATION (2026-09-29): {@code opId}-carrying overload for the
+     * verification pass's phase-trace logging. {@code opId} is diagnostic-only -- it never
+     * participates in routing/scheduling/dedup/ordering; the public {@link #dispatch(Entity,
+     * EntityMutationOp)} overload above generates a fresh one per call and delegates here.
+     */
+    static void dispatch(Entity target, EntityMutationOp op, long opId) {
+        final org.apache.logging.log4j.Logger DIAG = org.apache.logging.log4j.LogManager.getLogger("NestWorld/DIAG");
+        DIAG.info("[API1A7] opId={} phase=SUBMIT op={} target={} callerThread={}",
+                opId, op.getClass().getSimpleName(), target.getUUID(), Thread.currentThread().getName());
         if (!NestworldRegionSystem.isInitialised() || !NestworldRegionSystem.get().isManagedLevel(target.level())) {
-            applyDirect(target, op);
+            DIAG.info("[API1A7] opId={} phase=APPLY owner=unmanaged target={}", opId, target.getUUID());
+            boolean applied = applyDirect(target, op);
+            DIAG.info("[API1A7] opId={} phase=TERMINAL result={}", opId, applied ? "APPLIED" : "STALE_INTENT_DROPPED");
             return;
         }
         WorldRegion owner = NestworldRegionSystem.get().getDimensionRegion(target.level())
                 .getGrid().findOwningRegion(target.getUUID());
+        DIAG.info("[API1A7] opId={} phase=OWNER_RESOLVED owner={} target={}",
+                opId, owner == null ? "null" : owner.getId(), target.getUUID());
+        EntityMutationTestHooks.barrierA();
         if (owner == null) {
             // Not currently owned by any region (mid-spawn, or a genuinely unsharded moment) --
             // nothing to race against, apply directly, same as EntityMutationHelper's own
             // null-owner handling.
-            applyDirect(target, op);
+            boolean applied = applyDirect(target, op);
+            DIAG.info("[API1A7] opId={} phase=TERMINAL result={} (owner=null direct)", opId, applied ? "APPLIED" : "STALE_INTENT_DROPPED");
             return;
         }
         if (Thread.currentThread() instanceof RegionThread rt) {
             WorldRegion self = rt.getRegion();
             if (self == owner) {
                 NestworldOwnershipAssertions.assertEntityOwner(target, "EntityMutationDispatcher.dispatch.directFallthrough");
-                applyDirect(target, op);
+                DIAG.info("[API1A7] opId={} phase=APPLY owner={} target={} (same-region direct)", opId, self.getId(), target.getUUID());
+                boolean applied = applyDirect(target, op);
+                DIAG.info("[API1A7] opId={} phase=TERMINAL result={}", opId, applied ? "APPLIED" : "STALE_INTENT_DROPPED");
                 return;
             }
+            DIAG.info("[API1A7] opId={} phase=ENQUEUE from={} to={} target={}", opId, self.getId(), owner.getId(), target.getUUID());
             self.nestworldSendOrQueue(owner, RegionMessage.entityMutate(self, owner,
-                    target.level().getServer().getTickCount(), new RegionMessage.EntityMutate(target.getUUID(), op)));
+                    target.level().getServer().getTickCount(), new RegionMessage.EntityMutate(target.getUUID(), op, 0, opId)));
             return;
         }
         // Main thread (or any non-region caller) -- same backpressure-fallback precedent as
@@ -84,11 +107,14 @@ public final class EntityMutationDispatcher {
         // pending-retry queue for; falling back to a direct call is strictly no worse than the
         // pre-dispatcher behavior in that one rare, already-degraded case).
         if (owner.nestworldMailboxDepthFast() >= NestworldTuning.MAILBOX_BACKPRESSURE_THRESHOLD) {
-            applyDirect(target, op);
+            DIAG.info("[API1A7] opId={} phase=APPLY owner={} target={} (backpressure fallback direct)", opId, owner.getId(), target.getUUID());
+            boolean applied = applyDirect(target, op);
+            DIAG.info("[API1A7] opId={} phase=TERMINAL result={}", opId, applied ? "APPLIED" : "STALE_INTENT_DROPPED");
             return;
         }
+        DIAG.info("[API1A7] opId={} phase=ENQUEUE from=main to={} target={}", opId, owner.getId(), target.getUUID());
         owner.nestworldPostMessage(RegionMessage.entityMutate(null, owner,
-                target.level().getServer().getTickCount(), new RegionMessage.EntityMutate(target.getUUID(), op)));
+                target.level().getServer().getTickCount(), new RegionMessage.EntityMutate(target.getUUID(), op, 0, opId)));
     }
 
     /**
@@ -99,8 +125,21 @@ public final class EntityMutationDispatcher {
      * a different region since the message was sent.
      */
     public static void applyQueued(UUID targetId, EntityMutationOp op, int rerouteHops, WorldRegion applyingRegion, ServerLevel level) {
+        applyQueued(targetId, op, rerouteHops, MailboxAudit.nextId(), applyingRegion, level);
+    }
+
+    /**
+     * API-1A.7 TEMP INSTRUMENTATION (2026-09-29): {@code opId}-carrying overload. Same
+     * diagnostic-only status as {@code dispatch}'s overload above -- the 5-arg legacy overload
+     * (used by any caller not yet updated to pass an opId) generates a fresh, uncorrelated one.
+     */
+    static void applyQueued(UUID targetId, EntityMutationOp op, int rerouteHops, long opId, WorldRegion applyingRegion, ServerLevel level) {
+        final org.apache.logging.log4j.Logger DIAG = org.apache.logging.log4j.LogManager.getLogger("NestWorld/DIAG");
+        EntityMutationTestHooks.barrierB();
         Entity target = level.getEntity(targetId);
         if (target == null || target.isRemoved()) {
+            DIAG.info("[API1A7] opId={} phase=TERMINAL result=TARGET_NOT_FOUND target={} applyingRegion={} thread={}",
+                    opId, targetId, applyingRegion.getId(), Thread.currentThread().getName());
             return; // target died/despawned/unloaded between send and apply -- NO-OP, not an error
         }
         WorldRegion currentOwner = NestworldRegionSystem.isInitialised() && NestworldRegionSystem.get().isManagedLevel(level)
@@ -111,25 +150,32 @@ public final class EntityMutationDispatcher {
                 // Target is ping-ponging ownership faster than the mailbox drains (or a genuine
                 // bug is looping it) -- drop rather than retry forever. Graceful degradation, not
                 // silent infinite retry -- same philosophy as this project's backpressure handling.
-                org.apache.logging.log4j.LogManager.getLogger("NestWorld/DIAG").warn(
-                        "EntityMutationDispatcher: dropping {} mutation on {} after {} re-route hops "
-                        + "(target keeps changing owner faster than the mailbox drains)",
-                        op.getClass().getSimpleName(), targetId, rerouteHops);
+                DIAG.warn("[API1A7] opId={} phase=TERMINAL result=REROUTE_LIMIT_DROPPED target={} hops={}",
+                        opId, targetId, rerouteHops);
                 return;
             }
             // Stale: ownership moved on (split/merge/handover) between send and apply. Re-route
             // to the entity's REAL current owner -- that region's own next drain re-validates
-            // again from scratch, same as this call did.
+            // again from scratch, same as this call did. opId carried through UNCHANGED.
+            DIAG.info("[API1A7] opId={} phase=REROUTE from={} to={} hop={} target={}",
+                    opId, applyingRegion.getId(), currentOwner.getId(), rerouteHops + 1, targetId);
             applyingRegion.nestworldSendOrQueue(currentOwner, RegionMessage.entityMutate(applyingRegion, currentOwner,
-                    level.getServer().getTickCount(), new RegionMessage.EntityMutate(targetId, op, rerouteHops + 1)));
+                    level.getServer().getTickCount(), new RegionMessage.EntityMutate(targetId, op, rerouteHops + 1, opId)));
             return;
         }
-        applyDirect(target, op);
+        EntityMutationTestHooks.barrierC();
+        DIAG.info("[API1A7] opId={} phase=APPLY owner={} target={} thread={}",
+                opId, applyingRegion.getId(), targetId, Thread.currentThread().getName());
+        boolean applied = applyDirect(target, op);
+        DIAG.info("[API1A7] opId={} phase=TERMINAL result={}", opId, applied ? "APPLIED" : "STALE_INTENT_DROPPED");
     }
 
     /** The actual mutation switch — same set {@code RegionThread.applyPendingEntityMutations()}
-     *  already had, plus {@link EntityMutationOp.Kill}/{@link EntityMutationOp.Discard}. */
-    static void applyDirect(Entity entity, EntityMutationOp op) {
+     *  already had, plus {@link EntityMutationOp.Kill}/{@link EntityMutationOp.Discard}. Returns
+     *  {@code false} only for API-1A.8's STALE_INTENT_DROPPED outcome ({@link
+     *  EntityMutationOp.SetVelocity} whose {@code intentVersion} lost arbitration to a newer one
+     *  already applied) -- every other op type always mutates and returns {@code true}. */
+    static boolean applyDirect(Entity entity, EntityMutationOp op) {
         if (op instanceof EntityMutationOp.Damage d) {
             entity.hurt(d.source(), d.amount());
         } else if (op instanceof EntityMutationOp.AddEffect e) {
@@ -148,6 +194,14 @@ public final class EntityMutationDispatcher {
             entity.kill();
         } else if (op instanceof EntityMutationOp.Discard) {
             entity.remove(Entity.RemovalReason.DISCARDED);
+        } else if (op instanceof EntityMutationOp.SetVelocity sv) {
+            SetVelocityIntentTracker.TargetKey key =
+                    new SetVelocityIntentTracker.TargetKey(entity.level().dimension(), entity.getUUID());
+            if (!SetVelocityIntentTracker.tryAccept(key, sv.intentVersion())) {
+                return false; // STALE_INTENT_DROPPED -- a newer intent for this target already won
+            }
+            entity.setDeltaMovement(sv.velocity());
         }
+        return true;
     }
 }
