@@ -967,6 +967,10 @@ project(':forge') {
         implementation project(':javafmllanguage')
         implementation project(':lowcodelanguage')
         implementation project(':mclanguage')
+        // API-PKG-1: net.nestworld.modapi.entity now lives in its own standalone, Core-free
+        // Gradle module (see project(':modapi') below) -- Core code resolves it as a normal
+        // project dependency instead of same-sourceSet compilation.
+        implementation project(':modapi')
         runtimeOnly "cpw.mods:bootstraplauncher:${BOOTSTRAPLAUNCHER_VERSION}"
     }
     dependencies sharedDeps
@@ -1802,6 +1806,45 @@ project(':forge') {
     // Make sure we run bin compat checking during local testing.
     if (!System.env.MAVEN_USER || !System.env.MAVEN_PASSWORD)
         publish.dependsOn(':forge:checkJarCompatibility')
+}
+
+// API-PKG-1 (packaging gate): net.nestworld.modapi.entity as a standalone, Maven-consumable,
+// Core-free artifact. compileOnly against :clean (genuine unpatched-by-NestWorld Forge/vanilla)
+// -- NOT :forge (which bundles NestWorld's own patches + net.nestworld.region.* in one
+// monolithic sourceSet; FORGE-001 already found deep, un-strippable Core coupling baked into
+// patched vanilla's own bootstrap, so compiling against :forge here would silently reintroduce
+// exactly the coupling this module exists to prove absent). :clean is also what :forge itself
+// depends on via patcher{parent=...}, so this creates a valid DAG: :modapi -> :clean <- :forge,
+// :forge -> :modapi. No cycle.
+project(':modapi') {
+    apply plugin: 'java-library'
+    apply plugin: 'maven-publish'
+
+    group = 'net.nestworld'
+    version = '1.0.0-SNAPSHOT'
+
+    java {
+        withSourcesJar()
+    }
+
+    dependencies {
+        compileOnly project(':clean')
+        compileOnly 'org.slf4j:slf4j-api:2.0.9'
+    }
+
+    publishing {
+        publications {
+            modapi(MavenPublication) {
+                from components.java
+                groupId = 'net.nestworld'
+                artifactId = 'nestworld-mod-api-forge-1.20.1'
+                version = '1.0.0-SNAPSHOT'
+            }
+        }
+        repositories {
+            mavenLocal()
+        }
+    }
 }
 
 //evaluationDependsOnChildren()

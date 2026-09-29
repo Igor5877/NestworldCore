@@ -10,13 +10,16 @@ must not be assumed by Phase API-1's skeleton.
 ```
 API-0     ARCHITECTURE BASELINE   -- completed, needed amendment (done, see below)
 API-0.5   MOD API SAFETY MODEL    -- CLOSED (see "Phase API-0.5 — CLOSED" below)
-API-1     PUBLIC API SKELETON     -- API-1A.5/1A.5P/1A.6/1A.7/1A.8 all CLOSED. setVelocity is
+API-1     PUBLIC API SKELETON     -- Milestone 1 (API-1A.5 through 1A.8) CLOSED: setVelocity is
                                     VERIFIED for Forge dedicated, Forge integrated, NestWorld
-                                    dedicated (NestWorld integrated PARKED as an infrastructure
-                                    gap, not silently skipped). The confirmed ordering inversion
-                                    is FIXED and VERIFIED (LATEST_INTENT_WINS, API-1A.8). First
-                                    Bounded Mutation Primitive is production-ready in the stated
-                                    scope. See "API-1A.7 — CLOSED" and "API-1A.8" below.
+                                    dedicated (NestWorld integrated PARKED, not silently
+                                    skipped), ordering inversion FIXED (LATEST_INTENT_WINS).
+                                    API-PKG-1 (packaging gate) also CLOSED: net.nestworld.modapi
+                                    now a real, separate, Maven-consumable Gradle module/artifact
+                                    (:modapi), proven end-to-end via a genuinely external
+                                    consumer project on both stock Forge and NestWorldCore. See
+                                    "API-1A.7 — CLOSED", "API-1A.8", "Roadmap after Milestone 1"
+                                    below, and docs/PACKAGING.md.
 API-2+    (Forge compat, Core integration, tests, NeoForge) -- BLOCKED
 ```
 
@@ -1194,7 +1197,7 @@ independently, not assume one implies another.
 ```
 API-1A ✅ CLOSED (Milestone 1)
    |
-API-PKG-1                          <- NEXT, before API-1B
+API-PKG-1 ✅ CLOSED (2026-09-29)
    |
    +------------------+------------------+
    v                                     v
@@ -1203,25 +1206,58 @@ Inventory Slot Mutation             Module SPI Boundary
 (ownership family #2)               (design/audit gate ONLY)
 ```
 
-**API-PKG-1 — Packaging gate (next, before any new primitive)**. Tests the actual product
-property this whole API exists for: can a third-party developer take a standalone API artifact
-and write a mod without knowing anything about NestWorldCore?
+**API-PKG-1 — Packaging gate — CLOSED, all 5 hard criteria met with real evidence.** Full
+detail: `docs/PACKAGING.md`. `net.nestworld.modapi.entity` now physically lives in its own
+Gradle subproject (`projects/modapi`, module `:modapi`), not the monolithic `:forge` compile
+unit:
 ```
 nestworld-mod-api-forge-1.20.1.jar
         |
-        +-- zero Core dependencies       (already proven at the ABI/jdeps level, API-1A.5P/1A.6)
-        +-- stable public ABI
-        +-- Maven-consumable              (mavenLocal() is sufficient to prove the boundary --
-        +-- external test mod                no need to publish to a real repository yet)
+        +-- zero Core dependencies       CONFIRMED -- jdeps on the actual PUBLISHED jar (not
+        |                                  compiled-classes-dir): only net.minecraft.*/
+        |                                  org.slf4j.*/java.* resolve, zero net.nestworld.region/
+        |                                  adapter, zero net.minecraftforge.*
+        +-- stable public ABI            unchanged -- same 5 classes, source untouched, only
+        |                                  their physical location moved
+        +-- Maven-consumable              CONFIRMED -- published to mavenLocal()
+        |                                  (~/.m2/repository/net/nestworld/
+        |                                  nestworld-mod-api-forge-1.20.1/1.0.0-SNAPSHOT/),
+        |                                  real Maven-coordinate resolution in the consumer,
+        |                                  not a project(...) dependency
+        +-- external test mod             CONFIRMED -- genuinely separate Gradle project
+                                           (scratchpad/api-pkg-1-consumer/), own settings.gradle/
+                                           build.gradle, mavenLocal() repository entry
                   |
           +-------+--------+
           v                v
      stock Forge       NestWorldCore
           |                |
-        PASS             PASS
+   PASS, physically    PASS, physically verified -- same consumer jar, byte-
+   verified (Motion    identical, unchanged, routed through the REAL region-aware
+   NBT match)          NestworldVelocityBackend/EntityMutationDispatcher path
+                        (intentVersion=1 confirmed in the log -- API-1A.8's
+                        LATEST_INTENT_WINS mechanism active end-to-end through
+                        the external artifact)
 ```
-Not yet started. `mavenLocal()`, not Maven Central/a real repository — publishing is a separate,
-later decision, this gate is purely about proving the packaging boundary itself works.
+**Module dependency graph built**: `:modapi` and `:forge` both `compileOnly`/depend on `:clean`
+(the genuinely unpatched vanilla+Forge project already used as `:forge`'s own patcher parent —
+chosen deliberately over `:forge` itself, since `:forge` bundles NestWorld's patches
+monolithically and `FORGE-001` already found un-strippable Core coupling baked into patched
+vanilla's own bootstrap); `:forge` additionally depends on `:modapi` (`implementation`) so Core
+code keeps resolving `net.nestworld.modapi.entity.*`. No dependency cycle. Both
+`:modapi:compileJava` and `:forge:compileJava` verified independently, twice (once by the
+dispatching pass, once independently re-confirmed by the coordinator against the final repo
+state).
+**Not done, correctly out of scope**: integrated-environment testing for the consumer project
+(the packaging boundary was the new thing under test; `setVelocity`'s own integrated-Forge
+behavior was already proven in API-1A.7 and isn't re-tested here). Real Maven Central/a real
+repository, a versioning policy, and which distribution shape to recommend externally are all
+explicitly deferred, not decided by this gate.
+**Incidental, non-blocking finding**: the reused test-mod template had hardcoded `@Mod(...)`
+mod-id string literals left over from an earlier mod, mismatched against its templated
+`mods.toml` — a real Forge mod-loading trap (annotation literals don't auto-follow
+`gradle.properties` template substitution), not a `net.nestworld.modapi` defect. Fixed in the
+scratch consumer project; worth remembering if this template gets reused again.
 
 **API-1B — Inventory Slot Mutation (after API-PKG-1)**. Chosen specifically because it tests a
 DIFFERENT ownership family, not just a second entity setter:

@@ -32,10 +32,12 @@ include 'fmlearlydisplay'
 include ':mcp'
 include ':fmlonly'
 include ':forge'
+include ':modapi'
 
 project(":mcp").projectDir = file("projects/mcp")
 project(":fmlonly").projectDir = file("projects/fmlonly")
 project(":forge").projectDir = file("projects/forge")
+project(":modapi").projectDir = file("projects/modapi")
 
 if (!System.env.TEAMCITY_VERSION) {
     include ':clean'
