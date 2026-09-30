@@ -65,6 +65,48 @@ public final class NestworldCommand {
                                                         DoubleArgumentType.getDouble(ctx, "z")))))));
     }
 
+    /** MODULE-1: live verification surface for {@code net.nestworld.module.ModuleRegistry},
+     *  following the same extracted-builder-method discipline {@link #buildSetVelocityTestNode()}
+     *  established after CORE-CMD-001 (docs/contracts/CORE-CMD-001-brigadier-fragility.md). */
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> buildModuleTestNode() {
+        return Commands.literal("module")
+                .then(Commands.literal("status").executes(ctx -> moduleStatus(ctx.getSource())))
+                .then(Commands.literal("quiesce")
+                        .then(Commands.argument("id", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                .executes(ctx -> moduleQuiesce(ctx.getSource(),
+                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "id")))))
+                .then(Commands.literal("testregister")
+                        .then(Commands.argument("id", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                .then(Commands.argument("name", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                        .executes(ctx -> moduleTestRegister(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "id"),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name"))))));
+    }
+
+    private static int moduleStatus(CommandSourceStack source) {
+        java.util.List<String> lines = net.nestworld.module.ModuleRegistry.statusLines();
+        if (lines.isEmpty()) {
+            source.sendSuccess(() -> net.minecraft.network.chat.Component.literal("(no modules)"), false);
+        }
+        for (String line : lines) {
+            source.sendSuccess(() -> net.minecraft.network.chat.Component.literal(line), false);
+        }
+        return lines.size();
+    }
+
+    private static int moduleQuiesce(CommandSourceStack source, String id) {
+        net.nestworld.module.ModuleRegistry.quiesce(new net.nestworld.module.ModuleId(id));
+        source.sendSuccess(() -> net.minecraft.network.chat.Component.literal("quiesce requested: " + id), false);
+        return 1;
+    }
+
+    private static int moduleTestRegister(CommandSourceStack source, String id, String name) {
+        String result = net.nestworld.module.ModuleRegistry.testLateCommandRegistration(
+                new net.nestworld.module.ModuleId(id), name);
+        source.sendSuccess(() -> net.minecraft.network.chat.Component.literal("testregister " + id + " '" + name + "' -> " + result), false);
+        return 1;
+    }
+
     /** API-1A.7 Phase B/C: deterministic barrier-driven test scenarios (see
      *  {@link Api1A7DeterministicTests}), following the same extracted-builder-method
      *  discipline {@link #buildSetVelocityTestNode()} already established. */
@@ -590,7 +632,8 @@ public final class NestworldCommand {
                                         .executes(ctx -> testMutate(ctx.getSource(),
                                                 UuidArgument.getUuid(ctx, "uuid"), new EntityMutationOp.Discard()))))
                         .then(buildSetVelocityTestNode())
-                        .then(buildDeterministicTestNode())));
+                        .then(buildDeterministicTestNode()))
+                .then(buildModuleTestNode()));
 
         // /spark — in-game access to the spark standalone agent (see SparkBridge).
         // Only when the real spark mod is absent (dev runtime can't load it);

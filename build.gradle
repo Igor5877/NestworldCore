@@ -1614,6 +1614,20 @@ project(':forge') {
             include 'assets/forge/lang/*.json'
         }
 
+        // API-PKG-1 fix: :modapi (net.nestworld.modapi.*) was extracted into its own Gradle
+        // module (implementation project(':modapi') in :forge's dependencies, above), which
+        // gives compile/IDE classpath access but does NOT put its classes in :forge's own
+        // output jar -- a project() dependency is not fat-jar inclusion. Core code
+        // (NestworldVelocityBackend, NestworldRegionSystem, EntityMutationDispatcher) calls
+        // net.nestworld.modapi.entity.* directly via normal imports, so the deployed server
+        // jar needs those classes physically present, not just resolvable at compile time.
+        // Confirmed missing (zero net/nestworld/modapi entries, 0 vs. net/nestworld/region's
+        // 222) and confirmed as the exact cause of a NoClassDefFoundError boot failure before
+        // this fix. Merge :modapi's compiled output directly in (same classloader, same
+        // package layout Core already expects) -- not jarJar/shading, which is for embedding
+        // an EXTERNAL artifact with its own isolated classloader, the wrong tool here.
+        from project(':modapi').sourceSets.main.output
+
         dependsOn downloadCrowdin
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 
@@ -1624,6 +1638,35 @@ project(':forge') {
                 } else {
                     manifest.attributes(values, pkg)
                 }
+            }
+        }
+
+        // Packaging invariant, added after the :modapi regression above: a project() compile
+        // dependency proves nothing about the OUTPUT jar's actual contents -- this bit Core
+        // once already (net.nestworld.modapi silently absent, NoClassDefFoundError at boot,
+        // not caught until a live re-boot weeks later). Cheaper to fail the build here than to
+        // rediscover this via a boot failure. Checks one canary class per subproject whose
+        // classes this jar's own Core code depends on at runtime -- extend this list if a
+        // future subproject extraction (per docs/PACKAGING.md's own stated lesson) adds another.
+        doLast {
+            def canaries = [
+                'net/nestworld/modapi/entity/NestWorldEntities.class',
+            ]
+            def jarPath = archiveFile.get().asFile
+            def zip = new java.util.zip.ZipFile(jarPath)
+            try {
+                canaries.each { canary ->
+                    if (zip.getEntry(canary) == null) {
+                        throw new GradleException("universalJar packaging invariant violated: "
+                            + "'${canary}' is missing from ${jarPath.name}. A project() compile "
+                            + "dependency does not guarantee fat-jar inclusion -- if a subproject "
+                            + "was recently added/changed, its classes likely need an explicit "
+                            + "'from project(...).sourceSets.main.output' line above, same as "
+                            + "the :modapi fix already here.")
+                    }
+                }
+            } finally {
+                zip.close()
             }
         }
     }

@@ -138,6 +138,42 @@ metadata for modid <old-id>` at boot — a real, reproducible Forge mod-loading 
 literal vs. templated `mods.toml` can silently diverge when reusing a template), not a
 `net.nestworld.modapi` defect. Fixed by updating the two annotation literals to match.
 
+## Regression found and fixed (2026-09-30) — `:forge`'s OWN deployed jar was broken
+
+**What happened**: API-PKG-1's verification tested the standalone `:modapi` artifact against an
+EXTERNAL consumer (mavenLocal(), a separate project) — real and correctly evidenced for that
+question. It never re-booted `:forge`'s own actual deployed server jar after the extraction.
+`implementation project(':modapi')` in `:forge`'s dependencies gives compile/IDE classpath
+resolution only — it is NOT fat-jar inclusion. Result: `net/nestworld/modapi/**` was silently
+**absent** from `:forge:universalJar`'s actual output (confirmed: 0 entries, vs.
+`net/nestworld/region`'s 222) ever since the API-PKG-1 commit (`7123ef366`) — meaning the real,
+deployable NestWorldCore server jar could not boot at all
+(`NoClassDefFoundError: net/nestworld/modapi/entity/VelocityExecutionBackend` at
+`NestworldMod.<init>`, since `NestworldVelocityBackend`/`NestworldRegionSystem`/
+`EntityMutationDispatcher` all call `net.nestworld.modapi.entity.*` directly). Found during
+MODULE-1's live-verification pass (`docs/contracts/Module1Foundation.md`), the first time
+anything rebuilt and booted `:forge`'s own jar from a fresh build since the extraction.
+
+**Fix**: `build.gradle`'s `universalJar` task now includes `from project(':modapi')
+.sourceSets.main.output` alongside its existing sources — merges `:modapi`'s compiled classes
+directly into the same jar, same classloader, same package layout Core already expects. This is
+deliberately NOT `jarJar`/shading (that mechanism is for embedding an EXTERNAL artifact with its
+own isolated classloader-remapping — the wrong tool for merging a project's own module into its
+own deployed jar).
+
+**Verified, not assumed**: rebuilt `:forge:universalJar`, confirmed `net/nestworld/modapi/**`
+now present (8 entries: 2 directories + 6 class files, matching all 5 source classes + 1 nested
+record). Rebuilt `:forge:installerJar`, ran the real installer into a fresh isolated instance,
+booted via the real `run.sh` launcher (not a bare `java -jar`, which fails differently on this
+project's SRG-obfuscated server jar — same lesson as `API1A7-FORGE-002`'s original tooling
+mistake) — server reached `Done (9.339s)! For help, type "help"` with zero
+`NoClassDefFoundError`. Test server process confirmed not left running afterward.
+
+**Lesson for future module/artifact extractions**: a `project(...)` dependency proves compile-time
+correctness, never packaging correctness. Any future extraction (API-1B or beyond, per the "Not
+yet decided" item below about extending this pattern) must re-verify the CONSUMING project's own
+deployed artifact boots, not only that an external consumer of the extracted artifact does.
+
 ## Not yet decided / out of scope for this gate
 
 - Publishing to a real, non-local Maven repository (Maven Central, GitHub Packages, a

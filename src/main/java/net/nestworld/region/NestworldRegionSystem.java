@@ -207,6 +207,11 @@ public class NestworldRegionSystem {
         // server generation (including an integrated-server world restart in the same JVM)
         // must never see stale version counters from a previous world.
         net.nestworld.modapi.entity.SetVelocityIntentTracker.resetAll();
+        // MODULE-1: drive every RUNNING module through QUIESCING -> DISABLED (or FAILED) before
+        // Core itself tears down -- this is the one QUIESCING precedent Core's own shutdown
+        // does NOT provide (docs/MODULE0_AUDIT.md §C: RegionThread.shutdown()'s mailbox isn't
+        // drained either) -- modules get a real drain step Core's own shutdown still lacks.
+        net.nestworld.module.ModuleRegistry.quiesceAll();
         if (INSTANCE != null) {
             INSTANCE.shutdown();
             INSTANCE = null;
@@ -216,6 +221,15 @@ public class NestworldRegionSystem {
     @SubscribeEvent
     public static void onRegisterCommands(net.minecraftforge.event.RegisterCommandsEvent event) {
         NestworldCommand.register(event.getDispatcher());
+        // MODULE-1: this is the earliest point a CommandDispatcher exists, which module
+        // command registrations need -- deliberately driving LOADED->ENABLED->RUNNING from
+        // here rather than onServerStarting, to avoid an event-ordering assumption between
+        // RegisterCommandsEvent and ServerStartingEvent. Startup-only discovery: both test
+        // modules are registered here, once, every server start -- no jar scanning, no
+        // runtime installation.
+        net.nestworld.module.ModuleRegistry.discover(new net.nestworld.module.ExampleModule());
+        net.nestworld.module.ModuleRegistry.discover(new net.nestworld.module.FailingExampleModule());
+        net.nestworld.module.ModuleRegistry.enableAll(event.getDispatcher());
     }
 
     // NestWorld: feeds TickDurationHistory's 10s/1m windows for /nestworld status|lag's

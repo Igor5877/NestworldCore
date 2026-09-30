@@ -10,16 +10,15 @@ must not be assumed by Phase API-1's skeleton.
 ```
 API-0     ARCHITECTURE BASELINE   -- completed, needed amendment (done, see below)
 API-0.5   MOD API SAFETY MODEL    -- CLOSED (see "Phase API-0.5 — CLOSED" below)
-API-1     PUBLIC API SKELETON     -- Milestone 1 (API-1A.5 through 1A.8) CLOSED: setVelocity is
-                                    VERIFIED for Forge dedicated, Forge integrated, NestWorld
-                                    dedicated (NestWorld integrated PARKED, not silently
-                                    skipped), ordering inversion FIXED (LATEST_INTENT_WINS).
-                                    API-PKG-1 (packaging gate) also CLOSED: net.nestworld.modapi
-                                    now a real, separate, Maven-consumable Gradle module/artifact
-                                    (:modapi), proven end-to-end via a genuinely external
-                                    consumer project on both stock Forge and NestWorldCore. See
-                                    "API-1A.7 — CLOSED", "API-1A.8", "Roadmap after Milestone 1"
-                                    below, and docs/PACKAGING.md.
+API-1     PUBLIC API SKELETON     -- Milestone 1 (API-1A.5 through 1A.8) CLOSED, API-PKG-1
+                                    (packaging) CLOSED -- see "Roadmap after Milestone 1" below.
+                                    Module SPI track: MODULE-0 PARTIAL -> MODULE-0.5 RESOLVED ->
+                                    MODULE-1 PASS (startup-loaded SPI foundation, real code,
+                                    live-verified 2026-09-30) -- MODULE-2 (hot reload) PARKED.
+                                    A critical packaging regression (:forge's own deployed jar
+                                    couldn't boot post-API-PKG-1) was found and fixed during
+                                    MODULE-1's verification -- see docs/PACKAGING.md. NEXT:
+                                    API-1B (Inventory Slot Mutation), not started.
 API-2+    (Forge compat, Core integration, tests, NeoForge) -- BLOCKED
 ```
 
@@ -1201,9 +1200,10 @@ API-PKG-1 ✅ CLOSED (2026-09-29)
    |
    +------------------+------------------+
    v                                     v
-API-1B                              MODULE-0
-Inventory Slot Mutation             Module SPI Boundary
-(ownership family #2)               (design/audit gate ONLY)
+API-1B                              MODULE-0    PARTIAL (2026-09-29)
+Inventory Slot Mutation             MODULE-0.5  RESOLVED (2026-09-29)
+NEXT                                MODULE-1    ✅ PASS (2026-09-30) -- startup foundation
+                                     MODULE-2    PARKED -- hot lifecycle/reload research
 ```
 
 **API-PKG-1 — Packaging gate — CLOSED, all 5 hard criteria met with real evidence.** Full
@@ -1270,13 +1270,62 @@ class -> delivery -> verification) works for this genuinely different ownership 
 real evidence of a repeatable methodology for building this Mod API — not evidence that
 `setVelocity` happened to be a well-chosen one-off.
 
-**MODULE-0 — Module SPI Boundary (parallel track or immediately after, NOT a hot-reload
-implementation)**. Design/audit gate only. Explicit lesson carried forward from this milestone:
+**MODULE-0 — Module SPI Boundary — CLOSED PARTIAL (2026-09-29).** Design/audit gate only, per
+directive. Full detail: `docs/MODULE0_AUDIT.md`. Extension-point inventory, privilege boundary
+(`privileged != unrestricted`, confirmed to hold structurally as long as entity/region mutation
+stays routed through `EntityMutationDispatcher`-shaped mechanisms), lifecycle contract draft,
+resource ownership matrix. Verdict PARTIAL: three unresolved gaps (generation semantics,
+execution-context vocabulary vs. GMEIL, unload-guarantee wording) — not a blocker, but not
+enough to design MODULE-1 from directly. Explicit lesson carried forward from Milestone 1:
 `docs/contracts/api-1a7-findings.md`'s "Lifecycle identity replacement: PASS" finding proved
 distinct identity across sequential server generations — it did NOT prove the stronger claim
 that all resources (executors, listeners, classloader references) from a prior generation are
 actually released. For a Module SPI, THAT stronger claim becomes the actual correctness
-question, not a nice-to-have — flagged now so it isn't rediscovered the hard way later.
+question, not a nice-to-have.
+
+**MODULE-0.5 — Lifecycle & Execution Contract Resolution — CLOSED RESOLVED (2026-09-29).**
+Design only, per directive. Full detail: `docs/MODULE0.5_LIFECYCLE_CONTRACT.md`. Closed all
+three MODULE-0 gaps: G1 (generation semantics — identity model, 5-state work model, generation
+check at `QUEUED -> RUNNING` mirroring `SetVelocityIntentTracker.tryAccept`'s placement,
+`RUNNING` work bounded by timeout rather than force-dropped), G2 (execution vocabulary — new
+`ModuleExecutionContext { MAIN_ONLY, REGION_LOCAL, CORE_OWNED }`, deliberately NOT reusing
+GMEIL's `ExecutionPolicy`, composes rather than collides), G3 (unload guarantee reformulated
+with an `ASSERTABLE`/`TESTABLE`/`NOT VERIFIABLE` honesty framework and a `ModuleContext`-owned
+vs. module-owned resource split).
+
+**MODULE-1 — Startup-Loaded Module SPI Foundation — CLOSED PASS (2026-09-30).** Real
+implementation this time, not design-only — the architecture owner's explicit "GO" for
+production code. Full detail: `docs/contracts/Module1Foundation.md`. New package
+`net.nestworld.module`: `ModuleId`/`Version`/`Generation`/`Identity` (generation carried
+through from day one, not decorative, per explicit instruction), `ModuleLifecycleState`
+(`DISCOVERED -> LOADED -> ENABLED -> RUNNING -> QUIESCING -> DISABLED` + `FAILED`, no
+`UNLOADED` — no classloader isolation this pass, process restart is the unload boundary),
+`ModuleExecutionContext` (MODULE-0.5's G2 decision), `NestWorldModule`/`ModuleContext`/
+`ResourceHandle`/`ResourceLedger` (revokes in REVERSE registration order, tolerant of a
+throwing handle), `ModuleFailure` (attribution, never rollback), `ModuleRegistry` (the
+orchestrator). Two test modules (`ExampleModule`: 3 registrations, deliberately boring;
+`FailingExampleModule`: fails before its 3rd registration) proved, live, with real RCON
+evidence: the central ledger-lifecycle test (register A/B/C → quiesce → reject late
+registration → ledger empty → `DISABLED`, with the listener's own live tick counter confirming
+revocation had a REAL effect, not just a bookkeeping one) and the failure-injection test
+(module never reaches `RUNNING`, straight to `FAILED`, ledger revoked in reverse order).
+**Honest limitation found and documented, not hidden**: command revocation is soft (execution
+refuses to run) not a real Brigadier tree removal — confirmed via `javap` that this project's
+Brigadier version (1.1.8) has no `removeChild`/`removeCommand` API.
+
+**Higher-priority incidental finding from MODULE-1's own verification pass**: this was the
+first fresh rebuild+boot of `:forge`'s own deployed jar since API-PKG-1 — it silently could not
+boot at all (`net.nestworld.modapi` missing from `universalJar`'s actual output; a
+`project(...)` dependency gives compile classpath, not fat-jar inclusion). Fixed in
+`build.gradle`, independently re-verified with a real installer + real boot. Full writeup:
+`docs/PACKAGING.md`. Lesson for any future extraction: verify the CONSUMING project's own
+deployed artifact still boots, not only that an external consumer of the extracted artifact
+does — API-PKG-1's own verification checked the latter and missed the former.
+
+**MODULE-2 — hot lifecycle/reload research — PARKED, not started.** Per explicit instruction:
+MODULE-1's PASS does not mean hot reload is next. `ModuleClassLoader` isolation, true hot
+load/reload, generation-tagged async (scheduled/mailbox) capabilities all remain deliberately
+unimplemented, each needing its own future gate once a real capability surfaces the need.
 
 ## API-1A.7 — CLOSED (2026-09-29)
 
