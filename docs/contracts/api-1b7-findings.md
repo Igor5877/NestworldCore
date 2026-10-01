@@ -8,7 +8,7 @@ not touched; the only JVMs touched were confirmed by `/proc/<pid>/cwd`. Target: 
 lines, `[API1A7] opId=…` phase trace, and `InventorySetTelemetry` invariant counters (computed
 independently of the trackers they audit).
 
-**Final status (2026-10-01)**: API-1B SET-SLOT — PRIMITIVE VERIFIED / DISTRIBUTION & TRANSPORT BLOCKED. Primitive correctness VERIFIED (NestWorld direct + routed, genuine
+**Final status (2026-10-01)**: API-1B SET-SLOT — PRIMITIVE VERIFIED / TRANSPORT BLOCKED (distribution blocker PKG-002 CLOSED 2026-10-01; earlier label: "API-1B SET-SLOT — PRIMITIVE VERIFIED / TRANSPORT BLOCKED"). Primitive correctness VERIFIED (NestWorld direct + routed, genuine
 stock Forge; deterministic fixtures with real respawn/relogin; 3 stress runs, all primitive
 invariants 0). Delivery reliability BLOCKED by CORE-MAILBOX-MERGE-001 (171/171 missing terminals
 attributed under forced churn). Distribution BLOCKED by API1B7-PKG-002. PKG-001 fixed in

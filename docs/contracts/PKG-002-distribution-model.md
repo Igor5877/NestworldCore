@@ -1,6 +1,44 @@
 # PKG-002 — Mod API distribution model (investigation, 2026-10-01)
 
-**Status: model PROVEN by experiment (E1–E6); decisions TAKEN (architecture owner, 2026-10-01); implementation NOT started; PKG-002 PASS additionally requires E7 (below).**
+**Status: PKG-002 — CLOSED / VERIFIED (2026-10-01). Packaging is frozen.**
+
+Commits: `72d5b3430` decision record · `b092a61a8` provider artifact · `a086b62a9` jar-in-jar
+packaging + Core version range · `21c0644ca` Gate 2 (SPI ABI) · `e7c6f08c4` Maven publication ·
+`347fd775c` reproducible fixtures (`tests/modapi-compat`).
+
+## Distribution invariant
+
+```
+Consumer never owns net.nestworld.modapi classes.
+Exactly one FML provider supplies the API namespace at runtime.
+FML establishes declared version compatibility (Gate 1).
+NestWorldCore establishes required SPI ABI compatibility
+  before SPI-dependent Core initialization (Gate 2).
+Stock Forge and NestWorld may use different execution
+  backends while consuming the same consumer jar.
+```
+
+## Closure evidence — `tests/modapi-compat/run-matrix.sh` (NestWorld 47.4.241, upstream Forge 1.20.1-47.4.20)
+
+| Runtime | Consumer | Provider | Expected | Got | Linkage errors |
+|---|---|---|---|---|---|
+| Stock Forge | compileOnly | external | PASS | PASS — setVelocity 1.500/1.5 | 0 |
+| Stock Forge | compileOnly | missing | FML refusal | `Mod ID: 'nestworld_modapi' … Actual version: '[MISSING]'` | 0 |
+| Stock Forge | jarJar | nested | PASS | PASS — 1.500/1.5 | 0 |
+| NestWorld | compileOnly | built-in | PASS | PASS — 1.470/1.5 | 0 |
+| NestWorld | jarJar | built-in + nested | PASS | PASS — 1.500/1.5 | 0 |
+| NestWorld | compileOnly | unsupported newer 1.0.1 | FML refusal | `Requested by: 'nestworld', Expected range: '[1.0.0-SNAPSHOT,1.0.0-SNAPSHOT]', Actual version: '1.0.1'` | 0 |
+| NestWorld | compileOnly | supported version, `setSlot` removed (S5) | ABI gate refusal | `InventorySetBackend no longer declares setSlot(…)` | 0 |
+| NestWorld | compileOnly | supported version, abstract method added | ABI gate refusal | `requires flush()V … does not implement` | 0 |
+| NestWorld | compileOnly | supported version, registry deleted | ABI gate refusal | `missing class …InventorySetBackendRegistry` | 0 |
+| NestWorld | compileOnly | 9.0.0, `setSlot` removed (E7) | FML refusal | refused by Gate 1 (the consumer's own range is the first line FML prints) | 0 |
+
+10/10 as expected; no server process left behind. The rest of this document is the chronological
+record (experiments, decisions, implementation, Gate 2) that led here.
+
+---
+
+**Earlier status: model PROVEN by experiment (E1–E6); decisions TAKEN (architecture owner, 2026-10-01); implementation NOT started; PKG-002 PASS additionally requires E7 (below).**
 
 ## The problem (API1B7-PKG-002)
 

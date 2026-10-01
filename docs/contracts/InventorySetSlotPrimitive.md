@@ -1,6 +1,6 @@
 # `setSlot` — Inventory Set-Slot Bounded Mutation Primitive (API-1B.5/1B.6/1B.7)
 
-**Status: API-1B SET-SLOT — PRIMITIVE VERIFIED / DISTRIBUTION & TRANSPORT BLOCKED** (architecture owner, 2026-10-01)
+**Status: API-1B SET-SLOT — PRIMITIVE VERIFIED / TRANSPORT BLOCKED (distribution blocker PKG-002 CLOSED 2026-10-01; earlier label: "API-1B SET-SLOT — PRIMITIVE VERIFIED / TRANSPORT BLOCKED")** (architecture owner, 2026-10-01)
 
 **Details (after API-1B.7 verification)**:
 - **Primitive correctness: VERIFIED** on NestWorld (direct and region-routed paths) and on genuine
@@ -12,7 +12,7 @@
   routine region merge/split strands queued messages with no terminal outcome (measured: 171/171
   missing terminals under forced churn). Not a primitive defect; separate Core gate; routing/stress
   tests to be re-run after its fix.
-- **Distribution: BLOCKED by API1B7-PKG-002** — a consumer mod that embeds `:modapi` cannot boot
+- **Distribution: RESOLVED (PKG-002 CLOSED / VERIFIED, docs/contracts/PKG-002-distribution-model.md); was BLOCKED by API1B7-PKG-002** — a consumer mod that embeds `:modapi` cannot boot
   on NestWorld (split package with NestWorld's own `forge` module). Packaging decision pending.
 - Not exercised: integrated (singleplayer) server; a second `MinecraftServer` in one JVM.
 

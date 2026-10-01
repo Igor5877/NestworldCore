@@ -1378,10 +1378,10 @@ stress.
 **Not yet started**: implementation (API-1B.6) and live verification (API-1B.7) — architecture
 owner's decision on when to proceed, not made by this gate.
 
-### API-1B SET-SLOT — PRIMITIVE VERIFIED / DISTRIBUTION & TRANSPORT BLOCKED
+### API-1B SET-SLOT — PRIMITIVE VERIFIED / TRANSPORT BLOCKED (distribution blocker PKG-002 CLOSED 2026-10-01; earlier label: "API-1B SET-SLOT — PRIMITIVE VERIFIED / TRANSPORT BLOCKED")
 
-**Status (2026-10-01, API-1B.7 complete)**: API-1B SET-SLOT — PRIMITIVE VERIFIED / DISTRIBUTION & TRANSPORT BLOCKED. Order to "API-1B fully CLOSED"
-(architecture owner): PKG-002 (next) → CORE-MAILBOX-MERGE-001 → API-1A per-op logging →
+**Status (2026-10-01, API-1B.7 complete)**: API-1B SET-SLOT — PRIMITIVE VERIFIED / TRANSPORT BLOCKED. Order to "API-1B fully CLOSED"
+(architecture owner): PKG-002 (CLOSED / VERIFIED 2026-10-01, packaging frozen) → CORE-MAILBOX-MERGE-001 (next) → API-1A per-op logging →
 reproducible stock-Forge probe in the repo → integrated server → multi-`MinecraftServer` JVM
 (proof that server A cannot affect server B's identity/version state). No new Mod API primitive
 before that.
@@ -1407,8 +1407,8 @@ before that.
   **E7 PASS** (ABI-incompatible provider refused by FML before any Core class loads). Finding
   PKG-002-S5 (a provider claiming a verified version but ABI-broken) resolved by Gate 2, the
   generated-manifest SPI ABI preflight (`ModApiAbiGate`): controlled startup abort, 0 linkage
-  errors, 0 gameplay executed. Remaining for PKG-002 PASS: Maven publication of the provider and
-  reproducible compatibility fixtures in the repo.
+  errors, 0 gameplay executed. Provider published to Maven; reproducible fixtures in
+  `tests/modapi-compat` (10-row matrix, 10/10). **PKG-002 — CLOSED / VERIFIED; packaging frozen.**
 - Fixed in this milestone: PKG-001 (`a8a2567b2`, `:modapi` shipped un-reobfuscated).
 - Follow-up: the `[API1A7]` per-op INFO phase trace (committed, `setVelocity` path) can stall the
   main thread under load (API1B7-STRESS-001); setSlot's own per-op lines are now fixture-gated.
