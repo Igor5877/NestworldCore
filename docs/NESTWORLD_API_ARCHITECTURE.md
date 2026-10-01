@@ -1404,9 +1404,11 @@ before that.
   verified API range). **Implemented and verified on real artifacts** (provider artifact
   b092a61a8 + jar-in-jar packaging): built-in provider only, compileOnly consumer and consumer
   jar-in-jar (form B) on both NestWorld and stock Forge, dedup, unverified-version refusal, and
-  **E7 PASS** (ABI-incompatible provider refused by FML before any Core class loads). Open:
-  finding PKG-002-S5 — a provider that lies about its version passes metadata checks and fails at
-  first call (`NoSuchMethodError`); mitigation proposed, decision pending.
+  **E7 PASS** (ABI-incompatible provider refused by FML before any Core class loads). Finding
+  PKG-002-S5 (a provider claiming a verified version but ABI-broken) resolved by Gate 2, the
+  generated-manifest SPI ABI preflight (`ModApiAbiGate`): controlled startup abort, 0 linkage
+  errors, 0 gameplay executed. Remaining for PKG-002 PASS: Maven publication of the provider and
+  reproducible compatibility fixtures in the repo.
 - Fixed in this milestone: PKG-001 (`a8a2567b2`, `:modapi` shipped un-reobfuscated).
 - Follow-up: the `[API1A7]` per-op INFO phase trace (committed, `setVelocity` path) can stall the
   main thread under load (API1B7-STRESS-001); setSlot's own per-op lines are now fixture-gated.

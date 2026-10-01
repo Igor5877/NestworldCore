@@ -185,7 +185,7 @@ way, because the check is declarative (Core's `mods.toml` range) and FML enforce
 loading — before the JVM has any reason to link a Core class against the provider. The linkage-
 ordering concern from D1 does not arise on this path.
 
-## Finding PKG-002-S5 — version metadata is trusted (boundary of D1)
+## Finding PKG-002-S5 — version metadata is trusted (boundary of D1) — RESOLVED by Gate 2 (below)
 
 Same ABI-broken provider, but **claiming** the verified version `1.0.0-SNAPSHOT`: FML selects it
 (equal versions; the copy in `mods/` won), Core's range accepts it, the server boots, and the
@@ -217,3 +217,52 @@ the SPI (D1a) would narrow it further.
   region-owned (left assigned by an earlier routed Core fixture), `setSlot` applies on a region
   thread after that barrier, so the probe read the slot too early and printed FAIL; the end state
   (`knowledge_book x5`) showed the write applied correctly.
+
+
+---
+
+# Provider SPI Compatibility Gate (Gate 2) — resolves S5 (decision: architecture owner, 2026-10-01)
+
+```
+FML version gate (Gate 1, Core mods.toml range)  →  provider selected
+  →  NestWorldCore bootstrap: NestworldMod constructor, first statement
+  →  Gate 2: SPI ABI preflight (ModApiAbiGate)
+       required classes exist · required methods/constructors/fields resolve with the exact
+       descriptor and invocation kind · implemented SPI types match in BOTH directions
+  →  PASS → only then is NestworldRegionSystem (first SPI-dependent Core class) touched
+```
+- **Expected ABI is generated, not maintained**: `:forge:spiAbiManifest` scans Core's compiled
+  bytecode (ASM tree API) for every reference to a `net/nestworld/modapi/**` class/member and every
+  modapi type a Core class implements; for implemented types it also records the type's abstract
+  methods as compiled in `:modapi` ("contract"). Output `META-INF/nestworld/spi-abi.json`
+  (`builtAgainstModApi`, 12 classes, 25 members, 2 implemented types for this build). A universalJar
+  canary fails the build if it is missing or empty (negative-tested).
+- **No compile-time SPI references in the gate**: classes are loaded with
+  `Class.forName(name, false, loader)` (no initialization); members are resolved with
+  `MethodHandles.Lookup.find{Static,Virtual,Constructor,Getter,...}` — the same resolution the JVM
+  performs at the call site, without running provider code.
+- **Not a security mechanism**: a malicious provider can pass and misbehave. Scope: no late
+  linkage errors from a damaged, mis-built or swapped provider.
+
+Gate run 1 found a gap in the gate itself: the S5 provider (`InventorySetBackend.setSlot` removed)
+PASSED, because Core never *calls* that method — Core *implements* it and the provider calls it.
+The first version only checked "provider's abstract methods ⊆ Core's implementation". Fixed by
+making implemented types a two-way contract (the provider must still declare every method Core
+implements for it). Run 2 (same build version 47.4.241, same scratch instance, fresh boot each):
+
+| # | Provider in `mods/` (besides the built-in one) | Gate 1 | Gate 2 | Linkage errors | Gameplay executed |
+|---|---|---|---|---|---|
+| G0 | none (built-in only) | PASS | PASS — 39 checks | 0 | boots; setVelocity smoke, A, D-routed, E-respawn-routed PASS |
+| **G1 (S5)** | claims `1.0.0-SNAPSHOT`, `InventorySetBackend.setSlot` removed | PASS | **FAIL**: `InventorySetBackend no longer declares setSlot(Lnet/nestworld/modapi/inventory/SetSlotRequest;)V, which net.nestworld.region.NestworldInventorySetBackend implements and the provider is expected to call` | 0 | 0 (`Preparing level`, `Done`, Core backend install: all 0) |
+| G2 | claims `1.0.0-SNAPSHOT`, abstract `flush()V` added to `InventorySetBackend` | PASS | **FAIL**: `requires flush()V, which … NestworldInventorySetBackend … does not implement` | 0 | 0 |
+| G3 | claims `1.0.0-SNAPSHOT`, `InventorySetBackendRegistry` deleted | PASS | **FAIL**: missing class + 2 unresolvable members (`install`, `uninstall`) | 0 | 0 |
+| G4 (E7) | `9.0.0`, `setSlot` removed | **FAIL** (`Expected range: '[1.0.0-SNAPSHOT,1.0.0-SNAPSHOT]', Actual version: '9.0.0'`) | not reached | 0 | 0 |
+
+Diagnostic shape (G1): `NestWorld Mod API provider 1.0.0-SNAPSHOT (g-remove-setSlot.jar) is
+ABI-incompatible with this NestWorldCore build (built against Mod API 1.0.0-SNAPSHOT). Startup
+aborted before any SPI-dependent Core initialization. Problems (1 of 39 checks): - …`.
+Without Gate 2 the same G1 provider booted and failed at the first `setSlot` with
+`NoSuchMethodError` (S5, recorded above).
+
+Variants were produced from the REAL built provider with ASM (version string rewritten in
+`mods.toml`; the named class/method removed, added or deleted), not from hand-assembled classes.

@@ -1676,6 +1676,124 @@ project(':forge') {
         }
     }
 
+    // PKG-002 Gate 2 (S5): the provider SPI ABI this Core build was compiled against, GENERATED from
+    // Core's own bytecode -- every reference from Core (net/nestworld/** in this project) to a
+    // net/nestworld/modapi/** member, plus every modapi interface a Core class implements and the
+    // methods it implements. ModApiAbiGate verifies exactly this list against the selected provider
+    // at startup. No hand-maintained second source of truth. Reobf does not change these entries:
+    // modapi member names are not obfuscated, and descriptors carry class names only, which are the
+    // same (Mojang-named) at runtime.
+    def spiAbiManifest = tasks.register('spiAbiManifest') {
+        def asmCfg = project.configurations.detachedConfiguration(
+                project.dependencies.create('org.ow2.asm:asm:9.3'),
+                project.dependencies.create('org.ow2.asm:asm-tree:9.3'))
+        def classesDirs = sourceSets.main.output.classesDirs
+        def apiClassesDirs = project(':modapi').sourceSets.main.output.classesDirs
+        def out = layout.buildDirectory.file('spiAbi/META-INF/nestworld/spi-abi.json')
+        def apiVersion = project(':modapi').version.toString()
+        dependsOn tasks.named('compileJava'), ':modapi:classes'
+        inputs.files(classesDirs)
+        inputs.files(apiClassesDirs)
+        inputs.property('apiVersion', apiVersion)
+        outputs.file(out)
+        doLast {
+            def cl = new URLClassLoader(asmCfg.files.collect { it.toURI().toURL() } as URL[], getClass().classLoader)
+            def ClassReader = cl.loadClass('org.objectweb.asm.ClassReader')
+            def ClassNode = cl.loadClass('org.objectweb.asm.tree.ClassNode')
+            def Type = cl.loadClass('org.objectweb.asm.Type')
+            final String API = 'net/nestworld/modapi/'
+            def classes = new TreeSet<String>()
+            def members = new TreeMap<String, Map>()     // key -> entry, deduplicated
+            def implementsList = []
+            def noteType = { String internalOrDesc ->
+                if (internalOrDesc == null) return
+                def t = internalOrDesc.startsWith('(') ? null : (internalOrDesc.startsWith('[') || internalOrDesc.endsWith(';') || internalOrDesc.length() == 1
+                        ? Type.getType(internalOrDesc) : Type.getObjectType(internalOrDesc))
+                def collect = { tt ->
+                    while (tt.sort == 9 /* ARRAY */) tt = tt.elementType
+                    if (tt.sort == 10 /* OBJECT */ && tt.internalName.startsWith(API)) classes << tt.internalName
+                }
+                if (internalOrDesc.startsWith('(')) {
+                    def mt = Type.getMethodType(internalOrDesc)
+                    mt.argumentTypes.each { collect(it) }
+                    collect(mt.returnType)
+                } else if (t != null) collect(t)
+            }
+            int scanned = 0
+            classesDirs.each { dir ->
+                if (!dir.exists()) return
+                dir.eachFileRecurse { f ->
+                    if (!f.name.endsWith('.class')) return
+                    def rel = dir.toPath().relativize(f.toPath()).toString().replace('\\', '/')
+                    if (!rel.startsWith('net/nestworld/') || rel.startsWith(API)) return
+                    scanned++
+                    def node = ClassNode.getDeclaredConstructor().newInstance()
+                    ClassReader.getConstructor(byte[]).newInstance([f.bytes] as Object[]).accept(node, 0)
+                    def apiIfaces = (node.interfaces ?: []).findAll { it.startsWith(API) }
+                    if (node.superName?.startsWith(API)) apiIfaces << node.superName
+                    apiIfaces.each { iface ->
+                        classes << iface
+                        // An implemented SPI type is a TWO-WAY contract: Core must implement every
+                        // abstract method the provider declares (checked at runtime against
+                        // "implemented"), AND the provider must still declare -- and therefore call --
+                        // every method Core implements for it ("contract", read from the :modapi
+                        // classes this Core was compiled against). Gate run 1 missed S5 itself
+                        // (InventorySetBackend.setSlot removed) without the second half.
+                        def apiFile = apiClassesDirs.collect { new File(it, iface + '.class') }.find { it.exists() }
+                        if (apiFile == null) throw new GradleException("spiAbiManifest: ${iface}.class not found in :modapi classes")
+                        def apiNode = ClassNode.getDeclaredConstructor().newInstance()
+                        ClassReader.getConstructor(byte[]).newInstance([apiFile.bytes] as Object[]).accept(apiNode, 0)
+                        implementsList << [coreClass: node.name, type: iface,
+                                           implemented: node.methods.collect { it.name + it.desc }.sort(),
+                                           contract: apiNode.methods.findAll { (it.access & 0x0400) != 0 }.collect { it.name + it.desc }.sort()]
+                    }
+                    node.fields.each { noteType(it.desc) }
+                    node.methods.each { m ->
+                        noteType(m.desc)
+                        m.instructions.each { insn ->
+                            def cn = insn.getClass().simpleName
+                            if (cn == 'MethodInsnNode' && insn.owner.startsWith(API)) {
+                                noteType(insn.owner); noteType(insn.desc)
+                                members["M ${insn.owner}.${insn.name}${insn.desc} ${insn.opcode}"] =
+                                        [kind: 'method', owner: insn.owner, name: insn.name, desc: insn.desc, opcode: insn.opcode, itf: insn.itf]
+                            } else if (cn == 'FieldInsnNode' && insn.owner.startsWith(API)) {
+                                noteType(insn.owner); noteType(insn.desc)
+                                members["F ${insn.owner}.${insn.name}:${insn.desc} ${insn.opcode}"] =
+                                        [kind: 'field', owner: insn.owner, name: insn.name, desc: insn.desc, opcode: insn.opcode]
+                            } else if (cn == 'TypeInsnNode') {
+                                noteType(insn.desc)
+                            } else if (cn == 'LdcInsnNode' && insn.cst?.getClass()?.name == 'org.objectweb.asm.Type') {
+                                noteType(insn.cst.descriptor)
+                            } else if (cn == 'InvokeDynamicInsnNode') {
+                                noteType(insn.desc)
+                                (insn.bsmArgs ?: []).each { a ->
+                                    if (a?.getClass()?.simpleName == 'Handle' && a.owner.startsWith(API)) {
+                                        noteType(a.owner); noteType(a.desc)
+                                        int tag = a.tag
+                                        int opcode = tag == 6 ? 184 : tag == 8 ? 183 : tag == 9 ? 185 : 182 // H_INVOKESTATIC/NEWINVOKESPECIAL/INTERFACE/else virtual
+                                        members["M ${a.owner}.${a.name}${a.desc} ${opcode}"] =
+                                                [kind: 'method', owner: a.owner, name: a.name, desc: a.desc, opcode: opcode, itf: a.isInterface()]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (scanned == 0) throw new GradleException('spiAbiManifest: scanned no Core classes -- wrong classes dir?')
+            if (members.isEmpty()) throw new GradleException('spiAbiManifest: Core references no net/nestworld/modapi members -- scan is broken')
+            out.get().asFile.parentFile.mkdirs()
+            out.get().asFile.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson([
+                    builtAgainstModApi: apiVersion,
+                    coreClassesScanned: scanned,
+                    classes           : classes.toList(),
+                    members           : members.values().toList(),
+                    implementsTypes   : implementsList.sort { it.coreClass + it.type }
+            ]))
+            logger.lifecycle("spiAbiManifest: ${scanned} Core classes, ${classes.size()} API classes, ${members.size()} members, ${implementsList.size()} implements")
+        }
+    }
+
     universalJar {
         from extraTxts
 
@@ -1689,6 +1807,8 @@ project(':forge') {
         // consumer mod also brings (newest wins, E3/E6b); Core's mods.toml dependency range then
         // accepts or rejects the selected version before any Core class loads (decision D1).
         dependsOn modapiProviderJar, modapiJarJarMetadata
+        dependsOn spiAbiManifest
+        from(spiAbiManifest.map { layout.buildDirectory.dir('spiAbi') }) // PKG-002 Gate 2 (S5): read by ModApiAbiGate
         from(modapiProviderJar) { into 'META-INF/jarjar' }
         from(modapiJarJarMetadata.map { layout.buildDirectory.dir('modapiJarJar') })
 
@@ -1750,6 +1870,11 @@ project(':forge') {
                 } finally {
                     inner.close()
                 }
+                // 5. Gate 2's generated ABI manifest is present and non-trivial (S5).
+                def abi = zip.getEntry('META-INF/nestworld/spi-abi.json')
+                if (abi == null) fail('META-INF/nestworld/spi-abi.json (Mod API ABI gate manifest) missing')
+                def abiJson = new groovy.json.JsonSlurper().parse(zip.getInputStream(abi))
+                if (!abiJson.members || abiJson.builtAgainstModApi != apiVersion) fail("spi-abi.json empty or built against ${abiJson.builtAgainstModApi}, not ${apiVersion}")
                 // 4. Core's declared Mod API range (its own mods.toml, decision D1) accepts the
                 //    built-in provider -- never ship a NestWorld that rejects its own API.
                 def coreText = zip.getInputStream(zip.getEntry('META-INF/mods.toml')).text
