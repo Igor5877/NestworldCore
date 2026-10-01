@@ -86,38 +86,52 @@ coupling. `:clean` is genuinely unpatched by NestWorld (it's what `:forge` itsel
 monolithic sourceSet through API-1A.6/1A.7/1A.8) as part of this gate. No source content
 changed, only location and the module wiring around it.
 
-## How an external mod depends on it (dev workflow proven this pass)
+## How an external mod depends on it — SUPERSEDED by PKG-002 (2026-10-01)
+
+**The original guidance here (embed the API classes into the consumer jar, or jar-in-jar the
+API *library*) is WITHDRAWN.** A consumer that physically contains `net.nestworld.modapi.*` cannot
+boot on NestWorld (`Modules <consumer> and forge export package net.nestworld.modapi.entity`,
+API1B7-PKG-002). The verified contract (docs/contracts/PKG-002-distribution-model.md):
 
 ```groovy
-// settings.gradle -- nothing special needed
-// build.gradle
-repositories {
-    mavenLocal()   // or wherever it's eventually published
-}
+// build.gradle (ForgeGradle 6)
+repositories { mavenLocal() }
 dependencies {
     minecraft "net.minecraftforge:forge:1.20.1-<forge version>"
-    implementation 'net.nestworld:nestworld-mod-api-forge-1.20.1:1.0.0-SNAPSHOT'
+    // Compile against the API -- NEVER bundle its classes.
+    compileOnly 'net.nestworld:nestworld-mod-api-forge-1.20.1:1.0.0-SNAPSHOT'
 
-    // To ship a single, self-contained deployable jar (real dedicated-server testing used
-    // this), embed the dependency via Forge's own jar-in-jar mechanism:
-    jarJar('net.nestworld:nestworld-mod-api-forge-1.20.1:[1.0.0-SNAPSHOT,)') {
-        jarJar.ranged(it, '[1.0.0-SNAPSHOT,)')
+    // OPTIONAL (form B): carry the provider MOD as jar-in-jar so stock-Forge servers need no
+    // separate install. Same identifier as NestWorld's built-in copy, so FML unifies them.
+    jarJar(group: 'net.nestworld', name: 'nestworld-modapi-provider', version: '[1.0.0-SNAPSHOT,2.0.0)') {
+        jarJar.pin(it, '1.0.0-SNAPSHOT')
     }
 }
+// form B only: the jarJar output must be reobfuscated too
+reobf { jarJar { } }
+tasks.named('jarJar') { finalizedBy 'reobfJarJar' }
 ```
-
-`implementation` alone is sufficient for `runServer`/`runClient` ForgeGradle dev tasks (Gradle
-puts it on the dev run classpath automatically). For a real, standalone deployed server, the
-dependency's classes must physically be inside the shipped mod jar (or a second jar Forge's mod
-loader recognizes) — `jarJar` is Forge's standard mechanism for this and was confirmed working
-(`META-INF/jarjar/nestworld-mod-api-forge-1.20.1-1.0.0-SNAPSHOT.jar` embedded correctly in a
-test build). The actual dedicated-server verification runs in this pass merged the dependency's
-compiled classes directly into the mod's own `jar` task output before reobfuscation (a
-`configurations { modapiEmbed }` + `from zipTree(...)` addition) to get one single, correctly
-SRG-remapped jar in one step — either approach produces a working deployable artifact; `jarJar`
-is the more idiomatic Forge-native path for a real release.
+```toml
+# mods.toml -- a mandatory dependency gives a clean FML error instead of a NoClassDefFoundError
+[[dependencies.<your_mod_id>]]
+    modId="nestworld_modapi"
+    mandatory=true
+    versionRange="[1.0.0-SNAPSHOT,2.0.0)"   # NOT "[1.0.0,)": a -SNAPSHOT sorts below the release
+    ordering="NONE"
+    side="BOTH"
+```
+Runtime: on NestWorld the platform supplies `nestworld_modapi` (built-in jar-in-jar); on stock
+Forge the provider jar `nestworld-modapi-provider-<version>.jar` (built by
+`:forge:modapiProviderJar`) is installed by the server owner (form A) or carried by the consumer
+(form B). Core accepts only the Mod API range it was verified against; FML refuses a newer
+unverified provider at startup.
 
 ## Evidence (2026-09-29)
+
+> **Note (2026-10-01):** the row "Same consumer mod jar (unchanged), real NestWorld-patched
+> dedicated (47.4.234)" predates the merge of `:modapi` into NestWorld's own jar and is no longer
+> valid evidence; with an embedded API the same consumer is now refused by the module system
+> (PKG-002). Current evidence: docs/contracts/PKG-002-distribution-model.md.
 
 | Check | Result |
 |---|---|

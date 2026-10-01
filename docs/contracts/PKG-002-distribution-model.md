@@ -148,3 +148,72 @@ mechanism) must be decided before PKG-002 closes. That outcome would be a findin
 4. `docs/PACKAGING.md`: retract API-PKG-1's "consumer embeds the API" guidance; document D1/D2.
 5. Re-run E1–E6 with real built artifacts (no hand-made jars or jar surgery), then E7, plus the
    API-1B regression fixtures and a `setVelocity` smoke.
+
+---
+
+# Implementation verification (real built artifacts, no hand-made jars or jar surgery)
+
+Build `47.4.240`: the forge module contains **0** `net/nestworld/modapi` classes; the universal jar
+carries `META-INF/jarjar/nestworld-modapi-provider-1.0.0-SNAPSHOT.jar` plus `metadata.json`
+(identifier `net.nestworld:nestworld-modapi-provider`); Core's `mods.toml` declares
+`nestworld_modapi` mandatory, `versionRange="[1.0.0-SNAPSHOT]"` (the only verified version).
+
+Build-time canaries (each negative-tested, then restored byte-identical):
+- API classes leaked into the forge module → `16 net/nestworld/modapi classes inside the forge
+  module … the API must ship only as the jar-in-jar provider`.
+- Core range excluding the built-in provider → `Core's supported Mod API range [2.0.0,3.0.0)
+  rejects the built-in provider 1.0.0-SNAPSHOT; widen it only after compatibility verification`.
+- Provider assembled from un-reobfuscated classes → `… is not SRG-named (expected m_20148_)`
+  (commit b092a61a8).
+(A first attempt at the leak test injected the merge in a way that failed `:forge:jar` before the
+canary ran; it proved nothing and was replaced by a valid variant.)
+
+| # | Platform / `mods/` | Result |
+|---|---|---|
+| R | NestWorld, `mods/` EMPTY (API only from built-in jar-in-jar) | `Mod API provider nestworld_modapi 1.0.0-SNAPSHOT selected by FML from nestworld-modapi-provider-1.0.0-SNAPSHOT.jar`; `setVelocity` smoke APPLIED; API-1B regression A, B, C-SIM, D-routed, E-respawn-routed, R-routed, OFFLINE-routed, W-routed all PASS; linkage errors 0 |
+| S1 (E2) | NestWorld + `compileOnly` consumer (0 API classes) | boots; consumer fixture PASS |
+| S2 (E6b) | NestWorld + same-version provider in `mods/` | deduplicated; boots |
+| S3 (D1) | NestWorld + newer, ABI-identical but UNVERIFIED provider 1.0.1 | **controlled refusal**: `Mod ID: 'nestworld_modapi', Requested by: 'nestworld', Expected range: '[1.0.0-SNAPSHOT,1.0.0-SNAPSHOT]', Actual version: '1.0.1'` |
+| **E7** | NestWorld + ABI-incompatible provider 9.0.0 (`InventorySetBackend.setSlot` removed with ASM from the real artifact) | **PASS — controlled refusal** by FML `ModSorter` before any Core class loads; no `NoSuchMethodError`/`AbstractMethodError`/`NoClassDefFoundError` |
+| E4 | stock Forge 47.4.20 + real provider + `compileOnly` consumer | STOCK-A, STOCK-D, STOCK-STALE PASS (`NestWorldCore present=false`) |
+| E5 | stock Forge + consumer, no provider | clean refusal: `Expected range: '[1.0.0-SNAPSHOT,2.0.0)', Actual version: '[MISSING]'` |
+| B1 (D2 form B) | stock Forge + ONE consumer jar carrying the provider as jar-in-jar (ForgeGradle `jarJar`) | bundled provider activates; STOCK-A, STOCK-D PASS |
+| B2 (D2 form B) | NestWorld (built-in provider) + the same consumer jar | both nested providers unified, boots; Core D-routed PASS; consumer's write applied (`knowledge_book x5` in slot 0) |
+
+**E7 verdict**: with an honest version, an ABI-incompatible provider is rejected in a controlled
+way, because the check is declarative (Core's `mods.toml` range) and FML enforces it during early
+loading — before the JVM has any reason to link a Core class against the provider. The linkage-
+ordering concern from D1 does not arise on this path.
+
+## Finding PKG-002-S5 — version metadata is trusted (boundary of D1)
+
+Same ABI-broken provider, but **claiming** the verified version `1.0.0-SNAPSHOT`: FML selects it
+(equal versions; the copy in `mods/` won), Core's range accepts it, the server boots, and the
+first `setSlot` fails with
+`NoSuchMethodError: 'void net.nestworld.modapi.inventory.InventorySetBackend.setSlot(net.nestworld.modapi.inventory.SetSlotRequest)'`.
+Any version-based policy has this limit: it protects against honest incompatibility, not against
+a mislabelled build. Possible mitigation (not implemented; decision pending): a Core self-check at
+mod construction that reflectively verifies the SPI members Core needs (e.g.
+`InventorySetBackend.setSlot(SetSlotRequest)`), catching `LinkageError`, and refusing to start with
+a readable message — cheap, and it turns S5 into a controlled rejection too. Physically separating
+the SPI (D1a) would narrow it further.
+
+## Consumer-contract findings from this run
+
+- **Snapshot ordering**: Maven orders `1.0.0-SNAPSHOT` BELOW `1.0.0`. A consumer declaring
+  `versionRange="[1.0.0,)"` is refused against a `1.0.0-SNAPSHOT` provider (observed). Consumers must
+  declare e.g. `[1.0.0-SNAPSHOT,2.0.0)` while the API is a snapshot — or the API moves to release
+  versions.
+- **Form B build recipe**: ForgeGradle's `jarJar` output needs its own reobfuscation
+  (`reobf { jarJar { } }`, `jarJar.finalizedBy('reobfJarJar')`); without it the consumer's own
+  classes stay MCP-named (observed before the fix).
+- **The jar-in-jar identifier is contract**: `net.nestworld:nestworld-modapi-provider`. The provider
+  is not yet published to a Maven repository by this build; form B was tested against a local
+  `mavenLocal()` install of the built artifact (publication is part of the follow-up fixtures step).
+
+## Test-harness notes (not product results)
+
+- The stock probe's FIFO-drain barrier only covers main-thread tasks. On NestWorld with the player
+  region-owned (left assigned by an earlier routed Core fixture), `setSlot` applies on a region
+  thread after that barrier, so the probe read the slot too early and printed FAIL; the end state
+  (`knowledge_book x5`) showed the write applied correctly.

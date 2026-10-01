@@ -1606,19 +1606,12 @@ project(':forge') {
         }
     }
 
-    // Packaging fix (supersedes API-PKG-1's universalJar merge): :modapi's compiled classes
-    // must reach the deployed jar THROUGH reobfJar. :modapi compiles against MCP-named vanilla
-    // (:clean); the runtime is SRG-named. Merging its output into universalJar (after reobf)
-    // shipped MCP references -- found live during API-1B verification as NoSuchMethodError
-    // 'ServerPlayer.getUUID()' on the first Mod API call, the same breakage affecting every
-    // net.nestworld.modapi.entity class (setVelocity) since 7123ef366. Putting the output
-    // into this jar (reobfJar's input) also gives the renamer the full patched-vanilla class
-    // hierarchy, which it needs to remap inherited members (ServerPlayer.getUUID -> Entity's
-    // m_20148_).
-    jar {
-        from project(':modapi').sourceSets.main.output
-        dependsOn ':modapi:classes'
-    }
+    // PKG-002 (docs/contracts/PKG-002-distribution-model.md): :modapi's classes are NO LONGER
+    // merged into this jar. Two copies of net.nestworld.modapi -- one inside the forge module, one
+    // in any consumer -- were the split-package collision (API1B7-PKG-002). The API now reaches the
+    // runtime only as the nestworld_modapi provider mod (modapiProviderJar below), which the
+    // universal jar carries as jar-in-jar. Core still compiles against :modapi
+    // (implementation project(':modapi')); at runtime it links to the provider module.
 
     // PKG-002 provider artifact (docs/contracts/PKG-002-distribution-model.md, commit N+1).
     // Step 1: remap :modapi's MCP-named classes to SRG with the same renamer, mappings and
@@ -1663,6 +1656,26 @@ project(':forge') {
         }
     }
 
+    // jar-in-jar metadata for the built-in provider (the schema FML's JarInJarDependencyLocator
+    // reads). The identifier is part of the distribution contract: consumers that carry the
+    // provider as jar-in-jar (decision D2, form B) must use the same group/artifact so FML's jar
+    // selection can unify the copies.
+    def modapiJarJarMetadata = tasks.register('modapiJarJarMetadata') {
+        def apiVersion = project(':modapi').version.toString()
+        def out = layout.buildDirectory.file('modapiJarJar/META-INF/jarjar/metadata.json')
+        inputs.property('apiVersion', apiVersion)
+        outputs.file(out)
+        doLast {
+            out.get().asFile.parentFile.mkdirs()
+            out.get().asFile.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson([jars: [[
+                identifier: [group: 'net.nestworld', artifact: 'nestworld-modapi-provider'],
+                version: [range: "[${apiVersion},)".toString(), artifactVersion: apiVersion],
+                path: "META-INF/jarjar/nestworld-modapi-provider-${apiVersion}.jar".toString(),
+                isObfuscated: false
+            ]]]))
+        }
+    }
+
     universalJar {
         from extraTxts
 
@@ -1671,9 +1684,13 @@ project(':forge') {
             include 'assets/forge/lang/*.json'
         }
 
-        // :modapi's classes are merged into :forge's own `jar` task (see the "Packaging fix"
-        // block next to it), NOT here: anything added at this stage bypasses reobfJar and
-        // ships with MCP names against an SRG runtime (NoSuchMethodError at first call).
+        // PKG-002: the Mod API ships as the nestworld_modapi provider mod, jar-in-jar. FML
+        // extracts it (proven, E6) and deduplicates it against a provider a server owner or a
+        // consumer mod also brings (newest wins, E3/E6b); Core's mods.toml dependency range then
+        // accepts or rejects the selected version before any Core class loads (decision D1).
+        dependsOn modapiProviderJar, modapiJarJarMetadata
+        from(modapiProviderJar) { into 'META-INF/jarjar' }
+        from(modapiJarJarMetadata.map { layout.buildDirectory.dir('modapiJarJar') })
 
         dependsOn downloadCrowdin
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
@@ -1688,46 +1705,59 @@ project(':forge') {
             }
         }
 
-        // Packaging invariant, added after the :modapi regression above: a project() compile
-        // dependency proves nothing about the OUTPUT jar's actual contents -- this bit Core
-        // once already (net.nestworld.modapi silently absent, NoClassDefFoundError at boot,
-        // not caught until a live re-boot weeks later). Cheaper to fail the build here than to
-        // rediscover this via a boot failure. Checks one canary class per subproject whose
-        // classes this jar's own Core code depends on at runtime -- extend this list if a
-        // future subproject extraction (per docs/PACKAGING.md's own stated lesson) adds another.
+        // Packaging invariants (PKG-001, PKG-002). Each of these failed silently at least once
+        // before it was checked: classes absent (NoClassDefFoundError at boot), classes present but
+        // MCP-named (NoSuchMethodError at first call), classes duplicated across modules (server
+        // refuses to start when a consumer brings its own copy).
         doLast {
-            def canaries = [
-                'net/nestworld/modapi/entity/NestWorldEntities.class',
-                'net/nestworld/modapi/inventory/NestWorldInventory.class',
-            ]
-            // Presence alone is not enough -- the API-PKG-1 merge shipped :modapi with MCP names
-            // (Entity.getUUID) against an SRG runtime, and the presence-only check passed. Each
-            // class listed here calls Entity.getUUID(); after a correct reobf its constant pool
-            // holds the SRG name m_20148_ and NOT the MCP name.
-            def mustBeSrg = [
-                'net/nestworld/modapi/entity/ForgeVelocityExecution.class',
-                'net/nestworld/modapi/inventory/NestWorldInventory.class',
-            ]
             def jarPath = archiveFile.get().asFile
             def zip = new java.util.zip.ZipFile(jarPath)
+            def apiVersion = project(':modapi').version.toString()
+            def nested = "META-INF/jarjar/nestworld-modapi-provider-${apiVersion}.jar"
+            def fail = { String why -> throw new GradleException("universalJar packaging invariant violated: ${why}") }
             try {
-                canaries.each { canary ->
-                    if (zip.getEntry(canary) == null) {
-                        throw new GradleException("universalJar packaging invariant violated: "
-                            + "'${canary}' is missing from ${jarPath.name}. A project() compile "
-                            + "dependency does not guarantee fat-jar inclusion -- see the :modapi "
-                            + "merge into :forge's jar task.")
-                    }
+                // 1. The forge module itself contains NO Mod API classes (PKG-002).
+                def leaked = zip.entries().toList().findAll { it.name.startsWith('net/nestworld/modapi/') && it.name.endsWith('.class') }
+                if (!leaked.isEmpty()) {
+                    fail("${leaked.size()} net/nestworld/modapi classes inside the forge module (first: ${leaked[0].name}); the API must ship only as the jar-in-jar provider")
                 }
-                mustBeSrg.each { cls ->
-                    def bytes = zip.getInputStream(zip.getEntry(cls)).bytes
-                    def text = new String(bytes, 'ISO-8859-1')
-                    if (!text.contains('m_20148_') || text.contains('getUUID')) {
-                        throw new GradleException("universalJar packaging invariant violated: "
-                            + "'${cls}' references vanilla by MCP names (expected SRG m_20148_ for "
-                            + "Entity.getUUID). :modapi output must go through reobfJar, i.e. be "
-                            + "merged into :forge's jar task, never added to universalJar directly.")
+                // 2. The provider is present as jar-in-jar, and metadata.json points at it.
+                def entry = zip.getEntry(nested)
+                if (entry == null) fail("${nested} missing")
+                def meta = zip.getEntry('META-INF/jarjar/metadata.json')
+                if (meta == null) fail('META-INF/jarjar/metadata.json missing')
+                def metaJson = new groovy.json.JsonSlurper().parse(zip.getInputStream(meta))
+                if (!metaJson.jars.any { it.path == nested }) fail("metadata.json does not reference ${nested}")
+                // 3. The nested provider is a mod with the expected id and version, and SRG-named.
+                def tmp = File.createTempFile('nested-provider', '.jar')
+                tmp.deleteOnExit()
+                tmp.bytes = zip.getInputStream(entry).bytes
+                def inner = new java.util.zip.ZipFile(tmp)
+                try {
+                    def toml = inner.getEntry('META-INF/mods.toml')
+                    if (toml == null) fail('nested provider has no META-INF/mods.toml')
+                    def tomlText = inner.getInputStream(toml).text
+                    if (!tomlText.contains('modId="nestworld_modapi"') || !tomlText.contains('version="' + apiVersion + '"')) {
+                        fail("nested provider mods.toml does not declare nestworld_modapi ${apiVersion}")
                     }
+                    ['net/nestworld/modapi/entity/ForgeVelocityExecution.class',
+                     'net/nestworld/modapi/inventory/NestWorldInventory.class'].each { cls ->
+                        def e = inner.getEntry(cls)
+                        if (e == null) fail("nested provider lacks ${cls}")
+                        def text = new String(inner.getInputStream(e).bytes, 'ISO-8859-1')
+                        if (!text.contains('m_20148_') || text.contains('getUUID')) fail("nested provider ${cls} is not SRG-named (expected m_20148_)")
+                    }
+                } finally {
+                    inner.close()
+                }
+                // 4. Core's declared Mod API range (its own mods.toml, decision D1) accepts the
+                //    built-in provider -- never ship a NestWorld that rejects its own API.
+                def coreText = zip.getInputStream(zip.getEntry('META-INF/mods.toml')).text
+                def m = (coreText =~ /(?s)\[\[dependencies\.nestworld\]\]\s*modId="nestworld_modapi".*?versionRange="([^"]+)"/)
+                if (!m.find()) fail('Core mods.toml declares no nestworld_modapi dependency range')
+                def range = org.apache.maven.artifact.versioning.VersionRange.createFromVersionSpec(m.group(1))
+                if (!range.containsVersion(new org.apache.maven.artifact.versioning.DefaultArtifactVersion(apiVersion))) {
+                    fail("Core's supported Mod API range ${m.group(1)} rejects the built-in provider ${apiVersion}; widen it only after compatibility verification (D1)")
                 }
             } finally {
                 zip.close()
@@ -1965,6 +1995,14 @@ project(':modapi') {
         }
     }
     ext.providerTomlDir = layout.buildDirectory.dir('provider')
+    // The same mods.toml in :modapi's own resources: on a dev classpath (ForgeGradle runs of Core or
+    // of a consumer using fg.deobf) :modapi is then itself the nestworld_modapi mod, so the
+    // mandatory dependencies resolve there too. The provider jar takes classes only from the
+    // reobfuscated output and adds this file once.
+    tasks.named('processResources', ProcessResources) {
+        dependsOn providerToml
+        from(providerTomlDir)
+    }
 
     publishing {
         publications {

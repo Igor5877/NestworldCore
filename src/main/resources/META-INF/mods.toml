@@ -35,3 +35,15 @@ license="LGPL v2.1"
     versionRange="[1.20.1,1.21)"
     ordering="NONE"
     side="BOTH"
+
+# PKG-002 / decision D1 (docs/contracts/PKG-002-distribution-model.md): Core's explicit, VERIFIED
+# Mod API range. FML may select any provider version (newest wins); FML's ModSorter rejects one
+# outside this range during early loading, before any Core class is loaded. Widen this range only
+# after compatibility verification against the new API version -- the universalJar canary refuses
+# to build a NestWorld whose built-in provider falls outside it.
+[[dependencies.nestworld]]
+    modId="nestworld_modapi"
+    mandatory=true
+    versionRange="[1.0.0-SNAPSHOT]"
+    ordering="NONE"
+    side="BOTH"
