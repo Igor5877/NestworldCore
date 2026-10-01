@@ -36,9 +36,21 @@ final class EntityMutationTestHooks {
 
     // --- called by production code at each barrier point ---
 
-    static void barrierA() { await(aHit, aRelease); }
-    static void barrierB() { await(bHit, bRelease); }
-    static void barrierC() { await(cHit, cRelease); }
+    /** API-1B.7: optional op-type filter (null = every op, the API-1A.7 behavior, unchanged).
+     *  With barriers being global latches, an unrelated dispatch() (combat, /kill, AoE) reaching
+     *  an armed barrier during a long hold -- e.g. while waiting for a real respawn -- would park
+     *  that unrelated caller too, possibly a region thread, stalling the server. Filtering by op
+     *  type confines the barrier to the fixture's own SetInventorySlot ops. */
+    static volatile Class<? extends EntityMutationOp> ONLY_OP = null;
+
+    static void barrierA(EntityMutationOp op) { if (matches(op)) await(aHit, aRelease); }
+    static void barrierB(EntityMutationOp op) { if (matches(op)) await(bHit, bRelease); }
+    static void barrierC(EntityMutationOp op) { if (matches(op)) await(cHit, cRelease); }
+
+    private static boolean matches(EntityMutationOp op) {
+        Class<? extends EntityMutationOp> f = ONLY_OP;
+        return f == null || f.isInstance(op);
+    }
 
     private static void await(CountDownLatch hit, CountDownLatch release) {
         if (!ENABLED || hit == null) return;

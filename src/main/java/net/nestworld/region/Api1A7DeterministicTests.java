@@ -31,8 +31,11 @@ final class Api1A7DeterministicTests {
     private Api1A7DeterministicTests() {}
 
     /** Ensures at least 2 registered regions exist in the overworld grid, splitting region 0
-     *  if needed. Returns {A, B}. */
-    private static WorldRegion[] ensureTwoRegions(NestworldRegionSystem sys) {
+     *  if needed. Returns {A, B}. Package-private (not private): reused as-is by
+     *  {@link Api1B6DeterministicTests} -- generic region-grid test scaffolding, not
+     *  primitive-specific mechanism, so sharing it doesn't cross this project's "keep each
+     *  primitive's own intent-tracking mechanism separate" line. */
+    static WorldRegion[] ensureTwoRegions(NestworldRegionSystem sys) {
         NestworldDimensionRegion dr = sys.getDimensionRegion(sys.getOverworld());
         List<WorldRegion> existing = new ArrayList<>(dr.getGrid().getAllRegions());
         if (existing.size() >= 2) {
@@ -78,7 +81,7 @@ final class Api1A7DeterministicTests {
      * whole test session, so both region threads keep receiving normal per-tick dispatch
      * regardless of what the scenario's own test entity does.
      */
-    private static void ensureAnchors(WorldRegion[] regions, ServerLevel level) {
+    static void ensureAnchors(WorldRegion[] regions, ServerLevel level) {
         for (WorldRegion r : regions) {
             if (!r.getOwnedEntityIds().isEmpty()) continue;
             // Place anchors far apart so each unambiguously falls inside its own region's
@@ -94,7 +97,7 @@ final class Api1A7DeterministicTests {
         }
     }
 
-    private static void assignSole(WorldRegion[] all, WorldRegion owner, UUID id) {
+    static void assignSole(WorldRegion[] all, WorldRegion owner, UUID id) {
         for (WorldRegion r : all) r.removeEntity(id);
         owner.addEntity(id);
     }

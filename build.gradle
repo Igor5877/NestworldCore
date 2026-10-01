@@ -1655,6 +1655,7 @@ project(':forge') {
         doLast {
             def canaries = [
                 'net/nestworld/modapi/entity/NestWorldEntities.class',
+                'net/nestworld/modapi/inventory/NestWorldInventory.class',
             ]
             // Presence alone is not enough -- the API-PKG-1 merge shipped :modapi with MCP names
             // (Entity.getUUID) against an SRG runtime, and the presence-only check passed. Each
@@ -1662,6 +1663,7 @@ project(':forge') {
             // holds the SRG name m_20148_ and NOT the MCP name.
             def mustBeSrg = [
                 'net/nestworld/modapi/entity/ForgeVelocityExecution.class',
+                'net/nestworld/modapi/inventory/NestWorldInventory.class',
             ]
             def jarPath = archiveFile.get().asFile
             def zip = new java.util.zip.ZipFile(jarPath)

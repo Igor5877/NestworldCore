@@ -169,6 +169,84 @@ public final class NestworldCommand {
         return 1;
     }
 
+    /** API-1B.7: deterministic barrier-driven fixtures for setSlot (see
+     *  {@link Api1B6DeterministicTests}), same extracted-builder-method discipline as
+     *  {@link #buildSetVelocityTestNode()}/{@link #buildDeterministicTestNode()}. */
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> buildInventoryDeterministicTestNode() {
+        return Commands.literal("invdet")
+                .then(Commands.argument("scenario", com.mojang.brigadier.arguments.StringArgumentType.word())
+                        .then(Commands.argument("player", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                .executes(ctx -> testInventoryDeterministic(ctx.getSource(),
+                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "scenario"),
+                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "player")))));
+    }
+
+    /** Unlike {@link #testDeterministic}'s scenarios (which spawn a disposable ArmorStand),
+     *  API-1B.6's fixtures need a REAL, currently-connected {@link ServerPlayer} -- {@code
+     *  SetInventorySlot}'s own applyDirect case rejects any non-ServerPlayer target, and a real
+     *  attached Inventory is what's actually being observed. The target is named explicitly
+     *  so an RCON driver can run fixtures against a connected bot. Same background-thread
+     *  discipline as {@link #testDeterministic} -- the main thread must stay free to keep
+     *  ticking region threads for the scenario's duration. */
+    private static int testInventoryDeterministic(CommandSourceStack src, String scenario, String playerName) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        ServerPlayer player = src.getServer().getPlayerList().getPlayerByName(playerName);
+        if (player == null) {
+            src.sendFailure(Component.literal("player not online: " + playerName));
+            return 0;
+        }
+        NestworldRegionSystem sys = NestworldRegionSystem.get();
+        java.util.function.Supplier<java.util.List<String>> runner = switch (scenario) {
+            case "snapshot" -> () -> safeRun(() -> Api1B6DeterministicTests.runSnapshotIndependenceTest(sys, player));
+            case "ordering" -> () -> safeRun(() -> Api1B6DeterministicTests.runSameIncarnationOrderingTest(sys, player));
+            case "equalstrap" -> () -> safeRun(() -> Api1B6DeterministicTests.runEqualsTrapTest(sys, player));
+            case "respawn" -> () -> safeRun(() -> Api1B6DeterministicTests.runTransitionRejectTest(sys, player, "respawn", false));
+            case "respawn-routed" -> () -> safeRun(() -> Api1B6DeterministicTests.runTransitionRejectTest(sys, player, "respawn", true));
+            case "relogin" -> () -> safeRun(() -> Api1B6DeterministicTests.runTransitionRejectTest(sys, player, "relogin", false));
+            case "relogin-routed" -> () -> safeRun(() -> Api1B6DeterministicTests.runTransitionRejectTest(sys, player, "relogin", true));
+            case "crossboundary" -> () -> safeRun(() -> Api1B6DeterministicTests.runCrossBoundaryOrderingTest(sys, player, false));
+            case "crossboundary-routed" -> () -> safeRun(() -> Api1B6DeterministicTests.runCrossBoundaryOrderingTest(sys, player, true));
+            case "window-respawn" -> () -> safeRun(() -> Api1B6DeterministicTests.runPublicationWindowTest(sys, player, "respawn", false));
+            case "window-respawn-routed" -> () -> safeRun(() -> Api1B6DeterministicTests.runPublicationWindowTest(sys, player, "respawn", true));
+            case "window-login" -> () -> safeRun(() -> Api1B6DeterministicTests.runPublicationWindowTest(sys, player, "relogin", false));
+            case "window-login-routed" -> () -> safeRun(() -> Api1B6DeterministicTests.runPublicationWindowTest(sys, player, "relogin", true));
+            case "stress-pinned" -> () -> safeRun(() -> Api1B6DeterministicTests.runStressTest(sys, 60, true, false));
+            case "stress-unpinned" -> () -> safeRun(() -> Api1B6DeterministicTests.runStressTest(sys, 60, false, false));
+            case "stress-churn" -> () -> safeRun(() -> Api1B6DeterministicTests.runStressTest(sys, 60, false, true));
+            case "worker" -> () -> safeRun(() -> Api1B6DeterministicTests.runWorkerThreadTest(sys, player, false));
+            case "worker-routed" -> () -> safeRun(() -> Api1B6DeterministicTests.runWorkerThreadTest(sys, player, true));
+            case "offline" -> () -> safeRun(() -> Api1B6DeterministicTests.runOfflineBeforeApplyTest(sys, player, false));
+            case "offline-routed" -> () -> safeRun(() -> Api1B6DeterministicTests.runOfflineBeforeApplyTest(sys, player, true));
+            case "slots" -> () -> safeRun(() -> Api1B6DeterministicTests.runSlotIndependenceTest(sys, player));
+            case "invalid" -> () -> safeRun(() -> Api1B6DeterministicTests.runInvalidSlotTest(sys, player));
+            case "reroutelimit" -> () -> safeRun(() -> Api1B6DeterministicTests.runRerouteLimitTest(sys, player));
+            case "generation" -> () -> safeRun(() -> Api1B6DeterministicTests.runGenerationResetTest(sys, player));
+            default -> null;
+        };
+        if (runner == null) {
+            src.sendFailure(Component.literal("Unknown scenario: " + scenario
+                    + " (expected snapshot|ordering|equalstrap|respawn[-routed]|relogin[-routed]|crossboundary[-routed]|window-respawn[-routed]|window-login[-routed])"));
+            return 0;
+        }
+        Thread t = new Thread(() -> {
+            org.apache.logging.log4j.Logger diag = org.apache.logging.log4j.LogManager.getLogger("NestWorld/DIAG");
+            diag.info("[API1B6-DET] scenario={} STARTED on background thread {}", scenario, Thread.currentThread().getName());
+            java.util.List<String> lines = runner.get();
+            if (!(lines instanceof Api1B6DeterministicTests.Out)) { // already streamed (logger NestWorld/API1B7) otherwise
+                for (String line : lines) diag.info("[API1B6-DET] {}", line);
+            }
+            diag.info("[API1B6-DET] scenario={} FINISHED", scenario);
+        }, "API1B6-det-controller-" + scenario);
+        t.setDaemon(true);
+        t.start();
+        src.sendSuccess(() -> Component.literal("inventory scenario " + scenario + " started for " + playerName
+                + " on a background thread; tail the server log for '[API1B6-DET]' lines"), false);
+        return 1;
+    }
+
     private interface ThrowingSupplier { java.util.List<String> get() throws Exception; }
 
     private static java.util.List<String> safeRun(ThrowingSupplier s) {
@@ -632,7 +710,8 @@ public final class NestworldCommand {
                                         .executes(ctx -> testMutate(ctx.getSource(),
                                                 UuidArgument.getUuid(ctx, "uuid"), new EntityMutationOp.Discard()))))
                         .then(buildSetVelocityTestNode())
-                        .then(buildDeterministicTestNode()))
+                        .then(buildDeterministicTestNode())
+                        .then(buildInventoryDeterministicTestNode()))
                 .then(buildModuleTestNode()));
 
         // /spark — in-game access to the spark standalone agent (see SparkBridge).

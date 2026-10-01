@@ -3,6 +3,7 @@ package net.nestworld.region;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
 
 import javax.annotation.Nullable;
@@ -74,4 +75,12 @@ public sealed interface EntityMutationOp {
      *  an older intent that arrives after a newer one already applied is silently dropped
      *  (LATEST_INTENT_WINS), not applied out of order over the newer state. */
     record SetVelocity(Vec3 velocity, long intentVersion) implements EntityMutationOp {}
+    /** API-1B.6: backs {@code net.nestworld.modapi.inventory.NestWorldInventory.setSlot}
+     *  (docs/contracts/InventorySetSlotPrimitive.md). Value data only: {@code snapshot} is a
+     *  detached {@code ItemStack.copy()} taken at the API boundary; {@code playerIncarnation} is
+     *  an opaque object-identity token ({@code PlayerIncarnationRegistry}), never a ServerPlayer
+     *  reference. {@code intentVersion} is scoped to the (player, slot, incarnation) domain. The
+     *  applying code must validate the incarnation against the object it is about to mutate
+     *  before consulting the version tracker. */
+    record SetInventorySlot(int slot, ItemStack snapshot, long intentVersion, long playerIncarnation) implements EntityMutationOp {}
 }

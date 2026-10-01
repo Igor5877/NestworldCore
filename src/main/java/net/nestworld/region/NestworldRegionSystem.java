@@ -11,6 +11,7 @@ import java.io.File;
 import java.nio.file.Path;
 import java.util.function.BooleanSupplier;
 import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.server.ServerStartingEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
@@ -174,6 +175,14 @@ public class NestworldRegionSystem {
         // can never clobber this install.
         net.nestworld.modapi.entity.VelocityBackendRegistry.install(
                 event.getServer(), net.nestworld.region.NestworldVelocityBackend.INSTANCE);
+        // API-1B.6 (docs/contracts/InventorySetSlotPrimitive.md): install the region-aware
+        // setSlot backend for THIS server instance -- same token-guarded install discipline as
+        // VelocityBackendRegistry above, separate registry instance per that primitive's own
+        // "reuse the pattern, keep the instance separate" rule. Unlike the velocity backend, this
+        // one is constructed per-server (it needs the MinecraftServer reference to resolve a
+        // player UUID on the main thread -- see NestworldInventorySetBackend's own javadoc).
+        net.nestworld.modapi.inventory.InventorySetBackendRegistry.install(
+                event.getServer(), new net.nestworld.region.NestworldInventorySetBackend(event.getServer()));
         // Start the always-on profiler (no-op unless AUTO_SPARK + spark present).
         SparkBridge.autoStart(event.getServer());
         // CPU Capacity Planner (2026-08-30, Phase 1) -- full parameter inventory + demand model +
@@ -207,6 +216,13 @@ public class NestworldRegionSystem {
         // server generation (including an integrated-server world restart in the same JVM)
         // must never see stale version counters from a previous world.
         net.nestworld.modapi.entity.SetVelocityIntentTracker.resetAll();
+        // API-1B.6: same unconditional-uninstall discipline for setSlot's backend, plus memory
+        // cleanup of the identity registry and the per-incarnation version domains. Neither reset
+        // is a correctness mechanism: incarnation tokens are never reused (the counter is never
+        // reset), so state from a previous server generation can never validate in a new one.
+        net.nestworld.modapi.inventory.InventorySetBackendRegistry.uninstall(event.getServer());
+        net.nestworld.modapi.inventory.PlayerIncarnationRegistry.resetAll();
+        net.nestworld.modapi.inventory.InventorySlotVersionTracker.resetAll();
         // MODULE-1: drive every RUNNING module through QUIESCING -> DISABLED (or FAILED) before
         // Core itself tears down -- this is the one QUIESCING precedent Core's own shutdown
         // does NOT provide (docs/MODULE0_AUDIT.md §C: RegionThread.shutdown()'s mailbox isn't
@@ -216,6 +232,23 @@ public class NestworldRegionSystem {
             INSTANCE.shutdown();
             INSTANCE = null;
         }
+    }
+
+    /** API-1B.7 TELEMETRY ONLY -- not part of any correctness path. setSlot's incarnation is
+     *  object identity (PlayerIncarnationRegistry); these lines exist so live traces can show
+     *  WHERE the Forge events fall relative to identity decisions (fixture E). An earlier design
+     *  bumped an incarnation counter here; that was refuted live (events fire after the new
+     *  ServerPlayer is already reachable) and removed. */
+    @SubscribeEvent
+    public static void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
+        LogManager.getLogger("NestWorld/DIAG").info("[API1B6] LIFECYCLE(telemetry) event=LOGIN player={} playerObj={}",
+                event.getEntity().getUUID(), Integer.toHexString(System.identityHashCode(event.getEntity())));
+    }
+
+    @SubscribeEvent
+    public static void onPlayerRespawn(PlayerEvent.PlayerRespawnEvent event) {
+        LogManager.getLogger("NestWorld/DIAG").info("[API1B6] LIFECYCLE(telemetry) event=RESPAWN player={} playerObj={}",
+                event.getEntity().getUUID(), Integer.toHexString(System.identityHashCode(event.getEntity())));
     }
 
     @SubscribeEvent

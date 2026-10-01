@@ -809,6 +809,38 @@ Live proof:
     of any single primitive's contract, and doesn't get treated as fixed the day one contract
     stops mentioning it. NOT blocking any current API-1A work. No fix scheduled.
 
+16. **CORE-MAILBOX-MERGE-001 — Region merge/split does not hand off mailboxes; a send to an
+    already-retired region is lost silently** (found live 2026-10-01, API-1B.7, isolated scratch instance).
+    `RegionSplitManager.doMerge` (`:998-1020`) moves owned-entity UUIDs into the merged region
+    and calls `pool.remove(a)/(b)`, but never drains, forwards or closes the retired regions'
+    mailboxes. `EntityMutationDispatcher.dispatch` resolves `owner` and only later posts to it,
+    so a merge landing between the two posts into a dead mailbox. Live trace: opId
+    `2000000004` (SetInventorySlot) `OWNER_RESOLVED owner=3` at 08:13:44.932 → region 3 merged
+    into 5 at 08:13:52.067 → `ENQUEUE to=3` at 08:14:14.933 → **no APPLY, no TERMINAL, ever**.
+    (The long gap came from a test barrier, but the same window exists without one; it is only
+    narrower.) Same class as #15 — at-most-once loss, not corruption, and invisible to the
+    `[API1A7]` phase trace because no code path ever emits a TERMINAL for it. Messages already
+    queued in a region's mailbox at the moment it is merged/split away are presumably lost the
+    same way (not separately reproduced). **Split variant reproduced live** (2026-10-01, API-1B.7
+    OFFLINE-ROUTED): `opId=2000000006 OWNER_RESOLVED owner=1` (11:31:24.233) → `Split Region{id=1}
+    -> [3, 4]` (11:31:25.205) → `ENQUEUE to=1` (11:31:25.341) → no APPLY, no TERMINAL. Region pinning
+    only suppresses merge pressure, not splits, so it does not shield a test from this. Distinct from ownership migration between two LIVE
+    regions, where `applyQueued` re-resolves and reroutes correctly (API-1B.7 fixture B shows
+    `REROUTE from=2 to=3 hop=1` working). Not fixed: Core-wide dispatcher/mailbox lifecycle
+    work, outside API-1B's scope; tracked here so the at-most-once wording in primitive
+    contracts isn't mistaken for "every loss is logged".
+    **Measured under load** (API-1B.7 `stress-churn`, 60 s, forced split/merge every ~2 s):
+    44 regions retired, 171 messages stranded in their mailboxes, exactly equal to the 171
+    `setSlot` submissions that never reached any terminal outcome.
+    **Classification — broader than any one primitive**: (a) delivery: best-effort contracts
+    formally permit loss, but this loss is triggered by routine region maintenance, not by target
+    disappearance or shutdown; (b) observability: no TERMINAL outcome is ever produced, so loss is
+    indistinguishable from "still in flight"; (c) blast radius: the same mailboxes carry every
+    `RegionMessage` type (entity pushes/impacts, border-band block writes, scheduled-tick
+    transfers), several of which have stronger expectations than a best-effort primitive.
+    **Gate**: separate Core fix/gate; a blocker for any final routed/stress delivery claim of
+    API-1A/API-1B, after which their routing tests must be re-run.
+
 ## Deployment discipline (standing rule, not per-fix)
 
 No coremod/fix from this file ships without, in order: source proof (own decompile, not just

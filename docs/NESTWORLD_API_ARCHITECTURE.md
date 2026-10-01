@@ -1270,6 +1270,203 @@ class -> delivery -> verification) works for this genuinely different ownership 
 real evidence of a repeatable methodology for building this Mod API — not evidence that
 `setVelocity` happened to be a well-chosen one-off.
 
+### API-1B boundary audit — CLOSED (2026-09-30), research only, no code written
+
+Full detail in session history (fork report) — summary here. Grounded in real vanilla source
+(`Inventory.java`, `AbstractContainerMenu.java`, `ContainerHelper.java`, `ItemStack.java`), not
+assumption.
+
+**Target identity, with a genuine asymmetry from `setVelocity` worth carrying forward**:
+`(player UUID, Inventory-flat-slot-index 0-40)`. Two slot-numbering schemes exist in vanilla —
+only one is stable: `Inventory`'s own flat index across its three compartments (`items[36]`,
+`armor[4]`, `offhand[1]`) is real identity; `AbstractContainerMenu`'s per-GUI slot index
+(assigned sequentially at menu construction, `slot.index = this.slots.size()`) is ephemeral and
+**must be excluded** — trusting it would repeat the "routing snapshot != mutation authority"
+mistake at the identity layer itself. Unlike `setVelocity`, **player UUID lookup needs no
+dimension component** (`PlayerList.getPlayer(UUID)` is a server-wide map, not per-dimension,
+unlike `level.getEntity(uuid)`) — but ownership ROUTING still needs dimension, read fresh off
+the reacquired player (`player.level().dimension()`), never captured at submission. Identity-
+for-lookup and identity-for-routing are different fields here in a way they weren't for
+`setVelocity` — don't conflate them in the eventual contract.
+
+**Fresh reacquisition**: `server.getPlayerList().getPlayer(uuid)` → `.getInventory()`. "Player
+not found" (offline) is this primitive's `TARGET_NOT_FOUND` equivalent — offline inventory data
+lives in a separate NBT file, a different write path, out of scope.
+
+**Ownership authority**: zero existing NestWorld code touches player `Inventory` anywhere
+(confirmed by grep — genuinely open, not already assumed elsewhere like some of MODULE-0's
+extension points were). `ServerPlayer` is not special-cased in `EntityMutationDispatcher`/
+`WorldGrid`/`NestworldOwnershipAssertions` — a player is just an `Entity` for ownership
+purposes today. Default, evidenced conclusion: inventory mutation routes through the same
+ownership mechanism already proven for `setVelocity` (whichever region owns the player entity).
+**Actor/target shape confirmed genuinely simpler than `damage()`/`useItemOnBlock()`**: raw
+`Inventory` manipulation touches only the player's own state, no second entity — real
+supporting evidence for `PLAYER_SINGLE_OWNER`, explicitly scoped to raw `Inventory` calls, NOT
+the `Slot`/click/crafting path (correctly excluded, same reason `useItemOnBlock()` was rejected
+for being too broad).
+
+**Operation taxonomy — each independently audited, prior guesses tested against real code, not
+repeated uncritically**:
+
+| Op | Bounded? | Callback surface | Temporal semantics |
+|---|---|---|---|
+| `SET` (`Inventory.setItem`) | YES — one list-element write, zero Forge/event references in the whole file | NONE at this layer | **Guess CONFIRMED**: `LATEST_INTENT_WINS` per `(player, slot)` — wholesale replacement, structurally identical to `setVelocity`, an older "set to X" losing to a newer "set to Y" is the correct outcome |
+| `INSERT` (`Inventory.add`) | **NO** — can write across multiple slots in one call, branches on creative-mode ability, **mutates the caller-supplied `ItemStack` parameter in place** (`setCount(...)` on the input) — the same class of live-caller-object-mutation hazard Milestone 1 rejected for `DamageSource` | none found in this exact path, but the shape alone disqualifies a naive `setVelocity` port | **Guess partially WRONG, corrected**: not `ORDERED_COMMAND` because "every call matters" abstractly — `LATEST_INTENT_WINS`-style dropping is **actively wrong** here: a stale insert silently dropped under a void, fire-and-forget contract means the item is simply **destroyed**, a real duplication/loss bug class, not "correct outcome, wrong timing" |
+| `EXTRACT` (`Inventory.removeItem`) | Bounded to one slot, but quantity-sensitive and silently clamps (asking for more than available returns less, never errors) | none found | **Open question, not resolved**: a stale extract being dropped isn't destructive (item stays put) — but a void, no-return-value shape doesn't fit EXTRACT at all, since the caller needs to know how much they actually got. May need a genuinely result-bearing contract, in tension with `docs/contracts/SetVelocityPrimitive.md`'s own deliberate "no `CompletableFuture`/`MutationResult`" scoping — flagged as real tension, not glossed over |
+| `COMPARE/CONDITIONAL` | — | — | **Not evidenced anywhere** — no compare-and-swap-shaped method exists on vanilla `Inventory` (full-class grep). Per `docs/MODULE0_AUDIT.md`'s own discipline ("do not invent extension points merely because they sound useful"), **dropped from the candidate set entirely** |
+
+**Recommendation**: `SET` (`Inventory.setItem`) is the strongest, narrowest first API-1B slice —
+same shape of choice as `setVelocity` itself was among a larger candidate set. The only
+operation of the four that is genuinely bounded with zero new machinery needed. `INSERT` needs
+its own future gate with `DamageSource`-gate-level rigor on the caller-object-mutation hazard
+before it's safe to route across any async boundary. `EXTRACT` needs its own future gate to
+resolve the result-bearing-contract tension. **Do not batch all four into one slice** — exactly
+the mistake the `damage()`/`useItemOnBlock()` double-audit taught this project to avoid.
+
+**Decided (2026-09-30): GO for `SET`, NO-GO for the combined Inventory API.** `INSERT`/`EXTRACT`
+remain separate, deliberately deferred future gates — not batched with `SET`.
+
+### API-1B.5 — Inventory Set-Slot Primitive — contract CLOSED (2026-09-30), no code written
+
+Full contract: `docs/contracts/InventorySetSlotPrimitive.md`. Four contract-closing items the
+architecture owner required before any implementation, all resolved with evidence:
+
+1. **`ItemStack.copy()` independence — confirmed directly against real source** (not the audit
+   fork, the coordinator's own read): `copy()` builds a new instance from `serializeCaps()`
+   (fresh capability data, not a shared handler) and deep-copies NBT via `tag.copy()`
+   (`CompoundTag.copy()` recursively calls `Tag::copy` on every nested tag). The
+   `(Item, int, CompoundTag)` constructor's `forgeInit()` calls `deserializeCaps(...)`
+   **immediately**, not lazily — the copy's capabilities are a freshly-reconstructed, fully
+   independent instance from the moment `copy()` returns. Zero shared mutable references
+   survive. `SetSlotRequest` carries this snapshot, never the caller's live `ItemStack`.
+2. **Slot identity formalized as ABI**: `TargetKey = (UUID playerId, int slot)`, `slot`
+   EXCLUSIVELY `Inventory`'s own stable flat index (0-40) — `AbstractContainerMenu`'s
+   per-GUI-instance slot index must never leak into the public surface at all.
+3. **Routing identity separated from mutation identity, same principle as `setVelocity`**:
+   dimension is NOT part of `TargetKey`. Genuine asymmetry from entity lookup confirmed:
+   `PlayerList.getPlayer(uuid)` is a server-wide map, needs no dimension component at all
+   (unlike `level.getEntity(uuid)`, which only searches one `ServerLevel`).
+4. **Temporal semantics formalized with a real linearization point**: `LATEST_INTENT_WINS` per
+   `(playerId, slot)` — independent version domains PER SLOT, `assignVersion` at submission,
+   `tryAccept` immediately before the actual `Inventory.setItem` call, identical discipline to
+   `SetVelocityIntentTracker`.
+
+**New finding this gate produced, not merely closed a checklist item — a real, evidence-traced
+hazard**: respawn creates a genuinely new `ServerPlayer`/`Inventory` incarnation, UNCONDITIONALLY,
+every time (`PlayerList.respawn` constructs `new ServerPlayer(...)` always;
+`ServerPlayer.restoreFrom`'s `Inventory.replaceWith(...)` call is conditional on
+`keepInventory`/spectator/End-conquest — in the ordinary death-respawn case it never runs, so the
+new inventory isn't even populated from the old one). Real hazard: a pre-respawn `setSlot` intent
+still in flight when respawn happens, with no post-respawn write yet landed for that slot, would
+still be "the highest version seen" and get ACCEPTED — writing pre-death item data into a fresh
+post-respawn inventory. **Resolution**: a `currentIncarnation(UUID)` counter, kept OUT of
+`TargetKey` (same "identity stays minimal, routing/execution state travels as a payload field"
+principle `setVelocity` already established for dimension), bumped via the real, confirmed
+`PlayerEvent.PlayerRespawnEvent`. `tryAccept` additionally rejects on an incarnation mismatch,
+regardless of version. Directly reuses two already-validated patterns rather than inventing a
+third: `ModuleGeneration`'s identity-plus-counter shape (MODULE-1) and MODULE-0.5's
+`QUIESCING`-sentinel-generation trick, applied here as a respawn-sentinel.
+
+**Evidence/tests proposed** (API-1B.6+, not yet written — design-only gate, matching how
+`setVelocity`'s own Evidence/tests section predated API-1A.7): direct path, worker-thread
+submission, migration/reroute, logout-before-apply, respawn-before-apply, stale-intent inversion,
+two different slots concurrently (per-slot version independence), **caller mutates the original
+`ItemStack` after submission** (the single most important test — slot content must match the
+submission-time snapshot, never the caller's later mutation), reroute limit, lifecycle reset,
+stress.
+
+**Not yet started**: implementation (API-1B.6) and live verification (API-1B.7) — architecture
+owner's decision on when to proceed, not made by this gate.
+
+### API-1B.6/1B.7 — Inventory Set-Slot Primitive — primitive VERIFIED; delivery and distribution BLOCKED (separate gates)
+
+**Status (2026-10-01, API-1B.7 complete)**: primitive correctness VERIFIED; API-1B is not called
+plain "CLOSED" because two non-primitive blockers remain, each with its own gate.
+- Verified: NestWorld (direct + region-routed) and genuine stock Forge 47.4.20; deterministic
+  fixtures with real respawn/relogin; stress pinned/unpinned/churn, ~46k submissions each, all
+  primitive invariants 0 (`duplicateApply, wrongOwnerMutation, wrongIncarnationMutation,
+  staleIntentApply, callerObjectLeak, unboundedReroute`, plus `finalStateMismatch`).
+- Incarnation model: object identity (`PlayerIncarnationRegistry`, reference `==`), temporal domain
+  `(player, slot, incarnation)`; the event-driven model was refuted live (fixture E) and removed.
+  This also closed the stock-Forge incarnation blocker — confirmed on a real stock-Forge server.
+- **Blocked — delivery**: CORE-MAILBOX-MERGE-001 (`RACE_CLASSIFICATION.md` #16). Under forced region
+  churn, 171/171 missing terminal outcomes were messages stranded in retired regions' mailboxes.
+  Core gate; API-1A/1B routing tests re-run after its fix.
+- **Blocked — distribution**: API1B7-PKG-002. A consumer mod embedding `:modapi` cannot boot on
+  NestWorld (`Modules nwinvprobe and forge export package net.nestworld.modapi.entity`). API-PKG-1's
+  "same consumer jar on both platforms" claim is no longer true. Packaging decision pending.
+- Fixed in this milestone: PKG-001 (`a8a2567b2`, `:modapi` shipped un-reobfuscated).
+- Follow-up: the `[API1A7]` per-op INFO phase trace (committed, `setVelocity` path) can stall the
+  main thread under load (API1B7-STRESS-001); setSlot's own per-op lines are now fixture-gated.
+
+Full status: `docs/contracts/InventorySetSlotPrimitive.md` (updated in place, not a new doc).
+Implementation landed: `net.nestworld.modapi.inventory.*` (`projects/modapi`, the standalone
+Core-free module — `InventoryTargetKey`, `SetSlotRequest`, `InventorySlotVersionTracker`,
+`PlayerIncarnationTracker`, `InventorySetBackend`(+`Registry`), `ForgeInventorySetExecution`,
+`NestWorldInventory` facade), `EntityMutationOp.SetInventorySlot` +
+`EntityMutationDispatcher.applyDirect`'s new case (incarnation checked strictly BEFORE version,
+per the contract's own load-bearing ordering requirement), `NestworldInventorySetBackend` (Core
+peer, `net.nestworld.region`), and `NestworldRegionSystem` wiring (backend install/uninstall,
+both trackers' `resetAll()` on server stop). `:modapi:compileJava` and `:forge:compileJava` both
+pass clean.
+
+**Real architectural correction found during implementation, not merely a checklist item**: the
+contract's own respawn-mechanism recommendation (self-registering `PlayerIncarnationTracker` to
+the Forge event bus, "works correctly on ordinary Forge with NestWorldCore entirely absent") is
+**impossible as originally specified** — confirmed by direct `:modapi:compileJava` failure
+(`package net.minecraftforge.common does not exist`), not assumed. `:modapi` compiles only
+against `:clean` (genuinely unpatched vanilla), which carries none of Forge's own event-bus/
+common API — those classes exist in this repo only inside `:forge`'s own patched sourceSet,
+inseparable from NestWorldCore per FORGE-001. Fix: `PlayerIncarnationTracker` stays a pure
+passive counter; the actual `@SubscribeEvent` bridge (`onPlayerLoggedIn`/`onPlayerRespawn`)
+moved into `NestworldRegionSystem` (Core), which already has full Forge access. **This reopens a
+gap the contract did not anticipate**: on ordinary Forge with NestWorldCore absent, nothing
+calls `bump()`. (An earlier revision called this "fails open, not unsafe" — withdrawn: without
+an incarnation signal a pre-respawn request can be applied to the NEW player's inventory, which
+violates the declared respawn semantics. OPEN BLOCKER; fix belongs in a stock-Forge
+runtime-integration bridge, not in `:modapi`.)
+
+Two more implementation-time findings, both resolved with evidence (see class javadocs for the
+full reasoning, not repeated here):
+- `NestworldVelocityBackend`'s Core-peer shape does NOT transfer to inventory unmodified: it
+  receives an already-resolved live `Entity` from its caller, so it never needs a UUID→player
+  lookup. `NestworldInventorySetBackend` receives only a UUID-carrying `SetSlotRequest`, and
+  `PlayerList.getPlayer(uuid)` reads a plain (non-concurrent-safe) `HashMap` — confirmed by
+  direct source read — so this peer marshals to the main thread BEFORE resolving the player,
+  mirroring `ForgeInventorySetExecution`'s own discipline, not assumed transferable from velocity.
+- The 8 new files were initially placed in `:forge`'s own sourceSet instead of the standalone
+  `:modapi` module — caught before compiling (would have silently never shipped in the published
+  Maven artifact) — moved to `projects/modapi/src/main/java/net/nestworld/modapi/inventory/`.
+
+**API-1B.7 (deterministic test harness for the four named critical fixtures) — WRITTEN, compiles
+clean, NOT YET RUN against a live server**: `net.nestworld.region.Api1B6DeterministicTests`,
+reusing `Api1A7DeterministicTests`' exact barrier-pause/mutate-state/release/observe discipline
+and its region-grid scaffolding (widened from `private` to package-private for reuse, not
+duplicated). RCON surface: `/nestworld testmutate invdet <snapshot|ordering|respawn|
+crossboundary>` (requires running AS a real connected player — `SetInventorySlot` rejects any
+non-`ServerPlayer` target, so this harness needs a real attached `Inventory`, unlike
+`setVelocity`'s disposable-`ArmorStand` harness).
+- **Fixture A (`snapshot`)**: caller mutates its own `ItemStack` after `setSlot()` returns —
+  applied slot content must reflect the submission-time snapshot only.
+- **Fixture B (`ordering`)**: same-incarnation `LATEST_INTENT_WINS` under a forced region
+  migration, SEC11-style — V1 delayed at a barrier, V2 submitted and applied first, V1 released
+  and must lose arbitration (`STALE_INTENT_DROPPED`) despite reaching its own apply-phase routing.
+- **Fixture C (`respawn`)**: an intent paused at barrier C (post ownership-recheck, pre-mutation)
+  must be rejected if `PlayerIncarnationTracker.bump()` fires while it's paused — proves the
+  incarnation check inside `applyDirect` itself catches this, not merely routing-level staleness.
+- **Fixture D (`crossboundary`, new this gate, not one of the original 11 evidence items)**: an
+  old-incarnation intent carrying a numerically HIGH version must be rejected regardless of its
+  version, while a new-incarnation intent carrying a numerically LOW (post-reset) version must be
+  accepted — proves temporal ordering never leaks across the incarnation boundary in either
+  direction, and that `InventorySlotVersionTracker.resetForPlayer` (triggered by `bump`) actually
+  resets the counter, not just that `bump` ran.
+
+**Not yet started**: live execution of the four fixtures (the actual DoD closure for API-1B.7),
+plus the remaining ~7 items from API-1B.5's original evidence list that have no dedicated test
+yet (worker-thread submission, logout-before-apply, two-slots-concurrently, reroute limit,
+lifecycle-reset-across-server-generations, stress) — see `docs/contracts/InventorySetSlotPrimitive.md`'s
+per-item status table for the full honest breakdown.
+
 **MODULE-0 — Module SPI Boundary — CLOSED PARTIAL (2026-09-29).** Design/audit gate only, per
 directive. Full detail: `docs/MODULE0_AUDIT.md`. Extension-point inventory, privilege boundary
 (`privileged != unrestricted`, confirmed to hold structurally as long as entity/region mutation
