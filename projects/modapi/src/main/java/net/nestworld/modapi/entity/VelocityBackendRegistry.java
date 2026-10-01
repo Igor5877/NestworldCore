@@ -5,6 +5,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
+ * <p><b>PLATFORM PROVIDER SPI — not part of the public Mod API.</b> This type is a contract
+ * between NestWorldCore and the Mod API provider, not a promise to mods; it may change, or move to
+ * a separate artifact, without notice (docs/contracts/PKG-002-distribution-model.md, D1a). Mods
+ * use the facades ({@code NestWorldEntities}, {@code NestWorldInventory}) and their value types.
+ *
  * Core-internal backend/platform boundary. Status: IMPLEMENTED (API-1A.6), NOT YET VERIFIED
  * (API-1A.7's repeated-integrated-server-start negative test has not run). Full contract:
  * {@code docs/contracts/SetVelocityPrimitive.md}'s "Backend lifecycle" section.

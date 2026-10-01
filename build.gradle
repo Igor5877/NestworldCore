@@ -1620,6 +1620,49 @@ project(':forge') {
         dependsOn ':modapi:classes'
     }
 
+    // PKG-002 provider artifact (docs/contracts/PKG-002-distribution-model.md, commit N+1).
+    // Step 1: remap :modapi's MCP-named classes to SRG with the same renamer, mappings and
+    // libraries as reobfJar, plus this project's MCP-named jar as a library so the renamer sees
+    // the patched-vanilla hierarchy (inherited members: ServerPlayer.getUUID -> Entity.m_20148_).
+    def reobfModapiProvider = tasks.register('reobfModapiProvider', net.minecraftforge.gradle.patcher.tasks.ReobfuscateJar) {
+        def base = tasks.named('reobfJar')
+        dependsOn ':modapi:jar', tasks.named('jar')
+        tool.set(base.flatMap { it.tool })
+        args.set(base.flatMap { it.args })
+        srg.set(base.flatMap { it.srg })
+        libraries.from(base.map { it.libraries }, tasks.named('jar').flatMap { it.archiveFile })
+        input.set(project(':modapi').tasks.named('jar').flatMap { it.archiveFile })
+        output.set(layout.buildDirectory.file('modapiProvider/reobf-classes.jar'))
+    }
+    // Step 2: the provider mod jar = SRG classes + the generated mods.toml.
+    def modapiProviderJar = tasks.register('modapiProviderJar', Jar) {
+        dependsOn reobfModapiProvider, ':modapi:providerModsToml'
+        archiveFileName = "nestworld-modapi-provider-${project(':modapi').version}.jar"
+        destinationDirectory = layout.buildDirectory.dir('modapiProvider')
+        from(zipTree(reobfModapiProvider.flatMap { it.output })) { include 'net/nestworld/modapi/**' }
+        from(project(':modapi').providerTomlDir)
+        manifest.attributes('Implementation-Title': 'nestworld_modapi',
+                'Implementation-Version': project(':modapi').version)
+        doLast {
+            // Provider invariants: it is a mod (mods.toml), and its classes are SRG-named.
+            def zip = new java.util.zip.ZipFile(archiveFile.get().asFile)
+            try {
+                if (zip.getEntry('META-INF/mods.toml') == null)
+                    throw new GradleException("modapi provider: META-INF/mods.toml missing")
+                ['net/nestworld/modapi/entity/ForgeVelocityExecution.class',
+                 'net/nestworld/modapi/inventory/NestWorldInventory.class'].each { cls ->
+                    def e = zip.getEntry(cls)
+                    if (e == null) throw new GradleException("modapi provider: ${cls} missing")
+                    def text = new String(zip.getInputStream(e).bytes, 'ISO-8859-1')
+                    if (!text.contains('m_20148_') || text.contains('getUUID'))
+                        throw new GradleException("modapi provider: ${cls} is not SRG-named (expected m_20148_)")
+                }
+            } finally {
+                zip.close()
+            }
+        }
+    }
+
     universalJar {
         from extraTxts
 
@@ -1895,6 +1938,33 @@ project(':modapi') {
         compileOnly project(':clean')
         compileOnly 'org.slf4j:slf4j-api:2.0.9'
     }
+
+    // PKG-002 (docs/contracts/PKG-002-distribution-model.md): the Mod API is distributed at
+    // runtime as an FML mod, modId "nestworld_modapi" -- never as classes merged into another
+    // module (that was the split-package collision itself). This only generates its mods.toml;
+    // the SRG-reobfuscated provider jar is assembled in :forge (reobfModapiProvider /
+    // modapiProviderJar), because remapping inherited vanilla members needs the patched-vanilla
+    // class hierarchy that only :forge has.
+    def providerToml = tasks.register('providerModsToml') {
+        def out = layout.buildDirectory.file('provider/META-INF/mods.toml')
+        inputs.property('version', project.version)
+        outputs.file(out)
+        doLast {
+            out.get().asFile.parentFile.mkdirs()
+            out.get().asFile.text = [
+                'modLoader="lowcodefml"',
+                'loaderVersion="[47,)"',
+                'license="All Rights Reserved"',
+                '[[mods]]',
+                'modId="nestworld_modapi"',
+                "version=\"${project.version}\"",
+                'displayName="NestWorld Mod API"',
+                'description="Runtime provider of the NestWorld Mod API (net.nestworld.modapi). Install on stock Forge or carry it as jar-in-jar; NestWorld ships it built in."',
+                ''
+            ].join('\n')
+        }
+    }
+    ext.providerTomlDir = layout.buildDirectory.dir('provider')
 
     publishing {
         publications {

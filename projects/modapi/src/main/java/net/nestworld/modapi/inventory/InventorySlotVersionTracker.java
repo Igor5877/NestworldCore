@@ -5,6 +5,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
+ * <p><b>PLATFORM PROVIDER SPI — not part of the public Mod API.</b> This type is a contract
+ * between NestWorldCore and the Mod API provider, not a promise to mods; it may change, or move to
+ * a separate artifact, without notice (docs/contracts/PKG-002-distribution-model.md, D1a). Mods
+ * use the facades ({@code NestWorldEntities}, {@code NestWorldInventory}) and their value types.
+ *
  * API-1B.6 (revised 2026-10-01): per-{@code (playerId, slot, incarnation)} LATEST_INTENT_WINS
  * version tracking for {@code setSlot} -- a SEPARATE class from
  * {@code net.nestworld.modapi.entity.SetVelocityIntentTracker}, deliberately not generalized.

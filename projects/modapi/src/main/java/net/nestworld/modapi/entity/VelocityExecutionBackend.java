@@ -4,6 +4,11 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
 
 /**
+ * <p><b>PLATFORM PROVIDER SPI — not part of the public Mod API.</b> This type is a contract
+ * between NestWorldCore and the Mod API provider, not a promise to mods; it may change, or move to
+ * a separate artifact, without notice (docs/contracts/PKG-002-distribution-model.md, D1a). Mods
+ * use the facades ({@code NestWorldEntities}, {@code NestWorldInventory}) and their value types.
+ *
  * Core-internal SPI. Status: IMPLEMENTED (API-1A.6), NOT YET VERIFIED (API-1A.7 pending).
  * Full contract: {@code docs/contracts/SetVelocityPrimitive.md}.
  *
