@@ -1606,6 +1606,20 @@ project(':forge') {
         }
     }
 
+    // Packaging fix (supersedes API-PKG-1's universalJar merge): :modapi's compiled classes
+    // must reach the deployed jar THROUGH reobfJar. :modapi compiles against MCP-named vanilla
+    // (:clean); the runtime is SRG-named. Merging its output into universalJar (after reobf)
+    // shipped MCP references -- found live during API-1B verification as NoSuchMethodError
+    // 'ServerPlayer.getUUID()' on the first Mod API call, the same breakage affecting every
+    // net.nestworld.modapi.entity class (setVelocity) since 7123ef366. Putting the output
+    // into this jar (reobfJar's input) also gives the renamer the full patched-vanilla class
+    // hierarchy, which it needs to remap inherited members (ServerPlayer.getUUID -> Entity's
+    // m_20148_).
+    jar {
+        from project(':modapi').sourceSets.main.output
+        dependsOn ':modapi:classes'
+    }
+
     universalJar {
         from extraTxts
 
@@ -1614,19 +1628,9 @@ project(':forge') {
             include 'assets/forge/lang/*.json'
         }
 
-        // API-PKG-1 fix: :modapi (net.nestworld.modapi.*) was extracted into its own Gradle
-        // module (implementation project(':modapi') in :forge's dependencies, above), which
-        // gives compile/IDE classpath access but does NOT put its classes in :forge's own
-        // output jar -- a project() dependency is not fat-jar inclusion. Core code
-        // (NestworldVelocityBackend, NestworldRegionSystem, EntityMutationDispatcher) calls
-        // net.nestworld.modapi.entity.* directly via normal imports, so the deployed server
-        // jar needs those classes physically present, not just resolvable at compile time.
-        // Confirmed missing (zero net/nestworld/modapi entries, 0 vs. net/nestworld/region's
-        // 222) and confirmed as the exact cause of a NoClassDefFoundError boot failure before
-        // this fix. Merge :modapi's compiled output directly in (same classloader, same
-        // package layout Core already expects) -- not jarJar/shading, which is for embedding
-        // an EXTERNAL artifact with its own isolated classloader, the wrong tool here.
-        from project(':modapi').sourceSets.main.output
+        // :modapi's classes are merged into :forge's own `jar` task (see the "Packaging fix"
+        // block next to it), NOT here: anything added at this stage bypasses reobfJar and
+        // ships with MCP names against an SRG runtime (NoSuchMethodError at first call).
 
         dependsOn downloadCrowdin
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
@@ -1652,6 +1656,13 @@ project(':forge') {
             def canaries = [
                 'net/nestworld/modapi/entity/NestWorldEntities.class',
             ]
+            // Presence alone is not enough -- the API-PKG-1 merge shipped :modapi with MCP names
+            // (Entity.getUUID) against an SRG runtime, and the presence-only check passed. Each
+            // class listed here calls Entity.getUUID(); after a correct reobf its constant pool
+            // holds the SRG name m_20148_ and NOT the MCP name.
+            def mustBeSrg = [
+                'net/nestworld/modapi/entity/ForgeVelocityExecution.class',
+            ]
             def jarPath = archiveFile.get().asFile
             def zip = new java.util.zip.ZipFile(jarPath)
             try {
@@ -1659,10 +1670,18 @@ project(':forge') {
                     if (zip.getEntry(canary) == null) {
                         throw new GradleException("universalJar packaging invariant violated: "
                             + "'${canary}' is missing from ${jarPath.name}. A project() compile "
-                            + "dependency does not guarantee fat-jar inclusion -- if a subproject "
-                            + "was recently added/changed, its classes likely need an explicit "
-                            + "'from project(...).sourceSets.main.output' line above, same as "
-                            + "the :modapi fix already here.")
+                            + "dependency does not guarantee fat-jar inclusion -- see the :modapi "
+                            + "merge into :forge's jar task.")
+                    }
+                }
+                mustBeSrg.each { cls ->
+                    def bytes = zip.getInputStream(zip.getEntry(cls)).bytes
+                    def text = new String(bytes, 'ISO-8859-1')
+                    if (!text.contains('m_20148_') || text.contains('getUUID')) {
+                        throw new GradleException("universalJar packaging invariant violated: "
+                            + "'${cls}' references vanilla by MCP names (expected SRG m_20148_ for "
+                            + "Entity.getUUID). :modapi output must go through reobfJar, i.e. be "
+                            + "merged into :forge's jar task, never added to universalJar directly.")
                     }
                 }
             } finally {

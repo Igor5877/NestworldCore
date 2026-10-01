@@ -174,6 +174,50 @@ correctness, never packaging correctness. Any future extraction (API-1B or beyon
 yet decided" item below about extending this pattern) must re-verify the CONSUMING project's own
 deployed artifact boots, not only that an external consumer of the extracted artifact does.
 
+## Regression found and fixed (2026-10-01) — `:modapi` shipped un-reobfuscated (MCP names on an SRG runtime)
+
+**Symptom** (found during API-1B live verification, isolated scratch instance): the first Mod API
+call on a deployed NestWorld jar failed with
+`java.lang.NoSuchMethodError: 'java.util.UUID net.minecraft.server.level.ServerPlayer.getUUID()'`.
+
+**Cause**: the 2026-09-30 fix above merged `project(':modapi').sourceSets.main.output` into
+`universalJar` — a stage AFTER `reobfJar`. `:modapi` compiles against MCP-named vanilla
+(`:clean`); the production runtime is SRG-named. `javap` on the deployed jar: every
+`net.nestworld.modapi.*` class referenced vanilla by MCP names (`Entity.getUUID`,
+`MinecraftServer.isSameThread`) while Core classes used SRG (`m_20148_`, `m_18695_`).
+**Impact**: the public Mod API — including the frozen `setVelocity` (`NestWorldEntities`,
+`ForgeVelocityExecution`) — threw on first use on every deployed NestWorld jar built since
+`7123ef366`. It went unnoticed because nothing exercised the Mod API on a deployed jar after
+API-PKG-1 (MODULE-1's live pass never called it) and the canary only checked class *presence*.
+The published Maven artifact (MCP-named by design, for ForgeGradle `fg.deobf` consumers) is
+unaffected.
+
+**Fix** (`build.gradle`): merge `:modapi`'s output into `:forge`'s `jar` task — the input of
+`reobfJar` — instead of `universalJar`. Besides putting the classes through the renamer, this
+gives the renamer the full patched-vanilla class hierarchy it needs for inherited members
+(`ServerPlayer.getUUID` → `Entity.m_20148_`); remapping `:modapi`'s jar on its own would lack it.
+The `universalJar` canary now also fails the build if a listed `:modapi` class lacks the SRG name
+`m_20148_` or still contains `getUUID`.
+
+**Evidence**:
+- Negative test: reintroducing the post-reobf merge → `BUILD FAILED`, `'…/ForgeVelocityExecution.class'
+  references vanilla by MCP names (expected SRG m_20148_ …)`; `build.gradle` restored byte-identical.
+- Positive: installer build, fresh `--installServer`, real boot to `Done`; `javap` shows SRG names in
+  `ForgeVelocityExecution`, `NestWorldEntities` (incl. inherited `ServerPlayer.m_20148_` in the API-1B
+  work-in-progress classes built alongside).
+- `setVelocity` through the public facade on the deployed jar: player target
+  `OWNER_RESOLVED owner=null → TERMINAL APPLIED`; region-owned armor stand
+  `ENQUEUE to=2 → NestWorld-Region-2 APPLY → TERMINAL APPLIED`. `NoSuchMethodError` count: 0.
+- Re-verified on the exact commit tree (all API-1B work stashed): installer build incl. the new
+  canary PASS, fresh install + boot `Done (59.444s)`, zero `modapi/inventory` classes in the jar,
+  SRG names in `ForgeVelocityExecution`/`NestWorldEntities`, public-facade `setVelocity` player
+  `opId=200 owner=null → TERMINAL APPLIED` and armor stand `opId=201 ENQUEUE to=3 →
+  NestWorld-Region-3 APPLY → TERMINAL APPLIED`, `NoSuchMethodError` 0.
+
+**Lesson**: compile success, class presence, and an external consumer passing all prove nothing
+about the *deployed* jar's linkage. The canary now checks naming, and any Mod API gate must call
+the API on a deployed NestWorld jar at least once.
+
 ## Not yet decided / out of scope for this gate
 
 - Publishing to a real, non-local Maven repository (Maven Central, GitHub Packages, a
