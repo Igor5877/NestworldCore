@@ -1,0 +1,35 @@
+// Shared by compileonly-consumer and jarjar-consumer (tests/modapi-compat). They differ ONLY in how
+// the Mod API provider reaches the runtime; source, metadata and the API dependency are identical.
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+minecraft {
+    mappings channel: 'official', version: '1.20.1'
+}
+
+sourceSets.main {
+    java.srcDirs = ['../consumer-src/main/java']
+    resources.srcDirs = ['../consumer-src/main/resources']
+}
+
+repositories {
+    mavenLocal() // ./gradlew :modapi:publishToMavenLocal in the repo root publishes both Mod API artifacts
+}
+
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.4.20'
+    // The consumer contract: compile against the API, never bundle its classes.
+    compileOnly 'net.nestworld:nestworld-mod-api-forge-1.20.1:1.0.0-SNAPSHOT'
+}
+
+tasks.named('processResources', ProcessResources).configure {
+    def props = [mod_id: 'nwinvprobe', mod_name: 'NestWorld Mod API compatibility consumer', mod_license: 'All Rights Reserved',
+                 mod_version: '1.0.0', mod_description: 'tests/modapi-compat consumer',
+                 loader_version_range: '[47,)', forge_version_range: '[47,)', minecraft_version_range: '[1.20.1,1.21)']
+    inputs.properties props
+    filesMatching('META-INF/mods.toml') { expand props }
+}
+
+tasks.named('jar', Jar).configure {
+    archiveBaseName = 'nwinvprobe-' + project.name
+    finalizedBy 'reobfJar'
+}

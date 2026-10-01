@@ -1,0 +1,7 @@
+build/
+.gradle/
+run/
+*.log
+
+# run-matrix.sh needs it; the repo-wide .gitignore ignores *.py
+!rcon.py

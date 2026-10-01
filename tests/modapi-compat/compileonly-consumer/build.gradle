@@ -1,0 +1,4 @@
+// Form A: compileOnly consumer. The provider must be supplied by the platform (NestWorld built-in)
+// or installed separately on stock Forge.
+plugins { id 'net.minecraftforge.gradle' version '[6.0,6.2)' }
+apply from: '../common.gradle'

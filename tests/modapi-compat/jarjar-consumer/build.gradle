@@ -1,0 +1,20 @@
+// Form B: compileOnly consumer that ALSO carries the provider MOD as jar-in-jar (never the API
+// classes). Same jar-in-jar identifier NestWorld uses, so FML unifies the copies.
+plugins { id 'net.minecraftforge.gradle' version '[6.0,6.2)' }
+apply from: '../common.gradle'
+
+jarJar.enable()
+
+dependencies {
+    jarJar(group: 'net.nestworld', name: 'nestworld-modapi-provider', version: '[1.0.0-SNAPSHOT,2.0.0)') {
+        jarJar.pin(it, '1.0.0-SNAPSHOT')
+    }
+}
+
+// The jarJar output must be reobfuscated like the normal jar (otherwise the consumer's own classes
+// stay MCP-named -- observed during PKG-002 verification).
+reobf { jarJar { } }
+tasks.named('jarJar') {
+    archiveBaseName = 'nwinvprobe-' + project.name
+    finalizedBy 'reobfJarJar'
+}

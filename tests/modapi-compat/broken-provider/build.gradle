@@ -1,0 +1,26 @@
+// Produces the negative-control providers for the compatibility matrix FROM THE PUBLISHED provider
+// (net.nestworld:nestworld-modapi-provider), never from hand-made classes:
+//   unverified-1.0.1        same ABI, newer version            -> Gate 1 (FML range) must refuse
+//   abi-remove-setSlot      claims the verified version, InventorySetBackend.setSlot removed (S5)
+//   abi-add-abstract        claims the verified version, abstract flush() added to InventorySetBackend
+//   abi-delete-registry     claims the verified version, InventorySetBackendRegistry deleted
+//   9.0.0-remove-setSlot    incompatible AND honest about it        -> Gate 1 must refuse first
+// The three abi-* variants must be refused by Gate 2 (ModApiAbiGate) with no linkage error.
+plugins { id 'java' }
+repositories { mavenLocal(); mavenCentral() }
+configurations { provider { transitive = false } }
+dependencies {
+    implementation 'org.ow2.asm:asm:9.3'
+    provider 'net.nestworld:nestworld-modapi-provider:1.0.0-SNAPSHOT'
+}
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+tasks.register('variants', JavaExec) {
+    dependsOn 'classes'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'MakeVariants'
+    def outDir = layout.buildDirectory.dir('variants')
+    outputs.dir(outDir)
+    doFirst { outDir.get().asFile.mkdirs() }
+    argumentProviders.add({ [configurations.provider.singleFile.absolutePath, outDir.get().asFile.absolutePath] } as CommandLineArgumentProvider)
+}
