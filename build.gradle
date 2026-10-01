@@ -2131,11 +2131,27 @@ project(':modapi') {
 
     publishing {
         publications {
+            // COMPILE-TIME API (MCP names, for ForgeGradle consumers): compileOnly only. Its jar
+            // also carries the nestworld_modapi mods.toml, so on a dev classpath it acts as the mod.
             modapi(MavenPublication) {
                 from components.java
                 groupId = 'net.nestworld'
                 artifactId = 'nestworld-mod-api-forge-1.20.1'
                 version = '1.0.0-SNAPSHOT'
+            }
+            // RUNTIME PROVIDER (SRG names, the FML mod nestworld_modapi): install on stock Forge, or
+            // carry it as jar-in-jar (PKG-002 decision D2, form B). NestWorld ships the same artifact
+            // built in. group/artifact are the jar-in-jar identifier FML unifies copies by -- part of
+            // the distribution contract. Never a compile dependency (it is SRG-named).
+            modapiProvider(MavenPublication) {
+                groupId = 'net.nestworld'
+                artifactId = 'nestworld-modapi-provider'
+                version = project.version.toString()
+                artifact(project(':forge').tasks.named('modapiProviderJar'))
+                pom {
+                    name = 'NestWorld Mod API provider (FML mod nestworld_modapi)'
+                    description = 'Runtime provider of net.nestworld.modapi; consumers compile against nestworld-mod-api-forge-1.20.1'
+                }
             }
         }
         repositories {

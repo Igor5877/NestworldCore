@@ -44,6 +44,18 @@ Published locally via `./gradlew :modapi:publishToMavenLocal`, landing at:
 separate, later decision; this gate exists to prove the packaging *boundary* itself, not to
 ship it publicly yet.
 
+## Two published artifacts (PKG-002, 2026-10-01)
+
+| Coordinate | Role | Names | How a consumer uses it |
+|---|---|---|---|
+| `net.nestworld:nestworld-mod-api-forge-1.20.1:1.0.0-SNAPSHOT` | compile-time API (also carries the `nestworld_modapi` `mods.toml`, so on a dev classpath it acts as the mod) | MCP | `compileOnly` — never bundled |
+| `net.nestworld:nestworld-modapi-provider:1.0.0-SNAPSHOT` | runtime FML mod `nestworld_modapi`; NestWorld ships the same artifact built in | SRG | installed on stock Forge (form A) or `jarJar` (form B); never a compile dependency |
+
+Both come from `./gradlew :modapi:publishToMavenLocal` (the provider is assembled by
+`:forge:modapiProviderJar`; the published file is byte-identical to the one NestWorld embeds).
+The provider's `group:artifact` is the jar-in-jar identifier FML unifies copies by — part of the
+distribution contract.
+
 ## Module graph
 
 ```
