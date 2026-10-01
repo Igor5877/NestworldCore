@@ -8,7 +8,7 @@ not touched; the only JVMs touched were confirmed by `/proc/<pid>/cwd`. Target: 
 lines, `[API1A7] opId=…` phase trace, and `InventorySetTelemetry` invariant counters (computed
 independently of the trackers they audit).
 
-**Final status (2026-10-01)**: primitive correctness VERIFIED (NestWorld direct + routed, genuine
+**Final status (2026-10-01)**: API-1B SET-SLOT — PRIMITIVE VERIFIED / DISTRIBUTION & TRANSPORT BLOCKED. Primitive correctness VERIFIED (NestWorld direct + routed, genuine
 stock Forge; deterministic fixtures with real respawn/relogin; 3 stress runs, all primitive
 invariants 0). Delivery reliability BLOCKED by CORE-MAILBOX-MERGE-001 (171/171 missing terminals
 attributed under forced churn). Distribution BLOCKED by API1B7-PKG-002. PKG-001 fixed in
@@ -319,6 +319,8 @@ before that merge, and is no longer valid evidence. Consequence: today there is 
 consumer jar that runs on both stock Forge and NestWorld. This is a distribution-architecture
 decision (who provides `net.nestworld.modapi` on each platform, and how consumers depend on it),
 outside setSlot's primitive correctness; it is not fixed here.
+**Follow-up (same day)**: distribution model investigated and proven by experiment (E1–E6) —
+`docs/contracts/PKG-002-distribution-model.md`. Implementation pending two owner decisions.
 
 ---
 

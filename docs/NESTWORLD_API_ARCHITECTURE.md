@@ -1378,10 +1378,13 @@ stress.
 **Not yet started**: implementation (API-1B.6) and live verification (API-1B.7) — architecture
 owner's decision on when to proceed, not made by this gate.
 
-### API-1B.6/1B.7 — Inventory Set-Slot Primitive — primitive VERIFIED; delivery and distribution BLOCKED (separate gates)
+### API-1B SET-SLOT — PRIMITIVE VERIFIED / DISTRIBUTION & TRANSPORT BLOCKED
 
-**Status (2026-10-01, API-1B.7 complete)**: primitive correctness VERIFIED; API-1B is not called
-plain "CLOSED" because two non-primitive blockers remain, each with its own gate.
+**Status (2026-10-01, API-1B.7 complete)**: API-1B SET-SLOT — PRIMITIVE VERIFIED / DISTRIBUTION & TRANSPORT BLOCKED. Order to "API-1B fully CLOSED"
+(architecture owner): PKG-002 (next) → CORE-MAILBOX-MERGE-001 → API-1A per-op logging →
+reproducible stock-Forge probe in the repo → integrated server → multi-`MinecraftServer` JVM
+(proof that server A cannot affect server B's identity/version state). No new Mod API primitive
+before that.
 - Verified: NestWorld (direct + region-routed) and genuine stock Forge 47.4.20; deterministic
   fixtures with real respawn/relogin; stress pinned/unpinned/churn, ~46k submissions each, all
   primitive invariants 0 (`duplicateApply, wrongOwnerMutation, wrongIncarnationMutation,
@@ -1394,7 +1397,11 @@ plain "CLOSED" because two non-primitive blockers remain, each with its own gate
   Core gate; API-1A/1B routing tests re-run after its fix.
 - **Blocked — distribution**: API1B7-PKG-002. A consumer mod embedding `:modapi` cannot boot on
   NestWorld (`Modules nwinvprobe and forge export package net.nestworld.modapi.entity`). API-PKG-1's
-  "same consumer jar on both platforms" claim is no longer true. Packaging decision pending.
+  "same consumer jar on both platforms" claim is no longer true. Distribution model now proven
+  by experiment and decided (`docs/contracts/PKG-002-distribution-model.md`: provider mod
+  `nestworld_modapi`, NestWorld ships it as jar-in-jar, consumers `compileOnly`, consumer
+  jar-in-jar of the provider allowed, shading API classes forbidden, Core enforces an explicit
+  verified API range); implementation pending; E7 (ABI-incompatible provider) gates PKG-002 PASS.
 - Fixed in this milestone: PKG-001 (`a8a2567b2`, `:modapi` shipped un-reobfuscated).
 - Follow-up: the `[API1A7]` per-op INFO phase trace (committed, `setVelocity` path) can stall the
   main thread under load (API1B7-STRESS-001); setSlot's own per-op lines are now fixture-gated.

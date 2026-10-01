@@ -1,6 +1,8 @@
 # `setSlot` — Inventory Set-Slot Bounded Mutation Primitive (API-1B.5/1B.6/1B.7)
 
-**Status (2026-10-01, after API-1B.7 verification)**:
+**Status: API-1B SET-SLOT — PRIMITIVE VERIFIED / DISTRIBUTION & TRANSPORT BLOCKED** (architecture owner, 2026-10-01)
+
+**Details (after API-1B.7 verification)**:
 - **Primitive correctness: VERIFIED** on NestWorld (direct and region-routed paths) and on genuine
   stock Forge 1.20.1-47.4.20 — deterministic fixtures, real respawn/relogin, and 3×60 s stress
   with every primitive invariant at 0. Evidence: `docs/contracts/api-1b7-findings.md`.
