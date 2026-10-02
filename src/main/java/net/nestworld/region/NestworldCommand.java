@@ -156,8 +156,14 @@ public final class NestworldCommand {
         Thread t = new Thread(() -> {
             org.apache.logging.log4j.Logger diag = org.apache.logging.log4j.LogManager.getLogger("NestWorld/DIAG");
             diag.info("[API1A7-DET] scenario={} STARTED on background thread {}", scenario, Thread.currentThread().getName());
-            for (String line : runner.get()) {
-                diag.info("[API1A7-DET] {}", line);
+            boolean traceBefore = ApiOpTrace.ENABLED;
+            ApiOpTrace.ENABLED = true; // STRESS-001: the fixture's evidence IS the phase trace
+            try {
+                for (String line : runner.get()) {
+                    diag.info("[API1A7-DET] {}", line);
+                }
+            } finally {
+                ApiOpTrace.ENABLED = traceBefore;
             }
             diag.info("[API1A7-DET] scenario={} FINISHED", scenario);
         }, "API1A7-det-controller-" + scenario);
@@ -166,6 +172,24 @@ public final class NestworldCommand {
         src.sendSuccess(() -> Component.literal("scenario " + scenario
                 + " started on background thread -- main thread NOT blocked, region ticks continue normally; "
                 + "tail server log for '[API1A7-DET]' lines"), false);
+        return 1;
+    }
+
+    /** STRESS-001: runtime switch for per-operation Mod API phase tracing ({@link ApiOpTrace}).
+     *  Default off; {@code on} is for debugging and manual evidence runs only. */
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> buildApiTraceNode() {
+        return Commands.literal("apitrace")
+                .executes(ctx -> apiTrace(ctx.getSource(), null))
+                .then(Commands.literal("on").executes(ctx -> apiTrace(ctx.getSource(), true)))
+                .then(Commands.literal("off").executes(ctx -> apiTrace(ctx.getSource(), false)));
+    }
+
+    private static int apiTrace(CommandSourceStack src, Boolean on) {
+        if (on != null) ApiOpTrace.ENABLED = on;
+        boolean now = ApiOpTrace.ENABLED;
+        long drops = ApiOpTrace.rerouteLimitDropped.get();
+        src.sendSuccess(() -> Component.literal("Mod API per-op tracing: " + (now ? "ON" : "OFF")
+                + " | rerouteLimitDropped=" + drops), on != null);
         return 1;
     }
 
@@ -696,6 +720,7 @@ public final class NestworldCommand {
                                                         IntegerArgumentType.getInteger(ctx, "z")))))))
                 .then(Commands.literal("scheduler").executes(ctx -> scheduler(ctx.getSource())))
                 .then(Commands.literal("mailboxaudit").executes(ctx -> mailboxAudit(ctx.getSource())))
+                .then(buildApiTraceNode())
                 .then(Commands.literal("pressure").executes(ctx -> pressure(ctx.getSource())))
                 .then(Commands.literal("entityguard").executes(ctx -> entityGuard(ctx.getSource())))
                 .then(Commands.literal("entityrecheck").executes(ctx -> entityRecheck(ctx.getSource())))

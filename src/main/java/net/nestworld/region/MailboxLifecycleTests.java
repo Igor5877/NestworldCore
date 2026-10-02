@@ -177,6 +177,8 @@ final class MailboxLifecycleTests {
                 + ", freeRunning=" + NestworldTuning.FREE_RUNNING_REGIONS_ENABLED + ") ===");
         MailboxLifecycleTestHooks.disarmAll();
         MailboxLifecycleTestHooks.ENABLED = true;
+        boolean traceBefore = ApiOpTrace.ENABLED;
+        ApiOpTrace.ENABLED = true; // STRESS-001: fixtures trace for their own duration only
         try {
             List<String> todo = scenario.equals("all")
                     ? List.of("l5", "l1-split", "l1-merge", "l2a", "l2b", "l2b-consumed", "l3", "l4", "transfer", "transfer-owned", "notfound", "redeliverylimit", "l2c")
@@ -214,6 +216,7 @@ final class MailboxLifecycleTests {
         } finally {
             MailboxLifecycleTestHooks.disarmAll();
             MailboxLifecycleTestHooks.ENABLED = false;
+            ApiOpTrace.ENABLED = traceBefore;
         }
         out.add("lifecycle: " + MailboxLifecycle.summary());
         out.add("RESULT pass=" + c.pass + " fail=" + c.fail + " skip=" + c.skip

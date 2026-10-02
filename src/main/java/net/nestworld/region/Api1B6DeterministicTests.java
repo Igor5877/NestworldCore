@@ -68,9 +68,14 @@ final class Api1B6DeterministicTests {
 
     // ------------------------------------------------------------------ shared helpers
 
+    /** STRESS-001: fixtures switch per-op tracing on for their own duration and restore it after. */
+    private static volatile boolean TRACE_BEFORE = false;
+
     private static void begin(List<String> out, String title) {
         InventorySetTelemetry.reset();
         InventorySetTelemetry.PER_INTENT = true;
+        TRACE_BEFORE = ApiOpTrace.ENABLED;
+        ApiOpTrace.ENABLED = true;
         EntityMutationTestHooks.disarmAll();
         EntityMutationTestHooks.ONLY_OP = EntityMutationOp.SetInventorySlot.class;
         EntityMutationTestHooks.ENABLED = false;
@@ -110,6 +115,7 @@ final class Api1B6DeterministicTests {
         EntityMutationTestHooks.ONLY_OP = null;
         out.add("INVARIANTS " + InventorySetTelemetry.invariantLine());
         InventorySetTelemetry.PER_INTENT = false;
+        ApiOpTrace.ENABLED = TRACE_BEFORE;
     }
 
     private static boolean waitFor(BooleanSupplier cond, long timeoutMs) throws InterruptedException {
@@ -847,10 +853,11 @@ final class Api1B6DeterministicTests {
         java.util.Map<WorldRegion, Boolean> prevPins = new java.util.HashMap<>();
         // First attempt crashed the server via the watchdog: uncapped submitters x several
         // synchronous per-op INFO diagnostic lines (~25k lines/s) parked the main thread inside
-        // log4j's file write. Per-op diagnostics are muted for the run (WARN still logs, e.g.
-        // REROUTE_LIMIT_DROPPED); fixture output uses its own logger; submission rate is bounded.
-        org.apache.logging.log4j.core.config.Configurator.setLevel("NestWorld/DIAG", org.apache.logging.log4j.Level.WARN);
-        out.add("per-op DIAG logging muted to WARN for the run; submitters capped at ~200/s each");
+        // log4j's file write. STRESS-001: the run executes with per-op tracing OFF -- the default
+        // runtime path (one volatile read per trace site, nothing formatted or allocated) -- instead
+        // of muting the logger; fixture output uses its own logger; submission rate is bounded.
+        ApiOpTrace.ENABLED = false;
+        out.add("per-op tracing OFF for the run (default runtime path); submitters capped at ~200/s each");
         try {
             MinecraftServer server = sys.getOverworld().getServer();
             ServerLevel level = sys.getOverworld();
@@ -965,6 +972,26 @@ final class Api1B6DeterministicTests {
             }
             long term = terminals();
             long missing = submitted.get() - term;
+            // Where do still-queued messages sit at the end of the run? A non-free-running region
+            // with no owned entities and no deferred work is never dispatched
+            // (RegionThreadPool.tickAllRegions), so its mailbox does not drain until an entity enters
+            // (finding API1A7-NW-PARKED-REGION) -- attributes any MISSING_TERMINAL to that liveness gap
+            // or rules it out.
+            out.add(server.submit(() -> {
+                StringBuilder sb = new StringBuilder("queued-at-end:");
+                int n = 0;
+                for (WorldRegion r : sys.getDimensionRegion(level).getGrid().getAllRegions()) {
+                    int depth = r.nestworldMailboxSize(), pend = r.nestworldOutboundPendingSize();
+                    if (depth == 0 && pend == 0) continue;
+                    n++;
+                    boolean dispatched = (NestworldTuning.FREE_RUNNING_REGIONS_ENABLED && r.isFreeRunning())
+                            || !r.getOwnedEntityIds().isEmpty();
+                    sb.append(" r").append(r.getId()).append("{mailbox=").append(depth).append(",pending=").append(pend)
+                            .append(",ownedEntities=").append(r.getOwnedEntityIds().size())
+                            .append(",dispatchedEachTick=").append(dispatched).append('}');
+                }
+                return n == 0 ? "queued-at-end: none" : sb.toString();
+            }).get(10, java.util.concurrent.TimeUnit.SECONDS));
             int[] finalMismatch = {0}, finalChecked = {0};
             String finalDetail = server.submit(() -> {
                 StringBuilder sb = new StringBuilder();
@@ -1025,7 +1052,6 @@ final class Api1B6DeterministicTests {
             out.add("RESULT " + tag + ": primitive correctness " + (primitivePass ? "PASS" : "FAIL")
                     + " | delivery: " + (missing == 0 ? "every submission reached a terminal outcome" : missing + " submission(s) with NO terminal outcome -- see CORE-016 attribution"));
         } finally {
-            org.apache.logging.log4j.core.config.Configurator.setLevel("NestWorld/DIAG", org.apache.logging.log4j.Level.INFO);
             InventorySetTelemetry.CALLER_ORIGINALS = null;
             prevPins.forEach((r, was) -> r.pinned = was);
             end(out);

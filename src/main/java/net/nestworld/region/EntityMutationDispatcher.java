@@ -70,18 +70,17 @@ public final class EntityMutationDispatcher {
      * EntityMutationOp)} overload above generates a fresh one per call and delegates here.
      */
     static void dispatch(Entity target, EntityMutationOp op, long opId) {
-        final org.apache.logging.log4j.Logger DIAG = org.apache.logging.log4j.LogManager.getLogger("NestWorld/DIAG");
-        DIAG.info("[API1A7] opId={} phase=SUBMIT op={} target={} callerThread={}",
+        if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=SUBMIT op={} target={} callerThread={}",
                 opId, op.getClass().getSimpleName(), target.getUUID(), Thread.currentThread().getName());
         if (!NestworldRegionSystem.isInitialised() || !NestworldRegionSystem.get().isManagedLevel(target.level())) {
-            DIAG.info("[API1A7] opId={} phase=APPLY owner=unmanaged target={}", opId, target.getUUID());
+            if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=APPLY owner=unmanaged target={}", opId, target.getUUID());
             ApplyOutcome outcome = applyDirect(target, op);
-            DIAG.info("[API1A7] opId={} phase=TERMINAL result={}", opId, outcome);
+            if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=TERMINAL result={}", opId, outcome);
             return;
         }
         WorldRegion owner = NestworldRegionSystem.get().getDimensionRegion(target.level())
                 .getGrid().findOwningRegion(target.getUUID());
-        DIAG.info("[API1A7] opId={} phase=OWNER_RESOLVED owner={} target={}",
+        if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=OWNER_RESOLVED owner={} target={}",
                 opId, owner == null ? "null" : owner.getId(), target.getUUID());
         EntityMutationTestHooks.barrierA(op);
         if (owner == null) {
@@ -89,19 +88,19 @@ public final class EntityMutationDispatcher {
             // nothing to race against, apply directly, same as EntityMutationHelper's own
             // null-owner handling.
             ApplyOutcome outcome = applyDirect(target, op);
-            DIAG.info("[API1A7] opId={} phase=TERMINAL result={} (owner=null direct)", opId, outcome);
+            if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=TERMINAL result={} (owner=null direct)", opId, outcome);
             return;
         }
         if (Thread.currentThread() instanceof RegionThread rt) {
             WorldRegion self = rt.getRegion();
             if (self == owner) {
                 NestworldOwnershipAssertions.assertEntityOwner(target, "EntityMutationDispatcher.dispatch.directFallthrough");
-                DIAG.info("[API1A7] opId={} phase=APPLY owner={} target={} (same-region direct)", opId, self.getId(), target.getUUID());
+                if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=APPLY owner={} target={} (same-region direct)", opId, self.getId(), target.getUUID());
                 ApplyOutcome outcome = applyDirect(target, op);
-                DIAG.info("[API1A7] opId={} phase=TERMINAL result={}", opId, outcome);
+                if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=TERMINAL result={}", opId, outcome);
                 return;
             }
-            DIAG.info("[API1A7] opId={} phase=ENQUEUE from={} to={} target={}", opId, self.getId(), owner.getId(), target.getUUID());
+            if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=ENQUEUE from={} to={} target={}", opId, self.getId(), owner.getId(), target.getUUID());
             self.nestworldSendOrQueue(owner, RegionMessage.entityMutate(self, owner,
                     target.level().getServer().getTickCount(), new RegionMessage.EntityMutate(target.getUUID(), op, 0, opId)));
             return;
@@ -111,12 +110,12 @@ public final class EntityMutationDispatcher {
         // pending-retry queue for; falling back to a direct call is strictly no worse than the
         // pre-dispatcher behavior in that one rare, already-degraded case).
         if (owner.nestworldMailboxDepthFast() >= NestworldTuning.MAILBOX_BACKPRESSURE_THRESHOLD) {
-            DIAG.info("[API1A7] opId={} phase=APPLY owner={} target={} (backpressure fallback direct)", opId, owner.getId(), target.getUUID());
+            if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=APPLY owner={} target={} (backpressure fallback direct)", opId, owner.getId(), target.getUUID());
             ApplyOutcome outcome = applyDirect(target, op);
-            DIAG.info("[API1A7] opId={} phase=TERMINAL result={}", opId, outcome);
+            if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=TERMINAL result={}", opId, outcome);
             return;
         }
-        DIAG.info("[API1A7] opId={} phase=ENQUEUE from=main to={} target={}", opId, owner.getId(), target.getUUID());
+        if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=ENQUEUE from=main to={} target={}", opId, owner.getId(), target.getUUID());
         owner.nestworldPostMessage(RegionMessage.entityMutate(null, owner,
                 target.level().getServer().getTickCount(), new RegionMessage.EntityMutate(target.getUUID(), op, 0, opId)));
     }
@@ -138,11 +137,10 @@ public final class EntityMutationDispatcher {
      * (used by any caller not yet updated to pass an opId) generates a fresh, uncorrelated one.
      */
     static void applyQueued(UUID targetId, EntityMutationOp op, int rerouteHops, long opId, WorldRegion applyingRegion, ServerLevel level) {
-        final org.apache.logging.log4j.Logger DIAG = org.apache.logging.log4j.LogManager.getLogger("NestWorld/DIAG");
         EntityMutationTestHooks.barrierB(op);
         Entity target = level.getEntity(targetId);
         if (target == null || target.isRemoved()) {
-            DIAG.info("[API1A7] opId={} phase=TERMINAL result=TARGET_NOT_FOUND target={} applyingRegion={} thread={}",
+            if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=TERMINAL result=TARGET_NOT_FOUND target={} applyingRegion={} thread={}",
                     opId, targetId, applyingRegion.getId(), Thread.currentThread().getName());
             if (op instanceof EntityMutationOp.SetInventorySlot) InventorySetTelemetry.targetNotFound.incrementAndGet();
             MailboxLifecycleTestHooks.onEntityTerminal(opId, "TARGET_NOT_FOUND");
@@ -156,8 +154,9 @@ public final class EntityMutationDispatcher {
                 // Target is ping-ponging ownership faster than the mailbox drains (or a genuine
                 // bug is looping it) -- drop rather than retry forever. Graceful degradation, not
                 // silent infinite retry -- same philosophy as this project's backpressure handling.
-                DIAG.warn("[API1A7] opId={} phase=TERMINAL result=REROUTE_LIMIT_DROPPED target={} hops={}",
+                if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.warn("[API1A7] opId={} phase=TERMINAL result=REROUTE_LIMIT_DROPPED target={} hops={}",
                         opId, targetId, rerouteHops);
+                ApiOpTrace.warnRerouteLimitDropped(opId, targetId, rerouteHops); // operational: always counted, WARN rate-limited
                 if (op instanceof EntityMutationOp.SetInventorySlot) InventorySetTelemetry.rerouteLimitDropped.incrementAndGet();
                 MailboxLifecycleTestHooks.onEntityTerminal(opId, "REROUTE_LIMIT_DROPPED");
                 return;
@@ -166,7 +165,7 @@ public final class EntityMutationDispatcher {
             // to the entity's REAL current owner -- that region's own next drain re-validates
             // again from scratch, same as this call did. opId carried through UNCHANGED.
             if (op instanceof EntityMutationOp.SetInventorySlot) InventorySetTelemetry.maxRerouteHop.accumulateAndGet(rerouteHops + 1, Math::max);
-            DIAG.info("[API1A7] opId={} phase=REROUTE from={} to={} hop={} target={}",
+            if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=REROUTE from={} to={} hop={} target={}",
                     opId, applyingRegion.getId(), currentOwner.getId(), rerouteHops + 1, targetId);
             applyingRegion.nestworldSendOrQueue(currentOwner, RegionMessage.entityMutate(applyingRegion, currentOwner,
                     level.getServer().getTickCount(), new RegionMessage.EntityMutate(targetId, op, rerouteHops + 1, opId)));
@@ -174,10 +173,10 @@ public final class EntityMutationDispatcher {
         }
         EntityMutationTestHooks.barrierC(op);
         MailboxLifecycleTestHooks.onEntityApplied(opId, applyingRegion);
-        DIAG.info("[API1A7] opId={} phase=APPLY owner={} target={} thread={}",
+        if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=APPLY owner={} target={} thread={}",
                 opId, applyingRegion.getId(), targetId, Thread.currentThread().getName());
         ApplyOutcome outcome = applyDirect(target, op);
-        DIAG.info("[API1A7] opId={} phase=TERMINAL result={}", opId, outcome);
+        if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=TERMINAL result={}", opId, outcome);
     }
 
     /** Terminal outcome of {@link #applyDirect}. API-1B.7: split out of the former boolean
@@ -222,9 +221,9 @@ public final class EntityMutationDispatcher {
     }
 
     private static ApplyOutcome applySetInventorySlot(Entity entity, EntityMutationOp.SetInventorySlot s) {
-        // Per-op trace lines only while a fixture has PER_INTENT on: the first API-1B.7 stress run
-        // showed synchronous per-op INFO logging can stall the main thread under load.
-        final org.apache.logging.log4j.Logger DIAG = org.apache.logging.log4j.LogManager.getLogger("NestWorld/DIAG");
+        // Per-op trace lines only while a fixture has PER_INTENT on AND per-op tracing is on
+        // (STRESS-001): the first API-1B.7 stress run showed synchronous per-op INFO logging can
+        // stall the main thread under load; stress keeps PER_INTENT telemetry but traces nothing.
         if (!(entity instanceof ServerPlayer player)) {
             InventorySetTelemetry.notPlayer.incrementAndGet();
             return ApplyOutcome.TARGET_NOT_PLAYER; // inventory slots only exist on players
@@ -238,7 +237,7 @@ public final class EntityMutationDispatcher {
         long incNow = PlayerIncarnationRegistry.incarnationOf(player);
         if (incNow != s.playerIncarnation()) {
             InventorySetTelemetry.incarnationMismatch.incrementAndGet();
-            if (InventorySetTelemetry.PER_INTENT) DIAG.info("[API1B6] SETSLOT outcome=INCARNATION_MISMATCH player={} slot={} intentVersion={} requestInc={} objectInc={} versionTrackerTouched=NO playerObj={} thread={}",
+            if (InventorySetTelemetry.PER_INTENT && ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1B6] SETSLOT outcome=INCARNATION_MISMATCH player={} slot={} intentVersion={} requestInc={} objectInc={} versionTrackerTouched=NO playerObj={} thread={}",
                     id, s.slot(), s.intentVersion(), s.playerIncarnation(), incNow, obj, Thread.currentThread().getName());
             return ApplyOutcome.INCARNATION_MISMATCH;
         }
@@ -247,7 +246,7 @@ public final class EntityMutationDispatcher {
             // captured before respawn/logout). Not a cross-incarnation hazard -- identity already
             // matched -- but writing into a discarded object is pointless; drop it observably.
             InventorySetTelemetry.targetRemoved.incrementAndGet();
-            if (InventorySetTelemetry.PER_INTENT) DIAG.info("[API1B6] SETSLOT outcome=TARGET_REMOVED player={} slot={} intentVersion={} requestInc={} versionTrackerTouched=NO playerObj={} thread={}",
+            if (InventorySetTelemetry.PER_INTENT && ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1B6] SETSLOT outcome=TARGET_REMOVED player={} slot={} intentVersion={} requestInc={} versionTrackerTouched=NO playerObj={} thread={}",
                     id, s.slot(), s.intentVersion(), s.playerIncarnation(), obj, Thread.currentThread().getName());
             return ApplyOutcome.TARGET_REMOVED;
         }
@@ -255,7 +254,7 @@ public final class EntityMutationDispatcher {
         InventorySetTelemetry.onTryAccept(id, s.slot(), s.playerIncarnation(), s.intentVersion());
         if (!InventorySlotVersionTracker.tryAccept(key, s.playerIncarnation(), s.intentVersion())) {
             InventorySetTelemetry.staleDropped.incrementAndGet();
-            if (InventorySetTelemetry.PER_INTENT) DIAG.info("[API1B6] SETSLOT outcome=STALE_INTENT_DROPPED player={} slot={} intentVersion={} requestInc={} versionTrackerTouched=YES lastApplied={} thread={}",
+            if (InventorySetTelemetry.PER_INTENT && ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1B6] SETSLOT outcome=STALE_INTENT_DROPPED player={} slot={} intentVersion={} requestInc={} versionTrackerTouched=YES lastApplied={} thread={}",
                     id, s.slot(), s.intentVersion(), s.playerIncarnation(),
                     InventorySlotVersionTracker.peekLastApplied(key, s.playerIncarnation()), Thread.currentThread().getName());
             return ApplyOutcome.STALE_INTENT_DROPPED;
@@ -268,7 +267,7 @@ public final class EntityMutationDispatcher {
             if (ownerNow != null && ownerNow != rt.getRegion()) InventorySetTelemetry.wrongOwnerMutation.incrementAndGet();
         }
         InventorySetTelemetry.onApplied(id, s.slot(), s.playerIncarnation(), s.intentVersion(), incAfter, player, player.getInventory().getItem(s.slot()));
-        if (InventorySetTelemetry.PER_INTENT) DIAG.info("[API1B6] SETSLOT outcome=APPLIED player={} slot={} intentVersion={} requestInc={} objectInc={} versionTrackerTouched=YES item={}x{} playerObj={} thread={}",
+        if (InventorySetTelemetry.PER_INTENT && ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1B6] SETSLOT outcome=APPLIED player={} slot={} intentVersion={} requestInc={} objectInc={} versionTrackerTouched=YES item={}x{} playerObj={} thread={}",
                 id, s.slot(), s.intentVersion(), s.playerIncarnation(), incNow,
                 s.snapshot().getItem(), s.snapshot().getCount(), obj, Thread.currentThread().getName());
         return ApplyOutcome.APPLIED;

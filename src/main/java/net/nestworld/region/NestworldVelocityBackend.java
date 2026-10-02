@@ -33,8 +33,8 @@ final class NestworldVelocityBackend implements VelocityExecutionBackend {
 
     @Override
     public void setVelocity(Entity entity, Vec3 velocity, long intentVersion) {
-        // API-1A.7 TEMP INSTRUMENTATION (route-trace evidence gate, 2026-09-29).
-        org.apache.logging.log4j.LogManager.getLogger("NestWorld/DIAG").info(
+        // API-1A.7 route-trace evidence; STRESS-001: emitted only with ApiOpTrace on (default off).
+        if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info(
                 "[API1A7] NestworldVelocityBackend.setVelocity() target={} velocity={} intentVersion={} thread={}",
                 entity.getUUID(), velocity, intentVersion, Thread.currentThread().getName());
         EntityMutationDispatcher.dispatch(entity, new EntityMutationOp.SetVelocity(velocity, intentVersion));
