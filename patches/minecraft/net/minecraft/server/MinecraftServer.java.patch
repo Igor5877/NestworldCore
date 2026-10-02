@@ -111,7 +111,7 @@
              this.f_129754_.m_6182_("nextTickWait");
              this.f_129728_ = true;
              this.f_129727_ = Math.max(Util.m_137550_() + 50L, this.f_129726_);
-@@ -661,8 +_,46 @@
+@@ -661,8 +_,34 @@
              this.f_129717_ = true;
              JvmProfiler.f_185340_.m_183597_(this.f_129737_);
           }
@@ -122,10 +122,13 @@
 +         // (root cause: a leaked non-daemon thread from a mod, unrelated to which path is
 +         // taken -- see NestworldShutdownWatchdog's own javadoc for the jstack-confirmed
 +         // culprit found that day). Armed here, on normal completion, not in the catch below.
-+         net.nestworld.region.NestworldShutdownWatchdog.arm("graceful /stop", f_129750_);
-+      } catch (Throwable throwable1) {
-+         f_129750_.error("Encountered an unexpected exception", throwable1);
-+         net.nestworld.region.NestworldShutdownWatchdog.arm("crash-driven shutdown", f_129750_);
++         // API-1B-CLOSURE: dedicated servers only. An integrated server stops while its client JVM
++         // deliberately keeps running (quit to title, open another world); arming here halted the
++         // whole client 90 s after leaving any single-player world (reproduced in a real client).
++         if (this.m_6982_()) net.nestworld.region.NestworldShutdownWatchdog.arm("graceful /stop", f_129750_);
+       } catch (Throwable throwable1) {
+          f_129750_.error("Encountered an unexpected exception", throwable1);
++         if (this.m_6982_()) net.nestworld.region.NestworldShutdownWatchdog.arm("crash-driven shutdown", f_129750_);
 +         // NestWorld: tell any still-connected players BEFORE stopServer() below cuts the
 +         // network connection and clears the player list -- otherwise a crash looks to
 +         // them like a silent freeze/timeout rather than a server-initiated, recoverable
