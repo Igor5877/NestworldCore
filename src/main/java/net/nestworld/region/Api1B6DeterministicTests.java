@@ -450,6 +450,10 @@ final class Api1B6DeterministicTests {
             int slot = 3;
             InventoryTargetKey key = new InventoryTargetKey(id, slot);
             long tokA = PlayerIncarnationRegistry.incarnationOf(p);
+            // Domain A's lastApplied BEFORE this run: object A may already carry history (e.g. it is
+            // the respawned object of an earlier fixture). The claim is "this run did not touch
+            // domain A", so compare before/after rather than assume it starts empty.
+            final Long lastAppliedABefore = InventorySlotVersionTracker.peekLastApplied(key, tokA);
             long vv = 0;
             while (vv < 1000) vv = InventorySlotVersionTracker.assignVersion(key, tokA);
             final long v1000 = vv;
@@ -499,10 +503,11 @@ final class Api1B6DeterministicTests {
                     : InventorySetTelemetry.incarnationMismatch.get() + InventorySetTelemetry.targetRemoved.get() == 1;
             boolean pass = oldArrived && newArrived && oldRejected
                     && rejectedUntouched(id, slot, tokA, v1000) && tryDelta == 0
-                    && InventorySlotVersionTracker.peekLastApplied(key, tokA) == null
+                    && java.util.Objects.equals(InventorySlotVersionTracker.peekLastApplied(key, tokA), lastAppliedABefore)
                     && InventorySetTelemetry.applyCount(id, slot, tokB, v1) == 1
                     && Long.valueOf(v1).equals(InventorySlotVersionTracker.peekLastApplied(key, tokB))
                     && fin.is(Items.APPLE) && v1 == 1 && tokA != tokB;
+            out.add("domain(A).lastApplied before=" + lastAppliedABefore + " after=" + InventorySlotVersionTracker.peekLastApplied(key, tokA));
             out.add("RESULT " + tag + ": " + (pass ? "PASS" : "FAIL") + " (V" + v1000 + " rejected" + (routed ? " as INCARNATION_MISMATCH" : "")
                     + ", tracker untouched, 0 mutations; V1 applied once in its own domain; B.slot=apple)");
         } finally {
