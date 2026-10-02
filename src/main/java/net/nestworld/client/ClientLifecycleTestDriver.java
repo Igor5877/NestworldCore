@@ -35,6 +35,14 @@ import org.apache.logging.log4j.Logger;
 public final class ClientLifecycleTestDriver {
     private static final Logger LOG = LogManager.getLogger("NestWorld/API1B-CLOSURE");
     private static final long HOLD_MS = Long.getLong("nestworld.clientLifecycleTest.titleHoldMs", 5_000L);
+    /** MODULE-LIFECYCLE-001 reproductions: false = run A -> B with NO harness intervention. */
+    private static final boolean HARNESS_MODULE_RESET =
+            Boolean.parseBoolean(System.getProperty("nestworld.clientLifecycleTest.harnessModuleReset", "true"));
+    /** MODULE-LIFECYCLE-001 reproduction: open the "Create New World" screen and cancel it first. */
+    private static final boolean CREATE_SCREEN_CANCEL = Boolean.getBoolean("nestworld.clientLifecycleTest.createScreenCancel");
+    private static final long WORLD_LOAD_TIMEOUT_MS = 180_000L;
+    private static boolean createScreenDone = false;
+    private static long waitWorldSince;
 
     private enum State { WAIT_TITLE, WAIT_WORLD, SETTLE, RUNNING, QUIT, HOLD, DONE }
 
@@ -84,7 +92,17 @@ public final class ClientLifecycleTestDriver {
                 // Any menu once resource loading is done (a first launch shows the accessibility
                 // onboarding screen instead of the title screen).
                 if (atMenu(mc)) {
+                    if (CREATE_SCREEN_CANCEL && !createScreenDone) {
+                        createScreenDone = true;
+                        LOG.info("[API1B-CLOSURE] CLIENT repro: opening Create New World screen (loads data packs), then Cancel");
+                        net.minecraft.client.gui.screens.worldselection.CreateWorldScreen.openFresh(mc, mc.screen);
+                        LOG.info("[API1B-CLOSURE] CLIENT repro: screen after openFresh = {}",
+                                mc.screen == null ? null : mc.screen.getClass().getSimpleName());
+                        mc.setScreen(new TitleScreen());
+                        return;
+                    }
                     createWorld(mc, second ? "nwlcB" : "nwlcA");
+                    waitWorldSince = System.currentTimeMillis();
                     state = State.WAIT_WORLD;
                 }
             }
@@ -93,6 +111,12 @@ public final class ClientLifecycleTestDriver {
                 if (mc.player != null && mc.screen == null && s != null && !s.getPlayerList().getPlayers().isEmpty()) {
                     settleTicks = 0;
                     state = State.SETTLE;
+                } else if (System.currentTimeMillis() - waitWorldSince > WORLD_LOAD_TIMEOUT_MS) {
+                    LOG.error("[API1B-CLOSURE] CLIENT world {} did NOT load within {} ms (screen={}) -- RESULT {} -- FAILURES PRESENT",
+                            second ? "B" : "A", WORLD_LOAD_TIMEOUT_MS,
+                            mc.screen == null ? null : mc.screen.getClass().getSimpleName(), IntegratedLifecycleTests.totals());
+                    state = State.DONE;
+                    mc.stop();
                 }
             }
             case SETTLE -> {
@@ -127,7 +151,8 @@ public final class ClientLifecycleTestDriver {
                 if (!second) {
                     serverAStoppedAt = System.currentTimeMillis();
                     IntegratedLifecycleTests.boundarySnapshot();
-                    IntegratedLifecycleTests.harnessResetModuleRegistry();
+                    if (HARNESS_MODULE_RESET) IntegratedLifecycleTests.harnessResetModuleRegistry();
+                    else LOG.info("[API1B-CLOSURE] CLIENT harness module reset DISABLED: world B runs on production lifecycle only");
                     holdStart = lastAliveLog = System.currentTimeMillis();
                     state = State.HOLD;
                 } else {
