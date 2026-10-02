@@ -1,6 +1,8 @@
 # CORE-MAILBOX-MERGE-001 — region mailbox lifecycle audit (research gate, no code changes)
 
-**Status: AUDIT COMPLETE (2026-10-02) — no code changed; fix not started. §8–§11 reviewed and approved by
+**Fix: CLOSED / VERIFIED 2026-10-02 — see `CORE-MAILBOX-MERGE-001-fix-spec.md` (contract, implementation, evidence).**
+
+**Status at audit time: AUDIT COMPLETE (2026-10-02) — no code changed; fix not started. §8–§11 reviewed and approved by
 the architecture owner 2026-10-02; the fix contract (linearization order, old-worker exclusion,
 join-timeout policy, accounting invariant) is specified separately in
 `CORE-MAILBOX-MERGE-001-fix-spec.md` and refines §10 where they differ.** Goal set by the architecture owner (2026-10-02): before any

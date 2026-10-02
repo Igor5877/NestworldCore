@@ -39,6 +39,7 @@ final class InventorySetTelemetry {
     static final AtomicLong targetRemoved = new AtomicLong();
     static final AtomicLong targetNotFound = new AtomicLong();      // applyQueued: UUID no longer resolves
     static final AtomicLong rerouteLimitDropped = new AtomicLong(); // applyQueued: hop limit reached
+    static final AtomicLong redeliveryLimitDropped = new AtomicLong(); // CORE-MAILBOX-MERGE-001: orphan redelivery cap
     static final AtomicLong maxRerouteHop = new AtomicLong();       // highest hop count any SetInventorySlot reached
     static volatile String lastApplyThread = "none";
     static final AtomicLong backendTargetNotFound = new AtomicLong(); // Core peer: player offline before dispatch
@@ -124,7 +125,7 @@ final class InventorySetTelemetry {
     /** Test-only: start a fixture from a clean slate. */
     static void reset() {
         applied.set(0); incarnationMismatch.set(0); staleDropped.set(0); notPlayer.set(0); targetRemoved.set(0);
-        targetNotFound.set(0); rerouteLimitDropped.set(0); maxRerouteHop.set(0); lastApplyThread = "none";
+        targetNotFound.set(0); rerouteLimitDropped.set(0); redeliveryLimitDropped.set(0); maxRerouteHop.set(0); lastApplyThread = "none";
         backendTargetNotFound.set(0); wrongOwnerMutation.set(0); callerObjectLeak.set(0);
         TOKEN_OBJECT.clear(); CALLER_ORIGINALS = null; MAX_APPLIED_SEQ.clear();
         tryAcceptCalls.set(0); duplicateApply.set(0); staleIntentApply.set(0); wrongIncarnationMutation.set(0);

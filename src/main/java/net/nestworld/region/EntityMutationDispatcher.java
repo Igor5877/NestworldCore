@@ -145,6 +145,7 @@ public final class EntityMutationDispatcher {
             DIAG.info("[API1A7] opId={} phase=TERMINAL result=TARGET_NOT_FOUND target={} applyingRegion={} thread={}",
                     opId, targetId, applyingRegion.getId(), Thread.currentThread().getName());
             if (op instanceof EntityMutationOp.SetInventorySlot) InventorySetTelemetry.targetNotFound.incrementAndGet();
+            MailboxLifecycleTestHooks.onEntityTerminal(opId, "TARGET_NOT_FOUND");
             return; // target died/despawned/unloaded between send and apply -- NO-OP, not an error
         }
         WorldRegion currentOwner = NestworldRegionSystem.isInitialised() && NestworldRegionSystem.get().isManagedLevel(level)
@@ -158,6 +159,7 @@ public final class EntityMutationDispatcher {
                 DIAG.warn("[API1A7] opId={} phase=TERMINAL result=REROUTE_LIMIT_DROPPED target={} hops={}",
                         opId, targetId, rerouteHops);
                 if (op instanceof EntityMutationOp.SetInventorySlot) InventorySetTelemetry.rerouteLimitDropped.incrementAndGet();
+                MailboxLifecycleTestHooks.onEntityTerminal(opId, "REROUTE_LIMIT_DROPPED");
                 return;
             }
             // Stale: ownership moved on (split/merge/handover) between send and apply. Re-route
@@ -171,6 +173,7 @@ public final class EntityMutationDispatcher {
             return;
         }
         EntityMutationTestHooks.barrierC(op);
+        MailboxLifecycleTestHooks.onEntityApplied(opId, applyingRegion);
         DIAG.info("[API1A7] opId={} phase=APPLY owner={} target={} thread={}",
                 opId, applyingRegion.getId(), targetId, Thread.currentThread().getName());
         ApplyOutcome outcome = applyDirect(target, op);

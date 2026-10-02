@@ -840,6 +840,29 @@ Live proof:
     transfers), several of which have stronger expectations than a best-effort primitive.
     **Gate**: separate Core fix/gate; a blocker for any final routed/stress delivery claim of
     API-1A/API-1B, after which their routing tests must be re-run.
+    **Status: CLOSED / VERIFIED (2026-10-02)** —
+    docs/contracts/CORE-MAILBOX-MERGE-001-audit.md (audit) and CORE-MAILBOX-MERGE-001-fix-spec.md
+    (contract C1–C11, evidence).
+
+    The fix gives each region a one-way ACTIVE → RETIRED → DRAINED lifecycle:
+    - RETIRED is published under the region write lock, after the successor topology.
+    - Every enqueue goes through a safe enqueue (add, re-check, remove-or-handed-off).
+    - The old worker is excluded by lock plus a post-lock RETIRED check.
+    - A retirement drain moves both the inbound mailbox and the sender-side pending queue to an
+      orphan queue.
+    - Orphans are re-resolved on main per message by target identity (explosion batches are
+      partitioned per owner), or closed with an explicit terminal.
+
+    Same `stress-churn` as above, after the fix:
+    - stranded 0 and MISSING_TERMINAL 0 (was 171/171);
+    - 180–188 messages per run drained on retirement and redelivered;
+    - C10 0 violations, C11 accepted = applied + explicit terminal, unaccounted 0;
+    - invariants 0, in barrier and free-running modes.
+
+    API-1A/API-1B routed fixtures were re-run (PASS), as this gate required.
+
+    Residual, recorded but not fixed: A1, work rounds posted to a retired free-running region
+    (not mailbox transport, own gate); L6 shutdown (#15) unchanged.
 
 ## Deployment discipline (standing rule, not per-fix)
 

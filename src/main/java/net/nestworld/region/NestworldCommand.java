@@ -169,6 +169,34 @@ public final class NestworldCommand {
         return 1;
     }
 
+    /** CORE-MAILBOX-MERGE-001: deterministic mailbox-retirement fixtures (see
+     *  {@link MailboxLifecycleTests}), same extracted-builder-method discipline and the same
+     *  background-controller-thread rule as {@link #testDeterministic}. */
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> buildMailboxLifecycleTestNode() {
+        return Commands.literal("mailbox")
+                .then(Commands.argument("scenario", com.mojang.brigadier.arguments.StringArgumentType.word())
+                        .executes(ctx -> testMailboxLifecycle(ctx.getSource(),
+                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "scenario"))));
+    }
+
+    private static int testMailboxLifecycle(CommandSourceStack src, String scenario) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        if (!MailboxLifecycleTests.SCENARIOS.contains(scenario)) {
+            src.sendFailure(Component.literal("Unknown scenario: " + scenario + " (expected " + String.join("|", MailboxLifecycleTests.SCENARIOS) + ")"));
+            return 0;
+        }
+        NestworldRegionSystem sys = NestworldRegionSystem.get();
+        Thread t = new Thread(() -> MailboxLifecycleTests.run(sys, scenario), "CORE-MAILBOX-det-controller-" + scenario);
+        t.setDaemon(true);
+        t.start();
+        src.sendSuccess(() -> Component.literal("mailbox scenario " + scenario
+                + " started on background thread; tail server log for '[CORE-MAILBOX-DET]' lines"), false);
+        return 1;
+    }
+
     /** API-1B.7: deterministic barrier-driven fixtures for setSlot (see
      *  {@link Api1B6DeterministicTests}), same extracted-builder-method discipline as
      *  {@link #buildSetVelocityTestNode()}/{@link #buildDeterministicTestNode()}. */
@@ -711,7 +739,8 @@ public final class NestworldCommand {
                                                 UuidArgument.getUuid(ctx, "uuid"), new EntityMutationOp.Discard()))))
                         .then(buildSetVelocityTestNode())
                         .then(buildDeterministicTestNode())
-                        .then(buildInventoryDeterministicTestNode()))
+                        .then(buildInventoryDeterministicTestNode())
+                        .then(buildMailboxLifecycleTestNode()))
                 .then(buildModuleTestNode()));
 
         // /spark — in-game access to the spark standalone agent (see SparkBridge).
@@ -785,6 +814,10 @@ public final class NestworldCommand {
      * as a possible loss. No-op (reports disabled) unless NESTWORLD_MAILBOX_AUDIT=1.
      */
     private static int mailboxAudit(CommandSourceStack src) {
+        // CORE-MAILBOX-MERGE-001: lifecycle counters + C10 sweep are always-on; the C11
+        // accounting line reports "disabled" unless the audit flag is set.
+        String lifecycle = MailboxLifecycle.fullReport();
+        src.sendSuccess(() -> Component.literal(lifecycle), false);
         if (!MailboxAudit.ENABLED) {
             src.sendFailure(Component.literal(
                     "Mailbox audit is disabled — set NESTWORLD_MAILBOX_AUDIT=1 (or -Dnestworld.mailboxAudit=true) and restart"));
@@ -803,6 +836,7 @@ public final class NestworldCommand {
     private static int pressure(CommandSourceStack src) {
         src.sendSuccess(() -> Component.literal("Batch-apply: " + BatchApplyStats.summary()), false);
         src.sendSuccess(() -> Component.literal("Mailbox audit: " + MailboxAudit.summary()), false);
+        src.sendSuccess(() -> Component.literal("Mailbox lifecycle: " + MailboxLifecycle.summary()), false);
         return 1;
     }
 

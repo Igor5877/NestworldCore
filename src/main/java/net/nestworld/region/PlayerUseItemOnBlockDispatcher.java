@@ -74,9 +74,10 @@ public final class PlayerUseItemOnBlockDispatcher {
      * {@code BlockPlaceContext} will actually place at (clicked or adjacent -- see class javadoc);
      * for every other item, the raw clicked position (what {@code useOn()} actually mutates for
      * axe-strip/scrape/wax-off-class items). Building a {@code BlockPlaceContext} here is a pure
-     * read -- it does not touch the world.
+     * read -- it does not touch the world. Package-private: {@link MailboxRetargeting} re-applies
+     * this same rule when a message's destination was retired (CORE-MAILBOX-MERGE-001).
      */
-    private static BlockPos resolveOwnerPos(ItemStack itemstack, UseOnContext useoncontext) {
+    static BlockPos resolveOwnerPos(ItemStack itemstack, UseOnContext useoncontext) {
         if (itemstack.getItem() instanceof BlockItem) {
             return new BlockPlaceContext(useoncontext).getClickedPos();
         }

@@ -489,21 +489,41 @@ public class RegionSplitManager {
      *  SplitMergeEventLog} visibility (2026-08-28 split/merge thrash investigation), never
      *  affects behavior. */
     public WorldRegion[] doSplit(WorldRegion region, String reason) {
+        return doSplit(region, reason, loadAwareCut(region));
+    }
+
+    /** CORE-MAILBOX-MERGE-001 TEST-ONLY: split at an explicit cut, so a fixture can place
+     *  positions deterministically on both sides of it (explosion batch partition, C8). Same
+     *  retirement path as every other split. */
+    WorldRegion[] doSplitAtForTest(WorldRegion region, SplitAxis axis, int cut, String reason) {
+        return doSplit(region, reason, new CutChoice(axis, cut));
+    }
+
+    private WorldRegion[] doSplit(WorldRegion region, String reason, CutChoice choice) {
         double avgTickMsAtDecision = region.getAvgTickMs();
         int entityCountAtDecision = region.getOwnedEntityIds().size();
         int parentId = region.getId();
         long opStart = System.nanoTime();
         boolean[] lockTimedOut = {false};
-        CutChoice choice = loadAwareCut(region);
         // Manual /nestworld split bypasses the hotspot veto: fall back to the
         // raw median on the preferred axis so an operator can still force a cut.
+        java.util.List<RegionThread> retiredWorkers = new java.util.ArrayList<>(1);
         WorldRegion[] result = nestworldWithRegionLocks(java.util.List.of(region), () -> {
             WorldRegion[] children = (choice != null)
                     ? tree.split(region, choice.axis, choice.cut)
                     : tree.split(region, entityMedianCut(region));
             if (children == null) return null; // at min size or not in tree
 
-            pool.remove(region);
+            // CORE-MAILBOX-MERGE-001 (fix-spec C2), under this region's write lock:
+            //   1. successor topology published (tree.split above)
+            //   2. RETIRED published -- whoever observes it can re-resolve to a successor
+            //   3. old worker stopped
+            //   4. inbound mailbox + outbound pending handed to the orphan queue (DRAINED)
+            // Orphans are re-resolved per message by target identity on the main thread
+            // (MailboxRetargeting) -- a split has two successors.
+            region.nestworldMarkRetired();
+            retiredWorkers.addAll(pool.remove(region));
+            region.nestworldDrainOnRetire();
 
             // Classify every entity by its last-published snapshot position (safe from
             // any thread, up to one tick stale -- same contract BoundaryEntityTransfer
@@ -542,6 +562,9 @@ public class RegionSplitManager {
                     blockTickHeat.hotspotSummary(region, 3));
             return children;
         }, lockTimedOut);
+        // C3 join policy: only after the locks are released (a worker blocked in writeLock()
+        // must be able to acquire it, observe RETIRED, and exit).
+        MailboxLifecycle.awaitWorkerExit(retiredWorkers);
         SplitMergeEventLog.recordSplit(parentId,
                 result != null ? new int[] {result[0].getId(), result[1].getId()} : new int[] {-1, -1},
                 reason, avgTickMsAtDecision, entityCountAtDecision, System.nanoTime() - opStart,
@@ -1003,12 +1026,18 @@ public class RegionSplitManager {
         int entityCount = a.getOwnedEntityIds().size() + b.getOwnedEntityIds().size();
         long opStart = System.nanoTime();
         boolean[] lockTimedOut = {false};
+        java.util.List<RegionThread> retiredWorkers = new java.util.ArrayList<>(2);
         WorldRegion result = nestworldWithRegionLocks(java.util.List.of(a, b), () -> {
             WorldRegion merged = tree.merge(a, b);
             if (merged == null) return null;
 
-            pool.remove(a);
-            pool.remove(b);
+            // CORE-MAILBOX-MERGE-001 (fix-spec C2): same order as doSplit, for both retirees.
+            a.nestworldMarkRetired();
+            b.nestworldMarkRetired();
+            retiredWorkers.addAll(pool.remove(a));
+            retiredWorkers.addAll(pool.remove(b));
+            a.nestworldDrainOnRetire();
+            b.nestworldDrainOnRetire();
             pool.spawn(merged);
 
             for (java.util.UUID uuid : a.getOwnedEntityIds()) merged.addEntity(uuid);
@@ -1018,6 +1047,7 @@ public class RegionSplitManager {
                     a, b, merged, String.format("%.1f", a.getAvgTickMs()), String.format("%.1f", b.getAvgTickMs()));
             return merged;
         }, lockTimedOut);
+        MailboxLifecycle.awaitWorkerExit(retiredWorkers);
         SplitMergeEventLog.recordMerge(aId, bId, result != null ? result.getId() : -1, reason,
                 avgTickMsA, avgTickMsB, entityCount, System.nanoTime() - opStart, lockTimedOut[0], result != null);
         return result;

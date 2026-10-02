@@ -543,8 +543,20 @@ public class RegionThread extends Thread {
     private void runOneTick(CountDownLatch latch, java.util.List<Runnable> work) {
         long tickStart = System.nanoTime();
         try {
+            if (work == null) MailboxLifecycleTestHooks.beforeWorkerLock(region);
             long stamp = region.getChunkLock().writeLock();
             try {
+                // CORE-MAILBOX-MERGE-001 (C3, old-worker exclusion): retirement publishes RETIRED
+                // and drains this region's queues while holding this same write lock. A worker
+                // that acquires the lock afterwards (e.g. a free-running worker that was blocked
+                // in writeLock() above) must consume nothing and tick nothing: its mailbox was
+                // handed off and its entities belong to the successor regions now. Work rounds
+                // (work != null: scheduled ticks / runWorkRound batches) are NOT mailbox
+                // transport and keep their existing behavior (out of scope, see fix-spec).
+                if (work == null && region.nestworldIsRetired()) {
+                    MailboxLifecycle.workerSkippedRetired.incrementAndGet();
+                    return;
+                }
                 clearChunkCache(); // chunks may have unloaded since last tick
                 // Test hook: force this region's thread to crash every tick,
                 // exercising the pool's backoff + disable path.

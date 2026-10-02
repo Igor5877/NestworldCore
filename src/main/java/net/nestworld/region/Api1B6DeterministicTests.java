@@ -991,6 +991,13 @@ final class Api1B6DeterministicTests {
             }
             out.add("churn: splits=" + splits.get() + " merges=" + merges.get() + " retiredRegions=" + retiredCount
                     + " messagesStrandedInRetiredMailboxes=" + stranded + " (all message types; CORE-016's silent loss, measured)");
+            // CORE-MAILBOX-MERGE-001: retirement handoff accounting (C10 emptiness sweep over every
+            // recently retired region; C11 accepted = applied + explicitTerminal + stillInFlight with
+            // unaccounted == 0 when -Dnestworld.mailboxAudit=true).
+            waitFor(() -> MailboxLifecycle.orphanCount() == 0, 5_000);
+            out.add("lifecycle: " + MailboxLifecycle.summary());
+            out.add(server.submit(MailboxLifecycle::c10Sweep).get(10, java.util.concurrent.TimeUnit.SECONDS));
+            out.add(server.submit(() -> MailboxAudit.accountingReport(MailboxLifecycle.reachableAuditIds())).get(10, java.util.concurrent.TimeUnit.SECONDS));
             java.util.Set<Integer> regionIdsAtEnd = new java.util.HashSet<>();
             for (WorldRegion r : sys.getDimensionRegion(level).getGrid().getAllRegions()) regionIdsAtEnd.add(r.getId());
             java.util.Set<Integer> retired = new java.util.HashSet<>(regionIdsAtStart); retired.removeAll(regionIdsAtEnd);
@@ -1029,6 +1036,7 @@ final class Api1B6DeterministicTests {
     private static long terminals() {
         return InventorySetTelemetry.applied.get() + InventorySetTelemetry.staleDropped.get() + InventorySetTelemetry.incarnationMismatch.get()
                 + InventorySetTelemetry.targetRemoved.get() + InventorySetTelemetry.targetNotFound.get() + InventorySetTelemetry.backendTargetNotFound.get()
-                + InventorySetTelemetry.rerouteLimitDropped.get() + InventorySetTelemetry.notPlayer.get();
+                + InventorySetTelemetry.rerouteLimitDropped.get() + InventorySetTelemetry.notPlayer.get()
+                + InventorySetTelemetry.redeliveryLimitDropped.get();
     }
 }

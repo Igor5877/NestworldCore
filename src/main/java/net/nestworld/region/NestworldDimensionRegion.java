@@ -927,6 +927,10 @@ public final class NestworldDimensionRegion {
      * as the pre-Stage-1 {@code NestworldRegionSystem.tickAllRegions()} this replaces.
      */
     void tick(NestworldPins pins, BooleanSupplier hasTime) {
+        // CORE-MAILBOX-MERGE-001: re-resolve messages orphaned by a retirement since the last
+        // pass (split/merge at the end of the previous tick, or any off-tick split) BEFORE any
+        // consumer phase of this tick, so a redelivered message is drained this same tick.
+        MailboxRetargeting.redeliver(this);
         runAutosplitTest();
         runRandomTickTest();
         pool.nestworldResetTickAccumulators();
@@ -1056,6 +1060,9 @@ public final class NestworldDimensionRegion {
 
         // 6. Adaptive split / merge
         splitManager.onTick();
+        // 6b. CORE-MAILBOX-MERGE-001: messages orphaned by THIS tick's retirements are
+        // re-addressed to their successor owners immediately (drained next tick).
+        MailboxRetargeting.redeliver(this);
         long t6 = System.nanoTime();
 
         // 7. Optional border visualisation for players

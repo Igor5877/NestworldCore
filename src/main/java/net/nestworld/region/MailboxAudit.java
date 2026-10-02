@@ -40,6 +40,14 @@ public final class MailboxAudit {
     private static final AtomicLong appliedTotal = new AtomicLong();
     private static final AtomicLong duplicateTotal = new AtomicLong();
     private static final AtomicLong misroutedTotal = new AtomicLong();
+    // CORE-MAILBOX-MERGE-001 (C11): retirement-handoff accounting.
+    private static final AtomicLong orphanedTotal = new AtomicLong();
+    private static final AtomicLong redirectedTotal = new AtomicLong();
+    private static final AtomicLong terminalTotal = new AtomicLong();
+    private static final Map<MailboxLifecycle.Terminal, AtomicLong> terminalByKind = new ConcurrentHashMap<>();
+    static {
+        for (MailboxLifecycle.Terminal t : MailboxLifecycle.Terminal.values()) terminalByKind.put(t, new AtomicLong());
+    }
 
     /** In-flight messages: auditId -> record, removed on successful apply. Bounded
      *  by real mailbox depth (the same messages the mailbox itself is holding at any
@@ -71,6 +79,7 @@ public final class MailboxAudit {
      *  taken effect (not on a requeue/timeout — those leave the entry untouched, still
      *  correctly tracked as pending). */
     public static void recordApplied(long auditId, WorldRegion appliedAtRegion, RegionMessage.Type type) {
+        MailboxLifecycleTestHooks.onAuditApplied(auditId, appliedAtRegion);
         if (!ENABLED) return;
         Entry e = inFlight.remove(auditId);
         if (e == null) {
@@ -85,6 +94,86 @@ public final class MailboxAudit {
                     auditId, type, e.destId(), appliedAtRegion.getId());
         }
         appliedTotal.incrementAndGet();
+    }
+
+    /** CORE-MAILBOX-MERGE-001: the message entered its dimension's orphan queue (its destination
+     *  was retired). Still in flight -- an orphan is transport state, not an outcome. */
+    static void recordOrphaned(long auditId) {
+        if (!ENABLED) return;
+        orphanedTotal.incrementAndGet();
+    }
+
+    /** CORE-MAILBOX-MERGE-001: re-resolution moved the message to {@code newDestination}; its
+     *  eventual apply there is correct routing, not a misroute. */
+    static void recordRedirected(long auditId, WorldRegion newDestination) {
+        if (!ENABLED) return;
+        redirectedTotal.incrementAndGet();
+        inFlight.computeIfPresent(auditId, (k, e) -> new Entry(e.sourceId(), newDestination.getId(), e.type(), e.sentNanos()));
+    }
+
+    /** CORE-MAILBOX-MERGE-001: an explicit, contract-defined terminal disposition decided during
+     *  re-resolution. Closes the in-flight entry exactly like an apply would. */
+    static void recordTerminal(long auditId, MailboxLifecycle.Terminal kind, RegionMessage.Type type) {
+        MailboxLifecycleTestHooks.onAuditTerminal(auditId, kind.name());
+        if (!ENABLED) return;
+        Entry e = inFlight.remove(auditId);
+        if (e == null) {
+            duplicateTotal.incrementAndGet();
+            LOGGER.warn("Mailbox audit: message {} (type={}) terminal {} but already closed -- duplicate outcome",
+                    auditId, type, kind);
+            return;
+        }
+        terminalTotal.incrementAndGet();
+        terminalByKind.get(kind).incrementAndGet();
+    }
+
+    /**
+     * C11 quiescence report. {@code reachable} = every audit id currently present in live
+     * transport (live regions' mailboxes and pending queues, plus orphan queues). Then
+     * <pre>
+     *   accepted = applied + terminal + inFlight
+     *   unaccounted = |inFlight \ reachable|   -- accepted, no outcome, and nowhere in transport
+     * </pre>
+     * At quiescence the closure property requires unaccounted == 0 (and normally inFlight == 0).
+     */
+    static String accountingReport(java.util.Set<Long> reachable) {
+        if (!ENABLED) return "ACCOUNTING disabled (-Dnestworld.mailboxAudit=true required)";
+        long unaccounted = 0;
+        StringBuilder sample = new StringBuilder();
+        for (Map.Entry<Long, Entry> e : inFlight.entrySet()) {
+            if (reachable.contains(e.getKey())) continue;
+            unaccounted++;
+            if (sample.length() < 300) {
+                sample.append(' ').append(e.getKey()).append(':').append(e.getValue().type())
+                        .append("->r").append(e.getValue().destId());
+            }
+        }
+        StringBuilder kinds = new StringBuilder();
+        for (Map.Entry<MailboxLifecycle.Terminal, AtomicLong> k : terminalByKind.entrySet()) {
+            if (k.getValue().get() != 0) kinds.append(' ').append(k.getKey()).append('=').append(k.getValue().get());
+        }
+        long accepted = sentTotal.get(), applied = appliedTotal.get(), terminal = terminalTotal.get(), live = inFlight.size();
+        return "ACCOUNTING accepted=" + accepted + " applied=" + applied + " explicitTerminal=" + terminal
+                + " stillInFlight=" + live + " reachableInTransport=" + (live - unaccounted)
+                + " unaccounted=" + unaccounted + " balance=" + (accepted - applied - terminal - live)
+                + " duplicates=" + duplicateTotal.get() + " misrouted=" + misroutedTotal.get()
+                + " orphaned=" + orphanedTotal.get() + " redirected=" + redirectedTotal.get()
+                + " terminals{" + (kinds.length() == 0 ? "" : kinds.substring(1)) + "}"
+                + (unaccounted > 0 ? " UNACCOUNTED_SAMPLE[" + sample.toString().trim() + "]" : "");
+    }
+
+    static long unaccounted(java.util.Set<Long> reachable) {
+        long n = 0;
+        for (Long id : inFlight.keySet()) if (!reachable.contains(id)) n++;
+        return n;
+    }
+
+    static boolean inFlightContains(long auditId) {
+        return inFlight.containsKey(auditId);
+    }
+
+    static boolean isAppliedOrClosed(long auditId) {
+        return ENABLED && !inFlight.containsKey(auditId);
     }
 
     /** One-line summary for end-of-soak reporting (e.g. via an RCON debug command). */
@@ -119,6 +208,10 @@ public final class MailboxAudit {
         appliedTotal.set(0);
         duplicateTotal.set(0);
         misroutedTotal.set(0);
+        orphanedTotal.set(0);
+        redirectedTotal.set(0);
+        terminalTotal.set(0);
+        terminalByKind.values().forEach(a -> a.set(0));
         inFlight.clear();
     }
 }

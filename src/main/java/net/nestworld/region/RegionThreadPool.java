@@ -187,15 +187,20 @@ public class RegionThreadPool {
      * Gracefully shuts down the thread for the given region.
      * Call this before a merge so the thread no longer ticks the region.
      */
-    public void remove(WorldRegion region) {
+    public java.util.List<RegionThread> remove(WorldRegion region) {
+        // CORE-MAILBOX-MERGE-001: returns the stopped worker(s) so the retiring caller can apply
+        // the C3 join policy (MailboxLifecycle.awaitWorkerExit) after releasing region locks.
+        java.util.List<RegionThread> removed = new java.util.ArrayList<>(1);
         threads.removeIf(t -> {
             if (t.region == region) {
                 t.shutdown();
+                removed.add(t);
                 return true;
             }
             return false;
         });
         LOGGER.info("Removed region {} (total active regions: {})", region.getId(), threads.size());
+        return removed;
     }
 
     // -----------------------------------------------------------------------

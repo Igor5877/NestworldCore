@@ -40,8 +40,31 @@ public record RegionMessage<T>(
         Type messageType,
         T payload,
         long createdNanos,
-        long auditId
+        long auditId,
+        int redeliveries
 ) {
+    /** Pre-CORE-MAILBOX-MERGE-001 shape: a freshly produced message, never redelivered. */
+    public RegionMessage(WorldRegion sourceRegion, WorldRegion destinationRegion, long logicalTick, int epoch,
+                         Type messageType, T payload, long createdNanos, long auditId) {
+        this(sourceRegion, destinationRegion, logicalTick, epoch, messageType, payload, createdNanos, auditId, 0);
+    }
+
+    /** CORE-MAILBOX-MERGE-001: the same message (same audit id, same payload, same creation time)
+     *  re-addressed to {@code newDestination} after its previous destination was retired.
+     *  {@code redeliveries} counts how many times re-resolution has moved it (bounded by
+     *  {@link NestworldTuning#MAILBOX_MAX_REDELIVERIES}). */
+    public RegionMessage<T> redeliveredTo(WorldRegion newDestination) {
+        return new RegionMessage<>(sourceRegion, newDestination, logicalTick, epoch, messageType, payload,
+                createdNanos, auditId, redeliveries + 1);
+    }
+
+    /** CORE-MAILBOX-MERGE-001: a CHILD of this message carrying a subset payload (explosion batch
+     *  split across several successor regions) -- a distinct message with its own audit id. */
+    public <U> RegionMessage<U> childFor(WorldRegion newDestination, U childPayload, long childAuditId) {
+        return new RegionMessage<>(sourceRegion, newDestination, logicalTick, epoch, messageType, childPayload,
+                createdNanos, childAuditId, redeliveries + 1);
+    }
+
     public enum Type {
         /** An entity's owning region changed (border crossing or initial assignment). */
         ENTITY_TRANSFER,

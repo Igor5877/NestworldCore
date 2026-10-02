@@ -377,8 +377,99 @@ public class WorldRegion {
      *  #nestworldRequeueMessage} instead, or the same real send gets double-counted. */
     public void nestworldPostMessage(RegionMessage<?> message) {
         MailboxAudit.recordSent(message.auditId(), message.sourceRegion(), this, message.messageType());
+        nestworldEnqueueOrOrphan(message);
+    }
+
+    // -----------------------------------------------------------------------
+    // CORE-MAILBOX-MERGE-001 (docs/contracts/CORE-MAILBOX-MERGE-001-fix-spec.md): mailbox
+    // destination lifecycle. Conceptual states:
+    //   ACTIVE   -- an enqueue may be accepted
+    //   RETIRED  -- no new enqueue is accepted; the retirement drain may still be running
+    //   DRAINED  -- the old worker is excluded/stopped and both transport queues were handed off
+    // nestworldRetired is a one-way volatile PUBLICATION flag only -- it does not make the
+    // mailbox lifecycle atomic by itself. Correctness comes from the combination of: this
+    // publication (written AFTER the new topology, so whoever sees RETIRED can re-resolve to a
+    // successor), CLQ add/remove atomicity (exactly-once ownership of a message), the single
+    // one-way transition, old-worker exclusion (region write lock + the worker's post-lock
+    // RETIRED check in RegionThread.runOneTick), the retirement drain, and orphan re-resolution
+    // (MailboxRetargeting). Removing any one of these reopens a loss path.
+    // -----------------------------------------------------------------------
+
+    private volatile boolean nestworldRetired = false;
+    private volatile boolean nestworldDrained = false;
+
+    public boolean nestworldIsRetired() { return nestworldRetired; }
+    public boolean nestworldIsDrained() { return nestworldDrained; }
+
+    /**
+     * C4 safe enqueue -- the ONLY path that adds to {@link #nestworldMailbox}.
+     * <pre>
+     * if RETIRED                       -> not accepted; orphaned for re-resolution
+     * add; depth++
+     * if !RETIRED                      -> ACCEPTED (a later retirement drain owns it if needed)
+     * if remove(msg) succeeds          -> not accepted; orphaned for re-resolution
+     * else                             -> ACCEPTED: after RETIRED the only possible takers are the
+     *                                     retirement drain (which orphans it) or a consumer that ran
+     *                                     BEFORE retirement (C3), which yields APPLY/TERMINAL
+     * </pre>
+     * A message can therefore never be left in, or vanish from, a retired region's queue.
+     */
+    private void nestworldEnqueueOrOrphan(RegionMessage<?> message) {
+        if (nestworldRetired) {
+            MailboxLifecycle.orphan(this, message, MailboxLifecycle.OrphanReason.REJECTED_RETIRED);
+            return;
+        }
         nestworldMailbox.add(message);
         nestworldMailboxDepth.incrementAndGet();
+        MailboxLifecycleTestHooks.afterAdd(message);
+        if (!nestworldRetired) return;
+        if (nestworldMailbox.remove(message)) {
+            nestworldMailboxDepth.decrementAndGet();
+            MailboxLifecycle.orphan(this, message, MailboxLifecycle.OrphanReason.REJECTED_RETIRED);
+            return;
+        }
+        MailboxLifecycle.acceptedRemoveFailed.incrementAndGet();
+    }
+
+    /**
+     * C2 step 2 -- RETIREMENT PUBLICATION. Caller (RegionSplitManager, main thread) holds this
+     * region's write lock and has ALREADY published the successor topology (tree.split/merge),
+     * so any thread that observes RETIRED also observes a topology that re-resolves to the
+     * successor owner. One-way: never cleared.
+     */
+    void nestworldMarkRetired() {
+        if (nestworldRetired) return;
+        nestworldRetired = true;
+        MailboxLifecycle.noteRetired(this);
+    }
+
+    /**
+     * C2 step 4 -- RETIREMENT DRAIN. Caller holds this region's write lock (so this region's own
+     * worker cannot consume concurrently, C3) and has already called {@link #nestworldMarkRetired}
+     * (so any producer that adds after this drain's poll sees RETIRED on its re-check and removes
+     * its own message, C4). Hands EVERY inbound message (all types) and EVERY sender-side pending
+     * entry to the dimension's orphan queue. Marks DRAINED.
+     */
+    void nestworldDrainOnRetire() {
+        if (!nestworldRetired) throw new IllegalStateException("drain before RETIRED publication: region " + id);
+        RegionMessage<?> m;
+        while ((m = nestworldMailbox.poll()) != null) {
+            nestworldMailboxDepth.decrementAndGet();
+            MailboxLifecycle.orphan(this, m, MailboxLifecycle.OrphanReason.DRAINED_ON_RETIRE);
+        }
+        NestworldPendingSend p;
+        while ((p = nestworldOutboundPending.poll()) != null) {
+            MailboxLifecycle.orphan(this, p.message(), MailboxLifecycle.OrphanReason.PENDING_SENDER_RETIRED);
+        }
+        nestworldDrained = true;
+        MailboxLifecycle.drainedRegions.incrementAndGet();
+    }
+
+    /** Audit ids currently reachable in this region's transport queues (diagnostic walk, used by
+     *  the C11 quiescence report). */
+    void nestworldForEachQueuedAuditId(java.util.function.LongConsumer c) {
+        for (RegionMessage<?> m : nestworldMailbox) c.accept(m.auditId());
+        for (NestworldPendingSend p : nestworldOutboundPending) c.accept(p.message().auditId());
     }
 
     /** Re-queues a message this region already accepted once (its "sent" event was
@@ -387,8 +478,7 @@ public class WorldRegion {
      *  event; the message's original {@link MailboxAudit} entry stays untouched, still
      *  correctly tracked as pending until it's actually applied. */
     public void nestworldRequeueMessage(RegionMessage<?> message) {
-        nestworldMailbox.add(message);
-        nestworldMailboxDepth.incrementAndGet();
+        nestworldEnqueueOrOrphan(message);
     }
 
     /** Drains and returns every currently-queued message of the given type, leaving
@@ -538,11 +628,20 @@ public class WorldRegion {
      * {@link #nestworldRequeueMessage}.
      */
     public void nestworldSendOrQueue(WorldRegion destination, RegionMessage<?> message) {
-        if (destination.nestworldMailboxDepthFast() < NestworldTuning.MAILBOX_BACKPRESSURE_THRESHOLD) {
+        if (destination.nestworldRetired
+                || destination.nestworldMailboxDepthFast() < MailboxLifecycleTestHooks.backpressureThreshold()) {
+            // A retired destination is handled inside the safe enqueue (orphaned, never accepted).
             destination.nestworldPostMessage(message);
         } else {
             MailboxAudit.recordSent(message.auditId(), message.sourceRegion(), destination, message.messageType());
-            nestworldOutboundPending.add(new NestworldPendingSend(destination, message));
+            // Same C4 shape on the sender-side pending queue: if THIS (the sender) was retired
+            // concurrently, either our own remove() wins (we orphan it) or the retirement drain
+            // already took it (it orphaned it). Never left in a drained queue.
+            NestworldPendingSend pending = new NestworldPendingSend(destination, message);
+            nestworldOutboundPending.add(pending);
+            if (nestworldRetired && nestworldOutboundPending.remove(pending)) {
+                MailboxLifecycle.orphan(this, message, MailboxLifecycle.OrphanReason.PENDING_SENDER_RETIRED);
+            }
         }
     }
 
@@ -563,7 +662,12 @@ public class WorldRegion {
         while (it.hasNext() && attempts < maxAttempts) {
             NestworldPendingSend pending = it.next();
             attempts++;
-            if (pending.destination().nestworldMailboxDepthFast() < NestworldTuning.MAILBOX_BACKPRESSURE_THRESHOLD) {
+            if (pending.destination().nestworldRetired) {
+                // Destination retired while the send was held here: its address is no longer
+                // authoritative -- re-resolve instead of waiting on a dead region's depth forever.
+                it.remove();
+                MailboxLifecycle.orphan(this, pending.message(), MailboxLifecycle.OrphanReason.PENDING_DESTINATION_RETIRED);
+            } else if (pending.destination().nestworldMailboxDepthFast() < MailboxLifecycleTestHooks.backpressureThreshold()) {
                 it.remove();
                 pending.destination().nestworldRequeueMessage(pending.message());
             }

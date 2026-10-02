@@ -232,6 +232,9 @@ public class NestworldRegionSystem {
             INSTANCE.shutdown();
             INSTANCE = null;
         }
+        // CORE-MAILBOX-MERGE-001: orphans/counters belong to this server generation's world.
+        // (Server-shutdown drain of live mailboxes is L6 / #15 -- out of scope, unchanged.)
+        MailboxLifecycle.resetAll();
     }
 
     /** API-1B.7 TELEMETRY ONLY -- not part of any correctness path. setSlot's incarnation is

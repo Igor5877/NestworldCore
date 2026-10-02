@@ -374,6 +374,25 @@ public final class NestworldTuning {
     public static final int MAILBOX_BACKPRESSURE_FLUSH_BUDGET =
             Integer.getInteger("nestworld.mailboxBackpressureFlushBudget", 64);
 
+    /** CORE-MAILBOX-MERGE-001: how many times one message may be re-resolved and redelivered after
+     *  its destination was retired before it is closed with the explicit terminal
+     *  REDELIVERY_LIMIT_DROPPED. Each redelivery requires a fresh split/merge retiring the NEW
+     *  destination before it drained, so a healthy run stays at 1-2. */
+    public static final int MAILBOX_MAX_REDELIVERIES =
+            Integer.getInteger("nestworld.mailboxMaxRedeliveries", 8);
+
+    /** CORE-MAILBOX-MERGE-001 (C3 join policy): how long the retiring main thread waits, AFTER
+     *  releasing the region locks, for a retired region's worker to exit. Not a correctness bound
+     *  -- the drain is protected by lock exclusion -- so it is kept short to bound main-thread
+     *  stall; a worker still alive is watched instead (see RETIRE_EXIT_DEADLINE_MS). */
+    public static final long RETIRE_JOIN_TIMEOUT_MS =
+            Long.getLong("nestworld.retireJoinTimeoutMs", 50L);
+
+    /** CORE-MAILBOX-MERGE-001: a retired region's worker still alive this long after retirement is
+     *  reported as RETIREMENT_FAILED (WARN + counter; the region stays RETIRED). */
+    public static final long RETIRE_EXIT_DEADLINE_MS =
+            Long.getLong("nestworld.retireExitDeadlineMs", 10_000L);
+
     /**
      * Weight of one unit of block-tick heat relative to one owned entity when
      * the split scorer scores candidate cut lines (see {@link BlockTickHeat}).
