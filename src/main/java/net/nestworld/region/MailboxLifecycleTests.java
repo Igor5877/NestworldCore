@@ -106,7 +106,7 @@ final class MailboxLifecycleTests {
     /** Test entity in chunk (0,0), owned solely by the region covering it. Main thread. */
     private static UUID spawnTarget(Ctx c) throws Exception {
         return c.onMain(() -> {
-            for (int cx = -1; cx <= 1; cx++) c.level.setChunkForced(cx, 0, true);
+            loadFixtureChunks(c);
             ArmorStand stand = new ArmorStand(c.level, 4.5, 210.0, 4.5);
             stand.setNoGravity(true);
             stand.setInvulnerable(true);
@@ -115,6 +115,16 @@ final class MailboxLifecycleTests {
             Api1A7DeterministicTests.assignSole(c.dr.getGrid().getAllRegions().toArray(new WorldRegion[0]), owner, stand.getUUID());
             return stand.getUUID();
         });
+    }
+
+    /** Forces AND synchronously loads chunks (-1..1, 0) to FULL (main thread). setChunkForced alone
+     *  is asynchronous: on a world whose spawn is away from the origin the chunk is not loaded yet,
+     *  an entity added there is not in the world, and block writes do not stick. */
+    private static void loadFixtureChunks(Ctx c) {
+        for (int cx = -1; cx <= 1; cx++) {
+            c.level.setChunkForced(cx, 0, true);
+            c.level.getChunk(cx, 0);
+        }
     }
 
     /** Earlier scenarios keep splitting the region around chunk (0,0); merge it back with its tree
@@ -211,6 +221,7 @@ final class MailboxLifecycleTests {
                     MailboxLifecycleTestHooks.ENABLED = true;
                     EntityMutationTestHooks.disarmAll();
                     EntityMutationTestHooks.ENABLED = false;
+                    EntityMutationTestHooks.ONLY_OP = null; // l2a filters barriers to Ignite; never leak that filter
                 }
             }
         } finally {
@@ -477,7 +488,7 @@ final class MailboxLifecycleTests {
         long noOwnerBefore = MailboxRetargeting.explosionPositionsNoOwner.get();
         Explosion[] explosionRef = new Explosion[1];
         long[] ids = c.onMain(() -> {
-            for (int cx = -1; cx <= 1; cx++) c.level.setChunkForced(cx, 0, true);
+            loadFixtureChunks(c);
             WorldRegion r = c.regionAtChunk(0, 0);
             if (r != c.regionAtChunk(1, 0) || !r.canSplit()) return null; // need chunks 0 and 1 in ONE splittable region
             for (BlockPos p : input) c.level.setBlock(p, Blocks.GLASS.defaultBlockState(), 3);

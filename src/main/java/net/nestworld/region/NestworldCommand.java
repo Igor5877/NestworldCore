@@ -158,6 +158,9 @@ public final class NestworldCommand {
             diag.info("[API1A7-DET] scenario={} STARTED on background thread {}", scenario, Thread.currentThread().getName());
             boolean traceBefore = ApiOpTrace.ENABLED;
             ApiOpTrace.ENABLED = true; // STRESS-001: the fixture's evidence IS the phase trace
+            // These fixtures barrier SetVelocity ops; a filter left behind by another fixture family
+            // (e.g. CORE-MAILBOX l2a's Ignite filter) would silently disable their interleaving.
+            EntityMutationTestHooks.ONLY_OP = null;
             try {
                 for (String line : runner.get()) {
                     diag.info("[API1A7-DET] {}", line);
