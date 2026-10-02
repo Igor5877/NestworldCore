@@ -1,12 +1,26 @@
 # API-1B-CLOSURE — integrated server and multi-server lifecycle in one JVM
 
-**Status (2026-10-02): lifecycle matrix RUN.** API-1B semantics PASS on a real integrated server
-and across two sequential servers in one JVM. Two product defects were found and fixed (W1, W2).
+**Status (owner decision, 2026-10-02):**
+```
+API-1B primitive correctness       VERIFIED
+API-1B integrated semantics        VERIFIED
+API-1B A→B isolation               VERIFIED*
+API-1B production lifecycle        BLOCKED
 
-**API-1B is NOT yet marked CLOSED/FROZEN.** Two verified findings are open and need an owner
-decision:
-- **MODULE-LIFECYCLE:** blocks any second world in a client.
-- **CORE-PARKED-REGION-001:** delivery liveness; per the owner's rule it comes before PERF-1.
+* verified after an explicit test-harness ModuleRegistry reset
+
+API-1B overall:                    CLOSURE BLOCKED
+```
+
+**Blocking dependencies.** These are separate gates; their commits are never mixed with API-1B:
+- **MODULE-LIFECYCLE-001:** server A → stop → server B, plus `/reload` semantics. The defect
+  belongs to ModuleRegistry, not to setSlot.
+- **CORE-PARKED-REGION-001:** the runnable-work model of a non-free-running WorldRegion.
+
+**Closure condition:** rerun production A→B **without any harness reset**, with ORDERING
+delivered within its deterministic timeout. Only then is API-1B CLOSED / VERIFIED / FROZEN.
+
+**Before PERF-1:** SOURCE-PATCH-INTEGRITY-001 (build gate, see W3).
 
 Invariant under test:
 `ServerLifetime(A) ∩ MutableRuntimeState(ServerLifetime(B)) = ∅`. Statics need not be physically
