@@ -67,6 +67,17 @@ public final class NestworldTickOwnership {
         return violationCount.get();
     }
 
+    /** Server-lifetime reset (API-1B-CLOSURE, multi-server lifecycle): the owner thread is the
+     *  CURRENT server's main thread. Kept across a stop it pinned the previous server (through its
+     *  dead thread) and turned every LevelTicks operation of the next server into a false violation
+     *  -- an ERROR report each, and a thrown exception in STRICT mode. Re-captured by the next
+     *  server's first LevelTicks operation. The violation counter is a process-lifetime metric
+     *  and is left as is. */
+    static void resetForServerStop() {
+        ownerThread = null;
+        lastKnownServerTick = -1;
+    }
+
     /**
      * Assert the calling thread is the same one that has made every previous call here
      * (across ALL LevelTicks instances / dimensions -- deliberately global, since vanilla

@@ -237,6 +237,23 @@ public class NestworldRegionSystem {
         MailboxLifecycle.resetAll();
     }
 
+    /**
+     * API-1B-CLOSURE (multi-server lifecycle): the captured main-thread identities belong to ONE
+     * server's lifetime. Kept across a stop they pinned the dead server thread -- and through it
+     * the whole previous IntegratedServer and world -- for the rest of the JVM, made every later
+     * server's real main thread look "off-main" (an ERROR per tick, an ERROR with a stack capture
+     * per chunk load) and turned every LevelTicks operation of the next server into a false
+     * ownership violation (a thrown exception in STRICT mode). Reset on STOPPED, not STOPPING:
+     * stopServer() still unloads chunks through LevelTicks on the old server thread after
+     * ServerStoppingEvent, which would re-capture it. Re-captured by the next server's first use.
+     */
+    @SubscribeEvent
+    public static void onServerStopped(net.minecraftforge.event.server.ServerStoppedEvent event) {
+        nestworldMainThreadIdentity = null;
+        nestworldLevelTicksIterating = false;
+        NestworldTickOwnership.resetForServerStop();
+    }
+
     /** API-1B.7 TELEMETRY ONLY -- not part of any correctness path. setSlot's incarnation is
      *  object identity (PlayerIncarnationRegistry); these lines exist so live traces can show
      *  WHERE the Forge events fall relative to identity decisions (fixture E). An earlier design
