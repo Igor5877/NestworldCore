@@ -60,9 +60,17 @@ final class Api1B6DeterministicTests {
     /** Streams every line to the log the moment it is added. A fixture that waits for an
      *  external lifecycle action must have its ACTION_REQUIRED line visible while it waits --
      *  the first live D run buffered it until the end and timed out without a respawn. */
+    /** API-1B-CLOSURE: in-JVM driver for ACTION_REQUIRED lines (single-player has no RCON operator). */
+    static volatile java.util.function.Consumer<String> ACTION_HOOK = null;
+
     static final class Out extends ArrayList<String> {
         private static final org.apache.logging.log4j.Logger DIAG = org.apache.logging.log4j.LogManager.getLogger("NestWorld/API1B7");
-        @Override public boolean add(String line) { DIAG.info("[API1B6-DET] {}", line); return super.add(line); }
+        @Override public boolean add(String line) {
+            DIAG.info("[API1B6-DET] {}", line);
+            var hook = ACTION_HOOK;
+            if (hook != null && line.startsWith("ACTION_REQUIRED")) hook.accept(line);
+            return super.add(line);
+        }
         @Override public boolean addAll(java.util.Collection<? extends String> c) { c.forEach(this::add); return !c.isEmpty(); }
     }
 
@@ -307,6 +315,17 @@ final class Api1B6DeterministicTests {
                     + " V1.applyCount=" + InventorySetTelemetry.applyCount(id, slot, inc, v1)
                     + " V2.applyCount=" + InventorySetTelemetry.applyCount(id, slot, inc, v2)
                     + " lastApplied=" + InventorySlotVersionTracker.peekLastApplied(key, inc) + " final=" + desc(fin));
+            if (!v1Arrived) {
+                // CORE-PARKED-REGION-001 evidence (does not change the verdict): where V1 sits, the
+                // dispatch-rule inputs of that region, and whether it drains with no external trigger.
+                MinecraftServer srv = sys.getOverworld().getServer();
+                out.add("V1 not delivered within 5s -- " + srv.submit(MailboxLifecycle::queuedRegionsReport).get(10, java.util.concurrent.TimeUnit.SECONDS));
+                long t0 = System.currentTimeMillis();
+                boolean late = waitFor(() -> InventorySetTelemetry.staleDropped.get() >= 1
+                        || InventorySetTelemetry.applyCount(id, slot, inc, v1) > 0, 30_000);
+                out.add("V1 with no external trigger: " + (late ? "arrived after a further " + (System.currentTimeMillis() - t0) + " ms"
+                        : "still not delivered after a further 30000 ms -- " + srv.submit(MailboxLifecycle::queuedRegionsReport).get(10, java.util.concurrent.TimeUnit.SECONDS)));
+            }
             boolean pass = v1Arrived && fin.is(Items.DIAMOND)
                     && InventorySetTelemetry.applyCount(id, slot, inc, v1) == 0
                     && InventorySetTelemetry.applyCount(id, slot, inc, v2) == 1;
@@ -982,21 +1001,7 @@ final class Api1B6DeterministicTests {
             // (RegionThreadPool.tickAllRegions), so its mailbox does not drain until an entity enters
             // (finding API1A7-NW-PARKED-REGION) -- attributes any MISSING_TERMINAL to that liveness gap
             // or rules it out.
-            out.add(server.submit(() -> {
-                StringBuilder sb = new StringBuilder("queued-at-end:");
-                int n = 0;
-                for (WorldRegion r : sys.getDimensionRegion(level).getGrid().getAllRegions()) {
-                    int depth = r.nestworldMailboxSize(), pend = r.nestworldOutboundPendingSize();
-                    if (depth == 0 && pend == 0) continue;
-                    n++;
-                    boolean dispatched = (NestworldTuning.FREE_RUNNING_REGIONS_ENABLED && r.isFreeRunning())
-                            || !r.getOwnedEntityIds().isEmpty();
-                    sb.append(" r").append(r.getId()).append("{mailbox=").append(depth).append(",pending=").append(pend)
-                            .append(",ownedEntities=").append(r.getOwnedEntityIds().size())
-                            .append(",dispatchedEachTick=").append(dispatched).append('}');
-                }
-                return n == 0 ? "queued-at-end: none" : sb.toString();
-            }).get(10, java.util.concurrent.TimeUnit.SECONDS));
+            out.add("queued-at-end: " + server.submit(MailboxLifecycle::queuedRegionsReport).get(10, java.util.concurrent.TimeUnit.SECONDS));
             int[] finalMismatch = {0}, finalChecked = {0};
             String finalDetail = server.submit(() -> {
                 StringBuilder sb = new StringBuilder();

@@ -33,5 +33,9 @@ public class NestworldMod {
         // against BEFORE NestworldRegionSystem (the first SPI-dependent Core class) is touched.
         ModApiAbiGate.verifyOrFail(providerDescription, net.minecraftforge.fml.loading.FMLLoader.isProduction());
         MinecraftForge.EVENT_BUS.register(NestworldRegionSystem.class);
+        // API-1B-CLOSURE TEST-ONLY: integrated-server lifecycle driver; client dist + explicit flag only.
+        if (net.minecraftforge.fml.loading.FMLEnvironment.dist.isClient() && Boolean.getBoolean("nestworld.clientLifecycleTest")) {
+            net.nestworld.client.ClientLifecycleTestDriver.register();
+        }
     }
 }

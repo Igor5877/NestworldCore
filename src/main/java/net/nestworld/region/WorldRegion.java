@@ -465,6 +465,14 @@ public class WorldRegion {
         MailboxLifecycle.drainedRegions.incrementAndGet();
     }
 
+    /** Diagnostic (CORE-PARKED-REGION-001 evidence): age in ns of the oldest message still queued
+     *  in this region's inbound mailbox, or -1 if it is empty. O(n) walk -- low-frequency use only. */
+    long nestworldOldestQueuedAgeNanos() {
+        long now = System.nanoTime(), oldest = -1;
+        for (RegionMessage<?> m : nestworldMailbox) oldest = Math.max(oldest, now - m.createdNanos());
+        return oldest;
+    }
+
     /** Audit ids currently reachable in this region's transport queues (diagnostic walk, used by
      *  the C11 quiescence report). */
     void nestworldForEachQueuedAuditId(java.util.function.LongConsumer c) {

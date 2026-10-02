@@ -264,9 +264,38 @@ public final class MailboxLifecycle {
         return ids;
     }
 
+    /**
+     * CORE-PARKED-REGION-001 evidence: every live region that still has queued transport work, with
+     * the inputs of {@code RegionThreadPool.tickAllRegions}' dispatch rule (a non-free-running
+     * region is dispatched only if it owns entities or carries deferred work). Read-only.
+     */
+    static String queuedRegionsReport() {
+        if (!NestworldRegionSystem.isInitialised()) return "queued-regions: system not initialised";
+        StringBuilder sb = new StringBuilder("queued-regions:");
+        int n = 0;
+        for (NestworldDimensionRegion dr : NestworldRegionSystem.get().allDimensionRegions()) {
+            for (WorldRegion r : dr.getGrid().getAllRegions()) {
+                int depth = r.nestworldMailboxSize(), pend = r.nestworldOutboundPendingSize();
+                if (depth == 0 && pend == 0) continue;
+                n++;
+                RegionThread t = r.owningThread;
+                int deferred = t == null ? -1 : t.getLastWorkDeferred();
+                int owned = r.getOwnedEntityIds().size();
+                boolean selfTicking = NestworldTuning.FREE_RUNNING_REGIONS_ENABLED && r.isFreeRunning();
+                boolean eligible = selfTicking || owned > 0 || deferred > 0;
+                long age = r.nestworldOldestQueuedAgeNanos();
+                sb.append(" r").append(r.getId()).append("{mailbox=").append(depth).append(",pending=").append(pend)
+                        .append(",ownedEntities=").append(owned).append(",deferredWork=").append(deferred)
+                        .append(",freeRunning=").append(r.isFreeRunning()).append(",dispatchEligible=").append(eligible)
+                        .append(",oldestAgeMs=").append(age < 0 ? -1 : age / 1_000_000).append('}');
+            }
+        }
+        return n == 0 ? "queued-regions: none" : sb.toString();
+    }
+
     /** Lifecycle counters + C10 sweep + C11 accounting, one block (diagnostic command output). */
     static String fullReport() {
-        return "MailboxLifecycle " + summary() + "\n" + c10Sweep() + "\n"
+        return "MailboxLifecycle " + summary() + "\n" + queuedRegionsReport() + "\n" + c10Sweep() + "\n"
                 + MailboxAudit.accountingReport(reachableAuditIds());
     }
 
