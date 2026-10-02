@@ -47,7 +47,7 @@ final class MailboxLifecycleTests {
     }
 
     static final List<String> SCENARIOS = List.of("l1-split", "l1-merge", "l2a", "l2b", "l2b-consumed", "l2c",
-            "l3", "l4", "l5", "transfer", "transfer-owned", "notfound", "redeliverylimit", "all");
+            "l3", "l4", "l5", "transfer", "transfer-owned", "notfound", "redeliverylimit", "parked-inbound", "parked-pending", "all");
 
     // ------------------------------------------------------------------
     // Harness
@@ -209,6 +209,8 @@ final class MailboxLifecycleTests {
                         case "transfer" -> transfer(c, false);
                         case "transfer-owned" -> transfer(c, true);
                         case "notfound" -> notFound(c);
+                        case "parked-inbound" -> parked(c, false);
+                        case "parked-pending" -> parked(c, true);
                         case "redeliverylimit" -> redeliveryLimit(c);
                         default -> c.skipped(s, "unknown scenario");
                     }
@@ -592,6 +594,104 @@ final class MailboxLifecycleTests {
                 "r" + ids[1] + " retired with the transfer queued; outcome " + o + "; owners of entity now: count=" + owners[0]
                         + " region=r" + owners[1] + " (expected exactly r" + ids[2] + ", the region at its position)");
         invariants(c, name);
+    }
+
+    // ------------------------------------------------------------------
+    // CORE-PARKED-REGION-001 deterministic reproductions (evidence only; no expectation of a fix)
+    // ------------------------------------------------------------------
+
+    private static final long PARKED_WINDOW_MS = Long.getLong("nestworld.parkedWindowMs", 15_000L);
+
+    /** A region guaranteed to own no entities: the leaf around a far chunk, cut by explicit
+     *  splits until it excludes the origin (unloaded chunks hold no entities). Main thread. */
+    private static WorldRegion farEmptyRegion(Ctx c) {
+        final int far = 3000;
+        WorldRegion r = c.regionAtChunk(far, far);
+        for (int i = 0; i < 4 && r != null && (r.getMinChunkX() < far || r.getMinChunkZ() < far); i++) {
+            SplitAxis axis = r.getMinChunkX() < far ? SplitAxis.X : SplitAxis.Z;
+            WorldRegion[] k = c.dr.getSplitManager().doSplitAtForTest(r, axis, far - 1, "core-parked-isolate");
+            if (k == null) break;
+            r = c.regionAtChunk(far, far);
+        }
+        return r;
+    }
+
+    /**
+     * P1 (parked-inbound): a stale-owner ENTITY_MUTATE sits in the inbound mailbox of a region with
+     * no owned entities. P2 (parked-pending): a backpressure-held send sits in the outbound pending
+     * queue of such a region (sender side). Both are consumed only by that region's entity round.
+     * Observe for PARKED_WINDOW_MS with NO trigger, then make the region dispatch-eligible
+     * (one owned entity id) and measure the time to the outcome.
+     */
+    private static void parked(Ctx c, boolean pendingSide) throws Exception {
+        String name = pendingSide ? "parked-pending" : "parked-inbound";
+        c.onMain(() -> farEmptyRegion(c)); // isolate first: its splits must not race the target's ownership
+        UUID target = spawnTarget(c);
+        long opId = OPIDS.incrementAndGet();
+        var o = MailboxLifecycleTestHooks.trackOp(opId);
+        WorldRegion[] holder = new WorldRegion[1];
+        String setup = c.onMain(() -> {
+            WorldRegion r = farEmptyRegion(c);
+            WorldRegion owner = c.dr.getGrid().findOwningRegion(target);
+            if (r == null || owner == null || r == owner || !r.getOwnedEntityIds().isEmpty()) return null;
+            holder[0] = r;
+            // Pinned: an auto-merge of this idle region would retire it, and the CORE-MAILBOX
+            // retirement drain would then deliver the work -- an incidental trigger (observed),
+            // which must not decide this reproduction.
+            r.pinned = true;
+            if (pendingSide) {
+                MailboxLifecycleTestHooks.setThresholdOverride(0);
+                r.nestworldSendOrQueue(owner, mutate(c, owner, target, opId)); // held at sender r
+                MailboxLifecycleTestHooks.setThresholdOverride(-1);
+            } else {
+                r.nestworldPostMessage(mutate(c, r, target, opId));            // stale owner r
+            }
+            return "r" + r.getId() + " " + r.getMinChunkX() + ".." + r.getMaxChunkX() + "," + r.getMinChunkZ() + ".." + r.getMaxChunkZ()
+                    + " (target owned by r" + owner.getId() + ")";
+        });
+        if (setup == null) { c.skipped(name, "could not isolate an entity-free region"); return; }
+        c.out.add(name + " setup: " + setup + " -- " + c.onMain(MailboxLifecycle::queuedRegionsReport));
+        long t0 = System.currentTimeMillis();
+        boolean early = waitFor(() -> o.outcomes() >= 1, PARKED_WINDOW_MS);
+        String during = c.onMain(MailboxLifecycle::queuedRegionsReport);
+        c.out.add(name + " after " + (System.currentTimeMillis() - t0) + " ms with no trigger: outcome " + o + " -- " + during);
+        c.check(name + ".reproduced", !early && during.contains("r" + holder[0].getId() + "{")
+                        && during.contains("dispatchEligible=false"),
+                "work queued for " + PARKED_WINDOW_MS + " ms in a region the scheduler never dispatched (expected for this repro)");
+        // Trigger: a REAL entity enters the parked region (a synthetic owned-id marker is removed by
+        // owned-id cleanup before dispatch -- observed, so it cannot serve as the trigger).
+        long t1 = System.currentTimeMillis();
+        UUID marker = c.onMain(() -> {
+            c.level.setChunkForced(3001, 3001, true);
+            c.level.getChunk(3001, 3001);
+            ArmorStand a = new ArmorStand(c.level, 3001 * 16 + 8.5, 120.0, 3001 * 16 + 8.5);
+            a.setNoGravity(true);
+            a.setInvulnerable(true);
+            c.level.addFreshEntity(a);
+            Api1A7DeterministicTests.assignSole(c.dr.getGrid().getAllRegions().toArray(new WorldRegion[0]), holder[0], a.getUUID());
+            return a.getUUID();
+        });
+        boolean delivered = waitFor(() -> o.outcomes() >= 1, 10_000);
+        c.out.add(name + " trigger (real entity entered the region) -> " + (delivered ? "outcome after " + (System.currentTimeMillis() - t1) + " ms: " + o : "still no outcome"));
+        if (!delivered) {
+            // Evidence for the open sub-question: eligible but still not dispatched?
+            String state = c.onMain(() -> {
+                RegionThread t = holder[0].owningThread;
+                return MailboxLifecycle.queuedRegionsReport() + " | r" + holder[0].getId() + " retired=" + holder[0].nestworldIsRetired()
+                        + " owned=" + holder[0].getOwnedEntityIds().size() + " thread=" + (t == null ? "null"
+                        : t.getName() + "{alive=" + t.isAlive() + ",state=" + t.getState() + ",deferred=" + t.getLastWorkDeferred() + "}")
+                        + " inPool=" + c.dr.getPool().getThreads().stream().anyMatch(x -> x.getRegion() == holder[0]);
+            });
+            c.out.add(name + " UNDELIVERED-AFTER-TRIGGER evidence: " + state);
+        }
+        c.check(name + ".deliveredOnceEligible", delivered && o.outcomes() == 1 && o.appliedOnRetired.get() == 0, "outcome " + o);
+        c.onMain(() -> {
+            var e = c.level.getEntity(marker);
+            if (e != null) e.discard();
+            c.level.setChunkForced(3001, 3001, false);
+            holder[0].pinned = false;
+            return null;
+        });
     }
 
     // ------------------------------------------------------------------
