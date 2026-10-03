@@ -1,5 +1,24 @@
 # API-1B-CLOSURE — integrated server and multi-server lifecycle in one JVM
 
+**Status: API-1B CLOSED / VERIFIED / FROZEN (2026-10-03).**
+```
+API-1B primitive correctness       VERIFIED
+API-1B integrated semantics        VERIFIED
+API-1B A→B isolation               VERIFIED   (production lifecycle, NO harness reset)
+API-1B production lifecycle        VERIFIED
+
+Both blocking gates closed:
+  MODULE-LIFECYCLE-001     fixed + verified
+  CORE-PARKED-REGION-001   CLOSED / VERIFIED / FROZEN
+
+Final matrix (real client, build 1.20.1-47.4.258):
+  Create World → Cancel ×2 → world A → title (100 s hold > watchdog) → world B → world C
+  103 pass / 0 fail; ORDERING PASS within its 5 s timeout; 0 ownership violations;
+  no HARNESS line; A's and B's servers and module registries garbage-collected;
+  client alive 148 s after server A stopped.
+```
+The earlier blocked status (2026-10-02) and its conditions are kept below for history.
+
 **Status (owner decision, 2026-10-02):**
 ```
 API-1B primitive correctness       VERIFIED
