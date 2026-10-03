@@ -31,21 +31,58 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class ModuleContextImpl implements ModuleContext {
     private static final Logger LOGGER = LoggerFactory.getLogger(ModuleContextImpl.class);
 
-    private final ModuleIdentity identity;
-    private final ResourceLedger ledger;
-    private final CommandDispatcher<CommandSourceStack> dispatcher;
-    private final AtomicBoolean accepting = new AtomicBoolean(true);
+    /**
+     * MODULE-LIFECYCLE-001 (I3): a command is a MODULE-OWNED DECLARATION that lives with this module
+     * generation. Revoking it is a soft revoke (Brigadier cannot remove nodes): the executor stops
+     * running wherever the declaration is bound. A BINDING (a node in one dispatcher) is created per
+     * dispatcher generation by {@link ModuleRegistry#bindCommands} and dies with that dispatcher.
+     */
+    static final class CommandDeclaration {
+        final String name;
+        final Command<CommandSourceStack> executor;
+        final AtomicBoolean live = new AtomicBoolean(true);
 
-    ModuleContextImpl(ModuleIdentity identity, ResourceLedger ledger, CommandDispatcher<CommandSourceStack> dispatcher) {
-        this.identity = identity;
-        this.ledger = ledger;
-        this.dispatcher = dispatcher;
+        CommandDeclaration(String name, Command<CommandSourceStack> executor) {
+            this.name = name;
+            this.executor = executor;
+        }
+
+        void bindInto(CommandDispatcher<CommandSourceStack> dispatcher) {
+            LiteralArgumentBuilder<CommandSourceStack> builder = Commands.literal(name).executes(ctx -> {
+                if (!live.get()) {
+                    ctx.getSource().sendFailure(net.minecraft.network.chat.Component.literal(
+                            "'" + name + "' was revoked (module resource no longer live)"));
+                    return 0;
+                }
+                return executor.run(ctx);
+            });
+            dispatcher.getRoot().addChild(builder.build());
+        }
     }
 
-    /** Called by ModuleRegistry the instant this module's generation stops being current
-     *  (QUIESCING begins). Idempotent. */
+    private final ModuleIdentity identity;
+    private final ResourceLedger ledger;
+    /** Binds a fresh declaration into the server's CURRENT dispatcher (I4); supplied by the registry. */
+    private final java.util.function.Consumer<CommandDeclaration> currentDispatcherBinder;
+    private final java.util.List<CommandDeclaration> declarations = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final AtomicBoolean accepting = new AtomicBoolean(true);
+
+    ModuleContextImpl(ModuleIdentity identity, ResourceLedger ledger,
+                      java.util.function.Consumer<CommandDeclaration> currentDispatcherBinder) {
+        this.identity = identity;
+        this.ledger = ledger;
+        this.currentDispatcherBinder = currentDispatcherBinder;
+    }
+
     void stopAccepting() {
         accepting.set(false);
+    }
+
+    /** Declarations that must be bound into each new dispatcher generation while RUNNING. */
+    java.util.List<CommandDeclaration> liveDeclarations() {
+        java.util.List<CommandDeclaration> out = new java.util.ArrayList<>();
+        for (CommandDeclaration d : declarations) if (d.live.get()) out.add(d);
+        return out;
     }
 
     @Override
@@ -85,21 +122,9 @@ final class ModuleContextImpl implements ModuleContext {
             LOGGER.info("NestWorld module {}: command '{}' registration REJECTED (no longer accepting)", identity, name);
             return null;
         }
-        if (dispatcher == null) {
-            LOGGER.error("NestWorld module {}: command '{}' registration REJECTED -- no command "
-                    + "dispatcher available yet (registerCommand called before RegisterCommandsEvent)", identity, name);
-            return null;
-        }
-        AtomicBoolean live = new AtomicBoolean(true);
-        LiteralArgumentBuilder<CommandSourceStack> builder = Commands.literal(name).executes(ctx -> {
-            if (!live.get()) {
-                ctx.getSource().sendFailure(net.minecraft.network.chat.Component.literal(
-                        "'" + name + "' was revoked (module resource no longer live)"));
-                return 0;
-            }
-            return executor.run(ctx);
-        });
-        dispatcher.getRoot().addChild(builder.build());
+        CommandDeclaration declaration = new CommandDeclaration(name, executor);
+        declarations.add(declaration);
+        currentDispatcherBinder.accept(declaration);
         ResourceHandle handle = new ResourceHandle() {
             private final AtomicBoolean revoked = new AtomicBoolean(false);
 
@@ -111,7 +136,7 @@ final class ModuleContextImpl implements ModuleContext {
             @Override
             public void revoke() {
                 if (revoked.compareAndSet(false, true)) {
-                    live.set(false); // soft revoke -- see class javadoc
+                    declaration.live.set(false); // soft revoke: every binding of this declaration stops executing
                 }
             }
         };

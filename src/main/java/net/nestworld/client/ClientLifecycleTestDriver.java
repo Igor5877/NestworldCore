@@ -35,19 +35,18 @@ import org.apache.logging.log4j.Logger;
 public final class ClientLifecycleTestDriver {
     private static final Logger LOG = LogManager.getLogger("NestWorld/API1B-CLOSURE");
     private static final long HOLD_MS = Long.getLong("nestworld.clientLifecycleTest.titleHoldMs", 5_000L);
-    /** MODULE-LIFECYCLE-001 reproductions: false = run A -> B with NO harness intervention. */
-    private static final boolean HARNESS_MODULE_RESET =
-            Boolean.parseBoolean(System.getProperty("nestworld.clientLifecycleTest.harnessModuleReset", "true"));
-    /** MODULE-LIFECYCLE-001 reproduction: open the "Create New World" screen and cancel it first. */
-    private static final boolean CREATE_SCREEN_CANCEL = Boolean.getBoolean("nestworld.clientLifecycleTest.createScreenCancel");
+    /** MODULE-LIFECYCLE-001: how many times to open "Create New World" and Cancel before world A. */
+    private static final int CREATE_SCREEN_CANCELS = Integer.getInteger("nestworld.clientLifecycleTest.createScreenCancels", 0);
+    /** Number of sequential worlds (server lifetimes) in this JVM: 2 = A,B; 3 = A,B,C. */
+    private static final int WORLDS = Integer.getInteger("nestworld.clientLifecycleTest.worlds", 2);
+    private static int cancelsDone = 0;
+    private static int world = 0;
     private static final long WORLD_LOAD_TIMEOUT_MS = 180_000L;
-    private static boolean createScreenDone = false;
     private static long waitWorldSince;
 
     private enum State { WAIT_TITLE, WAIT_WORLD, SETTLE, RUNNING, QUIT, HOLD, DONE }
 
     private static State state = State.WAIT_TITLE;
-    private static boolean second = false;
     private static boolean busy = false;
     private static int settleTicks = 0;
     private static volatile boolean phaseDone = false;
@@ -92,16 +91,18 @@ public final class ClientLifecycleTestDriver {
                 // Any menu once resource loading is done (a first launch shows the accessibility
                 // onboarding screen instead of the title screen).
                 if (atMenu(mc)) {
-                    if (CREATE_SCREEN_CANCEL && !createScreenDone) {
-                        createScreenDone = true;
-                        LOG.info("[API1B-CLOSURE] CLIENT repro: opening Create New World screen (loads data packs), then Cancel");
+                    if (world == 0 && cancelsDone < CREATE_SCREEN_CANCELS) {
+                        cancelsDone++;
+                        long createdBefore = IntegratedLifecycleTests.registriesCreated();
+                        LOG.info("[API1B-CLOSURE] CLIENT Create New World screen #{} (loads data packs), then Cancel", cancelsDone);
                         net.minecraft.client.gui.screens.worldselection.CreateWorldScreen.openFresh(mc, mc.screen);
-                        LOG.info("[API1B-CLOSURE] CLIENT repro: screen after openFresh = {}",
+                        LOG.info("[API1B-CLOSURE] CLIENT screen after openFresh = {}",
                                 mc.screen == null ? null : mc.screen.getClass().getSimpleName());
                         mc.setScreen(new TitleScreen());
+                        IntegratedLifecycleTests.checkNoModuleLifecycleWithoutServer("createScreenCancel" + cancelsDone, createdBefore);
                         return;
                     }
-                    createWorld(mc, second ? "nwlcB" : "nwlcA");
+                    createWorld(mc, "nwlc" + name());
                     waitWorldSince = System.currentTimeMillis();
                     state = State.WAIT_WORLD;
                 }
@@ -113,7 +114,7 @@ public final class ClientLifecycleTestDriver {
                     state = State.SETTLE;
                 } else if (System.currentTimeMillis() - waitWorldSince > WORLD_LOAD_TIMEOUT_MS) {
                     LOG.error("[API1B-CLOSURE] CLIENT world {} did NOT load within {} ms (screen={}) -- RESULT {} -- FAILURES PRESENT",
-                            second ? "B" : "A", WORLD_LOAD_TIMEOUT_MS,
+                            name(), WORLD_LOAD_TIMEOUT_MS,
                             mc.screen == null ? null : mc.screen.getClass().getSimpleName(), IntegratedLifecycleTests.totals());
                     state = State.DONE;
                     mc.stop();
@@ -123,16 +124,18 @@ public final class ClientLifecycleTestDriver {
                 if (++settleTicks >= 60) {
                     IntegratedServer s = mc.getSingleplayerServer();
                     LOG.info("[API1B-CLOSURE] CLIENT world {} ready (server {}), starting phase {}",
-                            second ? "B" : "A", Integer.toHexString(System.identityHashCode(s)), second ? "B" : "A");
+                            name(), Integer.toHexString(System.identityHashCode(s)), name());
                     phaseDone = false;
-                    boolean b = second;
+                    int w = world;
                     Thread t = new Thread(() -> {
                         try {
-                            if (b) IntegratedLifecycleTests.runPhaseB(s); else IntegratedLifecycleTests.runPhaseA(s);
+                            if (w == 0) IntegratedLifecycleTests.runPhaseA(s);
+                            else if (w == 1) IntegratedLifecycleTests.runPhaseB(s);
+                            else IntegratedLifecycleTests.runPhaseC(s);
                         } finally {
                             phaseDone = true;
                         }
-                    }, "API1B-CLOSURE-phase-" + (b ? "B" : "A"));
+                    }, "API1B-CLOSURE-phase-" + name());
                     t.setDaemon(true);
                     t.start();
                     state = State.RUNNING;
@@ -142,17 +145,15 @@ public final class ClientLifecycleTestDriver {
                 if (phaseDone) state = State.QUIT;
             }
             case QUIT -> {
-                LOG.info("[API1B-CLOSURE] CLIENT quitting world {} to title", second ? "B" : "A");
+                LOG.info("[API1B-CLOSURE] CLIENT quitting world {} to title", name());
                 if (mc.level != null) mc.level.disconnect();
                 mc.clearLevel(new GenericDirtMessageScreen(Component.literal("NestWorld lifecycle test: saving")));
                 mc.setScreen(new TitleScreen());
                 LOG.info("[API1B-CLOSURE] CLIENT back at title; integrated server stopped (singleplayerServer={})",
                         mc.getSingleplayerServer());
-                if (!second) {
-                    serverAStoppedAt = System.currentTimeMillis();
+                if (world + 1 < WORLDS) {
+                    if (world == 0) serverAStoppedAt = System.currentTimeMillis();
                     IntegratedLifecycleTests.boundarySnapshot();
-                    if (HARNESS_MODULE_RESET) IntegratedLifecycleTests.harnessResetModuleRegistry();
-                    else LOG.info("[API1B-CLOSURE] CLIENT harness module reset DISABLED: world B runs on production lifecycle only");
                     holdStart = lastAliveLog = System.currentTimeMillis();
                     state = State.HOLD;
                 } else {
@@ -169,13 +170,17 @@ public final class ClientLifecycleTestDriver {
                     lastAliveLog = now;
                     LOG.info("[API1B-CLOSURE] CLIENT alive at title, {} ms after server A stopped", now - serverAStoppedAt);
                 }
-                if (now - holdStart >= HOLD_MS && atMenu(mc)) {
-                    second = true;
+                if ((world > 0 || now - holdStart >= HOLD_MS) && atMenu(mc)) {
+                    world++;
                     state = State.WAIT_TITLE;
                 }
             }
             case DONE -> { }
         }
+    }
+
+    private static String name() {
+        return String.valueOf((char) ('A' + world));
     }
 
     private static boolean atMenu(Minecraft mc) {

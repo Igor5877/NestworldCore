@@ -203,6 +203,8 @@ public class NestworldRegionSystem {
         if (net.nestworld.racedetect.RaceDetectTuning.MODE != net.nestworld.racedetect.RaceDetectTuning.Mode.OFF) {
             net.nestworld.racedetect.CandidateRegistry.scanIfNeeded(event.getServer());
         }
+        // MODULE-LIFECYCLE-001: modules start last -- every Core dependency is initialised above.
+        startModules(event.getServer());
     }
 
     @SubscribeEvent
@@ -227,7 +229,8 @@ public class NestworldRegionSystem {
         // Core itself tears down -- this is the one QUIESCING precedent Core's own shutdown
         // does NOT provide (docs/MODULE0_AUDIT.md §C: RegionThread.shutdown()'s mailbox isn't
         // drained either) -- modules get a real drain step Core's own shutdown still lacks.
-        net.nestworld.module.ModuleRegistry.quiesceAll();
+        net.nestworld.module.ModuleRegistry modules = net.nestworld.module.ModuleRegistry.forServer(event.getServer());
+        if (modules != null) modules.quiesceAll();
         if (INSTANCE != null) {
             INSTANCE.shutdown();
             INSTANCE = null;
@@ -252,6 +255,8 @@ public class NestworldRegionSystem {
         nestworldMainThreadIdentity = null;
         nestworldLevelTicksIterating = false;
         NestworldTickOwnership.resetForServerStop();
+        // MODULE-LIFECYCLE-001 (I5): the server's module registry leaves the facade and becomes unreachable.
+        net.nestworld.module.ModuleRegistry.dispose(event.getServer());
     }
 
     /** API-1B.7 TELEMETRY ONLY -- not part of any correctness path. setSlot's incarnation is
@@ -274,15 +279,25 @@ public class NestworldRegionSystem {
     @SubscribeEvent
     public static void onRegisterCommands(net.minecraftforge.event.RegisterCommandsEvent event) {
         NestworldCommand.register(event.getDispatcher());
-        // MODULE-1: this is the earliest point a CommandDispatcher exists, which module
-        // command registrations need -- deliberately driving LOADED->ENABLED->RUNNING from
-        // here rather than onServerStarting, to avoid an event-ordering assumption between
-        // RegisterCommandsEvent and ServerStartingEvent. Startup-only discovery: both test
-        // modules are registered here, once, every server start -- no jar scanning, no
-        // runtime installation.
-        net.nestworld.module.ModuleRegistry.discover(new net.nestworld.module.ExampleModule());
-        net.nestworld.module.ModuleRegistry.discover(new net.nestworld.module.FailingExampleModule());
-        net.nestworld.module.ModuleRegistry.enableAll(event.getDispatcher());
+        // MODULE-LIFECYCLE-001 (I2/I3): RegisterCommandsEvent belongs to a RESOURCE SET (it fires in
+        // the Commands constructor: before any server exists, on every /reload, and on the client's
+        // Create World screen). It is not a module lifecycle event. Its only module duty: bind the
+        // command declarations of an already-RUNNING server's modules into this new dispatcher.
+        net.minecraft.server.MinecraftServer current = net.minecraftforge.server.ServerLifecycleHooks.getCurrentServer();
+        net.nestworld.module.ModuleRegistry modules = net.nestworld.module.ModuleRegistry.forServer(current);
+        if (modules != null && current.isSameThread()) {
+            modules.bindCommands(event.getDispatcher());
+        }
+    }
+
+    /** MODULE-LIFECYCLE-001 (I1/I2): module discover -> enable, exactly once per server lifetime,
+     *  anchored at ServerStartingEvent after Core initialisation (levels and the region system
+     *  exist, no gameplay yet). Declarations bind into the server's active dispatcher (I4). */
+    private static void startModules(net.minecraft.server.MinecraftServer server) {
+        net.nestworld.module.ModuleRegistry modules = net.nestworld.module.ModuleRegistry.create(server);
+        modules.discover(new net.nestworld.module.ExampleModule());
+        modules.discover(new net.nestworld.module.FailingExampleModule());
+        modules.enableAll();
     }
 
     // NestWorld: feeds TickDurationHistory's 10s/1m windows for /nestworld status|lag's

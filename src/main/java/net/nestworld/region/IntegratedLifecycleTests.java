@@ -72,6 +72,9 @@ public final class IntegratedLifecycleTests {
     private static WeakReference<NestworldRegionSystem> aSystem;
     private static WeakReference<ServerPlayer> aPlayer;
     private static WeakReference<Object> aInventoryBackend;
+    private static WeakReference<Object> aModules;
+    private static WeakReference<MinecraftServer> bServer;
+    private static WeakReference<Object> bModules;
     private static UUID playerId;
     private static long tokA = -1;
     private static final int ISO_SLOT = 7;
@@ -205,6 +208,8 @@ public final class IntegratedLifecycleTests {
             aSystem = new WeakReference<>(NestworldRegionSystem.get());
             aPlayer = new WeakReference<>(p);
             aInventoryBackend = new WeakReference<>(staticField("net.nestworld.modapi.inventory.InventorySetBackendRegistry", "backend"));
+            moduleChecks(server, "A", 1);
+            aModules = new WeakReference<>(net.nestworld.module.ModuleRegistry.forServer(server));
             note("A identity: server=" + hex(server) + " regionSystem=" + hex(aSystem.get()) + " player=" + hex(p)
                     + " invBackend=" + hex(aInventoryBackend.get()) + " tokA=" + tokA);
         } catch (Throwable t) {
@@ -256,8 +261,7 @@ public final class IntegratedLifecycleTests {
             new Item(Kind.SEMANTIC, R + "ConnectionAdmissionGate", "waiting"),
             new Item(Kind.SEMANTIC, R + "PairingAdmissionGate", "perPlayerAdmittedThisTick"),
             new Item(Kind.SEMANTIC, R + "PlayerInputDiagnostics", "pendingCounts"),
-            new Item(Kind.SEMANTIC, "net.nestworld.module.ModuleRegistry", "MODULES"),
-            new Item(Kind.SEMANTIC, "net.nestworld.module.ModuleRegistry", "FAILURES"),
+            new Item(Kind.SEMANTIC, "net.nestworld.module.ModuleRegistry", "BY_SERVER"),
             new Item(Kind.METRIC, "net.nestworld.module.ModuleRegistry", "GENERATION_COUNTERS"),
             new Item(Kind.METRIC, R + "RegionTimeCompatibility", "emaBatchSize"),
             new Item(Kind.METRIC, R + "SplitMergeEventLog", "events"),
@@ -302,26 +306,53 @@ public final class IntegratedLifecycleTests {
         note("boundary.otherNestWorldThreads " + otherNw);
     }
 
-    /**
-     * TEST-HARNESS WORKAROUND, NOT A PRODUCT FIX: MODULE-1's ModuleRegistry keeps server A's
-     * discovered modules in JVM-global state, so server B's module discovery throws
-     * "ModuleId already discovered" and world B fails to load (finding MODULE-LIFECYCLE, same root
-     * as MODULE-RELOAD-001). To still measure API-1B isolation in B, the harness clears the
-     * discovered-module map and failure list here (generation counters are left untouched, so no
-     * generation number can be reused). The product bug stays open.
-     */
-    public static void harnessResetModuleRegistry() {
-        try {
-            synchronized (Class.forName("net.nestworld.module.ModuleRegistry")) {
-                long modules = sizeOf(staticField("net.nestworld.module.ModuleRegistry", "MODULES"));
-                ((Map<?, ?>) staticField("net.nestworld.module.ModuleRegistry", "MODULES")).clear();
-                ((Collection<?>) staticField("net.nestworld.module.ModuleRegistry", "FAILURES")).clear();
-                note("HARNESS WORKAROUND: cleared ModuleRegistry.MODULES (" + modules + " entries from server A) and FAILURES "
-                        + "so world B can load -- product bug MODULE-LIFECYCLE remains open");
-            }
-        } catch (Throwable t) {
-            note("HARNESS WORKAROUND failed: " + t);
-        }
+    // ------------------------------------------------------------------ MODULE-LIFECYCLE-001 checks
+
+    private static final net.nestworld.module.ModuleId EXAMPLE = new net.nestworld.module.ModuleId("example-module");
+
+    /** Client thread, no server: a resource set built without a server (Create World screen) must
+     *  cause NO module lifecycle (I1). */
+    public static void checkNoModuleLifecycleWithoutServer(String stage, long registriesCreatedBefore) {
+        String jvm = net.nestworld.module.ModuleRegistry.jvmSummary();
+        check("module.noLifecycleWithoutServer." + stage, net.nestworld.module.ModuleRegistry.liveRegistries() == 0
+                        && jvm.startsWith("registriesCreated=" + registriesCreatedBefore + " "),
+                jvm + " (expected no registry created by a resource load without a server)");
+    }
+
+    public static long registriesCreated() {
+        String jvm = net.nestworld.module.ModuleRegistry.jvmSummary();
+        return Long.parseLong(jvm.substring("registriesCreated=".length(), jvm.indexOf(' ')));
+    }
+
+    /** Per world: exactly-once lifecycle, monotonic generation, commands bound, /reload keeps
+     *  commands without rediscovery / re-enable / new generation (I2/I3/I4). */
+    static void moduleChecks(MinecraftServer server, String phase, long expectedGeneration) throws Exception {
+        var r = net.nestworld.module.ModuleRegistry.forServer(server);
+        check(phase + ".module.registryOwnedByServer", r != null && net.nestworld.module.ModuleRegistry.liveRegistries() == 1,
+                net.nestworld.module.ModuleRegistry.jvmSummary());
+        if (r == null) return;
+        long disc = r.discoveries(), en = r.enables(), gen = r.generationOf(EXAMPLE), binds = r.dispatcherBindings();
+        check(phase + ".module.exactlyOnce", disc == 2 && en == 2 && r.runningCount() == 1,
+                "discoveries=" + disc + " enables=" + en + " running=" + r.runningCount() + " (2 modules; failing-example fails by design)");
+        check(phase + ".module.generationMonotonicPerJvm", gen == expectedGeneration, "example-module generation=" + gen + " expected=" + expectedGeneration);
+        var d1 = onMain(server, () -> server.getCommands().getDispatcher());
+        int ran1 = onMain(server, () -> d1.getRoot().getChild("exmodping") == null ? -1
+                : d1.execute("exmodping", server.createCommandSourceStack().withSuppressedOutput()));
+        check(phase + ".module.commandAvailable", ran1 == 1, "exmodping in the active dispatcher returned " + ran1);
+        // /reload: a new dispatcher generation.
+        java.util.concurrent.CompletableFuture<Void> reload = onMain(server,
+                () -> server.reloadResources(server.getPackRepository().getSelectedIds()));
+        reload.get(120, TimeUnit.SECONDS);
+        var d2 = onMain(server, () -> server.getCommands().getDispatcher());
+        int ran2 = onMain(server, () -> d2.getRoot().getChild("exmodping") == null ? -1
+                : d2.execute("exmodping", server.createCommandSourceStack().withSuppressedOutput()));
+        check(phase + ".module.reloadKeepsCommands", d2 != d1 && ran2 == 1,
+                "new dispatcher=" + (d2 != d1) + " exmodping returned " + ran2);
+        check(phase + ".module.reloadNoRediscovery", r.discoveries() == disc && r.enables() == en
+                        && r.generationOf(EXAMPLE) == gen && r.dispatcherBindings() == binds + 1
+                        && net.nestworld.module.ModuleRegistry.forServer(server) == r,
+                "after /reload: discoveries=" + r.discoveries() + " enables=" + r.enables() + " generation=" + r.generationOf(EXAMPLE)
+                        + " dispatcherBindings=" + binds + "->" + r.dispatcherBindings());
     }
 
     // ------------------------------------------------------------------ phase B
@@ -381,6 +412,7 @@ public final class IntegratedLifecycleTests {
             }, 5_000);
             check("B.setVelocityApplies", moved, "fresh armor stand moved after setVelocity on server B");
 
+            moduleChecks(server, "B", 2);
             fixture(server, "B", "snapshot", (s, q) -> safe(() -> Api1B6DeterministicTests.runSnapshotIndependenceTest(s, q)));
             fixture(server, "B", "ordering", (s, q) -> safe(() -> Api1B6DeterministicTests.runSameIncarnationOrderingTest(s, q)));
             fixture(server, "B", "respawn-routed", (s, q) -> safe(() -> Api1B6DeterministicTests.runTransitionRejectTest(s, q, "respawn", true)));
@@ -393,8 +425,12 @@ public final class IntegratedLifecycleTests {
                 System.gc();
                 Thread.sleep(300);
             }
-            check("B.serverAObjectsCollectable", aServer.get() == null && aSystem.get() == null && aPlayer.get() == null,
-                    "after GC: serverA=" + hex(aServer.get()) + " regionSystemA=" + hex(aSystem.get()) + " playerA=" + hex(aPlayer.get()));
+            check("B.serverAObjectsCollectable", aServer.get() == null && aSystem.get() == null && aPlayer.get() == null
+                            && aModules.get() == null,
+                    "after GC: serverA=" + hex(aServer.get()) + " regionSystemA=" + hex(aSystem.get()) + " playerA=" + hex(aPlayer.get())
+                            + " moduleRegistryA=" + hex(aModules.get()));
+            bServer = new WeakReference<>(server);
+            bModules = new WeakReference<>(net.nestworld.module.ModuleRegistry.forServer(server));
             if (aServer.get() != null) {
                 // Evidence for the leak path: a live-object heap dump to inspect for the GC root
                 // still holding server A (test-only; path from -Dnestworld.clientLifecycleTest.heapDump).
@@ -411,6 +447,25 @@ public final class IntegratedLifecycleTests {
             LOG.error("[API1B-CLOSURE] phase B threw", t);
         } finally {
             Api1B6DeterministicTests.ACTION_HOOK = null;
+        }
+    }
+
+    // ------------------------------------------------------------------ phase C (MODULE-LIFECYCLE-001)
+
+    /** World C: a third server lifetime in the same JVM -- modules again exactly once with the next
+     *  generation, /reload keeps commands, and server B with its module registry is collectable. */
+    public static void runPhaseC(MinecraftServer server) {
+        try {
+            moduleChecks(server, "C", 3);
+            for (int i = 0; i < 6 && (bServer.get() != null || bModules.get() != null); i++) {
+                System.gc();
+                Thread.sleep(300);
+            }
+            check("C.serverBObjectsCollectable", bServer.get() == null && bModules.get() == null,
+                    "after GC: serverB=" + hex(bServer.get()) + " moduleRegistryB=" + hex(bModules.get()));
+        } catch (Throwable t) {
+            check("C.exception", false, t.toString());
+            LOG.error("[API1B-CLOSURE] phase C threw", t);
         }
     }
 }

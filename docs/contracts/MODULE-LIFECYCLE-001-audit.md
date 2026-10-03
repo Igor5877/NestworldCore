@@ -1,7 +1,9 @@
 # MODULE-LIFECYCLE-001 — ModuleRegistry lifecycle audit (`/reload` + server A → stop → server B)
 
-**Status: AUDIT + DETERMINISTIC REPRODUCTIONS COMPLETE (2026-10-03). No product code changed; fix
-not started.** This gate merges MODULE-RELOAD-001 with the API-1B-CLOSURE finding MODULE-LIFECYCLE.
+**Fix: IMPLEMENTED + VERIFIED 2026-10-03, see `MODULE-LIFECYCLE-001-spec.md`.**
+
+**Status at audit time: AUDIT + DETERMINISTIC REPRODUCTIONS COMPLETE (2026-10-03). No product code
+changed; fix not started.** This gate merges MODULE-RELOAD-001 with the API-1B-CLOSURE finding MODULE-LIFECYCLE.
 It is a blocking dependency of API-1B CLOSED.
 
 Target invariant (owner, 2026-10-02):

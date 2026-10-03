@@ -84,7 +84,8 @@ public final class NestworldCommand {
     }
 
     private static int moduleStatus(CommandSourceStack source) {
-        java.util.List<String> lines = net.nestworld.module.ModuleRegistry.statusLines();
+        net.nestworld.module.ModuleRegistry modules = net.nestworld.module.ModuleRegistry.forServer(source.getServer());
+        java.util.List<String> lines = modules == null ? java.util.List.of() : modules.statusLines();
         if (lines.isEmpty()) {
             source.sendSuccess(() -> net.minecraft.network.chat.Component.literal("(no modules)"), false);
         }
@@ -95,13 +96,15 @@ public final class NestworldCommand {
     }
 
     private static int moduleQuiesce(CommandSourceStack source, String id) {
-        net.nestworld.module.ModuleRegistry.quiesce(new net.nestworld.module.ModuleId(id));
+        net.nestworld.module.ModuleRegistry modules = net.nestworld.module.ModuleRegistry.forServer(source.getServer());
+        if (modules != null) modules.quiesce(new net.nestworld.module.ModuleId(id));
         source.sendSuccess(() -> net.minecraft.network.chat.Component.literal("quiesce requested: " + id), false);
         return 1;
     }
 
     private static int moduleTestRegister(CommandSourceStack source, String id, String name) {
-        String result = net.nestworld.module.ModuleRegistry.testLateCommandRegistration(
+        net.nestworld.module.ModuleRegistry modules = net.nestworld.module.ModuleRegistry.forServer(source.getServer());
+        String result = modules == null ? "NO_REGISTRY" : modules.testLateCommandRegistration(
                 new net.nestworld.module.ModuleId(id), name);
         source.sendSuccess(() -> net.minecraft.network.chat.Component.literal("testregister " + id + " '" + name + "' -> " + result), false);
         return 1;
