@@ -212,6 +212,14 @@ public class RegionThreadPool {
      * Wakes all region threads, then services chunk tasks until every thread
      * has finished ticking its region.
      */
+    /** CORE-PARKED-REGION-001 sanity metric: entity-round dispatches of regions that own no
+     *  entities (dispatched only because they hold runnable work). Idle regions must not add here. */
+    private final java.util.concurrent.atomic.AtomicLong nestworldDispatchesWithoutEntities = new java.util.concurrent.atomic.AtomicLong();
+
+    public long nestworldDispatchesWithoutEntities() {
+        return nestworldDispatchesWithoutEntities.get();
+    }
+
     public void tickAllRegions() {
         respawnCrashedThreads();
 
@@ -229,7 +237,13 @@ public class RegionThreadPool {
         java.util.List<RegionThread> workers = new java.util.ArrayList<>();
         for (RegionThread t : threads) {
             if (NestworldTuning.FREE_RUNNING_REGIONS_ENABLED && t.region.isFreeRunning()) continue;
-            if (!t.region.getOwnedEntityIds().isEmpty() || t.getLastWorkDeferred() > 0) workers.add(t);
+            // CORE-PARKED-REGION-001: one runnable-work predicate (entities, deferred work, inbound
+            // work that requires this region's tick, sender-side pending) -- a truly idle region
+            // stays parked, a region holding work that only its own round can progress does not.
+            if (t.region.hasRunnableWork()) {
+                workers.add(t);
+                if (t.region.getOwnedEntityIds().isEmpty()) nestworldDispatchesWithoutEntities.incrementAndGet();
+            }
         }
         if (workers.isEmpty()) return;
 

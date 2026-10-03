@@ -1,7 +1,7 @@
 # CORE-PARKED-REGION-001 — runnable-work model of a non-free-running WorldRegion
 
-**Status: AUDIT FROZEN (2026-10-03). All four sources reproduced dynamically (§3, §3b). No scheduler
-change; fix not started.** It is a blocking dependency of API-1B CLOSED (ORDERING within its deterministic timeout).
+**Status: CLOSED / VERIFIED / FROZEN (2026-10-03).** Option A implemented in the scope approved by
+the owner (§6). The audit was frozen before the fix (§3, §3b). It is a blocking dependency of API-1B CLOSED (ORDERING within its deterministic timeout).
 
 Audit question (owner):
 > What constitutes runnable work for a non-free-running WorldRegion, and does dispatch eligibility
@@ -128,3 +128,48 @@ explicit assertion or a counted terminal, never a silent drop.
 Whatever is chosen must keep the reason for the existing skip rule (idle regions are not woken
 every tick, see the `tickAllRegions` comment). It must also be verified with P1/P2, the integrated
 ORDERING fixture within its 5 s timeout, and the stress modes.
+
+## 6. Fix (option A) — implementation contract and verification
+
+**Normative invariant (owner):**
+> For every accepted unit of work W: if progress(W) requires execution by `WorldRegion.runOneTick()`,
+> then while W remains pending and its region remains ACTIVE, `WorldRegion.hasRunnableWork() == true`.
+> A non-free-running ACTIVE region containing W therefore stays dispatch-eligible independently of
+> owned entities, unrelated entity movement, split/merge, promotion, or any other external trigger.
+
+**Implementation:**
+- **Eligibility is a property of the transport path, not a list of types.** Every
+  `RegionMessage.Type` must declare its `Consumer` (REGION_THREAD / MAIN_THREAD) as a constructor
+  argument, so a new type cannot compile without one. `requiresRegionTick()` is the only thing the
+  predicate asks.
+- **`WorldRegion.hasRunnableWork()`** = owned entities ∨ deferred work of the region's thread ∨
+  `regionTickInbound > 0` ∨ `outboundPendingCount > 0`. It is O(1) and walks no queue.
+  `RegionThreadPool.tickAllRegions` dispatches on it.
+- **Accounting rule (no false zero):** increment BEFORE the item becomes visible in its queue;
+  decrement only AFTER it was actually taken out. That means a successful `remove`, a `poll`, or a
+  consumer's iterator removal. So the counter is ≥ the pending items at every instant and equal at
+  quiescence. All 11 mutation points are covered:
+  - safe enqueue and its post-RETIRED remove;
+  - retirement drain (inbound and pending);
+  - the three consumer drains;
+  - `sendOrQueue` and its post-RETIRED remove;
+  - flush (orphan branch and requeue branch).
+- **Requeue and redelivery** go through the same safe enqueue, so they are counted by the same
+  rule. A message in flight between sender and destination inside one flush call is held by the
+  executing thread, not by a queue awaiting dispatch.
+- **Explicitly out of scope:** P4 (pendingFreeRunningWork transition), `offerAll` hardening,
+  CORE-WORK-RETIREMENT-001, scheduler redesign, affinity, performance work.
+
+**Verification** (scratch instances, build 1.20.1-47.4.258):
+
+| DoD item | Result |
+|---|---|
+| P1 parked-inbound, no trigger | delivered in 25–101 ms (5 barrier runs + 1 free-running), exactly once, at the target's owner; afterwards `inboundCounter=0 pendingCounter=0 mailbox=0 pending=0 consistent=true runnable=false` |
+| P2 parked-pending, no trigger | same; 25–101 ms (5 + 1 runs) |
+| Negative (parked-idle) | isolated empty region: `hasRunnableWork=false/false`, +0 local ticks in 10 s; quiet server: 0 entity-less dispatches in 60 s (no busy loop) |
+| Counter/queue consistency | every mailbox scenario and every stress run: all live regions `consistent`; C10 now also requires both counters = 0 on every retired region |
+| Retirement (CORE-MAILBOX-MERGE-001) | mailbox fixtures 64/64 barrier (L2c skipped by design), 69/69 free-running; C10 0 violations; `unaccounted=0` |
+| API-1A deterministic set | migration REROUTE→APPLIED; removed TARGET_NOT_FOUND; reroutelimit 5×REROUTE→REROUTE_LIMIT_DROPPED; ordering APPLIED + STALE_INTENT_DROPPED |
+| API-1B dedicated fixtures | 19/19 PASS |
+| Stress churn / pinned / unpinned | MISSING_TERMINAL 0; duplicateApply, wrongOwner, wrongIncarnation, staleIntentApply, callerObjectLeak, unboundedReroute all 0; `unaccounted=0`; C10 0/86–94; counters consistent; nothing queued at end. Entity-less dispatches during stress (cumulative 54 → 161 → 173) are regions that actually held work |
+| Integrated ORDERING (real client, world A) | **PASS within the existing 5 s.** V1: ENQUEUE to entity-less r1 → REROUTE 1→2 → STALE_INTENT_DROPPED in < 1 s, no unrelated trigger; V2 applied once; final = diamond |

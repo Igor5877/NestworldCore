@@ -223,7 +223,8 @@ public final class MailboxLifecycle {
             int depth = r.nestworldMailboxDepthFast();
             int mailbox = r.nestworldMailboxSize();
             int pending = r.nestworldOutboundPendingSize();
-            if (!r.nestworldIsDrained() || depth != 0 || mailbox != 0 || pending != 0) {
+            if (!r.nestworldIsDrained() || depth != 0 || mailbox != 0 || pending != 0
+                    || r.nestworldRegionTickInboundCount() != 0 || r.nestworldOutboundPendingCount() != 0) {
                 violations++;
                 residualDepth += depth;
                 residualMailbox += mailbox;
@@ -231,7 +232,8 @@ public final class MailboxLifecycle {
                 if (detail.length() < 400) {
                     detail.append(" r").append(r.getId()).append("{drained=").append(r.nestworldIsDrained())
                             .append(",depth=").append(depth).append(",mailbox=").append(mailbox)
-                            .append(",pending=").append(pending).append('}');
+                            .append(",pending=").append(pending).append(",inboundCounter=").append(r.nestworldRegionTickInboundCount())
+                            .append(",pendingCounter=").append(r.nestworldOutboundPendingCount()).append('}');
                 }
             }
         }
@@ -243,7 +245,8 @@ public final class MailboxLifecycle {
     static boolean c10Holds() {
         for (WorldRegion r : recentlyRetired()) {
             if (!r.nestworldIsDrained() || r.nestworldMailboxDepthFast() != 0
-                    || r.nestworldMailboxSize() != 0 || r.nestworldOutboundPendingSize() != 0) {
+                    || r.nestworldMailboxSize() != 0 || r.nestworldOutboundPendingSize() != 0
+                    || r.nestworldRegionTickInboundCount() != 0 || r.nestworldOutboundPendingCount() != 0) {
                 return false;
             }
         }
@@ -282,10 +285,12 @@ public final class MailboxLifecycle {
                 int deferred = t == null ? -1 : t.getLastWorkDeferred();
                 int owned = r.getOwnedEntityIds().size();
                 boolean selfTicking = NestworldTuning.FREE_RUNNING_REGIONS_ENABLED && r.isFreeRunning();
-                boolean eligible = selfTicking || owned > 0 || deferred > 0;
+                boolean eligible = selfTicking || r.hasRunnableWork();
                 long age = r.nestworldOldestQueuedAgeNanos();
                 sb.append(" r").append(r.getId()).append("{mailbox=").append(depth).append(",pending=").append(pend)
                         .append(",ownedEntities=").append(owned).append(",deferredWork=").append(deferred)
+                        .append(",inboundCounter=").append(r.nestworldRegionTickInboundCount())
+                        .append(",pendingCounter=").append(r.nestworldOutboundPendingCount())
                         .append(",freeRunning=").append(r.isFreeRunning()).append(",dispatchEligible=").append(eligible)
                         .append(",oldestAgeMs=").append(age < 0 ? -1 : age / 1_000_000).append('}');
             }
@@ -293,9 +298,32 @@ public final class MailboxLifecycle {
         return n == 0 ? "queued-regions: none" : sb.toString();
     }
 
+    /** CORE-PARKED-REGION-001: counter/queue consistency over every LIVE region (exact at
+     *  quiescence). "consistent" or the list of mismatching regions. */
+    static String counterConsistencySweep() {
+        if (!NestworldRegionSystem.isInitialised()) return "counters: system not initialised";
+        int checked = 0;
+        StringBuilder bad = new StringBuilder();
+        for (NestworldDimensionRegion dr : NestworldRegionSystem.get().allDimensionRegions()) {
+            for (WorldRegion r : dr.getGrid().getAllRegions()) {
+                checked++;
+                String m = r.nestworldCounterInconsistency();
+                if (m != null) bad.append(' ').append(m);
+            }
+        }
+        return "counters liveRegionsChecked=" + checked + (bad.length() == 0 ? " consistent" : " MISMATCH" + bad);
+    }
+
     /** Lifecycle counters + C10 sweep + C11 accounting, one block (diagnostic command output). */
     static String fullReport() {
-        return "MailboxLifecycle " + summary() + "\n" + queuedRegionsReport() + "\n" + c10Sweep() + "\n"
+        long entityLess = 0;
+        if (NestworldRegionSystem.isInitialised()) {
+            for (NestworldDimensionRegion dr : NestworldRegionSystem.get().allDimensionRegions()) {
+                entityLess += dr.getPool().nestworldDispatchesWithoutEntities();
+            }
+        }
+        return "MailboxLifecycle " + summary() + "\n" + queuedRegionsReport() + "\n" + counterConsistencySweep()
+                + " entityLessDispatches=" + entityLess + "\n" + c10Sweep() + "\n"
                 + MailboxAudit.accountingReport(reachableAuditIds());
     }
 

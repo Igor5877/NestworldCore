@@ -1034,6 +1034,8 @@ final class Api1B6DeterministicTests {
             waitFor(() -> MailboxLifecycle.orphanCount() == 0, 5_000);
             out.add("lifecycle: " + MailboxLifecycle.summary());
             out.add(server.submit(MailboxLifecycle::c10Sweep).get(10, java.util.concurrent.TimeUnit.SECONDS));
+            out.add(server.submit(MailboxLifecycle::counterConsistencySweep).get(10, java.util.concurrent.TimeUnit.SECONDS)
+                    + " | entity-less region dispatches (whole run): " + sys.getDimensionRegion(level).getPool().nestworldDispatchesWithoutEntities());
             out.add(server.submit(() -> MailboxAudit.accountingReport(MailboxLifecycle.reachableAuditIds())).get(10, java.util.concurrent.TimeUnit.SECONDS));
             java.util.Set<Integer> regionIdsAtEnd = new java.util.HashSet<>();
             for (WorldRegion r : sys.getDimensionRegion(level).getGrid().getAllRegions()) regionIdsAtEnd.add(r.getId());

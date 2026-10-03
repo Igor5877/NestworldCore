@@ -396,6 +396,57 @@ public class WorldRegion {
     // -----------------------------------------------------------------------
 
     private volatile boolean nestworldRetired = false;
+
+    // -----------------------------------------------------------------------
+    // CORE-PARKED-REGION-001 (docs/contracts/CORE-PARKED-REGION-001-audit.md): runnable-work model.
+    // Invariant: for every accepted unit of work W, if progress(W) requires this region's
+    // runOneTick(), then while W is pending and the region is ACTIVE, hasRunnableWork() == true --
+    // independently of owned entities, unrelated entity movement, split/merge, or promotion.
+    // Accounting rule (no false zero): a counter is incremented BEFORE its item becomes visible in
+    // the queue and decremented only AFTER the item was actually taken out (successful remove /
+    // poll / iterator removal). So counter >= pending items at every instant; at quiescence equal.
+    // -----------------------------------------------------------------------
+
+    /** Inbound messages whose type requires this region's tick ({@link RegionMessage.Type#requiresRegionTick}). */
+    private final java.util.concurrent.atomic.AtomicInteger nestworldRegionTickInbound = new java.util.concurrent.atomic.AtomicInteger();
+    /** Sender-side backpressure-held sends (flushed only by this region's own entity round). */
+    private final java.util.concurrent.atomic.AtomicInteger nestworldOutboundPendingCount = new java.util.concurrent.atomic.AtomicInteger();
+
+    private void nestworldCountInbound(RegionMessage<?> m) {
+        if (m.messageType().requiresRegionTick()) nestworldRegionTickInbound.incrementAndGet();
+    }
+
+    private void nestworldUncountInbound(RegionMessage<?> m) {
+        if (m.messageType().requiresRegionTick()) nestworldRegionTickInbound.decrementAndGet();
+    }
+
+    /**
+     * O(1) dispatch eligibility of a non-free-running region (RegionThreadPool.tickAllRegions):
+     * owned entities, deferred work carried by this region's thread, inbound work that requires
+     * this region's tick, or sender-side pending sends. A truly idle region stays NOT runnable.
+     */
+    public boolean hasRunnableWork() {
+        if (!ownedEntityIds.isEmpty()) return true;
+        RegionThread t = owningThread;
+        if (t != null && t.getLastWorkDeferred() > 0) return true;
+        return nestworldRegionTickInbound.get() > 0 || nestworldOutboundPendingCount.get() > 0;
+    }
+
+    public int nestworldRegionTickInboundCount() { return nestworldRegionTickInbound.get(); }
+    public int nestworldOutboundPendingCount() { return nestworldOutboundPendingCount.get(); }
+
+    /** Counter/queue consistency (diagnostic O(n) walk; exact at quiescence): null if consistent,
+     *  otherwise a description. A counter BELOW the queue content is the dangerous direction
+     *  (false zero -> starvation); above it would only cause a spurious dispatch. */
+    String nestworldCounterInconsistency() {
+        int actualInbound = 0;
+        for (RegionMessage<?> m : nestworldMailbox) if (m.messageType().requiresRegionTick()) actualInbound++;
+        int actualPending = nestworldOutboundPending.size();
+        int ci = nestworldRegionTickInbound.get(), cp = nestworldOutboundPendingCount.get();
+        if (ci == actualInbound && cp == actualPending) return null;
+        return "r" + id + "{inboundCounter=" + ci + ",inboundActual=" + actualInbound
+                + ",pendingCounter=" + cp + ",pendingActual=" + actualPending + "}";
+    }
     private volatile boolean nestworldDrained = false;
 
     public boolean nestworldIsRetired() { return nestworldRetired; }
@@ -419,12 +470,14 @@ public class WorldRegion {
             MailboxLifecycle.orphan(this, message, MailboxLifecycle.OrphanReason.REJECTED_RETIRED);
             return;
         }
+        nestworldCountInbound(message); // CORE-PARKED-REGION-001: count BEFORE add (never a false zero)
         nestworldMailbox.add(message);
         nestworldMailboxDepth.incrementAndGet();
         MailboxLifecycleTestHooks.afterAdd(message);
         if (!nestworldRetired) return;
         if (nestworldMailbox.remove(message)) {
             nestworldMailboxDepth.decrementAndGet();
+            nestworldUncountInbound(message);
             MailboxLifecycle.orphan(this, message, MailboxLifecycle.OrphanReason.REJECTED_RETIRED);
             return;
         }
@@ -455,10 +508,12 @@ public class WorldRegion {
         RegionMessage<?> m;
         while ((m = nestworldMailbox.poll()) != null) {
             nestworldMailboxDepth.decrementAndGet();
+            nestworldUncountInbound(m);
             MailboxLifecycle.orphan(this, m, MailboxLifecycle.OrphanReason.DRAINED_ON_RETIRE);
         }
         NestworldPendingSend p;
         while ((p = nestworldOutboundPending.poll()) != null) {
+            nestworldOutboundPendingCount.decrementAndGet();
             MailboxLifecycle.orphan(this, p.message(), MailboxLifecycle.OrphanReason.PENDING_SENDER_RETIRED);
         }
         nestworldDrained = true;
@@ -502,6 +557,7 @@ public class WorldRegion {
                 drained.add(m);
                 it.remove();
                 nestworldMailboxDepth.decrementAndGet();
+                nestworldUncountInbound(m);
             }
         }
         return drained;
@@ -545,6 +601,7 @@ public class WorldRegion {
             if (m.messageType() != type) continue;
             it.remove();
             nestworldMailboxDepth.decrementAndGet();
+            nestworldUncountInbound(m);
             applier.accept(m);
             applied++;
             if ((applied & 3) == 0 && System.nanoTime() >= deadlineNanos) break;
@@ -573,6 +630,7 @@ public class WorldRegion {
             if (m.messageType() != type) continue;
             it.remove();
             nestworldMailboxDepth.decrementAndGet();
+            nestworldUncountInbound(m);
             batch.add(m);
         }
         return batch;
@@ -646,8 +704,10 @@ public class WorldRegion {
             // concurrently, either our own remove() wins (we orphan it) or the retirement drain
             // already took it (it orphaned it). Never left in a drained queue.
             NestworldPendingSend pending = new NestworldPendingSend(destination, message);
+            nestworldOutboundPendingCount.incrementAndGet(); // CORE-PARKED-REGION-001: count BEFORE add
             nestworldOutboundPending.add(pending);
             if (nestworldRetired && nestworldOutboundPending.remove(pending)) {
+                nestworldOutboundPendingCount.decrementAndGet();
                 MailboxLifecycle.orphan(this, message, MailboxLifecycle.OrphanReason.PENDING_SENDER_RETIRED);
             }
         }
@@ -674,9 +734,11 @@ public class WorldRegion {
                 // Destination retired while the send was held here: its address is no longer
                 // authoritative -- re-resolve instead of waiting on a dead region's depth forever.
                 it.remove();
+                nestworldOutboundPendingCount.decrementAndGet();
                 MailboxLifecycle.orphan(this, pending.message(), MailboxLifecycle.OrphanReason.PENDING_DESTINATION_RETIRED);
             } else if (pending.destination().nestworldMailboxDepthFast() < MailboxLifecycleTestHooks.backpressureThreshold()) {
                 it.remove();
+                nestworldOutboundPendingCount.decrementAndGet();
                 pending.destination().nestworldRequeueMessage(pending.message());
             }
         }

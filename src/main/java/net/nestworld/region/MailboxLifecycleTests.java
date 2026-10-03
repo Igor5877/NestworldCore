@@ -47,7 +47,7 @@ final class MailboxLifecycleTests {
     }
 
     static final List<String> SCENARIOS = List.of("l1-split", "l1-merge", "l2a", "l2b", "l2b-consumed", "l2c",
-            "l3", "l4", "l5", "transfer", "transfer-owned", "notfound", "redeliverylimit", "parked-inbound", "parked-pending", "parked-demotion", "all");
+            "l3", "l4", "l5", "transfer", "transfer-owned", "notfound", "redeliverylimit", "parked-inbound", "parked-pending", "parked-idle", "parked-demotion", "all");
 
     // ------------------------------------------------------------------
     // Harness
@@ -163,6 +163,8 @@ final class MailboxLifecycleTests {
         waitFor(() -> MailboxLifecycle.orphanCount() == 0, 5_000);
         String c10 = c.onMain(MailboxLifecycle::c10Sweep);
         c.check(name + ".C10", c.onMain(MailboxLifecycle::c10Holds), c10);
+        String counters = c.onMain(MailboxLifecycle::counterConsistencySweep);
+        c.check(name + ".counters", counters.endsWith(" consistent"), counters);
         if (MailboxAudit.ENABLED) {
             String acc = c.onMain(() -> MailboxAudit.accountingReport(MailboxLifecycle.reachableAuditIds()));
             long unacc = c.onMain(() -> MailboxAudit.unaccounted(MailboxLifecycle.reachableAuditIds()));
@@ -191,7 +193,7 @@ final class MailboxLifecycleTests {
         ApiOpTrace.ENABLED = true; // STRESS-001: fixtures trace for their own duration only
         try {
             List<String> todo = scenario.equals("all")
-                    ? List.of("l5", "l1-split", "l1-merge", "l2a", "l2b", "l2b-consumed", "l3", "l4", "transfer", "transfer-owned", "notfound", "redeliverylimit", "l2c")
+                    ? List.of("l5", "l1-split", "l1-merge", "l2a", "l2b", "l2b-consumed", "l3", "l4", "transfer", "transfer-owned", "notfound", "redeliverylimit", "parked-inbound", "parked-pending", "parked-idle", "l2c")
                     : List.of(scenario);
             for (String s : todo) {
                 out.add("--- " + s + " ---");
@@ -211,6 +213,7 @@ final class MailboxLifecycleTests {
                         case "notfound" -> notFound(c);
                         case "parked-inbound" -> parked(c, false);
                         case "parked-pending" -> parked(c, true);
+                        case "parked-idle" -> parkedIdle(c);
                         case "parked-demotion" -> parkedDemotion(c);
                         case "redeliverylimit" -> redeliveryLimit(c);
                         default -> c.skipped(s, "unknown scenario");
@@ -602,6 +605,8 @@ final class MailboxLifecycleTests {
     // ------------------------------------------------------------------
 
     private static final long PARKED_WINDOW_MS = Long.getLong("nestworld.parkedWindowMs", 15_000L);
+    /** CORE-PARKED-REGION-001 DoD: bounded, tick-scale delivery without any trigger (40 ticks). */
+    private static final long PARKED_DELIVERY_MS = Long.getLong("nestworld.parkedDeliveryMs", 2_000L);
 
     /** A region guaranteed to own no entities: the leaf around a far chunk, cut by explicit
      *  splits until it excludes the origin (unloaded chunks hold no entities). Main thread. */
@@ -653,46 +658,47 @@ final class MailboxLifecycleTests {
         if (setup == null) { c.skipped(name, "could not isolate an entity-free region"); return; }
         c.out.add(name + " setup: " + setup + " -- " + c.onMain(MailboxLifecycle::queuedRegionsReport));
         long t0 = System.currentTimeMillis();
-        boolean early = waitFor(() -> o.outcomes() >= 1, PARKED_WINDOW_MS);
-        String during = c.onMain(MailboxLifecycle::queuedRegionsReport);
-        c.out.add(name + " after " + (System.currentTimeMillis() - t0) + " ms with no trigger: outcome " + o + " -- " + during);
-        c.check(name + ".reproduced", !early && during.contains("r" + holder[0].getId() + "{")
-                        && during.contains("dispatchEligible=false"),
-                "work queued for " + PARKED_WINDOW_MS + " ms in a region the scheduler never dispatched (expected for this repro)");
-        // Trigger: a REAL entity enters the parked region (a synthetic owned-id marker is removed by
-        // owned-id cleanup before dispatch -- observed, so it cannot serve as the trigger).
-        long t1 = System.currentTimeMillis();
-        UUID marker = c.onMain(() -> {
-            c.level.setChunkForced(3001, 3001, true);
-            c.level.getChunk(3001, 3001);
-            ArmorStand a = new ArmorStand(c.level, 3001 * 16 + 8.5, 120.0, 3001 * 16 + 8.5);
-            a.setNoGravity(true);
-            a.setInvulnerable(true);
-            c.level.addFreshEntity(a);
-            Api1A7DeterministicTests.assignSole(c.dr.getGrid().getAllRegions().toArray(new WorldRegion[0]), holder[0], a.getUUID());
-            return a.getUUID();
+        boolean delivered = waitFor(() -> o.outcomes() >= 1, PARKED_DELIVERY_MS);
+        long latency = System.currentTimeMillis() - t0;
+        Thread.sleep(1_000); // settle: no second outcome may appear
+        String after = c.onMain(() -> {
+            String inc = holder[0].nestworldCounterInconsistency();
+            return MailboxLifecycle.queuedRegionsReport() + " | r" + holder[0].getId() + " inboundCounter="
+                    + holder[0].nestworldRegionTickInboundCount() + " pendingCounter=" + holder[0].nestworldOutboundPendingCount()
+                    + " mailbox=" + holder[0].nestworldMailboxSize() + " pending=" + holder[0].nestworldOutboundPendingSize()
+                    + " consistent=" + (inc == null) + " runnable=" + holder[0].hasRunnableWork();
         });
-        boolean delivered = waitFor(() -> o.outcomes() >= 1, 10_000);
-        c.out.add(name + " trigger (real entity entered the region) -> " + (delivered ? "outcome after " + (System.currentTimeMillis() - t1) + " ms: " + o : "still no outcome"));
-        if (!delivered) {
-            // Evidence for the open sub-question: eligible but still not dispatched?
-            String state = c.onMain(() -> {
-                RegionThread t = holder[0].owningThread;
-                return MailboxLifecycle.queuedRegionsReport() + " | r" + holder[0].getId() + " retired=" + holder[0].nestworldIsRetired()
-                        + " owned=" + holder[0].getOwnedEntityIds().size() + " thread=" + (t == null ? "null"
-                        : t.getName() + "{alive=" + t.isAlive() + ",state=" + t.getState() + ",deferred=" + t.getLastWorkDeferred() + "}")
-                        + " inPool=" + c.dr.getPool().getThreads().stream().anyMatch(x -> x.getRegion() == holder[0]);
-            });
-            c.out.add(name + " UNDELIVERED-AFTER-TRIGGER evidence: " + state);
-        }
-        c.check(name + ".deliveredOnceEligible", delivered && o.outcomes() == 1 && o.appliedOnRetired.get() == 0, "outcome " + o);
-        c.onMain(() -> {
-            var e = c.level.getEntity(marker);
-            if (e != null) e.discard();
-            c.level.setChunkForced(3001, 3001, false);
-            holder[0].pinned = false;
-            return null;
-        });
+        c.out.add(name + " NO trigger: " + (delivered ? "outcome after " + latency + " ms" : "NOT delivered within " + PARKED_DELIVERY_MS + " ms")
+                + ", outcome " + o + " -- " + after);
+        c.check(name + ".deliveredWithoutTrigger", delivered && latency <= PARKED_DELIVERY_MS,
+                "work in an entity-free region delivered with no external trigger in " + latency + " ms (bound " + PARKED_DELIVERY_MS + " ms)");
+        c.check(name + ".exactlyOnceCorrectOwner", o.outcomes() == 1 && o.applied.get() == 1 && o.appliedOnRetired.get() == 0
+                        && o.appliedRegionId != holder[0].getId(), "outcome " + o + " (applied at the target's owner, not at the parked region)");
+        c.check(name + ".queueAndCountersReturnToZero", after.contains("inboundCounter=0 pendingCounter=0 mailbox=0 pending=0 consistent=true runnable=false"),
+                "parked region after delivery: " + after.substring(after.indexOf(" | ") + 3));
+        c.onMain(() -> { holder[0].pinned = false; return null; });
+        invariants(c, name);
+    }
+
+    /** Negative: an isolated region with NO entities, NO deferred work, NO inbound and NO outbound
+     *  work must stay NOT dispatch-eligible, and must not be ticked (no accidental busy loop). */
+    private static void parkedIdle(Ctx c) throws Exception {
+        WorldRegion r = c.onMain(() -> farEmptyRegion(c));
+        if (r == null || !r.getOwnedEntityIds().isEmpty()) { c.skipped("parked-idle", "could not isolate an entity-free region"); return; }
+        c.onMain(() -> { r.pinned = true; return null; });
+        Thread.sleep(500);
+        long tick0 = r.getLocalTickCount();
+        long dispatch0 = c.dr.getPool().nestworldDispatchesWithoutEntities();
+        boolean runnable0 = c.onMain(r::hasRunnableWork);
+        Thread.sleep(10_000);
+        long ticked = r.getLocalTickCount() - tick0;
+        long dispatchedEmpty = c.dr.getPool().nestworldDispatchesWithoutEntities() - dispatch0;
+        boolean runnable1 = c.onMain(r::hasRunnableWork);
+        c.out.add("parked-idle r" + r.getId() + ": runnable=" + runnable0 + "/" + runnable1 + " localTicks+" + ticked
+                + " in 10000 ms; pool entity-round dispatches of entity-less regions (all regions) +" + dispatchedEmpty);
+        c.check("parked-idle.notEligible", !runnable0 && !runnable1 && ticked == 0,
+                "idle region: hasRunnableWork=" + runnable0 + "/" + runnable1 + ", local ticks +" + ticked + " (expected false/false, 0)");
+        c.onMain(() -> { r.pinned = false; return null; });
     }
 
     /** Snapshot of the two free-running-only queues of a region plus its dispatch inputs. */

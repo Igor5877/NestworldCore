@@ -67,18 +67,18 @@ public record RegionMessage<T>(
 
     public enum Type {
         /** An entity's owning region changed (border crossing or initial assignment). */
-        ENTITY_TRANSFER,
+        ENTITY_TRANSFER(Consumer.MAIN_THREAD),
         /** A redstone wire update whose network reached outside its source region's bounds. */
-        WIRE_UPDATE,
+        WIRE_UPDATE(Consumer.MAIN_THREAD),
         /** A subset of an explosion's destroyed/ignited positions that belong to a
          *  DIFFERENT region than the one that triggered the explosion — see the Stage 3
          *  "entity-triggered block-write race" finding in docs/LOCAL_TICK_STAGE4.md. */
-        EXPLOSION_APPLY,
+        EXPLOSION_APPLY(Consumer.MAIN_THREAD),
         /** A single generic Level.setBlock() call (covers removeBlock/destroyBlock/
          *  setBlockAndUpdate, which all funnel through it) made by mob-AI or mod code
          *  directly, for a position outside the calling region thread's own bounds — the
          *  Stage 3 EXTENSION beyond Explosion, see Level.setBlock()'s NestWorld comment. */
-        BLOCK_WRITE,
+        BLOCK_WRITE(Consumer.MAIN_THREAD),
         /** An explosion's damage+knockback effect on ONE entity owned by a DIFFERENT
          *  region than the one that triggered the explosion — found during the Stage 5
          *  "Entity Safety Layer" audit (docs/LOCAL_TICK_STAGE4.md): a PRE-EXISTING race
@@ -88,7 +88,7 @@ public record RegionMessage<T>(
          *  unlike EXPLOSION_APPLY/BLOCK_WRITE), matching this project's single-writer
          *  entity-ownership discipline: the entity's own position (needed even just to
          *  compute knockback DIRECTION) is only ever safely read by its owner. */
-        ENTITY_IMPACT,
+        ENTITY_IMPACT(Consumer.REGION_THREAD),
         /** A vanilla entity-collision push-apart ({@code Entity.push(Entity)}, reached via
          *  {@code LivingEntity.doPush}) directed at an entity owned by a DIFFERENT region —
          *  found by the {@link EntityOwnershipGuard} invariant test on real ATM9 load
@@ -97,14 +97,14 @@ public record RegionMessage<T>(
          *  directly, so a currently-ticking region thread was calling {@code setDeltaMovement}
          *  on a foreign entity whenever two entities near a region border collided. Applied
          *  on the OWNING region's own thread via the entity's own {@code push(dx,dy,dz)}. */
-        ENTITY_PUSH,
+        ENTITY_PUSH(Consumer.REGION_THREAD),
         /** A simple, atomic foreign-entity mutation ({@link EntityMutationOp}: damage, add
          *  effect, or ignite) — the generic Bucket A primitive (docs/LOCAL_TICK_STAGE4.md,
          *  "Entity Safety Layer, two generic primitives") replacing bespoke message types
          *  for the AOE-style "scan radius, mutate every entity found" call sites the audit
          *  found beyond Explosion/push (ThrownPotion, EvokerFangs, AreaEffectCloud, Guardian,
          *  Axolotl, Ravager.roar(), ...). Applied on the OWNING region's own thread. */
-        ENTITY_MUTATE,
+        ENTITY_MUTATE(Consumer.REGION_THREAD),
         /** Phase 11 #31.2 (docs/PHASE11_PLAYER_REGION_EXECUTION_SPEC.md) — SHADOW-MODE ONLY at
          *  this stage: a captured, sequenced player-input snapshot (today, movement packets
          *  only), posted to the input's position-resolved owner region for apply-time
@@ -114,7 +114,7 @@ public record RegionMessage<T>(
          *  movement regardless of this message's outcome. Purpose: prove the transport
          *  (sequence ordering, apply-time ownership re-check, bounded queue, reroute-on-stale)
          *  is correct before #31.3 lets anything real depend on it. */
-        PLAYER_INPUT,
+        PLAYER_INPUT(Consumer.REGION_THREAD),
         /** Phase 11 #31.4 (docs/PHASE11_PLAYER_REGION_EXECUTION_SPEC.md) — a whole {@code
          *  Player.attack(target)} invocation, routed to the attacker's position-resolved owner
          *  region for a per-player opt-in set ({@link PlayerAttackExperiment}), gated behind
@@ -126,7 +126,7 @@ public record RegionMessage<T>(
          *  dispatched per PACKET, so two attacks landing in the same region before it drains
          *  would silently lose the first one under that mechanism. A real queue (this) cannot
          *  drop a still-pending attack that way. */
-        PLAYER_ATTACK,
+        PLAYER_ATTACK(Consumer.REGION_THREAD),
         /** Phase 11 #31.4 step 2 (docs/PHASE11_PLAYER_REGION_EXECUTION_SPEC.md) — a single
          *  {@code BlockState.use()} block interaction (lever/button/door-class "flip state"
          *  right-click), routed to the block's OWNER-BY-POSITION region for a per-player opt-in
@@ -140,7 +140,7 @@ public record RegionMessage<T>(
          *  like {@link Type#PLAYER_ATTACK}. The RESULT itself ({@code InteractionResult}, a
          *  plain enum) is immutable/value-like crossing the thread boundary, per this step's
          *  design principle -- no live {@code BlockEntity}/{@code ItemStack} is ever returned. */
-        PLAYER_BLOCK_INTERACTION,
+        PLAYER_BLOCK_INTERACTION(Consumer.REGION_THREAD),
         /** Phase 11 #31.4 step 3 (docs/PHASE11_PLAYER_REGION_EXECUTION_SPEC.md) -- a single
          *  {@code ServerPlayerGameMode.useItem()} call (no-target item use: eating, drinking,
          *  bow draw, ender pearl throw), routed to the ACTING PLAYER's position-resolved owner
@@ -152,7 +152,7 @@ public record RegionMessage<T>(
          *  position (like {@link Type#PLAYER_ATTACK}) rather than a foreign block/entity position
          *  -- this choke point never touches anything but the acting player's own ItemStack/
          *  hunger/health/effects. */
-        PLAYER_USE_ITEM,
+        PLAYER_USE_ITEM(Consumer.REGION_THREAD),
         /** Phase 11 #31.4 step 4 (docs/PHASE11_PLAYER_REGION_EXECUTION_SPEC.md) -- a single
          *  {@code ItemStack.useOn(UseOnContext)} call (item-on-block: axe strip/scrape/wax-off
          *  first), routed to the CLICKED BLOCK's owner-by-position region for a per-player
@@ -162,7 +162,7 @@ public record RegionMessage<T>(
          *  position (like block interaction), not player position (unlike {@link
          *  Type#PLAYER_USE_ITEM}), since this call can mutate a block the acting player doesn't
          *  own. */
-        PLAYER_USE_ITEM_ON_BLOCK,
+        PLAYER_USE_ITEM_ON_BLOCK(Consumer.REGION_THREAD),
         /** Phase 11 #31.3/#31.4 player-action-ownership hardening (see the #31.4 step4b closing
          *  design discussion) -- a {@code void}, no-result "control" mutation on the ACTING
          *  PLAYER's own use-item state ({@code releaseUsingItem()}/{@code stopUsingItem()}),
@@ -191,7 +191,7 @@ public record RegionMessage<T>(
          *  wasn't left inconsistent), a silently-dropped release/stop would leave the player
          *  stuck mid-{@code useItem} forever, so on an ownership mismatch this REROUTES to the
          *  player's current owner rather than discarding the message. */
-        PLAYER_USE_CONTROL,
+        PLAYER_USE_CONTROL(Consumer.REGION_THREAD),
         /** Phase 11 #31.4 item-on-entity -- a single {@code Entity.interact(Player, InteractionHand)}
          *  (plain right-click, {@code atPos == null}) or {@code Entity.interactAt(Player, Vec3,
          *  InteractionHand)} (precise-hit-location right-click, e.g. armor stand/item frame,
@@ -223,7 +223,33 @@ public record RegionMessage<T>(
          *  and unmodified, on the correct owner thread -- any mod overriding {@code interact()}/
          *  {@code interactAt()} is automatically covered with zero NestworldCore-side awareness of
          *  its specific mutation shape. */
-        PLAYER_ENTITY_INTERACT
+        PLAYER_ENTITY_INTERACT(Consumer.REGION_THREAD);
+
+        /**
+         * CORE-PARKED-REGION-001: who consumes an accepted message of this type. REGION_THREAD means
+         * progress requires the destination region's own {@code RegionThread.runOneTick()} entity
+         * round, so a pending message of this type makes that region dispatch-eligible
+         * ({@link WorldRegion#hasRunnableWork}). MAIN_THREAD types are drained by the main thread
+         * for every region regardless of dispatch. Mandatory constructor argument: a new type
+         * cannot be added without declaring its consumer, so the scheduler predicate never needs
+         * a hand-maintained list of types.
+         */
+        public enum Consumer { REGION_THREAD, MAIN_THREAD }
+
+        private final Consumer consumer;
+
+        Type(Consumer consumer) {
+            this.consumer = consumer;
+        }
+
+        public Consumer consumer() {
+            return consumer;
+        }
+
+        /** True if progress of a message of this type requires the destination region's tick. */
+        public boolean requiresRegionTick() {
+            return consumer == Consumer.REGION_THREAD;
+        }
     }
 
     /** Op for {@link Type#PLAYER_USE_CONTROL} -- which void vanilla method to call. */
