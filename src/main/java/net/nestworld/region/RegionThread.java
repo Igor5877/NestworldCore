@@ -251,6 +251,7 @@ public class RegionThread extends Thread {
     @Override
     public void run() {
         while (running) {
+            MailboxLifecycleTestHooks.beforeLoopIteration(region);
             if (NestworldTuning.FREE_RUNNING_REGIONS_ENABLED && region.isFreeRunning()) {
                 runFreeRunningTick();
                 continue;

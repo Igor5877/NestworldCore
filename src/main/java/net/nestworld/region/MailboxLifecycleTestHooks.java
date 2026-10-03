@@ -44,6 +44,32 @@ final class MailboxLifecycleTestHooks {
         await(workerHit, workerRelease);
     }
 
+    /** CORE-PARKED-REGION-001 P3/P4: pauses a region worker at the top of its run() loop iteration,
+     *  BEFORE it checks free-running vs barrier mode -- so a test can post work and flip the mode with
+     *  no drain in between, and the worker then takes the post-demotion branch. One-shot. */
+    static void beforeLoopIteration(WorldRegion region) {
+        if (!ENABLED || region.getId() != loopRegionId) return;
+        loopRegionId = Integer.MIN_VALUE;
+        await(loopHit, loopRelease);
+    }
+
+    private static volatile int loopRegionId = Integer.MIN_VALUE;
+    private static volatile CountDownLatch loopHit, loopRelease;
+
+    static void armLoop(int regionId) {
+        loopHit = new CountDownLatch(1);
+        loopRelease = new CountDownLatch(1);
+        loopRegionId = regionId;
+    }
+
+    static boolean awaitLoopHit(long seconds) throws InterruptedException {
+        return loopHit.await(seconds, TimeUnit.SECONDS);
+    }
+
+    static void releaseLoop() {
+        loopRelease.countDown();
+    }
+
     static boolean forcedJoinTimeout() {
         return ENABLED && forceJoinTimeout;
     }
@@ -185,6 +211,9 @@ final class MailboxLifecycleTestHooks {
         workerLockRegionId = Integer.MIN_VALUE;
         if (workerRelease != null) workerRelease.countDown();
         workerHit = workerRelease = null;
+        loopRegionId = Integer.MIN_VALUE;
+        if (loopRelease != null) loopRelease.countDown();
+        loopHit = loopRelease = null;
         forceJoinTimeout = false;
         thresholdOverride = -1;
         BY_AUDIT.clear();

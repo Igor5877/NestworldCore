@@ -47,7 +47,7 @@ final class MailboxLifecycleTests {
     }
 
     static final List<String> SCENARIOS = List.of("l1-split", "l1-merge", "l2a", "l2b", "l2b-consumed", "l2c",
-            "l3", "l4", "l5", "transfer", "transfer-owned", "notfound", "redeliverylimit", "parked-inbound", "parked-pending", "all");
+            "l3", "l4", "l5", "transfer", "transfer-owned", "notfound", "redeliverylimit", "parked-inbound", "parked-pending", "parked-demotion", "all");
 
     // ------------------------------------------------------------------
     // Harness
@@ -211,6 +211,7 @@ final class MailboxLifecycleTests {
                         case "notfound" -> notFound(c);
                         case "parked-inbound" -> parked(c, false);
                         case "parked-pending" -> parked(c, true);
+                        case "parked-demotion" -> parkedDemotion(c);
                         case "redeliverylimit" -> redeliveryLimit(c);
                         default -> c.skipped(s, "unknown scenario");
                     }
@@ -690,6 +691,109 @@ final class MailboxLifecycleTests {
             if (e != null) e.discard();
             c.level.setChunkForced(3001, 3001, false);
             holder[0].pinned = false;
+            return null;
+        });
+    }
+
+    /** Snapshot of the two free-running-only queues of a region plus its dispatch inputs. */
+    private static String demotionState(WorldRegion r, java.util.concurrent.atomic.AtomicInteger ranS,
+                                        java.util.concurrent.atomic.AtomicInteger ranF) throws Exception {
+        java.lang.reflect.Field f = WorldRegion.class.getDeclaredField("pendingFreeRunningWork");
+        f.setAccessible(true);
+        Object pending = ((java.util.concurrent.atomic.AtomicReference<?>) f.get(r)).get();
+        int owned = r.getOwnedEntityIds().size();
+        boolean selfTicking = NestworldTuning.FREE_RUNNING_REGIONS_ENABLED && r.isFreeRunning();
+        RegionThread t = r.owningThread;
+        int deferred = t == null ? -1 : t.getLastWorkDeferred();
+        return "r" + r.getId() + "{freeRunning=" + r.isFreeRunning() + ",scheduledTicks=" + r.scheduledTicks.size()
+                + ",pendingFreeRunningWork=" + (pending == null ? 0 : ((java.util.List<?>) pending).size())
+                + ",ownedEntities=" + owned + ",deferredWork=" + deferred
+                + ",dispatchEligible=" + (selfTicking || owned > 0 || deferred > 0)
+                + ",localTick=" + r.getLocalTickCount() + "} executed{scheduled=" + ranS.get() + ",freeRunningWork=" + ranF.get() + "}";
+    }
+
+    /**
+     * P3 + P4 (parked-demotion): work sits in the two FREE-RUNNING-only queues (scheduledTicks,
+     * pendingFreeRunningWork) of a region at the moment it is demoted to barrier mode. The worker is
+     * paused at the top of its loop iteration, so posting and demotion happen with no drain between.
+     * Stage 1: no trigger. Stage 2: a real entity enters, so the region is dispatched in barrier mode
+     * (does barrier runOneTick consume these queues?). Stage 3: re-promote to free-running.
+     */
+    private static void parkedDemotion(Ctx c) throws Exception {
+        if (!NestworldTuning.FREE_RUNNING_REGIONS_ENABLED) {
+            c.skipped("parked-demotion", "needs -Dnestworld.freeRunningRegions=true");
+            return;
+        }
+        WorldRegion r = c.onMain(() -> farEmptyRegion(c));
+        if (r == null || !r.getOwnedEntityIds().isEmpty()) { c.skipped("parked-demotion", "could not isolate an entity-free region"); return; }
+        java.util.concurrent.atomic.AtomicInteger ranS = new java.util.concurrent.atomic.AtomicInteger(), ranF = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicReference<String> threadS = new java.util.concurrent.atomic.AtomicReference<>(), threadF = new java.util.concurrent.atomic.AtomicReference<>();
+        c.onMain(() -> { r.pinned = true; r.nestworldSetFreeRunning(true); return null; });
+        Thread.sleep(1_000); // the worker is now in its free-running loop
+        MailboxLifecycleTestHooks.armLoop(r.getId());
+        boolean paused = MailboxLifecycleTestHooks.awaitLoopHit(10);
+        long postedAt = System.currentTimeMillis();
+        String atDemotion = c.onMain(() -> {
+            // Real representation: production SCHEDULED_TICK work is always a Tagged BLOCK/FLUID entry
+            // (RegionScheduledTicks.offerAll silently drops untagged runnables -- latent hazard, see audit).
+            Runnable s1 = ScheduledTickHandoffMetrics.tagBlock(
+                    () -> { ranS.incrementAndGet(); threadS.set(Thread.currentThread().getName()); },
+                    new net.minecraft.core.BlockPos(r.getMinChunkX() * 16 + 8, 100, r.getMinChunkZ() * 16 + 8));
+            Runnable f1 = () -> { ranF.incrementAndGet(); threadF.set(Thread.currentThread().getName()); };
+            r.nestworldPostScheduledTicks(new java.util.ArrayList<>(java.util.List.of(s1)), c.server.getTickCount(), c.level.getGameTime());
+            r.nestworldPostFreeRunningWork(new java.util.ArrayList<>(java.util.List.of(f1)), c.server.getTickCount(), c.level.getGameTime());
+            r.nestworldSetFreeRunning(false); // demotion: barrier mode from here on
+            return demotionState(r, ranS, ranF);
+        });
+        MailboxLifecycleTestHooks.releaseLoop();
+        c.out.add("parked-demotion worker paused=" + paused + "; at demotion: " + atDemotion);
+
+        // Stage 1: no trigger.
+        Thread.sleep(PARKED_WINDOW_MS);
+        String s1 = c.onMain(() -> demotionState(r, ranS, ranF));
+        c.out.add("parked-demotion stage1 after " + (System.currentTimeMillis() - postedAt) + " ms, no trigger: " + s1);
+        int s1S = ranS.get(), s1F = ranF.get();
+        c.check("parked-demotion.P3.scheduledTicks.stage1", paused && s1S == 1,
+                "scheduledTicks queued at demotion executed with NO trigger: " + s1S + " (1 = recovered by the existing demotion backlog drain)");
+        c.check("parked-demotion.P4.pendingFreeRunningWork.stage1", paused && s1F == 0,
+                "pendingFreeRunningWork queued at demotion executed with no trigger: " + s1F + " (0 = stalled)");
+
+        // Stage 2: a real entity enters -> the region is dispatched in BARRIER mode.
+        UUID entity = c.onMain(() -> {
+            c.level.setChunkForced(3001, 3001, true);
+            c.level.getChunk(3001, 3001);
+            ArmorStand a = new ArmorStand(c.level, 3001 * 16 + 8.5, 120.0, 3001 * 16 + 8.5);
+            a.setNoGravity(true);
+            a.setInvulnerable(true);
+            c.level.addFreshEntity(a);
+            Api1A7DeterministicTests.assignSole(c.dr.getGrid().getAllRegions().toArray(new WorldRegion[0]), r, a.getUUID());
+            return a.getUUID();
+        });
+        long tick0 = r.getLocalTickCount();
+        Thread.sleep(PARKED_WINDOW_MS);
+        long ticked = r.getLocalTickCount() - tick0;
+        String s2 = c.onMain(() -> demotionState(r, ranS, ranF));
+        c.out.add("parked-demotion stage2 (real entity, barrier-dispatched: +" + ticked + " local ticks in " + PARKED_WINDOW_MS + " ms): " + s2);
+        c.check("parked-demotion.P4.stage2.dispatchedButNotConsumed", ticked > 0 && ranF.get() == 0,
+                "region dispatched " + ticked + " barrier rounds; pendingFreeRunningWork executed " + ranF.get()
+                        + " (0 = the barrier path does not consume this queue; a liveness-only fix cannot reach it)");
+
+        // Stage 3: re-promote to free-running.
+        long t3 = System.currentTimeMillis();
+        c.onMain(() -> { r.nestworldSetFreeRunning(true); return null; });
+        boolean ran = waitFor(() -> ranS.get() >= 1 && ranF.get() >= 1, 10_000);
+        Thread.sleep(1_000);
+        String s3 = c.onMain(() -> demotionState(r, ranS, ranF));
+        c.out.add("parked-demotion stage3 (re-promoted): " + (ran ? "executed after " + (System.currentTimeMillis() - t3 - 1_000) + " ms" : "not executed within 10 s")
+                + " on threads scheduled=" + threadS.get() + " freeRunningWork=" + threadF.get() + " -- " + s3);
+        c.check("parked-demotion.stage3.exactlyOnceAfterRepromotion", ranS.get() == 1 && ranF.get() == 1,
+                "scheduled=" + ranS.get() + " freeRunningWork=" + ranF.get());
+        c.onMain(() -> {
+            r.nestworldSetFreeRunning(false);
+            var e = c.level.getEntity(entity);
+            if (e != null) e.discard();
+            c.level.setChunkForced(3001, 3001, false);
+            r.pinned = false;
             return null;
         });
     }

@@ -1,7 +1,7 @@
 # CORE-PARKED-REGION-001 — runnable-work model of a non-free-running WorldRegion
 
-**Status: AUDIT + DETERMINISTIC REPRODUCTIONS COMPLETE (2026-10-03). No scheduler change; fix not
-started.** It is a blocking dependency of API-1B CLOSED (ORDERING within its deterministic timeout).
+**Status: AUDIT FROZEN (2026-10-03). All four sources reproduced dynamically (§3, §3b). No scheduler
+change; fix not started.** It is a blocking dependency of API-1B CLOSED (ORDERING within its deterministic timeout).
 
 Audit question (owner):
 > What constitutes runnable work for a non-free-running WorldRegion, and does dispatch eligibility
@@ -28,12 +28,14 @@ everything.
 | 3 | `carriedWork` (budget remainder) | next round | yes (`lastWorkDeferred`) |
 | 4 | pushed work rounds | work round | yes (push) |
 | 5 | owned entities | entity round | yes |
-| 6 | **`scheduledTicks`** (lossless free-running queue) | free-running loop only | **NO after demotion**: there is no barrier consumer. Already flagged by an existing DIAG in `demoteFreeRunning` ("#1 freeze") |
-| 7 | **`pendingFreeRunningWork`** (latest-batch-wins slot) | free-running loop only | **NO after demotion** (same) |
+| 6 | `scheduledTicks` (lossless free-running queue) | free-running loop; **after demotion: the existing backlog recovery in `runWorkRound(SCHEDULED_TICK)`** (push, every tick, even with no entities) | **covered**, dynamically verified (§3b) |
+| 7 | **`pendingFreeRunningWork`** (latest-batch-wins slot: RANDOM_TICK, BLOCK_EVENT batches) | free-running loop only | **NO after demotion**: even a dispatched barrier region never consumes it (§3b). This is a transition defect, not a liveness one |
 
 The conceptual defect is visible: **the scheduler's notion of "runnable" (entities or deferred work)
-is not the transports' notion ("has work queued for me").** At least four sources (1, 2, 6, 7) can
-starve.
+is not the transports' notion ("has work queued for me").** After dynamic verification:
+- sources **1 and 2** are **liveness** defects of a live barrier region;
+- source **7** is a **transition** defect: no barrier consumer exists at all;
+- source **6** is covered by the existing demotion recovery.
 
 Sources 6 and 7 also overlap the retirement question CORE-WORK-RETIREMENT-001 (A1): the queues are
 tied to an execution mode / region lifetime that the scheduler state machine does not know about.
@@ -69,8 +71,28 @@ used to make the reproduction deterministic.
   10.0–11.2 s.
 - **STRESS-001 F2:** intermittent MISSING_TERMINAL on a dedicated server, later delivered.
 
-**Not reproduced here:** sources 6 and 7 (demotion stranding). They are static only, plus the
-existing DIAG; reproducing them needs free-running mode and is the next audit step.
+### 3b. Demotion reproductions (P3/P4, `parked-demotion`, free-running mode)
+
+Setup:
+1. An isolated, pinned, entity-free region is promoted to free-running.
+2. Its worker is paused at the top of its loop iteration (test hook), so posting and demotion happen
+   with no drain in between.
+3. One **Tagged** scheduled tick (the real production representation) and one free-running work
+   batch are posted, then the region is demoted.
+
+Two runs, identical:
+
+| Stage | `scheduledTicks` (source 6, P3) | `pendingFreeRunningWork` (source 7, P4) |
+|---|---|---|
+| 15 s, no trigger | **executed exactly once**: +1 local tick, push work round, DIAG "recovered 1 scheduled tick(s) … while demoted" | **not executed** (`pendingFreeRunningWork=1`, `dispatchEligible=false`) |
+| 15 s, a real entity enters; the region is dispatched in barrier mode (+215 / +284 local ticks) | — | **still not executed**: the barrier `runOneTick` does not consume this queue |
+| re-promotion to free-running | — | executed exactly once, after 0–7 ms, on the region thread |
+
+**Test lesson (recorded):** the first P3 attempt posted an untagged Runnable, and
+`RegionScheduledTicks.offerAll` **silently dropped it**. Production SCHEDULED_TICK routing always
+tags BLOCK/FLUID entries (OTHER-kind untagged work is used only by block events, which go through
+`pendingFreeRunningWork`), so this is a **latent hazard**, not an active loss. It should become an
+explicit assertion or a counted terminal, never a silent drop.
 
 ## 4. Observations made while building the reproduction
 - **Incidental triggers decide latency today.** An auto-merge of the idle region retires it, and
@@ -82,7 +104,19 @@ existing DIAG; reproducing them needs free-running mode and is the next audit st
   WAITING / in pool). This is not a scheduler fault: once the id is removed the region is
   legitimately ineligible again. The reproduction therefore uses a real entity.
 
-## 5. Candidate fix shapes (NOT decided)
+## 4b. Frozen conclusions → scope
+- **CORE-PARKED-REGION-001 → A** (unified O(1) runnable-work predicate). Covers source 1 (inbound
+  mailbox, region-thread types) and source 2 (sender outboundPending). Sources 3, 4 and 5 are
+  already covered; source 6 is covered by the existing demotion recovery and stays as is.
+  Invariant: if progress of work requires `runOneTick()`, the presence of that work makes a
+  non-free-running region dispatch-eligible.
+- **Source 7 (pendingFreeRunningWork across demotion) → not A.** It is a transition defect, so it
+  goes to CORE-WORK-RETIREMENT-001 (or a sibling transition gate) as a C-type handoff decision.
+  Its contents (RANDOM_TICK, BLOCK_EVENT) are latest-batch-wins by design, and that changes what
+  "correct handoff" means.
+- **Latent:** `offerAll` drops untagged work silently. Track it in the same transition gate.
+
+## 5. Candidate fix shapes (A chosen for this gate; listed for history)
 - **A.** One per-region runnable-work predicate aggregating sources 1, 2, 3, 6 and 7 via O(1)
   counters. A mailbox depth counter already exists; a region-thread-type counter and a pending
   counter would be needed. `tickAllRegions` dispatches on it.
