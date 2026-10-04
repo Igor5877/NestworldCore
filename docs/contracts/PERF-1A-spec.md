@@ -1,8 +1,9 @@
 # PERF-1A — scheduler scaling baseline (spec, DRAFT for owner review)
 
-**Status (2026-10-04): the harness FREEZE CRITERION IS MET (pilot round 6, §9); the freeze is
-proposed, pending owner acceptance of the §9 method changes. The official 1 → 16 matrix is still
-blocked: the host has freed only 3 quiet physical cores (§9).** No Core change. Reference build
+**Status (2026-10-04): PERF-1A HARNESS VERIFIED / FROZEN at `d5321f70e`.** The freeze criterion
+was met in pilot round 6 (§9), and the owner accepted the §9 method changes in the PERF-1 TZ
+(`PERF-1-tz.md`). The official matrix runs through `tests/perf1/official/series.py`. N ≥ 4 is
+blocked until the host frees more quiet physical cores. No Core change. Reference build
 47.4.264 (`dab499ff`, trusted artifact, canary 4/4).
 
 ## Question
