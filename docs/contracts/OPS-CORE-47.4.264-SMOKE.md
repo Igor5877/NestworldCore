@@ -43,6 +43,16 @@ Every external call failed locally with ConnectException; there were no calls to
   `ScheduledThreadPoolExecutor.take`. Without a join, stop takes under 1 s.
 - **Reproduced identically on 47.4.233 and 47.4.264**, so this is not a Core regression.
 - The mod owner reports it is fixed in newer mod versions.
+- **Fix verified (2026-10-04)** on the isolated island copy, Core 47.4.264, same scenario (join →
+  logout, freeze scheduled for 5 minutes → `/stop`), with the updated jar (sha256
+  `355707470f76…`):
+  - `PlayerEventHandler` now builds the executor with a factory that names the thread
+    `NestWorld-freeze-scheduler` and calls `setDaemon(true)`;
+  - `/stop` exits in about 1 s with `forced=0`. The old jar (`e039c20514a1…`) reproduced the
+    90 s forced exit in the same scenario.
+  - **Open (DEPLOY-CONFIG-INTEGRITY-001):** both jars declare `version = "1.3.0"` with the same
+    file name, so the fixed and broken builds cannot be told apart by name or version. A version
+    bump is recommended before rollout.
 
 ## Registered separately (not part of PERF-1; no action now)
 - **DEPLOY-CONFIG-INTEGRITY-001.** `mods.zip` and the deployed `extracted/minecraft/mods` differ:
