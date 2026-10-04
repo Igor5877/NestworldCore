@@ -4,7 +4,7 @@
   perf1.py prepare <server> <datapack-dir> <snapshot.tar>
       boot once, build the W1 walls and forceloads (no entities), save, stop, archive.
   perf1.py run <server> <snapshot.tar> <datapack-dir> <N> <cpu-list> <tag> <out-dir>
-               [--warmup S] [--window S]
+               [--warmup S] [--window S] [--warmup-ticks T]
       restore the snapshot, boot pinned to <cpu-list>, build the region layout on markers,
       summon the cows into it, warm up, measure, stop; writes <out-dir>/<tag>.json plus gc/jfr/console files.
   perf1.py validate <run.json>...
@@ -116,19 +116,34 @@ def pick_cpus(spec):
     return ",".join(map(str, chosen[:n]))
 
 
+def host_cpu_busy():
+    """Host-wide per-CPU (total, idle) jiffies; /proc/stat in this container shows the whole host."""
+    d = {}
+    for l in open("/proc/stat"):
+        if l.startswith("cpu") and l[3].isdigit():
+            f = l.split()
+            v = list(map(int, f[1:]))
+            d[int(f[0][3:])] = (sum(v), v[3] + v[4])
+    return d
+
+
 def affinity(pid):
     return open(f"/proc/{pid}/status").read().split("Cpus_allowed_list:")[1].split()[0]
 
 
-def boot(server, console, cpus=None):
+def boot(server, console, cpus=None, java_opts=None):
     if server_pid(server):
         sys.exit("a server is already running in " + server)
     cmd = ["bash", "run.sh", "nogui"]
     if cpus:
         cmd = ["taskset", "-c", cpus] + cmd
     out = open(console, "w")
+    env = dict(os.environ)
+    env.pop("JDK_JAVA_OPTIONS", None)
+    if java_opts:
+        env["JDK_JAVA_OPTIONS"] = java_opts   # per-run options never touch user_jvm_args.txt
     subprocess.Popen(cmd, cwd=server, stdout=out, stderr=subprocess.STDOUT,
-                     stdin=subprocess.DEVNULL, start_new_session=True)
+                     stdin=subprocess.DEVNULL, start_new_session=True, env=env)
     for _ in range(600):
         time.sleep(1)
         with open(console, errors="replace") as f:
@@ -155,6 +170,77 @@ def stop(pid, rc):
     return False
 
 
+def process_cpu(pid):
+    """Whole-process CPU seconds from /proc/<pid>/stat: unlike the per-thread sum it keeps the
+    time of threads that exited during the window."""
+    f = open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()
+    return (int(f[11]) + int(f[12])) / CLK
+
+
+def jit_cpu(pid):
+    """CPU seconds of the JIT compiler threads. Needs -XX:-UseDynamicNumberOfCompilerThreads so
+    the threads never exit (their time would be lost from the per-thread sum)."""
+    return thread_cpu(pid).get("jit", 0.0)
+
+
+def pin_jit(pid, cpus):
+    """Pin the JIT compiler threads (persistent with -XX:-UseDynamicNumberOfCompilerThreads)
+    to the harness CPUs: at N=1 C2 recompilation after unstable_if deopts took ~22% of the only
+    benchmark core in steady state (pilot finding), penalising low N. JIT is JVM warm-up cost,
+    not Core cost; its CPU is still recorded."""
+    pinned = []
+    for tid in os.listdir(f"/proc/{pid}/task"):
+        try:
+            name = open(f"/proc/{pid}/task/{tid}/comm").read().strip()
+        except OSError:
+            continue
+        if "CompilerThre" in name:
+            os.sched_setaffinity(int(tid), cpus)
+            pinned.append(int(tid))
+    return pinned
+
+
+def jit_affinities(pid):
+    out = set()
+    for tid in os.listdir(f"/proc/{pid}/task"):
+        try:
+            if "CompilerThre" in open(f"/proc/{pid}/task/{tid}/comm").read():
+                out.add(open(f"/proc/{pid}/task/{tid}/status").read()
+                        .split("Cpus_allowed_list:")[1].split()[0])
+        except OSError:
+            continue
+    return sorted(out)
+
+
+def counter_now(server):
+    with open(os.path.join(server, "perf1-counter.csv")) as f:
+        last = f.read().strip().splitlines()[-1]
+    return int(last.split(",")[1])
+
+
+def warm_up(pid, server, minimum_s, min_ticks, quiet_window=60, quiet_jit_cpu_s=0.5,
+            maximum=3600):
+    """Warmup measured in WORK, not time: at least min_ticks executed entity ticks (the same for
+    every N, because tiered-JIT thresholds count invocations), at least minimum_s seconds, and
+    then the JIT quiet for quiet_window seconds (its threads used <= quiet_jit_cpu_s CPU).
+    Pilot findings: a fixed 120 s left up to 196 s of >=1 s compilations in the N=1 window, and
+    a 30 s quiet check passed at 120 s while the JIT used 29% of the next window at N=1."""
+    start = time.time()
+    t0 = counter_now(server)
+    hist = [(start, jit_cpu(pid))]
+    while True:
+        time.sleep(5)
+        now = time.time()
+        hist.append((now, jit_cpu(pid)))
+        old = [h for h in hist if h[0] <= now - quiet_window]
+        work_done = counter_now(server) - t0 >= min_ticks
+        if now - start >= minimum_s and work_done and old \
+                and hist[-1][1] - old[-1][1] <= quiet_jit_cpu_s:
+            return now - start
+        if now - start >= maximum:
+            return -(now - start)          # never converged: recorded, makes the run void
+
+
 def thread_cpu(pid):
     """CPU seconds per thread group: region workers, main, GC, other."""
     groups = {}
@@ -171,6 +257,8 @@ def thread_cpu(pid):
             g = "region"
         elif name == "Server thread":
             g = "main"
+        elif "CompilerThre" in name:
+            g = "jit"
         elif name.startswith(("GC Thread", "G1 ")):
             g = "gc"
         else:
@@ -351,8 +439,26 @@ def prepare(server, dp, snapshot):
         sys.exit("snapshot must hold no entities")
 
 
-def run(server, snapshot, dp, n, cpus, tag, out_dir, warmup, window):
+CANON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server-config")
+
+
+def check_config(server):
+    """The server must run the canonical PERF-1A config committed in tests/perf1/server-config:
+    user_jvm_args.txt byte-identical, and every key of the canonical server.properties equal."""
+    if open(os.path.join(server, "user_jvm_args.txt")).read() != \
+            open(os.path.join(CANON, "user_jvm_args.txt")).read():
+        sys.exit("user_jvm_args.txt differs from tests/perf1/server-config")
+    props = dict(l.strip().split("=", 1) for l in open(os.path.join(server, "server.properties"))
+                 if "=" in l and not l.startswith("#"))
+    for l in open(os.path.join(CANON, "server.properties")):
+        k, v = l.strip().split("=", 1)
+        if props.get(k) != v:
+            sys.exit(f"server.properties {k}={props.get(k)} differs from canonical {v}")
+
+
+def run(server, snapshot, dp, n, cpus, tag, out_dir, warmup, window, warmup_ticks):
     os.makedirs(out_dir, exist_ok=True)
+    check_config(server)
     cpus = pick_cpus(cpus)
     smt = {c: siblings(c) for c in expand(cpus)}
     res = {"tag": tag, "N": n, "cpus": cpus, "container_cpuset_at_start": container_cpuset(),
@@ -378,24 +484,20 @@ def run(server, snapshot, dp, n, cpus, tag, out_dir, warmup, window):
         t.extractall(server)
 
     gclog = os.path.abspath(os.path.join(out_dir, f"{tag}-gc.log"))
-    args_file = os.path.join(server, "user_jvm_args.txt")
-    base_args = open(args_file).read()
-    with open(args_file, "w") as f:
-        f.write(base_args.rstrip("\n") + f"\n-Xlog:gc*:file={gclog}:uptime,time\n")
-    try:
-        pid = boot(server, os.path.join(out_dir, f"{tag}-console.log"), cpus)
-    finally:
-        with open(args_file, "w") as f:
-            f.write(base_args)
+    pid = boot(server, os.path.join(out_dir, f"{tag}-console.log"), cpus,
+               java_opts=f"-Xlog:gc*:file={gclog}:uptime,time")
     res["pid"], res["cwd"] = pid, os.path.realpath(f"/proc/{pid}/cwd")
     res["affinity"] = affinity(pid)
+    jit_cpus = harness_cpus()
+    res["jit_threads_pinned"] = len(pin_jit(pid, jit_cpus)) if jit_cpus else 0
     rc = Rcon()
     log = []
     res["layout_splits"] = build_layout(rc, cells, log)
     res["layout_log"] = log
     res["entities"] = entity_count(rc, "@e[tag=perf1]")
     res["non_cow_entities"] = entity_count(rc, "@e[tag=!perf1]")
-    time.sleep(warmup)
+    res["warmup_min_ticks"] = warmup_ticks
+    res["warmup_actual_s"] = warm_up(pid, server, warmup, warmup_ticks)
 
     # ---- measurement window
     jfr = os.path.abspath(os.path.join(out_dir, f"{tag}.jfr"))
@@ -403,14 +505,19 @@ def run(server, snapshot, dp, n, cpus, tag, out_dir, warmup, window):
     t0 = time.time()
     g0 = gametime(rc)
     cpu0 = thread_cpu(pid)
+    proc0 = process_cpu(pid)
+
+    host0 = host_cpu_busy()
     subprocess.run(["jcmd", str(pid), "JFR.start", "name=perf1", f"filename={jfr}",
                     "settings=default"], capture_output=True)
     blocks, fair, g_last = [], [], g0
     seen_aff, seen_cpuset = {affinity(pid)}, {container_cpuset()}
+    seen_jit_aff = set(jit_affinities(pid))
     depth = []
     while time.time() - t0 < window:
         time.sleep(1)
         seen_aff.add(affinity(pid))
+        seen_jit_aff.update(jit_affinities(pid))
         seen_cpuset.add(container_cpuset())
         g = gametime(rc)
         if g - g_last >= 100:                      # non-overlapping 100-tick blocks
@@ -423,6 +530,9 @@ def run(server, snapshot, dp, n, cpus, tag, out_dir, warmup, window):
     g1 = gametime(rc)
     t1 = time.time()
     cpu1 = thread_cpu(pid)
+    proc1 = process_cpu(pid)
+
+    host1 = host_cpu_busy()
     subprocess.run(["jcmd", str(pid), "JFR.stop", "name=perf1"], capture_output=True)
     lay1, status_full = layout(rc)
     fair.append(fairness(rc))
@@ -445,10 +555,23 @@ def run(server, snapshot, dp, n, cpus, tag, out_dir, warmup, window):
         "deferred_samples": [sum(d for _, _, _, d in s) for s in fair],
         "regions_with_entities": [len(s) for s in fair],
         "cpu_s": {k: cpu1.get(k, 0) - cpu0.get(k, 0) for k in cpu1},
-        "affinity_seen": sorted(seen_aff), "container_cpuset_seen": sorted(seen_cpuset),
+        "affinity_seen": sorted(seen_aff), "jit_affinity_seen": sorted(seen_jit_aff), "container_cpuset_seen": sorted(seen_cpuset),
         "jfr": jfr, "gc_log": gclog,
     })
     res["secondary_ticks_per_s"] = res["tps"] * res["entities"]
+    # interference on a host that cannot isolate cores: the SMT siblings of the benchmark CPUs
+    # must stay idle, and the benchmark CPUs must carry nothing but this server
+    bench = expand(cpus)
+    sib = sorted({x for c in bench for x in siblings(c)} - set(bench))
+
+    def busy_s(c):
+        tot, idle = host1[c][0] - host0[c][0], host1[c][1] - host0[c][1]
+        return (tot - idle) / CLK
+    res["sibling_busy_pct"] = {str(c): 100 * busy_s(c) / dt for c in sib}
+    res["process_cpu_s"] = proc1 - proc0
+    res["bench_cpu_s"] = res["process_cpu_s"] - res["cpu_s"].get("jit", 0.0)
+    res["jit_cpu_s_in_window"] = res["cpu_s"].get("jit", 0.0)
+    res["foreign_on_bench_pct"] = 100 * (sum(busy_s(c) for c in bench) - res["bench_cpu_s"]) / (dt * len(bench))
     res["cpu_util"] = {k: v / (dt * n) for k, v in res["cpu_s"].items()}
     res["stopped_cleanly"] = stop(pid, rc)
     res.update(jfr_summary(jfr))
@@ -495,10 +618,11 @@ def validate(paths):
                 for k, v in r.get("smt_siblings", {}).items()) and "smt_siblings" in r,
             "harness CPUs (and siblings) not used by the server":
                 not set(r.get("harness_reserved", [])) & set(map(int, r["cpus"].split(","))),
-            "affinity == requested cpus": r["affinity"] == r["cpus"],
-            "affinity stable in window": r["affinity_seen"] == [r["cpus"]],
+            "affinity == requested cpus": expand(r["affinity"]) == expand(r["cpus"]),
+            "affinity stable in window": [expand(a) for a in r["affinity_seen"]] == [expand(r["cpus"])],
             "container cpuset stable in window": len(r["container_cpuset_seen"]) == 1,
-            "CPU used <= N cores": r["cpu_s"]["total"] / r["window_wall_s"] <= r["N"] * 1.02,
+            "CPU used <= N cores":
+                r.get("bench_cpu_s", r["cpu_s"]["total"]) / r["window_wall_s"] <= r["N"] * 1.02,
             "layout: 15 splits, one cell per region": r["layout_splits"] == 15,
             "16 regions in total": len(r["layout_start"]) == 16,
             "only workload entities": r["non_cow_entities"] == 0,
@@ -512,6 +636,15 @@ def validate(paths):
                 abs(r["primary_ticks_per_s"] / r["secondary_ticks_per_s"] - 1) < 0.01,
             "mspt blocks collected": len(r["mspt_blocks"]) >= 2 and all(r["mspt_blocks"]),
             "gc/jfr collected": "gc_count" in r and os.path.getsize(r["gc_log"]) > 0,
+            "SMT siblings idle (<= 3%)": "sibling_busy_pct" in r and
+                all(v <= 3.0 for v in r["sibling_busy_pct"].values()),
+            "no foreign load on bench CPUs (<= 3%)": "foreign_on_bench_pct" in r and
+                r["foreign_on_bench_pct"] <= 3.0,
+            "JIT converged before the window": r.get("warmup_actual_s", -1) > 0,
+            "JIT threads off the benchmark CPUs": r.get("jit_threads_pinned", 0) > 0 and
+                all(set(expand(a)) == set(r["harness_cpus"]) for a in r.get("jit_affinity_seen", ["x"])),
+            "dynamic compiler threads off":
+                "-XX:-UseDynamicNumberOfCompilerThreads" in r["jvm_args"],
             "mailbox depth collected": len(r.get("mailbox_depth_max_samples", [])) >= 2 and
                 None not in r["mailbox_depth_max_samples"],
             "stopped cleanly": r["stopped_cleanly"],
@@ -549,7 +682,7 @@ def main():
     if a and a[0] == "prepare":
         prepare(*a[1:4])
     elif a and a[0] == "run":
-        opts = {"--warmup": 120, "--window": 300}
+        opts = {"--warmup": 120, "--window": 300, "--warmup-ticks": 15_000_000}
         pos = []
         it = iter(a[1:])
         for x in it:
@@ -558,7 +691,8 @@ def main():
             else:
                 pos.append(x)
         server, snap, dp, n, cpus, tag, out = pos
-        run(server, snap, dp, int(n), cpus, tag, out, opts["--warmup"], opts["--window"])
+        run(server, snap, dp, int(n), cpus, tag, out, opts["--warmup"], opts["--window"],
+            opts["--warmup-ticks"])
     elif a and a[0] == "validate":
         sys.exit(validate(a[1:]))
     else:

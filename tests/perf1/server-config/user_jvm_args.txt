@@ -1,0 +1,11 @@
+-Xms8G
+-Xmx8G
+-XX:+UseG1GC
+-XX:ActiveProcessorCount=16
+-XX:ParallelGCThreads=13
+-XX:ConcGCThreads=3
+-Dnestworld.maxRegions=16
+-Dnestworld.splitTargetParallelism=16
+-Dnestworld.regionEntityBudgetMs=100000
+-Dnestworld.splitFillCoresMs=1000000000
+-XX:-UseDynamicNumberOfCompilerThreads
