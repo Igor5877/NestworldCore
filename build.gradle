@@ -1806,7 +1806,10 @@ project(':forge') {
     // [3]: the explicit regeneration must not destroy uncommitted tree edits either.
     tasks.named('extractMapped') {
         doFirst {
-            if (!spiPatchedSrc.exists() || project.findProperty('forceRegeneratePatchedSources') == 'true') return
+            // A fresh checkout has NO tree, or an EMPTY directory (ForgeGradle creates it at configuration
+            // time): nothing to lose, regeneration is always allowed.
+            boolean treeHasFiles = spiPatchedSrc.exists() && spiPatchedSrc.listFiles()?.any { it.isDirectory() || it.isFile() }
+            if (!treeHasFiles || project.findProperty('forceRegeneratePatchedSources') == 'true') return
             def base = spiReadState()
             String tree = spiDirDigest(spiPatchedSrc)
             if (base == null || base.getProperty('baseTreeDigest') != tree) {
