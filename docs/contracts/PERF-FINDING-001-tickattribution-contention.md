@@ -1,8 +1,11 @@
 # PERF-FINDING-001 — global lock contention on the entity-tick hot path (TickAttribution)
 
-**Status: RECORDED (2026-10-04), found by the PERF-1A pilot calibration. Not fixed.** The rule
-"measure first, do not fix during PERF-1" applies. Fixing it is an owner decision and a separate
-gate.
+**Status: OPEN / MEASURE-FIRST (owner, 2026-10-04).** Found by the PERF-1A pilot calibration.
+Not fixed.
+- 47.4.264 is measured in PERF-1A as is, with this contention included.
+- If JFR confirms it as the scaling limiter, the fix is a separate gate and a new reference
+  build (integrity / canary / smoke), followed by the same PERF-1A as an A/B.
+- If it makes N ≥ 4 unmeasurable, PERF-1A for 47.4.264 closes as BOTTLENECK IDENTIFIED.
 
 ## Finding
 `RegionThread.tickEntities` (RegionThread.java:1114) calls
@@ -64,7 +67,5 @@ crash report `crash-2026-10-04_10.37.14-server.txt`.
   measured separately and is not cleared.
 
 ## Not decided here (owner)
-- Whether PERF-1A measures the current build as is (curve includes this lock) or waits for a fix.
-  The latter means a new reference build, so the trusted artifact / canary / smoke chain is redone.
-- Fix direction, if any: for example region-confined accumulation merged by the main thread, a
+- Fix direction, decided after the PERF-1A baseline: for example region-confined accumulation merged by the main thread, a
   spread hash, gating behind a flag, or sampling. No code change is proposed in this record.

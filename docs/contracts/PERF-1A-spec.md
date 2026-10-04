@@ -1,7 +1,7 @@
 # PERF-1A — scheduler scaling baseline (spec, DRAFT for owner review)
 
-**Status: DRAFT (2026-10-04), amended by the pilot (§7). BLOCKED on the rig (§6) and on the owner
-decision in PERF-FINDING-001.** No Core change. Reference build
+**Status: DRAFT (2026-10-04), amended by the pilot (§7), owner decisions in §8. Harness NOT yet
+frozen; BLOCKED on the pinned rig (§6).** No Core change. Reference build
 47.4.264 (`dab499ff`, trusted artifact, canary 4/4).
 
 ## Question
@@ -154,3 +154,44 @@ Gate results:
 
 **Core finding.** PERF-FINDING-001 is a global monitor on the entity-tick hot path. Any curve on
 this build includes it.
+
+**Pilot observation.** Pilot observations are consistent with positive multicore scaling, but are
+not scaling evidence. N=1 gave 27–32k entity ticks/s and N=2 gave 62–64k, but the runs used
+different physical cores, N=1 CV was 7.4%, the cpuset was dynamic, and there are only two points.
+
+## 8. Owner decisions (2026-10-04)
+1. **PERF-FINDING-001: OPEN / MEASURE-FIRST.** 47.4.264 is measured as is, with the
+   TickAttribution contention included. It is part of the real Core, not benchmark noise.
+   - If JFR confirms it as the scaling limiter, the fix becomes a new reference build. That build
+     goes through integrity / canary / smoke, and then the **same** PERF-1A is repeated, giving an
+     A/B before and after the fix.
+   - Exception: if on the pinned rig the bottleneck makes N ≥ 4 practically unmeasurable, PERF-1A
+     for 47.4.264 closes as **BOTTLENECK IDENTIFIED** instead of forcing the full matrix.
+2. **Rig: explicit CPU pinning on the E5-2699 v3** (18 cores / 36 threads; SMT sibling of CPU n is
+   n+18).
+   - The benchmark container gets `limits.cpu: "1-17"`:
+     - CPU 1 is reserved for the harness driver (`PERF1_HARNESS_CPUS=1`);
+     - CPUs 2–17 (16 physical cores) are the benchmark pool.
+   - The host, LXD, SSH and monitoring use CPUs 0, 18 and 19 (cores 0 and 1).
+   - CPUs 20–35 (siblings of the benchmark cores) are given to nothing. Other containers are
+     stopped or pinned inside {0, 18, 19} for the series.
+   - `tests/perf1/host-preflight.sh <ct> 2-17 1` checks this on the host (read-only).
+   - Any cpuset or affinity change inside the measurement window makes the run **VOID**. It is
+     never corrected statistically.
+3. **mailboxAudit = false in the primary matrix.** Recorded instead: queue depth, pressure
+   counters, JFR. An optional diagnostic run with `mailboxAudit=true` is tagged `diag-` and never
+   enters the dataset. Mailbox latency is the subject of the later cross-region workload, with
+   its own instrumented series.
+4. **Spread gate.** Over ≥ 3 valid runs per N:
+
+   | CV | Verdict |
+   |---|---|
+   | ≤ 5% | **VALID** |
+   | 5–10% | **UNSTABLE**, repeat |
+   | > 10% | **INVALID ENVIRONMENT**, investigate |
+
+   Only CV ≤ 5% enters the PERF-1A dataset.
+
+**Freeze criterion.** N=1 and N=2, ×3 each, on the pinned rig: every run VALID, no cpuset or
+affinity violation, CV ≤ 5%. Then **PERF-1A HARNESS = VERIFIED / FROZEN**, and the unchanged
+harness runs 1 → 2 → 4 → 8 → 12 → 16.
