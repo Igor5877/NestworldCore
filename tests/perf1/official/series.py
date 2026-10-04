@@ -37,7 +37,7 @@ def git(*a):
 def core_provenance(server):
     """Manifest provenance of the installed Core (the universal jar the server runs)."""
     run_sh = open(os.path.join(server, "run.sh")).read()
-    ver = run_sh.split("forge/")[1].split("/unix_args")[0]
+    ver = run_sh.split("minecraftforge/forge/")[1].split("/unix_args")[0]
     d = os.path.join(server, "libraries/net/minecraftforge/forge", ver)
     uni = [f for f in os.listdir(d) if f.endswith("-universal.jar")][0]
     srv = [f for f in os.listdir(d) if f.endswith("-server.jar")][0]
