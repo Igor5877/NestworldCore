@@ -1,7 +1,8 @@
 # PERF-1A — scheduler scaling baseline (spec, DRAFT for owner review)
 
-**Status: DRAFT (2026-10-04), amended by the pilot (§7), owner decisions in §8. Harness NOT yet
-frozen; BLOCKED on the pinned rig (§6).** No Core change. Reference build
+**Status (2026-10-04): the harness FREEZE CRITERION IS MET (pilot round 6, §9); the freeze is
+proposed, pending owner acceptance of the §9 method changes. The official 1 → 16 matrix is still
+blocked: the host has freed only 3 quiet physical cores (§9).** No Core change. Reference build
 47.4.264 (`dab499ff`, trusted artifact, canary 4/4).
 
 ## Question
@@ -195,3 +196,61 @@ different physical cores, N=1 CV was 7.4%, the cpuset was dynamic, and there are
 **Freeze criterion.** N=1 and N=2, ×3 each, on the pinned rig: every run VALID, no cpuset or
 affinity violation, CV ≤ 5%. Then **PERF-1A HARNESS = VERIFIED / FROZEN**, and the unchanged
 harness runs 1 → 2 → 4 → 8 → 12 → 16.
+
+## 9. Pilot round 6: freeze criterion met (2026-10-04)
+
+**Rig.** The host cannot pin the container; the container sees all of 0–35. On the host side,
+CPUs 1–3 and their siblings 19–21 were freed:
+- benchmark on CPU 2 (N=1) or CPUs 2,3 (N=2);
+- harness on CPU 1 (`PERF1_HARNESS_CPUS=1`);
+- the container's own processes moved to CPUs 0 and 18.
+
+Isolation is measured, not assumed. Every run checks from host-wide `/proc/stat`:
+- SMT siblings of the benchmark CPUs are ≤ 3% busy;
+- foreign load on the benchmark CPUs (their busy time minus the server's CPU time) is ≤ 3%.
+
+**Method changes since the owner review** (each forced by pilot data; proposed for the frozen
+harness):
+1. **CPU accounting.** Server CPU is the whole-process `/proc/<pid>/stat`. The per-thread sum
+   lost the time of threads that exited during the window: 0.79 against 0.99 cores at N=1.
+2. **JVM: `-XX:-UseDynamicNumberOfCompilerThreads`.** The JIT keeps its ergonomic 12 threads for
+   the whole run instead of creating and exiting them, which keeps accounting exact. Nothing else
+   about the JIT changes.
+3. **Warmup is measured in work, not time.** At least 15 M executed entity ticks (equal for every
+   N, because tiered-JIT thresholds count invocations), at least 120 s, and then the JIT threads
+   quiet for 60 s. A fixed 120 s left up to 196 s of ≥ 1 s compilations inside the N=1 window.
+4. **JIT compiler threads are pinned to the harness CPU.** In steady state at N=1, C2
+   recompilation after `unstable_if` deopts kept taking about 22% of the only benchmark core
+   (73 compilations ≥ 1 s in a 120 s window, even after the warmup above). JIT is JVM cost, not
+   Core cost, and it penalised low N, which inflates S(N).
+   - Measured effect at N=1: 26.6k → 38.0k ticks/s.
+   - JIT CPU is still recorded per run: about 27–30 s per 300 s window at both N=1 and N=2.
+   - Validity check: the JIT threads stay on the harness CPUs.
+5. **Per-run JVM options** (the GC log path) go through `JDK_JAVA_OPTIONS`. The harness
+   previously appended them to `user_jvm_args.txt`, and interrupted runs left stale `-Xlog`
+   lines behind.
+6. **Canonical server config** is committed in `tests/perf1/server-config/`. A run refuses to
+   start unless `user_jvm_args.txt` is byte-identical and every canonical `server.properties` key
+   matches. The check was added after round 6; round 6 used exactly this config (verified).
+
+**Round 6 data** (W1 c=24, 16 × 576 cows; all runs VALID; HARNESS VALIDATION ONLY):
+
+| Run | primary/s | warmup | MSPT p50 / p95 / p99 | foreign on bench | siblings |
+|---|---|---|---|---|---|
+| N1-r1 | 37 992 | 371 s | 227 / 273 / 334 | 0.03% | 0.3% |
+| N1-r2 | 37 685 | 401 s | 227 / 249 / 306 | 0.00% | 0.1% |
+| N1-r3 | 38 824 | 366 s | 223 / 240 / 309 | 0.00% | 0.2% |
+| N2-r1 | 72 936 | 221 s | 116 / 129 / 218 | −0.01% | ≤ 0.4% |
+| N2-r2 | 80 604 | 216 s | 107 / 114 / 142 | −0.23% | ≤ 0.5% |
+| N2-r3 | 79 437 | 221 s | 108 / 115 / 157 | 0.16% | ≤ 0.4% |
+
+- **N=1:** mean 38 167/s, **CV 1.3% (VALID)**.
+- **N=2:** mean 77 659/s, **CV 4.3% (VALID)**.
+- Other checks: same topology, flags and snapshot; deferred = 0; primary ≈ secondary within
+  0.8%; no cpuset or affinity change.
+- Pilot observations are consistent with positive multicore scaling (N2/N1 ≈ 2.03), but are not
+  scaling evidence.
+
+**Remaining blocker for the official matrix.** N ∈ {4…16} needs 4–16 quiet physical cores, with
+their siblings idle, plus the harness core. The host has freed 3. The frozen harness runs any N
+the host can free, and voids any run with interference.
