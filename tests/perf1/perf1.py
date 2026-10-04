@@ -85,14 +85,28 @@ def expand(cpulist):
     return out
 
 
+def siblings(c):
+    return expand(open(f"/sys/devices/system/cpu/cpu{c}/topology/thread_siblings_list").read().strip())
+
+
+def harness_cpus():
+    """CPUs reserved for the driver itself (env PERF1_HARNESS_CPUS), never given to the server."""
+    v = os.environ.get("PERF1_HARNESS_CPUS", "")
+    return expand(v) if v else []
+
+
 def pick_cpus(spec):
-    """'auto:N' = N CPUs of the CURRENT container cpuset on distinct physical cores. The LXD
-    host may move the container between cores, so a fixed list can go stale (pilot finding)."""
+    """'auto:N' = N CPUs of the CURRENT container cpuset on distinct physical cores, excluding the
+    harness CPUs and their SMT siblings. The LXD host may move a container whose limits.cpu is a
+    count, so a fixed list can go stale (pilot finding)."""
     if not spec.startswith("auto:"):
         return spec
     n = int(spec.split(":")[1])
+    reserved = {s for h in harness_cpus() for s in siblings(h)}
     chosen, cores = [], set()
     for c in expand(container_cpuset()):
+        if c in reserved:
+            continue
         core = open(f"/sys/devices/system/cpu/cpu{c}/topology/core_id").read().strip()
         if core not in cores:
             cores.add(core)
@@ -340,7 +354,11 @@ def prepare(server, dp, snapshot):
 def run(server, snapshot, dp, n, cpus, tag, out_dir, warmup, window):
     os.makedirs(out_dir, exist_ok=True)
     cpus = pick_cpus(cpus)
-    res = {"tag": tag, "N": n, "cpus": cpus, "container_cpuset_at_start": container_cpuset(), "warmup_s": warmup, "window_s": window,
+    smt = {c: siblings(c) for c in expand(cpus)}
+    res = {"tag": tag, "N": n, "cpus": cpus, "container_cpuset_at_start": container_cpuset(),
+           "harness_cpus": harness_cpus(),
+           "harness_reserved": sorted({x for h in harness_cpus() for x in siblings(h)}),
+           "smt_siblings": {str(k): v for k, v in smt.items()}, "warmup_s": warmup, "window_s": window,
            "snapshot_sha256": subprocess.run(["sha256sum", snapshot], capture_output=True,
                                              text=True).stdout.split()[0]}
     props = dict(l.strip().split("=", 1) for l in open(os.path.join(server, "server.properties"))
@@ -470,6 +488,13 @@ def validate(paths):
         checks = {
             "process cwd is the server": r["cwd"].endswith("/server"),
             "vanilla watchdog off (max-tick-time=-1)": r.get("max_tick_time") == "-1",
+            "mailboxAudit off (primary run)":
+                "-Dnestworld.mailboxAudit=true" not in r["jvm_args"] or r["tag"].startswith("diag-"),
+            "one CPU per physical core": all(
+                set(v) & set(map(int, r["cpus"].split(","))) == {int(k)}
+                for k, v in r.get("smt_siblings", {}).items()) and "smt_siblings" in r,
+            "harness CPUs (and siblings) not used by the server":
+                not set(r.get("harness_reserved", [])) & set(map(int, r["cpus"].split(","))),
             "affinity == requested cpus": r["affinity"] == r["cpus"],
             "affinity stable in window": r["affinity_seen"] == [r["cpus"]],
             "container cpuset stable in window": len(r["container_cpuset_seen"]) == 1,
@@ -499,13 +524,16 @@ def validate(paths):
     for r, valid in zip(runs, verdicts):
         if valid:  # spread is a property of valid runs only
             by_n.setdefault(r["N"], []).append(r["primary_ticks_per_s"])
+    # owner gate (2026-10-04): CV <= 5% VALID; 5-10% UNSTABLE, repeat; > 10% INVALID
+    # ENVIRONMENT, investigate. Only CV <= 5% enters the PERF-1A dataset. Needs >= 3 valid runs.
     spread_ok = True
     for n_, v in sorted(by_n.items()):
         mean = sum(v) / len(v)
         cv = (sum((x - mean) ** 2 for x in v) / len(v)) ** 0.5 / mean if len(v) > 1 else 0.0
-        spread_ok &= cv <= 0.05
-        print(f"N={n_}: runs={len(v)} primary mean={mean:.0f}/s CV={cv * 100:.1f}% "
-              f"({'ok' if cv <= 0.05 else 'SPREAD TOO HIGH'})")
+        tier = ("TOO FEW VALID RUNS" if len(v) < 3 else "VALID" if cv <= 0.05
+                else "UNSTABLE - repeat" if cv <= 0.10 else "INVALID ENVIRONMENT - investigate")
+        spread_ok &= tier == "VALID"
+        print(f"N={n_}: valid runs={len(v)} primary mean={mean:.0f}/s CV={cv * 100:.1f}% {tier}")
     layouts = {json.dumps(r["layout_start"]) for r in runs}
     same = len(layouts) == 1
     print(f"same topology across runs: {same}")
@@ -516,6 +544,8 @@ def validate(paths):
 
 def main():
     a = sys.argv[1:]
+    if harness_cpus():
+        os.sched_setaffinity(0, harness_cpus())  # the driver, jcmd and jfr stay off benchmark CPUs
     if a and a[0] == "prepare":
         prepare(*a[1:4])
     elif a and a[0] == "run":
