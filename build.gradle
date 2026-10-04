@@ -1676,6 +1676,147 @@ project(':forge') {
         }
     }
 
+    // SOURCE-PATCH-INTEGRITY-001 (docs/contracts/SOURCE-PATCH-INTEGRITY-001-spec.md). The committed
+    // patches/ are the ONLY source of truth; projects/forge/src/main/java is a mutable, DERIVED
+    // development representation of them. compileJava compiles that tree, and nothing in the normal
+    // graph regenerates it, so a tree left behind by a `git pull` used to compile silently. Fail
+    // closed: before compileJava, compare the tree with what the CURRENT generation inputs produce
+    // (srg2mcp/output.zip = exactly what extractMapped would write; computed without touching the
+    // tree) and fail with a three-way diagnosis on any mismatch. The build never regenerates the
+    // tree itself: that would destroy uncommitted developer edits. Regeneration stays explicit
+    // (setup / extractMapped), and is itself guarded against discarding edits.
+    def spiPatchedSrc = file('src/main/java')
+    def spiStateFile = file('.patch-state')            // projects/forge/.patch-state (ignored, survives `clean`)
+    def spiPatchesDir = file("$rootDir/patches")
+    def spiCanon = { java.security.MessageDigest root, String rel, byte[] content ->
+        root.update(rel.getBytes('UTF-8')); root.update((byte) 0)
+        root.update(java.security.MessageDigest.getInstance('SHA-256').digest(content)); root.update((byte) 0)
+    }
+    def spiDirDigest = { File dir ->
+        def md = java.security.MessageDigest.getInstance('SHA-256')
+        if (!dir.exists()) return 'absent'
+        def files = []
+        dir.eachFileRecurse(groovy.io.FileType.FILES) { files << it }
+        files.collect { [dir.toPath().relativize(it.toPath()).toString().replace('\\', '/'), it] }
+             .sort { it[0] }
+             .each { spiCanon(md, it[0], it[1].bytes) }
+        md.digest().encodeHex().toString() + ':' + files.size()
+    }
+    def spiZipDigest = { File zip ->
+        def md = java.security.MessageDigest.getInstance('SHA-256')
+        def zf = new java.util.zip.ZipFile(zip)
+        try {
+            def entries = zf.entries().toList().findAll { !it.directory }.sort { it.name }
+            entries.each { e -> spiCanon(md, e.name, zf.getInputStream(e).bytes) }
+            md.digest().encodeHex().toString() + ':' + entries.size()
+        } finally { zf.close() }
+    }
+    def spiReadState = { ->
+        if (!spiStateFile.exists()) return null
+        def p = new Properties(); spiStateFile.withInputStream { p.load(it) }; p
+    }
+    def spiWriteState = { String generated, String tree ->
+        def p = new Properties()
+        p.setProperty('baseGeneratedDigest', generated); p.setProperty('baseTreeDigest', tree)
+        spiStateFile.withOutputStream { p.store(it, 'SOURCE-PATCH-INTEGRITY-001 baseline: last known consistent state (tree == generation output)') }
+    }
+    def spiGitDirty = { ->
+        def out = new ByteArrayOutputStream()
+        project.exec { commandLine 'git', '-C', rootDir.absolutePath, 'status', '--porcelain'; standardOutput = out }
+        !out.toString().trim().isEmpty()
+    }
+
+    def verifySourcePatchIntegrity = tasks.register('verifySourcePatchIntegrity') {
+        group = 'verification'
+        description = 'Fails the build unless the generated patched source tree equals what the committed patches generate.'
+        dependsOn 'srg2mcp'
+        outputs.upToDateWhen { false }
+        doLast {
+            File expectedZip = tasks.named('srg2mcp').get().output.get().asFile
+            String generated = spiZipDigest(expectedZip)
+            String tree = spiDirDigest(spiPatchedSrc)
+            String patchSet = spiDirDigest(spiPatchesDir)
+            project.ext.spiProvenance = [
+                    'Git-Commit'             : gradleutils.gitInfo.abbreviatedId,
+                    'Git-Dirty'              : String.valueOf(spiGitDirty()),
+                    'Patch-Set-Digest'       : patchSet,
+                    'Generated-Source-Digest': tree,
+                    'Source-Patch-Integrity' : 'MATCH']
+            if (tree == generated) {
+                spiWriteState(generated, tree)
+                logger.lifecycle("SOURCE-PATCH-INTEGRITY: MATCH (generated source == committed patch inputs, ${tree})")
+                return
+            }
+            def base = spiReadState()
+            String state, action
+            if (base == null) {
+                state = 'UNKNOWN_BASELINE'
+                action = 'No record of the last consistent state, so the direction cannot be determined. If the tree holds no ' +
+                         'local work, regenerate it explicitly (./gradlew :forge:extractMapped -PforceRegeneratePatchedSources=true); ' +
+                         'otherwise run :forge:genPatches and reconcile first.'
+            } else {
+                boolean genChanged = base.getProperty('baseGeneratedDigest') != generated
+                boolean treeChanged = base.getProperty('baseTreeDigest') != tree
+                if (genChanged && !treeChanged) {
+                    state = 'PATCHES_AHEAD'
+                    action = 'Generated source is stale relative to the committed patches (e.g. after git pull). ' +
+                             'Regenerate patched sources: ./gradlew :forge:extractMapped'
+                } else if (!genChanged && treeChanged) {
+                    state = 'TREE_AHEAD'
+                    action = 'Generated source contains changes not represented by patches. ' +
+                             'Run ./gradlew :forge:genPatches, keep only the intended patch changes, and rebuild.'
+                } else if (genChanged && treeChanged) {
+                    state = 'DIVERGED'
+                    action = 'Both the patches and the generated source changed independently. Manual reconciliation required: ' +
+                             'save your tree edits (genPatches into a scratch branch), regenerate, then reapply.'
+                } else {
+                    state = 'INCONSISTENT_BASELINE'
+                    action = 'Baseline claims consistency but tree != generation output; delete projects/forge/.patch-state only ' +
+                             'after checking the tree, then regenerate or genPatches.'
+                }
+            }
+            // Reconciliation path: genPatches compiles the tree (applyRangeMapBase -> extractRangeMap), so it
+            // would be blocked by the very state it exists to resolve. TREE_AHEAD -- and only TREE_AHEAD -- is
+            // tolerated when genPatches is in this build AND no task that produces a patched artifact is.
+            // PATCHES_AHEAD / DIVERGED still fail: genPatches from a stale tree would silently revert committed
+            // patch content (the mechanism of the 2026-09-23 incident).
+            def graph = gradle.taskGraph
+            // (:forge:jar is NOT listed: it is the intermediate MCP-named jar, part of genPatches' own graph via
+            // validateDeprecations; everything shipped is derived through reobfJar, which IS listed.)
+            def artifactTasks = [':forge:reobfJar', ':forge:universalJar', ':forge:signUniversalJar',
+                                 ':forge:installerJar', ':forge:genServerBinPatches', ':forge:genClientBinPatches']
+            def artifactsInGraph = artifactTasks.findAll { graph.hasTask(it) }
+            if (state == 'TREE_AHEAD' && graph.hasTask(':forge:genPatches') && artifactsInGraph.isEmpty()) {
+                logger.lifecycle("SOURCE-PATCH-INTEGRITY: TREE_AHEAD tolerated for :forge:genPatches (reconciliation); no artifact task in this build")
+                project.ext.spiProvenance['Source-Patch-Integrity'] = 'TREE_AHEAD_RECONCILIATION'
+                return
+            }
+            if (state == 'TREE_AHEAD' && graph.hasTask(':forge:genPatches')) {
+                action = 'genPatches may not run in the same build as artifact tasks ' + artifactsInGraph + '. Run :forge:genPatches alone first.'
+            }
+            throw new GradleException("SOURCE-PATCH-INTEGRITY-001 ${state}: projects/forge/src/main/java does not match the committed patch inputs.\n" +
+                    "  generation output: ${generated}\n  generated tree:    ${tree}\n  baseline:          ${base == null ? 'none' : base.getProperty('baseGeneratedDigest') + ' / ' + base.getProperty('baseTreeDigest')}\n" +
+                    "  ${action}")
+        }
+    }
+    // [4]/[14]: every production patched artifact (jar -> reobfJar -> binpatches -> universal/installer)
+    // is derived from compileJava's output, so this single edge gates all of them.
+    tasks.named('compileJava') { dependsOn verifySourcePatchIntegrity }
+
+    // [3]: the explicit regeneration must not destroy uncommitted tree edits either.
+    tasks.named('extractMapped') {
+        doFirst {
+            if (!spiPatchedSrc.exists() || project.findProperty('forceRegeneratePatchedSources') == 'true') return
+            def base = spiReadState()
+            String tree = spiDirDigest(spiPatchedSrc)
+            if (base == null || base.getProperty('baseTreeDigest') != tree) {
+                throw new GradleException('SOURCE-PATCH-INTEGRITY-001: refusing to overwrite projects/forge/src/main/java: ' +
+                        (base == null ? 'no baseline exists' : 'it has edits since the last consistent state') +
+                        '. Run :forge:genPatches to keep them, or pass -PforceRegeneratePatchedSources=true to discard them.')
+            }
+        }
+    }
+
     // PKG-002 Gate 2 (S5): the provider SPI ABI this Core build was compiled against, GENERATED from
     // Core's own bytecode -- every reference from Core (net/nestworld/** in this project) to a
     // net/nestworld/modapi/** member, plus every modapi interface a Core class implements and the
@@ -1815,6 +1956,7 @@ project(':forge') {
         dependsOn downloadCrowdin
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 
+        dependsOn verifySourcePatchIntegrity
         doFirst {
             MANIFESTS.each{ pkg, values ->
                 if (pkg == '/') {
@@ -1823,6 +1965,9 @@ project(':forge') {
                     manifest.attributes(values, pkg)
                 }
             }
+            // SOURCE-PATCH-INTEGRITY-001 [10]: provenance of the source state this artifact was built from.
+            // Git-Dirty=true means: NOT reproducible from Git-Commit alone.
+            manifest.attributes(project.ext.spiProvenance)
         }
 
         // Packaging invariants (PKG-001, PKG-002). Each of these failed silently at least once
