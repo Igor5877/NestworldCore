@@ -1,0 +1,539 @@
+#!/usr/bin/env python3
+"""PERF-1A harness driver (docs/contracts/PERF-1A-spec.md). Measures; changes nothing in Core.
+
+  perf1.py prepare <server> <datapack-dir> <snapshot.tar>
+      boot once, build the W1 walls and forceloads (no entities), save, stop, archive.
+  perf1.py run <server> <snapshot.tar> <datapack-dir> <N> <cpu-list> <tag> <out-dir>
+               [--warmup S] [--window S]
+      restore the snapshot, boot pinned to <cpu-list>, build the region layout on markers,
+      summon the cows into it, warm up, measure, stop; writes <out-dir>/<tag>.json plus gc/jfr/console files.
+  perf1.py validate <run.json>...
+      applies the spec's validity checks and prints one verdict per run.
+
+The server's own process is identified by its cwd (never by command-line pattern) and every
+run records that cwd.
+"""
+import json, os, re, shutil, socket, struct, subprocess, sys, tarfile, time
+
+RCON_PORT, RCON_PASS = 25622, "perf1"
+CLK = os.sysconf("SC_CLK_TCK")
+
+
+# ---------------------------------------------------------------- rcon
+class Rcon:
+    def __init__(self, port=RCON_PORT, password=RCON_PASS):
+        self.s = socket.create_connection(("127.0.0.1", port), timeout=120)
+        self._send(1, 3, password)
+        self._recv()
+
+    def _send(self, i, t, body):
+        d = struct.pack("<ii", i, t) + body.encode() + b"\0\0"
+        self.s.sendall(struct.pack("<i", len(d)) + d)
+
+    def _recv(self):
+        n = struct.unpack("<i", self._read(4))[0]
+        d = self._read(n)
+        return d[8:-2].decode(errors="replace")
+
+    def _read(self, n):
+        b = b""
+        while len(b) < n:
+            chunk = self.s.recv(n - len(b))
+            if not chunk:
+                raise ConnectionError("rcon closed")
+            b += chunk
+        return b
+
+    def cmd(self, c):
+        self._send(2, 2, c)
+        return self._recv()
+
+
+def strip(s):
+    return re.sub(r"§.", "", s)
+
+
+# ---------------------------------------------------------------- process
+def server_pid(server):
+    """The java process whose cwd is the server root (cmdline patterns are not trusted)."""
+    real = os.path.realpath(server)
+    for p in os.listdir("/proc"):
+        if not p.isdigit():
+            continue
+        try:
+            if os.path.realpath(f"/proc/{p}/cwd") == real and \
+                    os.path.basename(os.readlink(f"/proc/{p}/exe")).startswith("java"):
+                return int(p)
+        except OSError:
+            continue
+    return None
+
+
+def container_cpuset():
+    try:
+        rel = open("/proc/self/cgroup").read().strip().split(":", 2)[2]
+        return open(f"/sys/fs/cgroup{rel}/cpuset.cpus.effective").read().strip()
+    except OSError:
+        return open("/proc/self/status").read().split("Cpus_allowed_list:")[1].split()[0]
+
+
+def expand(cpulist):
+    out = []
+    for part in cpulist.split(","):
+        a, _, b = part.partition("-")
+        out += range(int(a), int(b or a) + 1)
+    return out
+
+
+def pick_cpus(spec):
+    """'auto:N' = N CPUs of the CURRENT container cpuset on distinct physical cores. The LXD
+    host may move the container between cores, so a fixed list can go stale (pilot finding)."""
+    if not spec.startswith("auto:"):
+        return spec
+    n = int(spec.split(":")[1])
+    chosen, cores = [], set()
+    for c in expand(container_cpuset()):
+        core = open(f"/sys/devices/system/cpu/cpu{c}/topology/core_id").read().strip()
+        if core not in cores:
+            cores.add(core)
+            chosen.append(c)
+    if len(chosen) < n:
+        sys.exit(f"need {n} distinct physical cores, container has {chosen}")
+    return ",".join(map(str, chosen[:n]))
+
+
+def affinity(pid):
+    return open(f"/proc/{pid}/status").read().split("Cpus_allowed_list:")[1].split()[0]
+
+
+def boot(server, console, cpus=None):
+    if server_pid(server):
+        sys.exit("a server is already running in " + server)
+    cmd = ["bash", "run.sh", "nogui"]
+    if cpus:
+        cmd = ["taskset", "-c", cpus] + cmd
+    out = open(console, "w")
+    subprocess.Popen(cmd, cwd=server, stdout=out, stderr=subprocess.STDOUT,
+                     stdin=subprocess.DEVNULL, start_new_session=True)
+    for _ in range(600):
+        time.sleep(1)
+        with open(console, errors="replace") as f:
+            if "Done (" in f.read():
+                break
+    else:
+        sys.exit("server did not finish booting")
+    pid = server_pid(server)
+    if not pid:
+        sys.exit("no java process with cwd " + server)
+    time.sleep(3)
+    return pid
+
+
+def stop(pid, rc):
+    try:
+        rc.cmd("stop")
+    except Exception:
+        pass
+    for _ in range(180):
+        if not os.path.exists(f"/proc/{pid}"):
+            return True
+        time.sleep(1)
+    return False
+
+
+def thread_cpu(pid):
+    """CPU seconds per thread group: region workers, main, GC, other."""
+    groups = {}
+    for tid in os.listdir(f"/proc/{pid}/task"):
+        try:
+            with open(f"/proc/{pid}/task/{tid}/comm") as f:
+                name = f.read().strip()
+            with open(f"/proc/{pid}/task/{tid}/stat") as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+        except OSError:
+            continue
+        cpu = (int(fields[11]) + int(fields[12])) / CLK
+        if name.startswith("NestWorld-Regio"):
+            g = "region"
+        elif name == "Server thread":
+            g = "main"
+        elif name.startswith(("GC Thread", "G1 ")):
+            g = "gc"
+        else:
+            g = "other"
+        groups[g] = groups.get(g, 0.0) + cpu
+    groups["total"] = sum(groups.values())
+    return groups
+
+
+# ---------------------------------------------------------------- parsing
+def gametime(rc):
+    m = re.search(r"(\d+)", strip(rc.cmd("time query gametime")))
+    return int(m.group(1))
+
+
+def entity_count(rc, sel):
+    m = re.search(r"count: (\d+)", strip(rc.cmd(f"execute if entity {sel}")))
+    return int(m.group(1)) if m else 0
+
+
+def fairness(rc):
+    """[(region id, owned, ticked, deferred)] from /nestworld entityfairness."""
+    out = strip(rc.cmd("nestworld entityfairness"))
+    return [tuple(map(int, m)) for m in
+            re.findall(r"#(\d+) Entities (\d+)\s+Ticked (\d+)\s+Deferred (\d+)", out)]
+
+
+def layout(rc):
+    """Sorted region ids with their bounds, from /nestworld status <dim> full."""
+    out = strip(rc.cmd("nestworld status minecraft:overworld full"))
+    regs = re.findall(r"#(\d+) \[([^\]]+)\]", out)
+    return sorted((int(i), b) for i, b in regs), out
+
+
+def queue_depth_max(rc):
+    """Max region mailbox depth right now (Core exposes it via interactionwaitbudget)."""
+    m = re.search(r"regionQueueDepthMax=(\d+)", strip(rc.cmd("nestworld interactionwaitbudget")))
+    return int(m.group(1)) if m else None
+
+
+def mspt(rc):
+    out = strip(rc.cmd("nestworld mspt"))
+    m = re.search(r"avg=([\d.]+) p50=([\d.]+) p95=([\d.]+) p99=([\d.]+) max=([\d.]+)", out)
+    return dict(zip(["avg", "p50", "p95", "p99", "max"], map(float, m.groups()))) if m else None
+
+
+def counter_at(server, t):
+    """(timestamp_ms, cumulative living ticks) of the counter line closest to wall time t."""
+    best = None
+    with open(os.path.join(server, "perf1-counter.csv")) as f:
+        for line in f:
+            ts, n = line.strip().split(",")
+            ts, n = int(ts), int(n)
+            if best is None or abs(ts / 1000 - t) < abs(best[0] / 1000 - t):
+                best = (ts, n)
+    return best
+
+
+# ---------------------------------------------------------------- layout build
+def merge_all(rc, log):
+    """Merge sibling regions until the overworld is one region. Loading-time load can make
+    the automatic splitter cut the world before the harness gets control (Core's region cap
+    is never below 4), so the layout is always rebuilt from a single root."""
+    for _ in range(64):
+        ids = [i for i, _ in layout(rc)[0]]
+        if len(ids) == 1:
+            return ids[0]
+        merged = False
+        for i in ids:
+            for j in ids:
+                if i < j:
+                    out = strip(rc.cmd(f"nestworld merge {i} {j}"))
+                    if out.startswith("Merged"):
+                        log.append(out)
+                        merged = True
+                        break
+            if merged:
+                break
+        if not merged:
+            raise RuntimeError(f"no sibling pair to merge among {ids}")
+        time.sleep(1)
+    raise RuntimeError("merge_all did not converge")
+
+
+def wait_loaded(rc, total, timeout=600):
+    """All cows loaded and owned by regions (entity loading after boot is gradual)."""
+    end = time.time() + timeout
+    while time.time() < end:
+        if entity_count(rc, "@e[tag=perf1]") == total and \
+                sum(o for _, o, _, _ in fairness(rc)) == total:
+            return
+        time.sleep(5)
+    raise RuntimeError("cows did not finish loading")
+
+
+def build_layout(rc, cells, log):
+    """One region per cell, built while the world holds no load (see gen_datapack.py):
+    merge to a single root, steer 15 manual splits with markers, then summon the cows."""
+    n_cells = len(cells["cells"])
+    merge_all(rc, log)
+    rc.cmd("function perf1:markers")
+    wait_owned(rc, n_cells)
+    regs = {rid: owned for rid, owned, _, _ in fairness(rc)}
+    root = [rid for rid, owned in regs.items() if owned == n_cells]
+    if len(root) != 1:
+        raise RuntimeError(f"no single region holds all {n_cells} cell markers: {regs}")
+    work = [(root[0], cells["cells"])]
+    splits = 0
+    while work:
+        rid, group = work.pop()
+        if len(group) == 1:
+            continue
+        upper = group[len(group) // 2]
+        # Core cuts at the chunk of the median owned entity and keeps that chunk in the lower
+        # child. One marker per cell plus this gap marker, in the chunk just before the upper
+        # cell, makes the gap marker the median, so the cut falls between the cells.
+        mx, mz = upper["chunk_x"] * 16 - 4, upper["chunk_z"] * 16 - 4
+        rc.cmd(f"summon minecraft:marker {mx} -60 {mz} {{Tags:[\"perf1m\"]}}")
+        wait_owned(rc, len(group) + 1, rid)
+        out = strip(rc.cmd(f"nestworld split {rid}"))
+        rc.cmd("kill @e[type=minecraft:marker,tag=perf1m]")
+        log.append(out)
+        sm = re.search(r"Split #\d+ -> #(\d+) \+ #(\d+)", out)
+        if not sm:
+            raise RuntimeError(f"split of #{rid} failed: {out}")
+        splits += 1
+        a, b = int(sm.group(1)), int(sm.group(2))
+        work.append((a, group[:len(group) // 2]))
+        work.append((b, group[len(group) // 2:]))
+    time.sleep(2)
+    per = sorted(owned for _, owned, _, _ in fairness(rc))
+    if per != [1] * n_cells:
+        raise RuntimeError(f"markers are not one per region: {per}")
+    rc.cmd("kill @e[type=minecraft:marker,tag=perf1cell]")
+    rc.cmd("function perf1:cows")
+    m = cells["cows_per_cell"]
+    wait_loaded(rc, m * n_cells)
+    per = sorted(owned for _, owned, _, _ in fairness(rc))
+    if per != [m] * n_cells:
+        raise RuntimeError(f"layout is not one cell per region: {per}")
+    return splits
+
+
+def wait_owned(rc, n, rid=None, timeout=60):
+    """Wait until the region (or all regions) own n entities."""
+    end = time.time() + timeout
+    while time.time() < end:
+        f = fairness(rc)
+        have = sum(o for r, o, _, _ in f if rid is None or r == rid)
+        if have == n:
+            return
+        time.sleep(0.5)
+    raise RuntimeError(f"expected {n} owned entities in {rid or 'all regions'}")
+
+
+# ---------------------------------------------------------------- commands
+def prepare(server, dp, snapshot):
+    console = snapshot + ".console.log"
+    pid = boot(server, console)
+    rc = Rcon()
+    dst = os.path.join(server, "world", "datapacks", "perf1")
+    shutil.rmtree(dst, ignore_errors=True)
+    shutil.copytree(dp, dst)
+    rc.cmd("reload")
+    time.sleep(5)
+    print(strip(rc.cmd("function perf1:setup")))
+    time.sleep(10)
+    have = entity_count(rc, "@e")
+    print(f"entities in snapshot: {have}")
+    rc.cmd("save-all flush")
+    time.sleep(5)
+    stop(pid, rc)
+    with tarfile.open(snapshot, "w") as t:
+        t.add(os.path.join(server, "world"), arcname="world")
+    digest = subprocess.run(["sha256sum", snapshot], capture_output=True, text=True).stdout.split()[0]
+    print(f"snapshot {snapshot} sha256 {digest}")
+    if have != 0:
+        sys.exit("snapshot must hold no entities")
+
+
+def run(server, snapshot, dp, n, cpus, tag, out_dir, warmup, window):
+    os.makedirs(out_dir, exist_ok=True)
+    cpus = pick_cpus(cpus)
+    res = {"tag": tag, "N": n, "cpus": cpus, "container_cpuset_at_start": container_cpuset(), "warmup_s": warmup, "window_s": window,
+           "snapshot_sha256": subprocess.run(["sha256sum", snapshot], capture_output=True,
+                                             text=True).stdout.split()[0]}
+    props = dict(l.strip().split("=", 1) for l in open(os.path.join(server, "server.properties"))
+                 if "=" in l and not l.startswith("#"))
+    # the N=1 point is deliberately below 4 TPS; the vanilla watchdog would stop the server
+    # there without any long tick (lag behind nextTickTime is only caught up every 300 ticks)
+    res["max_tick_time"] = props.get("max-tick-time", "60000")
+    with open(os.path.join(server, "user_jvm_args.txt")) as f:
+        res["jvm_args"] = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+    res["jvm_args"] = [a for a in res["jvm_args"] if not a.startswith("-Xlog")]
+    cells = json.load(open(os.path.join(dp, "cells.json")))
+    shutil.rmtree(os.path.join(server, "world"), ignore_errors=True)
+    for f in ("perf1-counter.csv",):
+        if os.path.exists(os.path.join(server, f)):
+            os.remove(os.path.join(server, f))
+    with tarfile.open(snapshot) as t:
+        t.extractall(server)
+
+    gclog = os.path.abspath(os.path.join(out_dir, f"{tag}-gc.log"))
+    args_file = os.path.join(server, "user_jvm_args.txt")
+    base_args = open(args_file).read()
+    with open(args_file, "w") as f:
+        f.write(base_args.rstrip("\n") + f"\n-Xlog:gc*:file={gclog}:uptime,time\n")
+    try:
+        pid = boot(server, os.path.join(out_dir, f"{tag}-console.log"), cpus)
+    finally:
+        with open(args_file, "w") as f:
+            f.write(base_args)
+    res["pid"], res["cwd"] = pid, os.path.realpath(f"/proc/{pid}/cwd")
+    res["affinity"] = affinity(pid)
+    rc = Rcon()
+    log = []
+    res["layout_splits"] = build_layout(rc, cells, log)
+    res["layout_log"] = log
+    res["entities"] = entity_count(rc, "@e[tag=perf1]")
+    res["non_cow_entities"] = entity_count(rc, "@e[tag=!perf1]")
+    time.sleep(warmup)
+
+    # ---- measurement window
+    jfr = os.path.abspath(os.path.join(out_dir, f"{tag}.jfr"))
+    lay0, _ = layout(rc)
+    t0 = time.time()
+    g0 = gametime(rc)
+    cpu0 = thread_cpu(pid)
+    subprocess.run(["jcmd", str(pid), "JFR.start", "name=perf1", f"filename={jfr}",
+                    "settings=default"], capture_output=True)
+    blocks, fair, g_last = [], [], g0
+    seen_aff, seen_cpuset = {affinity(pid)}, {container_cpuset()}
+    depth = []
+    while time.time() - t0 < window:
+        time.sleep(1)
+        seen_aff.add(affinity(pid))
+        seen_cpuset.add(container_cpuset())
+        g = gametime(rc)
+        if g - g_last >= 100:                      # non-overlapping 100-tick blocks
+            blocks.append(mspt(rc))
+            g_last = gametime(rc)
+        if len(depth) < int((time.time() - t0) // 5):
+            depth.append(queue_depth_max(rc))
+        if len(fair) < int((time.time() - t0) // 30):
+            fair.append(fairness(rc))
+    g1 = gametime(rc)
+    t1 = time.time()
+    cpu1 = thread_cpu(pid)
+    subprocess.run(["jcmd", str(pid), "JFR.stop", "name=perf1"], capture_output=True)
+    lay1, status_full = layout(rc)
+    fair.append(fairness(rc))
+    # mailbox latency is not exposed by Core unless -Dnestworld.mailboxAudit=true (owner decision);
+    # depth is sampled every 5 s, the lifecycle/audit counters are read once at the end
+    res["mailbox_depth_max_samples"] = depth
+    res["pressure"] = strip(rc.cmd("nestworld pressure"))
+    res["status_full_end"] = status_full
+    res["entities_end"] = entity_count(rc, "@e[tag=perf1]")
+    c0, c1 = counter_at(server, t0), counter_at(server, t1)
+
+    dt = t1 - t0
+    res.update({
+        "window_wall_s": dt, "gametime": [g0, g1],
+        "tps": (g1 - g0) / dt,
+        "primary_ticks_per_s": (c1[1] - c0[1]) / ((c1[0] - c0[0]) / 1000.0),
+        "counter_span_ms": c1[0] - c0[0],
+        "mspt_blocks": blocks,
+        "layout_start": lay0, "layout_end": lay1,
+        "deferred_samples": [sum(d for _, _, _, d in s) for s in fair],
+        "regions_with_entities": [len(s) for s in fair],
+        "cpu_s": {k: cpu1.get(k, 0) - cpu0.get(k, 0) for k in cpu1},
+        "affinity_seen": sorted(seen_aff), "container_cpuset_seen": sorted(seen_cpuset),
+        "jfr": jfr, "gc_log": gclog,
+    })
+    res["secondary_ticks_per_s"] = res["tps"] * res["entities"]
+    res["cpu_util"] = {k: v / (dt * n) for k, v in res["cpu_s"].items()}
+    res["stopped_cleanly"] = stop(pid, rc)
+    res.update(jfr_summary(jfr))
+    with open(os.path.join(out_dir, f"{tag}.json"), "w") as f:
+        json.dump(res, f, indent=1)
+    print(json.dumps({k: res[k] for k in ("tag", "N", "tps", "primary_ticks_per_s",
+                                          "secondary_ticks_per_s", "deferred_samples")}))
+
+
+def jfr_summary(path):
+    """GC pause total/count and sampled allocation weight in the window, from the JFR file."""
+    out = {}
+    try:
+        p = subprocess.run(["jfr", "print", "--json", "--events",
+                            "jdk.GarbageCollection,jdk.ObjectAllocationSample", path],
+                           capture_output=True, text=True, timeout=600)
+        ev = json.loads(p.stdout)["recording"]["events"]
+    except Exception as e:  # recorded, never hidden
+        return {"jfr_error": str(e)}
+    gcs = [e for e in ev if e["type"] == "jdk.GarbageCollection"]
+
+    def dur(s):  # ISO-8601 duration "PT0.0123S"
+        m = re.match(r"PT(?:(\d+)M)?([\d.]+)S", s)
+        return (int(m.group(1) or 0) * 60 + float(m.group(2))) if m else 0.0
+    out["gc_count"] = len(gcs)
+    out["gc_pause_total_s"] = sum(dur(e["values"]["sumOfPauses"]) for e in gcs)
+    out["alloc_sampled_bytes"] = sum(e["values"]["weight"] for e in ev
+                                     if e["type"] == "jdk.ObjectAllocationSample")
+    return out
+
+
+def validate(paths):
+    runs = [json.load(open(p)) for p in paths]
+    ok_all = True
+    verdicts = []
+    for r in runs:
+        checks = {
+            "process cwd is the server": r["cwd"].endswith("/server"),
+            "vanilla watchdog off (max-tick-time=-1)": r.get("max_tick_time") == "-1",
+            "affinity == requested cpus": r["affinity"] == r["cpus"],
+            "affinity stable in window": r["affinity_seen"] == [r["cpus"]],
+            "container cpuset stable in window": len(r["container_cpuset_seen"]) == 1,
+            "CPU used <= N cores": r["cpu_s"]["total"] / r["window_wall_s"] <= r["N"] * 1.02,
+            "layout: 15 splits, one cell per region": r["layout_splits"] == 15,
+            "16 regions in total": len(r["layout_start"]) == 16,
+            "only workload entities": r["non_cow_entities"] == 0,
+            "layout unchanged in window (split=0, merge=0)": r["layout_start"] == r["layout_end"],
+            "deferred = 0": all(d == 0 for d in r["deferred_samples"]),
+            "16 regions with entities": all(n == 16 for n in r["regions_with_entities"]),
+            "entity count stable": r["entities"] == r["entities_end"],
+            "not truncated by the 20 TPS cap": r["tps"] < 19.0 and
+                sorted(b["p50"] for b in r["mspt_blocks"])[len(r["mspt_blocks"]) // 2] >= 50.0,
+            "primary ~ secondary (1%)":
+                abs(r["primary_ticks_per_s"] / r["secondary_ticks_per_s"] - 1) < 0.01,
+            "mspt blocks collected": len(r["mspt_blocks"]) >= 2 and all(r["mspt_blocks"]),
+            "gc/jfr collected": "gc_count" in r and os.path.getsize(r["gc_log"]) > 0,
+            "mailbox depth collected": len(r.get("mailbox_depth_max_samples", [])) >= 2 and
+                None not in r["mailbox_depth_max_samples"],
+            "stopped cleanly": r["stopped_cleanly"],
+        }
+        bad = [k for k, v in checks.items() if not v]
+        ok_all &= not bad
+        verdicts.append(not bad)
+        print(f"{r['tag']}: {'VALID' if not bad else 'VOID: ' + '; '.join(bad)}")
+    by_n = {}
+    for r, valid in zip(runs, verdicts):
+        if valid:  # spread is a property of valid runs only
+            by_n.setdefault(r["N"], []).append(r["primary_ticks_per_s"])
+    spread_ok = True
+    for n_, v in sorted(by_n.items()):
+        mean = sum(v) / len(v)
+        cv = (sum((x - mean) ** 2 for x in v) / len(v)) ** 0.5 / mean if len(v) > 1 else 0.0
+        spread_ok &= cv <= 0.05
+        print(f"N={n_}: runs={len(v)} primary mean={mean:.0f}/s CV={cv * 100:.1f}% "
+              f"({'ok' if cv <= 0.05 else 'SPREAD TOO HIGH'})")
+    layouts = {json.dumps(r["layout_start"]) for r in runs}
+    same = len(layouts) == 1
+    print(f"same topology across runs: {same}")
+    print(f"same jvm args across runs: {len({json.dumps(r['jvm_args']) for r in runs}) == 1}")
+    print(f"same snapshot across runs: {len({r['snapshot_sha256'] for r in runs}) == 1}")
+    return 0 if ok_all and same and spread_ok else 1
+
+
+def main():
+    a = sys.argv[1:]
+    if a and a[0] == "prepare":
+        prepare(*a[1:4])
+    elif a and a[0] == "run":
+        opts = {"--warmup": 120, "--window": 300}
+        pos = []
+        it = iter(a[1:])
+        for x in it:
+            if x in opts:
+                opts[x] = int(next(it))
+            else:
+                pos.append(x)
+        server, snap, dp, n, cpus, tag, out = pos
+        run(server, snap, dp, int(n), cpus, tag, out, opts["--warmup"], opts["--window"])
+    elif a and a[0] == "validate":
+        sys.exit(validate(a[1:]))
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()
