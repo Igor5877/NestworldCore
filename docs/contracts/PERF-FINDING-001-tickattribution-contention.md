@@ -33,24 +33,32 @@ independent-regions premise and is exactly what PERF-1A must surface.
    76% used): 298 `jdk.JavaMonitorEnter` events ≥ 20 ms in 60 s, **8.98 s blocked**. 298 of the
    299 events are on `ConcurrentHashMap$TreeBin` at `TickAttribution.recordChunkCost`. Events
    under 20 ms are not recorded, so this is a lower bound.
-2. **Collapse at N=1** (16 regions × 2500 cows, one core): ticks of about 1.8 s, then a single
-   tick of **60 s**, and the vanilla ServerWatchdog stopped the server.
+2. **Snapshot at N=1** (16 regions × 2500 cows, one core). The crash-report thread dump shows
+   region threads 7, 8, 9, 13, 14 and others `BLOCKED on ConcurrentHashMap$TreeBin@3bec21e4
+   owned by NestWorld-Region-15`, all in `TickAttribution.recordChunkCost`. A second convoy is on
+   `TreeBin@63897424`, owned by Region-21.
 
-   Crash-report thread dump: region threads 7, 8, 9, 13, 14 and others are `BLOCKED on
-   ConcurrentHashMap$TreeBin@3bec21e4 owned by NestWorld-Region-15`, all in
-   `TickAttribution.recordChunkCost`. A second convoy is on `TreeBin@63897424`, owned by
-   Region-21.
+   **Correction (same day):** this record first said the convoy produced a 60 s tick. That is
+   wrong:
+   - Real ticks were about 1.8 s.
+   - The "single server tick took 60 s" is the vanilla `ServerWatchdog` measuring
+     `now - nextTickTime`. `MinecraftServer` only catches that lag up once per 15 000 ms of game
+     time (300 ticks), so any server sustained below ≈ 4 TPS trips the 60 s limit without any
+     long tick.
+   - The same watchdog stopped a later pilot run at about 2 TPS whose dump shows the region
+     threads RUNNABLE, not blocked.
 
-   With more runnable threads than cores, the lock holder is preempted, so the convoy grows until
-   a tick exceeds 60 s.
+   The dump remains valid as a snapshot of the convoy. **The watchdog stop is not evidence of this
+   finding.** Evidence 1 (JFR) is the measurement.
 
 Run artefacts (scratch): `perf1/mech/mech3.{json,jfr}`, `perf1/cal/cal50-console.log`, and the
 crash report `crash-2026-10-04_10.37.14-server.txt`.
 
 ## Consequences for PERF-1
-- PERF-1A cannot calibrate M per spec, because the 1-core point collapses before the load is
-  large enough to keep N=16 below 20 TPS. Any scaling curve measured now includes this lock. It
-  would answer "does Core scale?" with "not with this lock", not with the scheduler's own limit.
+- Any scaling curve measured on this build includes this lock. It would answer "does Core
+  scale?" with "not with this lock", not with the scheduler's own limit.
+- (Corrected) The calibration failure at N=1 was the vanilla watchdog, not this lock. The
+  harness needs `max-tick-time=-1`, because its N=1 point is deliberately below 4 TPS.
 - `recordEntityTick` (same class) uses `modNanos` / `modCounts` with very few keys (one per mod
   namespace). Its `computeIfAbsent` mostly hits the lock-free first-node path. It has not been
   measured separately and is not cleared.
