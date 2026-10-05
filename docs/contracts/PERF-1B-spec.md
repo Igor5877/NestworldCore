@@ -1,6 +1,8 @@
 # PERF-1B — Mod API end-to-end performance validation — audit + spec DRAFT
 
-**Status: DRAFT for owner review (2026-10-05).** No code yet. The governing TZ is
+**Status (2026-10-05): D1–D6 APPROVED by the owner; IMPLEMENTED (§4); pilot pending.** The
+pilot needs the benchmark cores after the W2 official series. The host-interference policy
+`v2-shared` applies (`PERF-HOST-INTERFERENCE-POLICY.md`). The governing TZ is
 `PERF-1B-tz.md` (owner's full text of 2026-10-05). PERF-1A W2 official is pending on host quiet;
 PERF-1B work does not use the benchmark cores until its pilot.
 
@@ -93,7 +95,51 @@ mailbox terminals), taken from the D1 counters. Submitted/s and applied/s are al
 **D6. Rates.** A saturation test (backlog to find capacity) and a sustainable test (bounded
 queue) are separate series and are never pooled (TZ §20). The pilot sets K and the per-tick rate.
 
-## 3. Out of scope until decided
+## 4. Implementation (2026-10-05)
+**Instrumentation (D1), commit `1a795cb32`, behind `-Dnestworld.apiStats=true`, default off.**
+- **NestWorld peer** (`VelocityTelemetry`):
+  - paths: owner fast, cross-region mailbox, mailbox from main, backpressure direct,
+    unmanaged / owner-null direct, reroutes, redeliveries;
+  - terminals: applied, stale-dropped, target removed / not found, reroute-limit and
+    redelivery-limit dropped, other;
+  - sampled latency: 1 in 64 operations, accept → terminal, log2(ns) histogram.
+- **Forge provider** (`ForgeVelocityTelemetry`, package-private, no ABI change): the same
+  accounting.
+- Both write one JSON line per second to `-Dnestworld.apiStatsFile`.
+- **Closure invariant:** accepted = Σ terminals; a loss or a duplicate breaks it.
+
+**Trusted build:** 47.4.298 (`Git-Commit 344b763f`, `Git-Dirty false`, Source-Patch-Integrity
+MATCH). The installer sha256 starts `61de03525a98…`; the installed server jar passes canary 4/4.
+The 47.4.264 reference stays untouched.
+
+**Consumer** (`tests/perf1b/benchmark-mod`, commit `9d9c9ff99`):
+- an ordinary Forge mod, built with ForgeGradle against upstream 47.4.20 and compileOnly
+  against the public Mod API;
+- a bytecode scan of the jar shows references only to MC, Forge, brigadier, the JDK and
+  `net.nestworld.modapi`;
+- **producer:** block `perf1b:producer` with a ticking block entity that issues K calls per
+  tick; `perf1b.mode` is API or RAW (B0);
+- **targets:** `minecraft:marker` entities, which have no physics, so final velocity equals the
+  last intent (LATEST_INTENT_WINS check via `/perf1b check`);
+- binding: `/perf1b bind self|partner`, partner = cell k^1.
+
+**Harness** (`tests/perf1b/harness`, commit `ea682c530`):
+- reuses the frozen perf1 helpers;
+- warmup: ≥ 20 M submitted operations, then 60 s of JIT quiet;
+- after the window: pause → wait for closure → `check` → ownership assertions
+  (`-Dnestworld.ownershipAssertionsEnabled=true`, diagnostic, in every run);
+- **primary metric (D4):** Δ terminals / s;
+- **validity:**
+  - B2 needs ≥ 99% of operations on the owner fast path; B3 needs ≥ 99% on the cross-region
+    mailbox;
+  - closure holds; mismatch = 0 and removed = 0; wrong-owner = 0;
+  - layout unchanged; JIT pinned; TPS < 19;
+  - interference under v2-shared.
+
+**Stock Forge:** 47.4.20 (the compat-matrix install) with the same canonical config, plus the
+provider jar and the consumer, for B0 / B1.
+
+## 5. Out of scope until decided
 - Any code (consumer, counters, harness).
 - `setSlot` (TZ §28).
 - API-1C.
