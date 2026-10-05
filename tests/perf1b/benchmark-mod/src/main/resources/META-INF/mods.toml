@@ -1,0 +1,9 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+
+[[mods]]
+modId="perf1b"
+version="1.0.0"
+displayName="PERF-1B benchmark consumer"
+description="Ordinary Forge consumer of the public NestWorld Mod API (setVelocity). Benchmark only."

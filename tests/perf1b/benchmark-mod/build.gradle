@@ -1,0 +1,15 @@
+// PERF-1B consumer: an ORDINARY Forge mod. Compile-time dependencies are Minecraft, Forge and the
+// public NestWorld Mod API only (compileOnly; the provider is supplied by the platform on
+// NestWorld or installed separately on stock Forge). One jar for every mode.
+plugins { id 'net.minecraftforge.gradle' version '[6.0,6.2)' }
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+minecraft { mappings channel: 'official', version: '1.20.1' }
+repositories { mavenLocal() }
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.4.20'
+    compileOnly 'net.nestworld:nestworld-mod-api-forge-1.20.1:1.0.0-SNAPSHOT'
+}
+tasks.named('jar', Jar).configure {
+    archiveBaseName = 'perf1b-benchmark-mod'
+    finalizedBy 'reobfJar'
+}
