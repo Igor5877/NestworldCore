@@ -37,6 +37,8 @@ final class NestworldVelocityBackend implements VelocityExecutionBackend {
         if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info(
                 "[API1A7] NestworldVelocityBackend.setVelocity() target={} velocity={} intentVersion={} thread={}",
                 entity.getUUID(), velocity, intentVersion, Thread.currentThread().getName());
-        EntityMutationDispatcher.dispatch(entity, new EntityMutationOp.SetVelocity(velocity, intentVersion));
+        long opId = MailboxAudit.nextId();
+        if (VelocityTelemetry.ENABLED) VelocityTelemetry.onAccepted(opId);
+        EntityMutationDispatcher.dispatch(entity, new EntityMutationOp.SetVelocity(velocity, intentVersion), opId);
     }
 }

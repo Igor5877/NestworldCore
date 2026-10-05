@@ -65,36 +65,47 @@ final class ForgeVelocityExecution {
     private ForgeVelocityExecution() {}
 
     static void apply(Entity entity, Vec3 velocity, long intentVersion) {
+        long nwT0 = ForgeVelocityTelemetry.ENABLED ? ForgeVelocityTelemetry.onAccepted() : 0L;
         MinecraftServer server = entity.getServer();
         if (server == null) {
+            if (ForgeVelocityTelemetry.ENABLED) ForgeVelocityTelemetry.onTerminal(ForgeVelocityTelemetry.noServer, nwT0);
             return;
         }
         SetVelocityIntentTracker.TargetKey key =
                 new SetVelocityIntentTracker.TargetKey(entity.level().dimension(), entity.getUUID());
         if (server.isSameThread()) {
+            if (ForgeVelocityTelemetry.ENABLED) ForgeVelocityTelemetry.pathSameThread.increment();
             if (SetVelocityIntentTracker.tryAccept(key, intentVersion)) {
                 entity.setDeltaMovement(velocity);
-            } // else STALE_INTENT_DROPPED -- silent, same posture as target-not-found
+                if (ForgeVelocityTelemetry.ENABLED) ForgeVelocityTelemetry.onTerminal(ForgeVelocityTelemetry.applied, nwT0);
+            } else if (ForgeVelocityTelemetry.ENABLED) { // STALE_INTENT_DROPPED -- silent, same posture as target-not-found
+                ForgeVelocityTelemetry.onTerminal(ForgeVelocityTelemetry.staleDropped, nwT0);
+            }
             return;
         }
         ResourceKey<Level> dimension = entity.level().dimension();
         UUID id = entity.getUUID();
-        server.execute(() -> applyByIdentity(server, dimension, id, velocity, key, intentVersion));
+        if (ForgeVelocityTelemetry.ENABLED) ForgeVelocityTelemetry.pathMarshal.increment();
+        server.execute(() -> applyByIdentity(server, dimension, id, velocity, key, intentVersion, nwT0));
     }
 
     private static void applyByIdentity(MinecraftServer server, ResourceKey<Level> dimension,
-            UUID id, Vec3 velocity, SetVelocityIntentTracker.TargetKey key, long intentVersion) {
+            UUID id, Vec3 velocity, SetVelocityIntentTracker.TargetKey key, long intentVersion, long nwT0) {
         ServerLevel level = server.getLevel(dimension);
         if (level == null) {
+            if (ForgeVelocityTelemetry.ENABLED) ForgeVelocityTelemetry.onTerminal(ForgeVelocityTelemetry.otherTerminal, nwT0);
             return;
         }
         Entity fresh = level.getEntity(id);
         if (fresh == null || fresh.isRemoved()) {
+            if (ForgeVelocityTelemetry.ENABLED) ForgeVelocityTelemetry.onTerminal(ForgeVelocityTelemetry.targetNotFound, nwT0);
             return;
         }
         if (!SetVelocityIntentTracker.tryAccept(key, intentVersion)) {
+            if (ForgeVelocityTelemetry.ENABLED) ForgeVelocityTelemetry.onTerminal(ForgeVelocityTelemetry.staleDropped, nwT0);
             return; // STALE_INTENT_DROPPED
         }
         fresh.setDeltaMovement(velocity);
+        if (ForgeVelocityTelemetry.ENABLED) ForgeVelocityTelemetry.onTerminal(ForgeVelocityTelemetry.applied, nwT0);
     }
 }

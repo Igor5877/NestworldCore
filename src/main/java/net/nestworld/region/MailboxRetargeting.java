@@ -132,6 +132,7 @@ final class MailboxRetargeting {
         MailboxAudit.recordRedirected(msg.auditId(), dest);
         MailboxLifecycle.redelivered.incrementAndGet();
         if (msg.payload() instanceof RegionMessage.EntityMutate em) {
+            if (VelocityTelemetry.ENABLED && em.op() instanceof EntityMutationOp.SetVelocity) VelocityTelemetry.redeliveries.increment();
             if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=REDELIVER from={} to={} redelivery={} target={}",
                     em.opId(), msg.destinationRegion() == null ? "null" : msg.destinationRegion().getId(),
                     dest.getId(), moved.redeliveries(), em.entityId());
@@ -193,6 +194,13 @@ final class MailboxRetargeting {
         MailboxAudit.recordTerminal(msg.auditId(), kind, msg.messageType());
         if (msg.payload() instanceof RegionMessage.EntityMutate em) {
             MailboxLifecycleTestHooks.onEntityTerminal(em.opId(), kind.name());
+            if (VelocityTelemetry.ENABLED && em.op() instanceof EntityMutationOp.SetVelocity) {
+                VelocityTelemetry.onTerminal(em.opId(), switch (kind) {
+                    case TARGET_NOT_FOUND -> VelocityTelemetry.targetNotFound;
+                    case REDELIVERY_LIMIT_DROPPED -> VelocityTelemetry.redeliveryLimitDropped;
+                    default -> VelocityTelemetry.otherTerminal;
+                });
+            }
             if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.warn("[API1A7] opId={} phase=TERMINAL result={} target={} redeliveries={}",
                     em.opId(), kind, em.entityId(), msg.redeliveries());
             if (em.op() instanceof EntityMutationOp.SetInventorySlot) {

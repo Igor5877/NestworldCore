@@ -76,6 +76,10 @@ public final class EntityMutationDispatcher {
             if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=APPLY owner=unmanaged target={}", opId, target.getUUID());
             ApplyOutcome outcome = applyDirect(target, op);
             if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=TERMINAL result={}", opId, outcome);
+            if (VelocityTelemetry.ENABLED && op instanceof EntityMutationOp.SetVelocity) {
+                VelocityTelemetry.pathUnmanagedDirect.increment();
+                VelocityTelemetry.onTerminal(opId, outcome);
+            }
             return;
         }
         WorldRegion owner = NestworldRegionSystem.get().getDimensionRegion(target.level())
@@ -89,6 +93,10 @@ public final class EntityMutationDispatcher {
             // null-owner handling.
             ApplyOutcome outcome = applyDirect(target, op);
             if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=TERMINAL result={} (owner=null direct)", opId, outcome);
+            if (VelocityTelemetry.ENABLED && op instanceof EntityMutationOp.SetVelocity) {
+                VelocityTelemetry.pathOwnerNullDirect.increment();
+                VelocityTelemetry.onTerminal(opId, outcome);
+            }
             return;
         }
         if (Thread.currentThread() instanceof RegionThread rt) {
@@ -98,9 +106,14 @@ public final class EntityMutationDispatcher {
                 if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=APPLY owner={} target={} (same-region direct)", opId, self.getId(), target.getUUID());
                 ApplyOutcome outcome = applyDirect(target, op);
                 if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=TERMINAL result={}", opId, outcome);
+                if (VelocityTelemetry.ENABLED && op instanceof EntityMutationOp.SetVelocity) {
+                    VelocityTelemetry.pathOwnerFast.increment();
+                    VelocityTelemetry.onTerminal(opId, outcome);
+                }
                 return;
             }
             if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=ENQUEUE from={} to={} target={}", opId, self.getId(), owner.getId(), target.getUUID());
+            if (VelocityTelemetry.ENABLED && op instanceof EntityMutationOp.SetVelocity) VelocityTelemetry.pathMailboxCross.increment();
             self.nestworldSendOrQueue(owner, RegionMessage.entityMutate(self, owner,
                     target.level().getServer().getTickCount(), new RegionMessage.EntityMutate(target.getUUID(), op, 0, opId)));
             return;
@@ -113,9 +126,14 @@ public final class EntityMutationDispatcher {
             if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=APPLY owner={} target={} (backpressure fallback direct)", opId, owner.getId(), target.getUUID());
             ApplyOutcome outcome = applyDirect(target, op);
             if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=TERMINAL result={}", opId, outcome);
+            if (VelocityTelemetry.ENABLED && op instanceof EntityMutationOp.SetVelocity) {
+                VelocityTelemetry.pathBackpressureDirect.increment();
+                VelocityTelemetry.onTerminal(opId, outcome);
+            }
             return;
         }
         if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=ENQUEUE from=main to={} target={}", opId, owner.getId(), target.getUUID());
+        if (VelocityTelemetry.ENABLED && op instanceof EntityMutationOp.SetVelocity) VelocityTelemetry.pathMailboxFromMain.increment();
         owner.nestworldPostMessage(RegionMessage.entityMutate(null, owner,
                 target.level().getServer().getTickCount(), new RegionMessage.EntityMutate(target.getUUID(), op, 0, opId)));
     }
@@ -143,6 +161,8 @@ public final class EntityMutationDispatcher {
             if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=TERMINAL result=TARGET_NOT_FOUND target={} applyingRegion={} thread={}",
                     opId, targetId, applyingRegion.getId(), Thread.currentThread().getName());
             if (op instanceof EntityMutationOp.SetInventorySlot) InventorySetTelemetry.targetNotFound.incrementAndGet();
+            if (VelocityTelemetry.ENABLED && op instanceof EntityMutationOp.SetVelocity)
+                VelocityTelemetry.onTerminal(opId, VelocityTelemetry.targetNotFound);
             MailboxLifecycleTestHooks.onEntityTerminal(opId, "TARGET_NOT_FOUND");
             return; // target died/despawned/unloaded between send and apply -- NO-OP, not an error
         }
@@ -158,6 +178,8 @@ public final class EntityMutationDispatcher {
                         opId, targetId, rerouteHops);
                 ApiOpTrace.warnRerouteLimitDropped(opId, targetId, rerouteHops); // operational: always counted, WARN rate-limited
                 if (op instanceof EntityMutationOp.SetInventorySlot) InventorySetTelemetry.rerouteLimitDropped.incrementAndGet();
+                if (VelocityTelemetry.ENABLED && op instanceof EntityMutationOp.SetVelocity)
+                    VelocityTelemetry.onTerminal(opId, VelocityTelemetry.rerouteLimitDropped);
                 MailboxLifecycleTestHooks.onEntityTerminal(opId, "REROUTE_LIMIT_DROPPED");
                 return;
             }
@@ -165,6 +187,7 @@ public final class EntityMutationDispatcher {
             // to the entity's REAL current owner -- that region's own next drain re-validates
             // again from scratch, same as this call did. opId carried through UNCHANGED.
             if (op instanceof EntityMutationOp.SetInventorySlot) InventorySetTelemetry.maxRerouteHop.accumulateAndGet(rerouteHops + 1, Math::max);
+            if (VelocityTelemetry.ENABLED && op instanceof EntityMutationOp.SetVelocity) VelocityTelemetry.reroutes.increment();
             if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=REROUTE from={} to={} hop={} target={}",
                     opId, applyingRegion.getId(), currentOwner.getId(), rerouteHops + 1, targetId);
             applyingRegion.nestworldSendOrQueue(currentOwner, RegionMessage.entityMutate(applyingRegion, currentOwner,
@@ -177,6 +200,7 @@ public final class EntityMutationDispatcher {
                 opId, applyingRegion.getId(), targetId, Thread.currentThread().getName());
         ApplyOutcome outcome = applyDirect(target, op);
         if (ApiOpTrace.ENABLED) ApiOpTrace.LOG.info("[API1A7] opId={} phase=TERMINAL result={}", opId, outcome);
+        if (VelocityTelemetry.ENABLED && op instanceof EntityMutationOp.SetVelocity) VelocityTelemetry.onTerminal(opId, outcome);
     }
 
     /** Terminal outcome of {@link #applyDirect}. API-1B.7: split out of the former boolean
