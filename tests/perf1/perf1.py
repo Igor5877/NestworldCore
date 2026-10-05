@@ -354,6 +354,29 @@ def wait_loaded(rc, total, timeout=600):
     raise RuntimeError("cows did not finish loading")
 
 
+def expected_cows(cells):
+    """Cows expected in each cell. W1 cells.json has no "cows" list: every cell holds
+    cows_per_cell. W2 lists them per cell (one hotspot cell, the rest empty)."""
+    return cells.get("cows") or [cells["cows_per_cell"]] * len(cells["cells"])
+
+
+def cell_bounds(cells, cl):
+    """(x, y, z, dx, dy, dz) volume a cell's cows must stay in. W1 default: the one-layer cell."""
+    if "bounds" in cl:
+        return tuple(cl["bounds"])
+    side = cells["side"]
+    return (cl["x0"], -61, cl["z0"], side - 1, 3, side - 1)
+
+
+def wall_checks(cells):
+    """[(cell k, box (x1,y1,z1,x2,y2,z2), expected stone)]. W1 default: one box per cell."""
+    if "verify" in cells:
+        return [(v["k"], tuple(v["box"]), v["stone"]) for v in cells["verify"]]
+    side = cells["side"]
+    return [(cl["k"], (cl["x0"], -60, cl["z0"], cl["x0"] + side - 1, -59, cl["z0"] + side - 1),
+             cells["stone_per_cell"]) for cl in cells["cells"]]
+
+
 def build_layout(rc, cells, log):
     """One region per cell, built while the world holds no load (see gen_datapack.py):
     merge to a single root, steer 15 manual splits with markers, then summon the cows."""
@@ -394,11 +417,11 @@ def build_layout(rc, cells, log):
         raise RuntimeError(f"markers are not one per region: {per}")
     rc.cmd("kill @e[type=minecraft:marker,tag=perf1cell]")
     rc.cmd("function perf1:cows")
-    m = cells["cows_per_cell"]
-    wait_loaded(rc, m * n_cells)
+    exp = expected_cows(cells)
+    wait_loaded(rc, sum(exp))
     per = sorted(owned for _, owned, _, _ in fairness(rc))
-    if per != [m] * n_cells:
-        raise RuntimeError(f"layout is not one cell per region: {per}")
+    if per != sorted(x for x in exp if x):
+        raise RuntimeError(f"layout is not one cell per region: {per} vs {exp}")
     return splits
 
 
@@ -420,16 +443,14 @@ def verify_walls(rc, cells):
     returns the cells whose count differs from the generator's expectation."""
     rc.cmd("forceload add 0 0 127 127")
     time.sleep(3)
-    side, bad = cells["side"], []
-    for cl in cells["cells"]:
-        x0, z0 = cl["x0"], cl["z0"]
-        out = strip(rc.cmd(f"clone {x0} -60 {z0} {x0 + side - 1} -59 {z0 + side - 1} "
-                           f"0 -60 0 masked force"))
+    bad = []
+    for k, (x1, y1, z1, x2, y2, z2), want in wall_checks(cells):
+        out = strip(rc.cmd(f"clone {x1} {y1} {z1} {x2} {y2} {z2} 0 -60 0 masked force"))
         m = re.search(r"(\d+) block", out)
         n = int(m.group(1)) if m else 0
-        rc.cmd(f"fill 0 -60 0 {side - 1} -59 {side - 1} minecraft:air")
-        if n != cells["stone_per_cell"]:
-            bad.append((cl["k"], n))
+        rc.cmd(f"fill 0 -60 0 {x2 - x1} {-60 + y2 - y1} {z2 - z1} minecraft:air")
+        if n != want:
+            bad.append((k, (x1, y1, z1), n, want))
     rc.cmd("forceload remove 0 0 127 127")
     return bad
 
@@ -447,9 +468,8 @@ def prepare(server, dp, snapshot):
     print(strip(rc.cmd("function perf1:setup")))
     # walls only once every forceloaded cell chunk is actually loaded: a fill on an unloaded
     # chunk fails silently (the first snapshot had no walls at all in cell 15)
-    side = cells["side"]
-    corners = [(x, z) for cl in cells["cells"]
-               for x in (cl["x0"], cl["x0"] + side - 1) for z in (cl["z0"], cl["z0"] + side - 1)]
+    corners = sorted({(x, z) for cl in cells["cells"] for bx, _, bz, dx, _, dz in [cell_bounds(cells, cl)]
+                      for x in (bx, bx + dx) for z in (bz, bz + dz)})
     for _ in range(120):
         if all("passed" in strip(rc.cmd(f"execute if loaded {x} -60 {z}")) for x, z in corners):
             break
@@ -461,7 +481,8 @@ def prepare(server, dp, snapshot):
     bad = verify_walls(rc, cells)
     if bad:
         sys.exit(f"cells with incomplete walls: {bad}")
-    print(f"walls verified: {len(cells['cells'])} cells x {cells['stone_per_cell']} stone")
+    print(f"walls verified: {len(wall_checks(cells))} boxes, "
+          f"{sum(w for _, _, w in wall_checks(cells))} stone")
     have = entity_count(rc, "@e")
     print(f"entities in snapshot: {have}")
     rc.cmd("save-all flush")
@@ -579,11 +600,11 @@ def run(server, snapshot, dp, n, cpus, tag, out_dir, warmup, window, warmup_tick
     res["status_full_end"] = status_full
     res["entities_end"] = entity_count(rc, "@e[tag=perf1]")
     # every cow still inside its own cell at the end of the window (cells are sealed)
-    side = cells["side"]
     res["cows_in_own_cell_end"] = [entity_count(
-        rc, f"@e[tag=perf1c{cl['k']},x={cl['x0']},y=-61,z={cl['z0']},dx={side - 1},dy=3,dz={side - 1}]")
+        rc, "@e[tag=perf1c{},x={},y={},z={},dx={},dy={},dz={}]".format(cl["k"], *cell_bounds(cells, cl)))
         for cl in cells["cells"]]
     res["cows_per_cell"] = cells["cows_per_cell"]
+    res["expected_cows"] = expected_cows(cells)
     c0, c1 = counter_at(server, t0), counter_at(server, t1)
 
     dt = t1 - t0
@@ -651,6 +672,8 @@ def validate(paths):
     ok_all = True
     verdicts = []
     for r in runs:
+        exp = r.get("expected_cows") or [r.get("cows_per_cell")] * 16
+        nonzero = sorted(x for x in exp if x)
         checks = {
             "process cwd is the server": r["cwd"].endswith("/server"),
             "vanilla watchdog off (max-tick-time=-1)": r.get("max_tick_time") == "-1",
@@ -673,11 +696,11 @@ def validate(paths):
             "deferred = 0": all(d == 0 for d in r["deferred_samples"]),
             "every region owns its cell and ticks all of it in every sample":
                 "fairness_samples" in r and all(
-                    o == r["cows_per_cell"] and t == o
-                    for smp in r["fairness_samples"] for _, o, t, _ in smp),
-            "every cow inside its own cell at window end":
-                r.get("cows_in_own_cell_end") == [r.get("cows_per_cell")] * 16,
-            "16 regions with entities": all(n == 16 for n in r["regions_with_entities"]),
+                    sorted(o for _, o, _, _ in smp) == nonzero and all(t == o for _, o, t, _ in smp)
+                    for smp in r["fairness_samples"]),
+            "every cow inside its own cell at window end": r.get("cows_in_own_cell_end") == exp,
+            "regions with entities == non-empty cells":
+                all(n == len(nonzero) for n in r["regions_with_entities"]),
             "entity count stable": r["entities"] == r["entities_end"],
             "not truncated by the 20 TPS cap": r["tps"] < 19.0 and
                 sorted(b["p50"] for b in r["mspt_blocks"])[len(r["mspt_blocks"]) // 2] >= 50.0,
