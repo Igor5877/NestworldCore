@@ -257,11 +257,18 @@ def validate(paths):
             oa = r.get("ownership_assertions", "")
             checks["ownership assertions enabled, wrong-owner = 0"] = \
                 "violations=0 " in oa + " " and "DISABLED" not in oa
-        if r["mode"] == "B2":
-            checks["path: owner fast >= 99%"] = wp.get("path_owner_fast", 0) / total_paths >= 0.99
-        if r["mode"] == "B3":
-            checks["path: cross-region mailbox >= 99%"] = wp.get("path_mailbox_cross", 0) / total_paths >= 0.99
         bad = [k for k, v in checks.items() if not v]
+        # path purity is a WORKLOAD-validity criterion, not an API correctness invariant (owner,
+        # 2026-10-05): a B3 run at 98.7% mailbox due to real race / topology behaviour is
+        # INVESTIGATE for path purity, not a correctness failure. Correctness stays the checks
+        # above (accounting, owner, final state / ordering).
+        purity = None
+        if r["mode"] == "B2":
+            purity = wp.get("path_owner_fast", 0) / total_paths
+        elif r["mode"] == "B3":
+            purity = wp.get("path_mailbox_cross", 0) / total_paths
+        if purity is not None and purity < 0.99 and not bad:
+            bad.append(f"INVESTIGATE path purity ({purity * 100:.2f}% on the intended path, workload validity)")
         tier, note = perf1.interference_tier(r)
         review = perf1.load_review(p).get(r["tag"])
         if review:

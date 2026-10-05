@@ -1,6 +1,8 @@
 # PERF-1B — Mod API end-to-end performance validation — audit + spec DRAFT
 
-**Status (2026-10-05): D1–D6 APPROVED by the owner; IMPLEMENTED (§4); pilot pending.** The
+**Status (2026-10-05, owner): IMPLEMENTED / NOT YET VALIDATED. 47.4.298 is a TRUSTED-BUILD
+CANDIDATE, not yet the PERF-1B reference.** D1–D6 were approved by the owner and implemented
+(§4); the owner's pre-pilot rules are in §6. The
 pilot needs the benchmark cores after the W2 official series. The host-interference policy
 `v2-shared` applies (`PERF-HOST-INTERFERENCE-POLICY.md`). The governing TZ is
 `PERF-1B-tz.md` (owner's full text of 2026-10-05). PERF-1A W2 official is pending on host quiet;
@@ -138,6 +140,43 @@ The 47.4.264 reference stays untouched.
 
 **Stock Forge:** 47.4.20 (the compat-matrix install) with the same canonical config, plus the
 provider jar and the consumer, for B0 / B1.
+
+## 6. Owner rules before the pilot (2026-10-05)
+1. **47.4.298 = CANDIDATE.** Provenance, MATCH and canary 4/4 are not enough after D1. It becomes
+   **TRUSTED PERF-1B REFERENCE** only after:
+   - an API-1A / Core regression;
+   - a smoke of the telemetry itself.
+2. **No PERF-1B server step while W2 runs.** It could pollute W2, and the canonical config (same
+   ports) forbids it anyway. The port conflict is an orchestration issue; the canonical config is
+   not changed for parallel runs.
+3. **Path purity is not a correctness invariant.** The ≥ 99% intended-path share for B2 / B3 is a
+   workload-validity criterion: below it, the run is INVESTIGATE for path purity, not a
+   correctness failure.
+   - Correctness is separate: closed accounting, wrong-owner = 0, no duplicate, and
+     ordering / final state (LATEST_INTENT_WINS).
+   - The harness validator implements this split.
+4. **The D1 accounting must be proven before the pilot.**
+   - accepted = applied + stale + reroute_limit + target_missing + other_terminal after a full
+     drain.
+   - A small **deterministic** test must deliberately produce at least APPLIED and
+     STALE_DROPPED, so that "0 unaccounted" cannot come from never touching a terminal branch.
+5. **Synthetic API workload.** Marker targets are named as such. Removing physics and
+   entity-tick noise isolates the API cost, which is useful here. The result is **not** the cost
+   of `setVelocity` on a typical living mob and must not be presented that way.
+6. **Fixed order after W2:**
+   1. W2 finish;
+   2. reconcile the W2 metadata;
+   3. W2 verdict;
+   4. PERF-1B world / snapshot;
+   5. D1 deterministic smoke / accounting;
+   6. API-1A regression;
+   7. instrumentation OFF/ON sanity check;
+   8. pilot B0 / B1 / B2 / B3.
+
+**W2 metadata reconciliation rule.** Raw evidence (the original `*-metadata.json`) is never
+rewritten. A separate generated file carries the reconciled verdict from the validator with
+reason `SERIES_METADATA_PARSER_DEFECT` (fixed in `01892c5e9`). That defect affects neither
+workload, timing, telemetry nor the validator verdict.
 
 ## 5. Out of scope until decided
 - Any code (consumer, counters, harness).
