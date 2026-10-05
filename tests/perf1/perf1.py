@@ -127,6 +127,25 @@ def host_cpu_busy():
     return d
 
 
+def burst_telemetry(tele, bench, sib, span=5):
+    """Max span-second interference: per sibling CPU (all of its load is foreign) and for the
+    benchmark CPUs (busy minus the server's non-JIT CPU), from per-second samples."""
+    def busy(a, b, c):
+        tot, idle = b[c][0] - a[c][0], b[c][1] - a[c][1]
+        return (tot - idle) / CLK
+    sib_max, foreign_max = {str(c): 0.0 for c in sib}, 0.0
+    for i in range(span, len(tele)):
+        (ta, ha, pa, ja), (tb, hb, pb, jb) = tele[i - span], tele[i]
+        dt = tb - ta
+        for c in sib:
+            sib_max[str(c)] = max(sib_max[str(c)], 100 * busy(ha, hb, c) / dt)
+        server = (pb - pa) - (jb - ja)
+        foreign_max = max(foreign_max, 100 * (sum(busy(ha, hb, c) for c in bench) - server)
+                          / (dt * len(bench)))
+    return {"sibling_burst_max_pct": sib_max, "foreign_on_bench_burst_max_pct": foreign_max,
+            "telemetry_samples": len(tele)}
+
+
 def affinity(pid):
     return open(f"/proc/{pid}/status").read().split("Cpus_allowed_list:")[1].split()[0]
 
@@ -568,6 +587,11 @@ def run(server, snapshot, dp, n, cpus, tag, out_dir, warmup, window, warmup_tick
     subprocess.run(["jcmd", str(pid), "JFR.start", "name=perf1", f"filename={jfr}",
                     "settings=default"], capture_output=True)
     blocks, fair, g_last = [], [], g0
+    # per-second host telemetry (docs/contracts/PERF-HOST-INTERFERENCE-POLICY.md): benchmark
+    # CPUs and their SMT siblings, so bursts are visible, not only window means
+    tele_bench = expand(cpus)
+    tele_sib = sorted({x for c in tele_bench for x in siblings(c)} - set(tele_bench))
+    tele = [(time.time(), host_cpu_busy(), process_cpu(pid), jit_cpu(pid))]
     seen_aff, seen_cpuset = {affinity(pid)}, {container_cpuset()}
     seen_jit_aff = set(jit_affinities(pid))
     depth = []
@@ -576,6 +600,7 @@ def run(server, snapshot, dp, n, cpus, tag, out_dir, warmup, window, warmup_tick
         seen_aff.add(affinity(pid))
         seen_jit_aff.update(jit_affinities(pid))
         seen_cpuset.add(container_cpuset())
+        tele.append((time.time(), host_cpu_busy(), process_cpu(pid), jit_cpu(pid)))
         g = gametime(rc)
         if g - g_last >= 100:                      # non-overlapping 100-tick blocks
             blocks.append(mspt(rc))
@@ -636,6 +661,8 @@ def run(server, snapshot, dp, n, cpus, tag, out_dir, warmup, window, warmup_tick
     res["bench_cpu_s"] = res["process_cpu_s"] - res["cpu_s"].get("jit", 0.0)
     res["jit_cpu_s_in_window"] = res["cpu_s"].get("jit", 0.0)
     res["foreign_on_bench_pct"] = 100 * (sum(busy_s(c) for c in bench) - res["bench_cpu_s"]) / (dt * len(bench))
+    res["interference_policy"] = os.environ.get("PERF1_INTERFERENCE_POLICY", "v1-hard")
+    res.update(burst_telemetry(tele, tele_bench, tele_sib))
     res["cpu_util"] = {k: v / (dt * n) for k, v in res["cpu_s"].items()}
     res["stopped_cleanly"] = stop(pid, rc)
     res.update(jfr_summary(jfr))
@@ -667,11 +694,29 @@ def jfr_summary(path):
     return out
 
 
+def interference_tier(r):
+    """Policy v2-shared tiers on window means (normal <= 3% < warning <= 5% < investigate);
+    5-second bursts are assessed separately and send a run to investigate above 25%."""
+    mean = max([r["foreign_on_bench_pct"]] + list(r["sibling_busy_pct"].values()))
+    burst = max([r.get("foreign_on_bench_burst_max_pct", 0.0)]
+                + list(r.get("sibling_burst_max_pct", {}).values()))
+    tier = "normal" if mean <= 3.0 else "warning" if mean <= 5.0 else "investigate"
+    if burst > 25.0:
+        tier = "investigate"
+    return tier, f" [interference {tier}: mean max {mean:.1f}%, 5s burst max {burst:.1f}%]"
+
+
+def load_review(run_json):
+    p = os.path.join(os.path.dirname(os.path.abspath(run_json)), "review.json")
+    return json.load(open(p)) if os.path.exists(p) else {}
+
+
 def validate(paths):
     runs = [json.load(open(p)) for p in paths]
     ok_all = True
     verdicts = []
-    for r in runs:
+    for r, path in zip(runs, paths):
+        policy = r.get("interference_policy", "v1-hard")
         exp = r.get("expected_cows") or [r.get("cows_per_cell")] * 16
         nonzero = sorted(x for x in exp if x)
         checks = {
@@ -708,10 +753,11 @@ def validate(paths):
                 abs(r["primary_ticks_per_s"] / r["secondary_ticks_per_s"] - 1) < 0.01,
             "mspt blocks collected": len(r["mspt_blocks"]) >= 2 and all(r["mspt_blocks"]),
             "gc/jfr collected": "gc_count" in r and os.path.getsize(r["gc_log"]) > 0,
-            "SMT siblings idle (<= 3%)": "sibling_busy_pct" in r and
-                all(v <= 3.0 for v in r["sibling_busy_pct"].values()),
-            "no foreign load on bench CPUs (<= 3%)": "foreign_on_bench_pct" in r and
-                r["foreign_on_bench_pct"] <= 3.0,
+            **({} if policy == "v2-shared" else {
+                "SMT siblings idle (<= 3%)": "sibling_busy_pct" in r and
+                    all(v <= 3.0 for v in r["sibling_busy_pct"].values()),
+                "no foreign load on bench CPUs (<= 3%)": "foreign_on_bench_pct" in r and
+                    r["foreign_on_bench_pct"] <= 3.0}),
             "JIT converged before the window": r.get("warmup_actual_s", -1) > 0,
             "JIT threads off the benchmark CPUs": r.get("jit_threads_pinned", 0) > 0 and
                 all(set(expand(a)) == set(r["harness_cpus"]) for a in r.get("jit_affinity_seen", ["x"])),
@@ -722,9 +768,19 @@ def validate(paths):
             "stopped cleanly": r["stopped_cleanly"],
         }
         bad = [k for k, v in checks.items() if not v]
+        note = ""
+        if policy == "v2-shared" and not bad:
+            tier, note = interference_tier(r)
+            review = load_review(path).get(r["tag"])
+            if review:                            # explicit, recorded analyst decision
+                note += f" | review: {review['verdict']} ({review['reason']})"
+                if review["verdict"] == "VOID":
+                    bad = [f"reviewed VOID: {review['reason']}"]
+            elif tier == "investigate":
+                bad = ["PENDING REVIEW (interference investigate tier; record a decision in review.json)"]
         ok_all &= not bad
         verdicts.append(not bad)
-        print(f"{r['tag']}: {'VALID' if not bad else 'VOID: ' + '; '.join(bad)}")
+        print(f"{r['tag']}: {'VALID' if not bad else 'VOID: ' + '; '.join(bad)}{note}")
     by_n = {}
     for r, valid in zip(runs, verdicts):
         if valid:  # spread is a property of valid runs only

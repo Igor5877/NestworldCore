@@ -137,3 +137,21 @@ Summary:
 W2 freeze at `d18a4c2b3`, snapshot `e7858bac`, is proposed. The official W2 matrix N = 1 / 2 / 4 / 8
 needs CPUs 4–9 and siblings 22–27 quiet again: the host showed 2–4% background there during this
 pilot.
+
+## Revision W2-R1 (owner, 2026-10-05): shared-host interference policy
+The owner decided that the W2 official series runs under `PERF-HOST-INTERFERENCE-POLICY.md`
+(policy `v2-shared`) instead of the frozen hard 3% gates.
+- The harness change is versioned: runs without `interference_policy` (all PERF-1A W1 runs and
+  the W2 pilot) are still judged by `v1-hard`, unchanged. Regression check: the 12 W1 R1 runs and
+  the W1 VOID runs give identical verdicts.
+- Under `v2-shared`:
+  - per-second host telemetry gives window means plus 5 s burst maxima for the benchmark CPUs
+    (foreign load) and the SMT siblings;
+  - tiers are normal ≤ 3% / warning ≤ 5% / investigate > 5%, and a 5 s burst > 25% is also
+    investigate;
+  - investigate-tier runs are **PENDING REVIEW**: excluded from statistics until an explicit
+    decision with its reason is recorded in `review.json` (VALID or VOID);
+  - the pre-run gate records the host state and does not wait.
+- Measurement, workload, snapshot, CPUs, JVM, warmup and every other check are unchanged
+  (`d18a4c2b3` + this revision). No re-pilot: only the interference classification changed. That
+  was the owner's choice: "only record the relaxation".

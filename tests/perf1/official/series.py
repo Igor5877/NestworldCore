@@ -9,7 +9,9 @@ this script only adds what the TZ requires around it:
   - durable raw evidence outside /tmp (TZ §9: raw artifacts are never deleted).
 
 Usage: series.py <server> <snapshot.tar> <datapack> <evidence-root> <series-id>
-                 --n 1,2 --bench-cpus 2,3 --housekeeping 1 [--reps 3]
+                 --n 1,2 --bench-cpus 2,3 --housekeeping 1 [--reps 3] [--policy v2-shared|v1-hard]
+Policy v2-shared (default; PERF-HOST-INTERFERENCE-POLICY.md) records the pre-run host state and
+does not wait; v1-hard is the PERF-1A W1 behaviour (wait up to 30 min for <= 3%).
 Bench CPUs are given in core order; N uses the first N of them.
 """
 import hashlib, json, os, subprocess, sys, time, zipfile
@@ -75,14 +77,15 @@ def order(ns, reps):
 
 def main():
     a = sys.argv[1:]
-    opts = {"--n": None, "--bench-cpus": None, "--housekeeping": None, "--reps": "3"}
+    opts = {"--n": None, "--bench-cpus": None, "--housekeeping": None, "--reps": "3",
+            "--policy": "v2-shared"}
     pos, it = [], iter(a)
     for x in it:
         if x in opts:
             opts[x] = next(it)
         else:
             pos.append(x)
-    if len(pos) != 5 or None in opts.values():
+    if len(pos) != 5 or None in opts.values() or opts["--policy"] not in ("v1-hard", "v2-shared"):
         sys.exit(__doc__)
     server, snapshot, dp, root, sid = pos
     ns = [int(x) for x in opts["--n"].split(",")]
@@ -93,6 +96,7 @@ def main():
     if git("status", "--porcelain", "--", "tests/perf1"):
         sys.exit("tests/perf1 has uncommitted changes: the series must run a committed harness")
     os.environ["PERF1_HARNESS_CPUS"] = opts["--housekeeping"]
+    os.environ["PERF1_INTERFERENCE_POLICY"] = opts["--policy"]
     os.sched_setaffinity(0, hk)                  # the series driver itself stays on housekeeping
     out = os.path.join(root, sid)
     os.makedirs(os.path.join(out, "inputs"), exist_ok=True)
@@ -113,7 +117,7 @@ def main():
                                  for f in ("user_jvm_args.txt", "server.properties")},
         "snapshot_sha256": sha256(snapshot),
         "datapack_cells_sha256": sha256(os.path.join(dp, "cells.json")),
-        "housekeeping_cpus": hk, "bench_cpu_order": bench,
+        "housekeeping_cpus": hk, "bench_cpu_order": bench, "interference_policy": opts["--policy"],
         **core_provenance(server),
     }
     json.dump(common, open(os.path.join(out, "series.json"), "w"), indent=1)
@@ -122,11 +126,15 @@ def main():
         cpus = ",".join(map(str, bench[:n]))
         meta = dict(common, tag=tag, N=n, cpus=cpus,
                     smt_siblings={c: perf1.siblings(c) for c in bench[:n]})
-        for attempt in range(1, 31):              # wait for a quiet host, never measure noise
+        if opts["--policy"] == "v2-shared":       # shared host: record the state, never wait
             ok, busy = pre_gate(bench[:n], hk)
-            if ok:
-                break
-            time.sleep(60)
+            ok, attempt = True, 1
+        else:
+            for attempt in range(1, 31):          # v1-hard: wait for a quiet host
+                ok, busy = pre_gate(bench[:n], hk)
+                if ok:
+                    break
+                time.sleep(60)
         meta["pre_gate"] = {"pass": ok, "busy_pct": busy, "attempts": attempt}
         meta["start"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         if ok:
