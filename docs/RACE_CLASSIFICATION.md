@@ -767,6 +767,60 @@ Live proof:
 
 ---
 
+### AE2 — `EnergyService` per-grid state (`ongoingInjectOperation`, requesters) — OBSERVED LIVE, NOT REPRODUCED (2026-10-05)
+
+```
+Race: appliedenergistics2 me.service.EnergyService.{ongoingInjectOperation, requesters}
+    (per-grid instance state, not a static collection; AE2 15.4.10)
+    writers: injectPower() sets ongoingInjectOperation=true for the duration of the injection
+             (reset in a finally block, verified in the bytecode). The caller is whatever
+             thread runs the injecting machine or energy acceptor, i.e. a region thread.
+    readers: addRequester() -> Preconditions.checkState(!ongoingInjectOperation), reached from
+             TickHandler.onServerTickEnd -> Grid.onServerEndTick -> EnergyService.onServerEndTick
+             -> extractAEPower -> ... -> StoredEnergyAmount.sendEvents
+             -> ControllerBlockEntity.emitPowerStateEvent -> GridEventBus.postEvent
+             -> storagePowerChangeHandler -> addRequester, on the main thread.
+
+Vanilla invariant:
+    A grid's EnergyService is mutated by one thread. Injection and the end-of-tick extraction
+    never overlap: ServerTickEvent.END runs after all block-entity ticking has finished.
+
+Why vanilla is safe:
+    Single server thread. onServerEndTick can never observe an in-progress injectPower(), so the
+    checkState guard only catches true re-entrancy.
+
+NestWorld violation (hypothesis; the live evidence below fits it, but it is NOT reproduced):
+    A machine that injects into the grid ticks on a region thread. A FREE-RUNNING region ticks
+    independently of main, so its injectPower() can overlap main's AE2 end-of-tick. Main then
+    sees ongoingInjectOperation=true set by another thread, and the checkState fires. The C1 fix
+    for GridEventBus.EVENTS (entry above) covers only that static map, not per-grid
+    EnergyService state.
+
+Fix class: not assigned (not reproduced). Candidates: disabling free-running where AE2 grids
+    exist, or confining AE2 grid-energy mutation to one thread. Note that /nestworld pinmod ae2
+    alone does not cover other mods injecting through capabilities.
+
+Required guarantee:
+    No injectPower() on a grid's EnergyService may overlap that grid's onServerEndTick or any
+    other mutation of its requester set.
+
+Live proof (observation only):
+    Island `skyblock-team-island-of-airisminhistory-64aa241d-25`, 2026-10-05 20:44:23, crash
+    report tick-skipped-2026-10-05_20.44.23 (UUID bb676463-b7c3-4380-a9e9-985fad48ba74).
+    - Exception: IllegalStateException "Cannot modify energy requesters while energy is being
+      injected". NestWorld skipped the tick and the server continued.
+    - Main's stack contains no injectPower() frame. Since the flag is reset in finally, it was
+      held by ANOTHER thread at that moment.
+    - Grid: 5 nodes, controller present, cable at (-9,104,112); one player at (-9,105,114).
+    - Core 47.4.234 (commit unknown), modpack v0.0.32.
+    - The island runs -Dnestworld.freeRunningRegions=true -Dnestworld.autoFreeRunning=true and
+      sees 30 CPUs with no cpu.max quota, so the free-running cap is 30-2=28 regions.
+    - Only one occurrence: the 20 tick-skipped reports of 2026-09-29 are a different description
+      ("Exception in server tick loop").
+    The crash report has no other thread stacks, so the injecting thread is NOT directly
+    observed. Owner decision 2026-10-05: record, do not reproduce for now.
+```
+
 ## Priority order (user-set, 2026-09-09)
 
 **P0 — real production risk, needs semantic design work before any fix:**
@@ -863,6 +917,10 @@ Live proof:
 
     Residual, recorded but not fixed: A1, work rounds posted to a retired free-running region
     (not mailbox transport, own gate); L6 shutdown (#15) unchanged.
+
+17. AE2 `EnergyService` per-grid inject / end-of-tick overlap (entry above): OBSERVED LIVE once
+    (2026-10-05), not reproduced, not fix-classified. The suspected enabler is free-running
+    regions on islands; see `docs/contracts/OPS-INCIDENT-2026-10-05-ae2-energy-race.md`.
 
 ## Deployment discipline (standing rule, not per-fix)
 
