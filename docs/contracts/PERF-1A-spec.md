@@ -1,8 +1,24 @@
 # PERF-1A — scheduler scaling baseline (spec, DRAFT for owner review)
 
-**Status (2026-10-05): REVISION 1 (§10). The freeze at `d5321f70e` is void: W1 was defective.
-The revised harness `cc0a19510` with W1 c=48 meets the freeze criterion in pilot round 7; the
-RE-FREEZE is pending owner approval.** History: VERIFIED / FROZEN at `d5321f70e` (2026-10-04). The freeze criterion
+**Status (2026-10-05, owner): PERF-1A W1 Revision 1 — HARNESS VERIFIED / RE-FROZEN.**
+
+| Item | Value |
+|---|---|
+| Frozen revision | `cc0a19510` |
+| Workload | 16 isolated cells × 2 304 cows with AI = 36 864 entities |
+| Snapshot | `4d87bd52` |
+| Validation | pilot 7, 7/7 VALID |
+| Primary official matrix | N = 1 / 2 / 4 / 8 |
+
+- **Previous W1 dataset: INVALID.** It must not be combined with Revision 1 results.
+- **MSPT limitation (accepted and disclosed):** an N=1 window holds only two complete 100-tick
+  aggregation blocks, so p95 / p99 MSPT at N=1 has coarse granularity. Primary throughput uses
+  the full 300 s window.
+- **No further change.** An unexpected curve is a result to investigate, not a reason to adjust
+  the benchmark. A ceiling at N=4 or N=8 (TickAttribution, NUMA / cache, lock contention) is a
+  Core PERF finding, not automatically a harness defect.
+
+History: VERIFIED / FROZEN at `d5321f70e` (2026-10-04), voided by the W1 defect (§10). The freeze criterion
 was met in pilot round 6 (§9), and the owner accepted the §9 method changes in the PERF-1 TZ
 (`PERF-1-tz.md`). The official matrix runs through `tests/perf1/official/series.py`. N ≥ 4 is
 blocked until the host frees more quiet physical cores. No Core change. Reference build
