@@ -1,5 +1,24 @@
 # PERF-1A — official results (Core 47.4.264, W1)
 
+> **INVALIDATED (2026-10-05) under PERF-1 TZ §22: methodological defect in W1.** The world
+> snapshot `8ecbd07f…` has **no walls at all in cell 15**. Cells 0–14 hold 3 650 stone blocks
+> each (verified with `clone … masked`); cell 15 holds 0. Its 576 cows roamed the flat world, so
+> the W1 premise of independent regions was violated for 1 of 16 cells:
+> - Cows crossed into the neighbouring region. In the N=4 run, region 8 (cell 15) went 575 → 556
+>   owned while region 7 went 577 → 639.
+> - Some cows left the forceloaded, entity-ticking chunks and were no longer ticked.
+>   `ticked < owned` appears in 32 of 353 log samples at N=2 and 62 of 576 at N=4.
+> - Primary therefore fell behind secondary by a gap that grows with N (0.4% → 0.7% → 1.3%).
+>   N4-r1 tripped the 1% check, which is how the defect surfaced.
+>
+> Cause: the prepare step ran `forceload add` and the wall `fill`s in the same function and tick.
+> `fill` silently fails on chunks that are not loaded yet, and the function reported 572 of 828
+> commands executed; nothing checked the result.
+>
+> Every N=1, N=2 and N=4 number below comes from this snapshot, so it is not PERF-1A data. The
+> pilot rounds share the same snapshot, so the earlier freeze rests on a defective workload too.
+> Method revision, new pilot and re-freeze are in `docs/contracts/PERF-1A-spec.md` §10.
+
 **Status: N=1 and N=2 ACCEPTED by the owner as a partial official dataset (2026-10-05).**
 Decisions: W2 WAIT, PERF-1B WAIT, Core untouched (PERF-FINDING-001 is not optimised). The next
 priority is N=4, taken as soon as 5 quiet physical cores are available (4 benchmark + 1
