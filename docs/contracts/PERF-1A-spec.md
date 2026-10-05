@@ -1,6 +1,8 @@
 # PERF-1A — scheduler scaling baseline (spec, DRAFT for owner review)
 
-**Status (2026-10-04): PERF-1A HARNESS VERIFIED / FROZEN at `d5321f70e`.** The freeze criterion
+**Status (2026-10-05): REVISION 1 (§10). The freeze at `d5321f70e` is void: W1 was defective.
+The revised harness `cc0a19510` with W1 c=48 meets the freeze criterion in pilot round 7; the
+RE-FREEZE is pending owner approval.** History: VERIFIED / FROZEN at `d5321f70e` (2026-10-04). The freeze criterion
 was met in pilot round 6 (§9), and the owner accepted the §9 method changes in the PERF-1 TZ
 (`PERF-1-tz.md`). The official matrix runs through `tests/perf1/official/series.py`. N ≥ 4 is
 blocked until the host frees more quiet physical cores. No Core change. Reference build
@@ -255,3 +257,49 @@ harness):
 **Remaining blocker for the official matrix.** N ∈ {4…16} needs 4–16 quiet physical cores, with
 their siblings idle, plus the harness core. The host has freed 3. The frozen harness runs any N
 the host can free, and voids any run with interference.
+
+## 10. Revision 1 (2026-10-05): sealed cells and an M sized for N=16
+
+**Defect** (TZ §22; details in `docs/performance/PERF-1A-results.md`):
+- The prepare step built the walls in the same function and tick as the forceloads.
+- `fill` failed silently on chunks that were not loaded, and cell 15 got no walls at all.
+- Its cows roamed into a neighbouring region and out of ticking chunks. This breaks W1's
+  independence and widens the primary/secondary gap as N grows; it surfaced as N4-r1 VOID.
+
+All pilot and official points on snapshot `8ecbd07f…` are void.
+
+**Second defect, found at the same STOP:** c = 24 (9 216 cows) violated §3. At about 39k ticks/s
+per core it would hit the 20 TPS cap from N ≈ 8, and those runs would be VOID by construction.
+
+**Revision (`cc0a19510`):**
+1. Walls are a separate `perf1:walls` function. It runs only after `execute if loaded` passes for
+   every cell corner.
+2. `prepare` verifies every cell with a masked clone: the stone count must equal
+   2·side² − 2·c² (14 210 for c = 48). Otherwise there is no snapshot.
+3. New per-run validity checks:
+   - in every fairness sample, each region owns exactly its cell and ticks all of it
+     (owned = ticked = cows_per_cell);
+   - at window end, all cows of every cell are inside that cell's bounds.
+4. **M = c² = 2 304 cows per cell (c = 48), 36 864 in total.** At T(1) ≈ 33k, ideal TPS(16) ≈ 14
+   stays below the 19 cap. Snapshot `4d87bd52…`: walls verified, 0 entities.
+
+Unchanged: everything else in §1–§9 (CPU / JIT / warmup / thresholds / config).
+
+**Pilot round 7** (HARNESS VALIDATION ONLY; CPUs 2 / 2–3 / 2–9, housekeeping 1; all runs VALID):
+
+| N | runs | primary/s (mean) | CV | TPS | MSPT p50 / p95 | primary vs secondary |
+|---|---|---|---|---|---|---|
+| 1 | 3 | 33 023 | 2.6% | 0.87–0.92 | ~1 030 / 1 480 ms | +0.35…+0.40% |
+| 2 | 3 | 68 575 | 0.8% | 1.84–1.88 | ~495 / 705 ms | +0.15…+0.18% |
+| 8 | 1 (headroom check) | 267 327 | — | 7.25 | 129 / 147 ms | +0.03% |
+
+Other observations:
+- Containment held in every run.
+- N=1 yields only 2 non-overlapping 100-tick MSPT blocks per 300 s window, the minimum the
+  frozen check accepts. Noted, not changed.
+- Pilot observations are consistent with positive multicore scaling (N2/N1 ≈ 2.08, N8/N1 ≈ 8.1),
+  but are not scaling evidence.
+
+**Freeze criterion met** (N=1, 2 ×3, all VALID, no cpuset or affinity violation, CV ≤ 5%).
+Re-freeze at `cc0a19510` with W1 c=48 is proposed for owner approval. After that, the official
+dataset restarts from N=1.
