@@ -1,7 +1,18 @@
 # PERF-1A Revision 1 — official W1 results, N = 1 / 2 / 4 / 8 (Core 47.4.264)
 
-**Status: OFFICIAL DATASET COMPLETE for N = 1, 2, 4, 8 (2026-10-05). 12 / 12 VALID, CV ≤ 5% at
-every N.** N = 12 and 16 are not measured; the host has freed cores 1–9 only.
+**Status: PERF-1A W1 (N = 1 / 2 / 4 / 8) — PASS (owner, 2026-10-05). 12 / 12 VALID, CV ≤ 5% at
+every N.**
+
+Owner decisions:
+- **N = 12 / 16 → PERF-1A-EXTENDED.** Optional, run later when those cores can be freed at no
+  operational cost.
+- **PERF-FIX-001: not now.** TickAttribution is not shown to be the wall up to N = 8; the
+  MEASURE-FIRST status was justified.
+- **Wording.** Throughput grew 8.41× from 1 to 8 cores and the cost per unit of work fell by 18%.
+  The cause of the cost reduction is not yet proven. Do not present this as "Core scales better
+  than linearly".
+- **Next:** W2 negative control (pilot / freeze → official), then PERF-1B, then
+  MOD-API-REALWORLD-1.
 
 This dataset must never be combined with the invalidated pre-revision dataset in
 `PERF-1A-results.md`.
