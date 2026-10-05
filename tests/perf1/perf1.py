@@ -415,6 +415,25 @@ def wait_owned(rc, n, rid=None, timeout=60):
 
 
 # ---------------------------------------------------------------- commands
+def verify_walls(rc, cells):
+    """Count each cell's stone with a masked clone into a scratch area that is cleared again;
+    returns the cells whose count differs from the generator's expectation."""
+    rc.cmd("forceload add 0 0 127 127")
+    time.sleep(3)
+    side, bad = cells["side"], []
+    for cl in cells["cells"]:
+        x0, z0 = cl["x0"], cl["z0"]
+        out = strip(rc.cmd(f"clone {x0} -60 {z0} {x0 + side - 1} -59 {z0 + side - 1} "
+                           f"0 -60 0 masked force"))
+        m = re.search(r"(\d+) block", out)
+        n = int(m.group(1)) if m else 0
+        rc.cmd(f"fill 0 -60 0 {side - 1} -59 {side - 1} minecraft:air")
+        if n != cells["stone_per_cell"]:
+            bad.append((cl["k"], n))
+    rc.cmd("forceload remove 0 0 127 127")
+    return bad
+
+
 def prepare(server, dp, snapshot):
     console = snapshot + ".console.log"
     pid = boot(server, console)
@@ -424,8 +443,25 @@ def prepare(server, dp, snapshot):
     shutil.copytree(dp, dst)
     rc.cmd("reload")
     time.sleep(5)
+    cells = json.load(open(os.path.join(dp, "cells.json")))
     print(strip(rc.cmd("function perf1:setup")))
-    time.sleep(10)
+    # walls only once every forceloaded cell chunk is actually loaded: a fill on an unloaded
+    # chunk fails silently (the first snapshot had no walls at all in cell 15)
+    side = cells["side"]
+    corners = [(x, z) for cl in cells["cells"]
+               for x in (cl["x0"], cl["x0"] + side - 1) for z in (cl["z0"], cl["z0"] + side - 1)]
+    for _ in range(120):
+        if all("passed" in strip(rc.cmd(f"execute if loaded {x} -60 {z}")) for x, z in corners):
+            break
+        time.sleep(1)
+    else:
+        sys.exit("cell chunks did not load")
+    print(strip(rc.cmd("function perf1:walls")))
+    time.sleep(3)
+    bad = verify_walls(rc, cells)
+    if bad:
+        sys.exit(f"cells with incomplete walls: {bad}")
+    print(f"walls verified: {len(cells['cells'])} cells x {cells['stone_per_cell']} stone")
     have = entity_count(rc, "@e")
     print(f"entities in snapshot: {have}")
     rc.cmd("save-all flush")
@@ -542,6 +578,12 @@ def run(server, snapshot, dp, n, cpus, tag, out_dir, warmup, window, warmup_tick
     res["pressure"] = strip(rc.cmd("nestworld pressure"))
     res["status_full_end"] = status_full
     res["entities_end"] = entity_count(rc, "@e[tag=perf1]")
+    # every cow still inside its own cell at the end of the window (cells are sealed)
+    side = cells["side"]
+    res["cows_in_own_cell_end"] = [entity_count(
+        rc, f"@e[tag=perf1c{cl['k']},x={cl['x0']},y=-61,z={cl['z0']},dx={side - 1},dy=3,dz={side - 1}]")
+        for cl in cells["cells"]]
+    res["cows_per_cell"] = cells["cows_per_cell"]
     c0, c1 = counter_at(server, t0), counter_at(server, t1)
 
     dt = t1 - t0
@@ -553,6 +595,7 @@ def run(server, snapshot, dp, n, cpus, tag, out_dir, warmup, window, warmup_tick
         "mspt_blocks": blocks,
         "layout_start": lay0, "layout_end": lay1,
         "deferred_samples": [sum(d for _, _, _, d in s) for s in fair],
+        "fairness_samples": fair,
         "regions_with_entities": [len(s) for s in fair],
         "cpu_s": {k: cpu1.get(k, 0) - cpu0.get(k, 0) for k in cpu1},
         "affinity_seen": sorted(seen_aff), "jit_affinity_seen": sorted(seen_jit_aff), "container_cpuset_seen": sorted(seen_cpuset),
@@ -628,6 +671,12 @@ def validate(paths):
             "only workload entities": r["non_cow_entities"] == 0,
             "layout unchanged in window (split=0, merge=0)": r["layout_start"] == r["layout_end"],
             "deferred = 0": all(d == 0 for d in r["deferred_samples"]),
+            "every region owns its cell and ticks all of it in every sample":
+                "fairness_samples" in r and all(
+                    o == r["cows_per_cell"] and t == o
+                    for smp in r["fairness_samples"] for _, o, t, _ in smp),
+            "every cow inside its own cell at window end":
+                r.get("cows_in_own_cell_end") == [r.get("cows_per_cell")] * 16,
             "16 regions with entities": all(n == 16 for n in r["regions_with_entities"]),
             "entity count stable": r["entities"] == r["entities_end"],
             "not truncated by the 20 TPS cap": r["tps"] < 19.0 and
