@@ -1,7 +1,8 @@
 # PERF-1A W2 — single unsplittable hotspot (negative control) — spec DRAFT
 
-**Status: APPROVED by the owner (2026-10-05).** The reading rule and the per-cell harness change
-are approved. Next: implementation → pilot → W2 freeze → official. W1 Revision 1 is
+**Status (2026-10-05): implemented (`d18a4c2b3`); the pilot meets the freeze criterion; the W2
+FREEZE is pending owner approval.** The spec, reading rule and per-cell harness change were
+approved by the owner earlier the same day. W1 Revision 1 is
 CLOSED as PASS for N = 1 / 2 / 4 / 8 (see `PERF-1A-spec.md`); this is the next step under
 PERF-1 TZ §13.
 
@@ -82,3 +83,42 @@ its own revision, pilot and freeze.
 
 ## Out of scope
 N = 12 / 16 (moved to PERF-1A-EXTENDED), PERF-FIX-001, PERF-1B.
+
+## Pilot (2026-10-05) — HARNESS VALIDATION ONLY
+| Item | Value |
+|---|---|
+| Implementation | `d18a4c2b3`. W1 equivalence verified: helper outputs equal the old logic, and all 12 official W1 runs still validate with unchanged T and CV |
+| Snapshot | `e7858bac`: 2 160 / 2 160 wall commands executed; 120 / 120 layer boxes verified (88 391 stone); 0 entities |
+| CPUs | as W1 (benchmark on 2… in core order, housekeeping on 1) |
+
+| Run | Verdict | ticks/s | TPS | benchmark CPU | hotspot region thread | main | other | CPU per 1 M ticks |
+|---|---|---|---|---|---|---|---|---|
+| N1-r1 | VALID | 20 988 | 2.73 | 0.99 | 0.77 | 0.09 | 0.12 | 47.3 s |
+| N1-r2 | VALID | 21 256 | 2.76 | 0.99 | 0.77 | 0.09 | 0.12 | 46.7 s |
+| N1-r3 | VALID | 21 768 | 2.83 | 0.99 | 0.77 | 0.08 | 0.12 | 45.6 s |
+| N2-r1 | VALID | 30 107 | 3.92 | 1.15 | 0.95 | 0.08 | 0.10 | 38.0 s |
+| N2-r2 | VALID | 30 437 | 3.96 | 1.15 | 0.95 | 0.08 | 0.10 | 37.7 s |
+| N2-r3 | VALID | 29 598 | 3.85 | 1.15 | 0.95 | 0.08 | 0.10 | 39.0 s |
+| N8-r1 | VOID (siblings 22–27 at 3.3–4.4%) | 30 860 | 4.01 | 1.17 | 0.96 | 0.08 | 0.11 | 37.9 s |
+
+Summary:
+- **N=1:** T = 21 337, CV 1.5%.
+- **N=2:** T = 30 047, CV 1.1%, S(2) = 1.408.
+- Every run: containment held (all 7 680 cows in the tower), deferred = 0, primary ≈ secondary.
+
+**Observations (pilot, not evidence):**
+- **Saturation is visible.** The hotspot region thread caps at about one core (0.95–0.96), and the
+  benchmark CPUs are 1.15–1.17 used whether 2 or 8 are given. The VOID N=8 run reached the same
+  throughput as N=2.
+- **The 1 → 2 gain (≈ 1.41×) has two measured components:**
+  - at N=1 the hotspot thread shares its core with main, GC and other threads (0.77 of the core),
+    against 0.95 at N=2;
+  - CPU per 1 M ticks falls from about 47 s to 38 s.
+- **Close to the reading-rule boundary.** Both effects are complete by N=2, so the expected
+  official S(8) is about 1.4–1.5. A value in 1.5–2.5 would trigger "investigate", and this
+  attribution already covers it.
+
+**Freeze criterion met** (N = 1, 2 ×3, all VALID, CV ≤ 5%, no cpuset or affinity violation).
+W2 freeze at `d18a4c2b3`, snapshot `e7858bac`, is proposed. The official W2 matrix N = 1 / 2 / 4 / 8
+needs CPUs 4–9 and siblings 22–27 quiet again: the host showed 2–4% background there during this
+pilot.
