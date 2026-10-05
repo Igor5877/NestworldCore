@@ -1,6 +1,10 @@
 # PERF-1A — official results (Core 47.4.264, W1)
 
-**Status: PARTIAL OFFICIAL DATASET (2026-10-04).** N = 1 and N = 2 are complete; N = 4, 8, 12 and
+**Status: N=1 and N=2 ACCEPTED by the owner as a partial official dataset (2026-10-05).**
+Decisions: W2 WAIT, PERF-1B WAIT, Core untouched (PERF-FINDING-001 is not optimised). The next
+priority is N=4, taken as soon as 5 quiet physical cores are available (4 benchmark + 1
+housekeeping); N=8, 12 and 16 follow as cores free up, with the method unchanged. Recorded
+2026-10-04: N = 1 and N = 2 are complete; N = 4, 8, 12 and
 16 are blocked on host capacity. These are official points, measured with the frozen harness
 `d5321f70e` and the series wrapper `76bb661b8`, under `PERF-1-tz.md`.
 
@@ -45,6 +49,12 @@ Per-run resource figures:
 |---|---|---|---|---|---|
 | 1 | 38 959 | 1.000 | 100.0% | 243 ms | 1.5% (ACCEPT) |
 | 2 | 75 704 | 1.943 | 97.2% | 120 ms | 2.0% (ACCEPT) |
+
+Owner reading: S(2) = 1.943 is an official PERF-1A point, not a scaling curve. N=4 is the
+informative next point:
+- S(4) ≈ 3.7–3.9 would indicate that the contention does not yet break scaling;
+- T(4) ≈ 105–120k would warrant checking whether growing `recordChunkCost` contention explains
+  the lost efficiency.
 
 ## Attribution notes (observations; no conclusion)
 JFR `jdk.JavaMonitorEnter` events ≥ 20 ms, summed over all threads, per 300 s window:
