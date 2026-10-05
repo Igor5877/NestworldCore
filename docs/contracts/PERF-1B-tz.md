@@ -1,6 +1,10 @@
 # PERF-1B — Mod API end-to-end performance validation (owner TZ, 2026-10-05)
 
-**Status: DRAFT, queued after W2.**
+**Status: ACTIVE (owner, 2026-10-05). The full TZ was received the same day; this file keeps the
+earlier summary.** The owner's full text (34 sections) governs: B0–B3, path attribution, closed
+accounting, the correctness gate, latency / CPU / GC, saturation vs sustainable runs, pilot →
+freeze → official, and GUARANTEED / MEASURED / NOT GUARANTEED. The audit and spec draft are in
+`PERF-1B-spec.md`.
 
 | Item | Value |
 |---|---|
