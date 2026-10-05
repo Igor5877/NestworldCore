@@ -44,6 +44,10 @@ per-operation `ApiOpTrace` logging (forbidden in primary measurement, TZ §6) or
 
 ## 2. Decisions needed before implementation (owner)
 
+**Decided (owner, 2026-10-05): N ≤ 8 in every matrix** (PERF-1B and W2). The CPU layout stays as
+in PERF-1A: 8 benchmark cores (CPUs 2–9) plus 1 housekeeping core (CPU 1), with siblings 19–27
+kept idle.
+
 **D1. Path and outcome counters.** TZ §6, §9 and §10 require aggregated attribution and closed
 accounting; nothing in 47.4.264 provides them.
 - *Recommendation:* add instrumentation-only counters (LongAdder per path and per ApplyOutcome)
