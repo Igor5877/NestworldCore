@@ -1,6 +1,7 @@
 # PERF-1A W2 — single unsplittable hotspot (negative control) — spec DRAFT
 
-**Status: DRAFT for owner review (2026-10-05).** No harness or Core change yet. W1 Revision 1 is
+**Status: APPROVED by the owner (2026-10-05).** The reading rule and the per-cell harness change
+are approved. Next: implementation → pilot → W2 freeze → official. W1 Revision 1 is
 CLOSED as PASS for N = 1 / 2 / 4 / 8 (see `PERF-1A-spec.md`); this is the next step under
 PERF-1 TZ §13.
 
@@ -61,7 +62,7 @@ thread, GC, JIT, and JFR monitor blocking (TickAttribution included).
   threads move off the hotspot core as N grows.
 - The hotspot region thread stays near one full core, and the other cores sit mostly idle.
 
-**Proposed reading rule (owner to confirm):**
+**Reading rule (owner-approved):**
 
 | Result | Reading |
 |---|---|
