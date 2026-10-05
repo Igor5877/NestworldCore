@@ -145,7 +145,8 @@ def main():
                                 os.path.join(out, f"{tag}.json")], capture_output=True, text=True)
             meta["validation"] = v.stdout
             line = v.stdout.splitlines()[0] if v.stdout else "no result"
-            meta["verdict"] = "VALID" if line.endswith(": VALID") else "VOID"
+            # v2-shared appends an interference note after the verdict ("...: VALID [interference ...]")
+            meta["verdict"] = "VALID" if line.split(": ", 1)[-1].startswith("VALID") else "VOID"
             meta["reason"] = line.split("VOID: ", 1)[1] if "VOID: " in line else \
                 (None if meta["verdict"] == "VALID" else line)
         else:
