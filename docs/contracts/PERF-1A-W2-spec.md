@@ -1,8 +1,23 @@
 # PERF-1A W2 — single unsplittable hotspot (negative control) — spec DRAFT
 
-**Status (2026-10-05): implemented (`d18a4c2b3`); the pilot meets the freeze criterion; the W2
-FREEZE is pending owner approval.** The spec, reading rule and per-cell harness change were
-approved by the owner earlier the same day. W1 Revision 1 is
+**Status (2026-10-05, owner): PERF-1A W2 HARNESS VERIFIED / FROZEN.**
+
+| Item | Value |
+|---|---|
+| Harness | `d18a4c2b3` |
+| Snapshot | `e7858bac` |
+| Workload | 7 680 AI cows in one chunk column, one hotspot ownership domain |
+| Pilot | N1 3/3 VALID, N2 3/3 VALID, N8 diagnostic VOID (host interference) |
+| Observed valid scaling | S(2) = 1.408 |
+
+- **N=8 saturation:** supported diagnostically, not yet measured officially. The VOID N=8 run is
+  not scaling evidence.
+- **The reading rule stays as approved before the pilot.** A result such as 1.53× is not called a
+  FAIL; it falls into the predefined INVESTIGATE band, followed by attribution. S(8) ≤ 1.5 with the
+  single-domain invariant intact is a negative-control PASS.
+- **Official series:** run only on a confirmed quiet host (CPUs 4–9 and siblings 22–27), as one
+  complete alternating 1 / 2 / 4 / 8 ×3 series, not in parts, to avoid drift between low and high
+  N. Core and harness unchanged. W1 Revision 1 is
 CLOSED as PASS for N = 1 / 2 / 4 / 8 (see `PERF-1A-spec.md`); this is the next step under
 PERF-1 TZ §13.
 
