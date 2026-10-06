@@ -51,7 +51,7 @@ final class Api1A7DeterministicTests {
         return children;
     }
 
-    private static Entity spawnTestEntity(ServerLevel level) {
+    static Entity spawnTestEntity(ServerLevel level) {
         // API-1A.7 TEST-HARNESS FIX (not a production change): first run of NW-002-DET found the
         // spawned entity became unreachable via level.getEntity(uuid) within ~2s with no player
         // nearby and no force-load -- force-loading the spawn chunk rules out "chunk unloaded

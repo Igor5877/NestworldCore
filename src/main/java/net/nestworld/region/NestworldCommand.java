@@ -149,11 +149,12 @@ public final class NestworldCommand {
             case "visibility" -> () -> safeRun(() -> Api1A7DeterministicTests.runVisibilityMatrix(sys));
             case "sameowner" -> () -> safeRun(() -> Api1A7DeterministicTests.runSameOwnerVisibilityTest(sys));
             case "controlflow" -> () -> Api1A7DeterministicTests.controlFlowInventory();
+            case "d1accounting" -> () -> safeRun(() -> Perf1bD1AccountingTest.run(sys));
             default -> null;
         };
         if (runner == null) {
             src.sendFailure(Component.literal("Unknown scenario: " + scenario
-                    + " (expected migration|removed|reroutelimit|ordering|visibility|sameowner|controlflow)"));
+                    + " (expected migration|removed|reroutelimit|ordering|visibility|sameowner|controlflow|d1accounting)"));
             return 0;
         }
         Thread t = new Thread(() -> {
