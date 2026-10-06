@@ -58,7 +58,7 @@ Small background load alone never voids a run.
 |---|---|
 | **PERF-1B** | this policy applies to its pilot and official series |
 | **PERF-1A W1 (Revision 1)** | stays as obtained under its frozen method (hard 3% gates); no retroactive reclassification of its VALID / VOID runs |
-| **PERF-1A W2** | frozen at `d18a4c2b3` with the hard 3% gates and not yet run officially; owner to decide whether its official series runs under this policy (a W2 harness revision) or under its frozen gates |
+| **PERF-1A W2** | official series ran under this policy (v2-shared, harness `82b9c3527`); see `docs/performance/PERF-1A-W2-results.md` |
 
 ## Implementation note
 The frozen W1 / W2 validator (`tests/perf1/perf1.py`) keeps its hard gates for the datasets frozen
@@ -67,3 +67,24 @@ on it. The PERF-1B harness implements this policy:
 - tier flags (normal / warning / investigate) instead of an automatic VOID;
 - an explicit, recorded VOID decision with its reason when material interference is found;
 - a pre-run check that records the host state but does not wait for laboratory quiet.
+
+## Source priority for CPU accounting (owner, 2026-10-06)
+When the CPU-accounting sources disagree, they rank as follows:
+1. per-thread runtime and affinity from `/proc/<pid>/task/*`;
+2. process CPU runtime;
+3. host / container per-CPU telemetry (`/proc/stat`, served by lxcfs here);
+4. the derived foreign-load metric (per-CPU busy minus process CPU), last.
+
+A lower source that contradicts a higher one never voids a run on its own. In particular, a
+negative derived foreign load is physically impossible and marks the derived metric as unreliable
+for that run; it is excluded from authoritative interference attribution. This is not a new gate.
+
+**Diagnostic finding (2026-10-06; not part of any dataset).**
+- On CPU 9, a 1 ms period duty cycle (50% / 25% / 10%) showed `/proc/stat` per-CPU busy 8–16%
+  below the process's precise runtime (schedstat = utime + stime). At 100% duty or a 20 ms
+  period they agree.
+- So per-CPU busy under-reports sub-tick busy / idle alternation in this environment. That
+  explains the negative foreign load on partly used benchmark CPUs (PERF-1A W2, N = 2).
+- The same bias can under-report bursty foreign load on siblings; throughput deviation versus
+  peers stays the deciding evidence for material interference.
+- Tools and raw output: `tests/perf1/diag/`, `/root/perf1-evidence/diag-cpu-accounting/`.
