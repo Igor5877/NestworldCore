@@ -51,3 +51,42 @@ server. The race analysis is in `docs/RACE_CLASSIFICATION.md` (AE2 `EnergyServic
   quota, free-running flags per island.
 - **Reproduction** of the AE2 race on an isolated island copy: deferred by the owner.
 - **Cause of the 2026-09-29 tick-skipped series:** not examined.
+
+## Recurrence (log pasted by the owner on 2026-10-06; the lines carry the time only)
+Same island (the player `64aa241d-98a0-11f0-bdfb-22014d09235b` is online and PlayerSync saves every
+minute), same Core `47.4.234`, same signature. There were **three** skipped ticks in 17 minutes:
+
+| Time | Crash report UUID |
+|---|---|
+| 20:01:08 | `d3ca4580-ab15-4fd9-9006-1e30d495ba81` |
+| 20:01:26 | `b3547036-7a91-4288-99ca-310a227baaec` |
+| 20:18:15 | `a35f5aaa-8e53-42f5-b6fc-8643f2199621` |
+
+Stack, identical in all three:
+`TickHandler.onServerTickEnd` → `Grid.onServerEndTick` → `EnergyService.onServerEndTick` →
+`extractAEPower` → `extractProviderPower` → `AEBasePoweredBlockEntity.extractAEPower` →
+`StoredEnergyAmount.extract` → `setStored` → `sendEvents` → `ControllerBlockEntity.emitPowerStateEvent` →
+`Grid.postEvent` → `GridEventBus.postEvent` → `EnergyService.storagePowerChangeHandler` →
+`addRequester` → `IllegalStateException: Cannot modify energy requesters while energy is being injected`.
+
+Each time the tick-loop catch-and-continue skipped one tick, and the server kept running.
+
+Facts added by this recurrence (still no reproduction):
+- **It recurs.** Three occurrences in 17 minutes on the same grid setup; it is not a one-off.
+- **The extract path itself raises the event.** Main is *extracting* (end-of-tick), and a
+  controller power-state change during that extraction calls `addRequester` while
+  `ongoingInjectOperation` is set. Under the hypothesis, that flag belongs to a concurrent
+  `injectPower` on another thread. The AE2 15.4.10 bytecode check (the flag is reset in
+  `finally`) still rules out a flag stuck on main's own thread.
+- **The C1 transformer is present but not in the chain.** `GridEventBus.postEvent` carries
+  `xf:fml:forge:nestworld_static_collection_race_transformer`. Our C1 static-collection transformer
+  is applied to that class, but it does not cover EnergyService's injection state, and nothing
+  shows that it plays a role here.
+- **Still unknown:**
+  - which thread was injecting (the reports hold the server-thread stack only);
+  - whether grid energy state stays consistent after each skipped tick.
+
+Open items unchanged: reproduce on an isolated island copy (deferred by the owner), island
+free-running sizing, island inventory. A thread dump taken at the moment of the exception would
+name the injecting thread. The existing island dump tooling only triggers on hangs, not on
+skipped ticks.
