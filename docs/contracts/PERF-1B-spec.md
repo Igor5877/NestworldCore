@@ -227,3 +227,41 @@ signature. It is recorded separately as **CORE-MAILBOX-FR-FLAKE-001** (OPEN) and
 regression of the candidate. **47.4.306 meets both §6 rule 1 conditions** (regression and
 telemetry smoke). It becomes the TRUSTED PERF-1B REFERENCE subject to the owner's acceptance of
 the FR-flake classification.
+
+## 8. Owner decisions (2026-10-06)
+- **PERF-1B reference artifact:** NestWorldCore 47.4.306, commit `7803c678c`, Git-Dirty=false,
+  Source-Patch-Integrity=MATCH — **TRUSTED PERF-1B REFERENCE, APPROVED.**
+- **47.4.298 superseded** before the PERF-1B pilot, because its D1 accounting could not be
+  deterministically validated through the public Mod API entry path. 47.4.306 differs from it
+  only by the test fixture code needed for that validation.
+- **D1 deterministic accounting:** VERIFIED.
+- **API regression** for moving to the next step: ACCEPTED.
+- **CORE-MAILBOX-FR-FLAKE-001:** OPEN / PRE-EXISTING / DEFERRED INVESTIGATION / NON-BLOCKING FOR
+  PERF-1B, on condition that every PERF-1B run proves that state absent in its own measurement
+  window (per-run ownership validity gate below). Not to be investigated now.
+- **CORE-MAILBOX-MERGE-001** stays CLOSED / FROZEN. Its proven closure property (no accepted
+  message is lost) holds in the flake runs: TARGET_NOT_FOUND terminal, unaccounted 0, duplicates
+  0. The flake is a separate correctness question: can a live entity end up without an
+  authoritative region owner in the free-running lifecycle?
+
+**Per-run ownership validity gate** (harness `perf1b.py validate`; NestWorld runs). Each condition
+must hold in the run's own window, otherwise the run is **INVALID** (ownership gate), never just
+another terminal outcome:
+- targets expected = present at start = present at end;
+- in every fairness sample (every 30 s and at the end): one region per cell, each owning exactly
+  the cell's targets, and owned = ticked;
+- ownership assertions enabled, wrong-owner = 0;
+- topology as in the scenario (16 regions, layout unchanged in the window);
+- no owner-loss terminals: target_not_found = target_removed = 0. Markers are never removed, so
+  any such terminal means an unexpected loss of the owner. Not observable in Step 7 OFF runs; the
+  owned = ticked samples and the final-state check still apply there.
+
+**Step 7 (instrumentation OFF/ON sanity):**
+- This is a sanity gate, not a benchmark: one stable scenario (B2, N = 4), several alternating
+  OFF/ON repetitions with an identical workload.
+- Compare throughput, process CPU, allocation / GC and, where OFF permits, latency. Latency
+  exists only with the counters on, so it cannot be compared.
+- No threshold is fixed before measuring. If the difference lies within run-to-run noise: PASS.
+  A systematic measurable regression is first quantified; the owner then decides whether the
+  instrumentation must be lightened.
+- After Step 7: the B0 / B1 / B2 / B3 pilot, with no further FR-flake investigation now.

@@ -1,6 +1,8 @@
 # CORE-MAILBOX-FR-FLAKE-001 — intermittent free-running mailbox fixture failure (OPEN)
 
-**Status: OPEN, observed 2026-10-06; not investigated; no fix proposed.** Found during the
+**Status (owner, 2026-10-06): OPEN / PRE-EXISTING / DEFERRED INVESTIGATION / NON-BLOCKING FOR PERF-1B**, on the condition that every PERF-1B run proves this state absent in its own window (per-run ownership validity gate, `PERF-1B-spec.md` §8). Not to be closed as a "fixture race" until that is proven. The A/B (same signature on 264 and 306) excludes the D1 instrumentation as the cause, but does not decide whether the defect is in production Core or in the fixture. Related gate: CORE-MAILBOX-MERGE-001 stays CLOSED / FROZEN (its closure property, no accepted message lost, holds in these runs).
+
+Observed 2026-10-06; not investigated; no fix proposed. Found during the
 PERF-1B pre-pilot API regression of candidate 47.4.306. It is **pre-existing**: the trusted
 reference 47.4.264 shows the same failure signature. It is therefore not a regression of the
 PERF-1B candidate.
@@ -48,6 +50,7 @@ tested:
 ## Impact on PERF-1B
 - PERF-1B windows run with a fixed layout (no split or merge), check owned = ticked per run, and
   run ownership assertions.
-- Recommendation: do not block the PERF-1B pilot; owner decision.
-- It does reopen a question for CORE-MAILBOX-MERGE-001 (closed / verified) in free-running mode.
-  That gate's own fixtures fail intermittently here, even though the transport invariant holds.
+- Owner decision: non-blocking, with the per-run ownership gate. A PERF-1B run in which this state
+  appears is INVALID.
+- The question is separate from CORE-MAILBOX-MERGE-001: can a live entity end up without an
+  authoritative region owner in the free-running lifecycle?
