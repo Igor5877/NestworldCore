@@ -183,3 +183,47 @@ workload, timing, telemetry nor the validator verdict.
 - `setSlot` (TZ §28).
 - API-1C.
 - Any optimisation (TZ §29).
+
+## 7. Pre-pilot progress (2026-10-06)
+**Step 4 — world / snapshot: DONE.** `snap-t256.tar`, sha256 `449e0cc6b103e2e3…`, entity-free
+(datapack `gen_p1b.py` T = 256 marker targets per cell; targets and producers are created by the
+layout builder at run time, as in PERF-1A).
+
+**Candidate change: 47.4.298 → 47.4.306.** The D1 proof needs operations counted as *accepted*.
+The API-1A deterministic fixtures call `EntityMutationDispatcher.dispatch` directly, bypass the
+backend's `onAccepted`, and therefore cannot prove closure. A test-only fixture
+(`Perf1bD1AccountingTest`, `/nestworld testmutate det d1accounting`, commit `7803c678c`) drives two
+calls through the real public entry `NestWorldEntities.setVelocity`. The diff against 298 is
+test-only: no production path changes. Candidate 47.4.306: Git-Commit `7803c678`, Git-Dirty false,
+Source-Patch-Integrity MATCH, installer sha256 `f82f4c9e…`. All candidate gates apply to 306.
+
+**Step 5 — D1 deterministic accounting: PASS** (`tests/perf1b/harness/d1smoke.py`, evidence
+`/root/perf1-evidence/perf1b-d1-smoke/`). Three repetitions, each one APPLIED and one
+STALE_INTENT_DROPPED, forced by barrier A (V1 parked, target migrated, V2 applied, V1 released).
+Three independent sources agree:
+
+| Source | Result |
+|---|---|
+| fixture counter deltas, per repetition | accepted 2 = applied 1 + stale 1; other terminals 0; unaccounted 0 |
+| per-second stats file, after all repetitions | accepted 6 = terminals 6 (applied 3, stale_dropped 3) |
+| TERMINAL phase traces | 3 × APPLIED, 3 × STALE_INTENT_DROPPED |
+
+Ownership assertions: violations = 0. Paths: mailbox_from_main 2 and one reroute per repetition,
+as expected for a test thread that is not a region thread.
+
+**Step 6 — API-1A / Core regression on 47.4.306: PASS** (exact sha-verified artifact, no rebuild;
+scratch `api1b7/server`, cwd-confirmed; evidence `/root/perf1-evidence/perf1b-reg-47.4.306*.out`).
+
+| Suite | Result | Reference 47.4.249 |
+|---|---|---|
+| CORE-MAILBOX fixtures, barrier mode | 64 / 0 | 39 / 0 (smaller fixture set then) |
+| API-1A `det` (migration, removed, reroutelimit, ordering, visibility, sameowner) | expected terminals: APPLIED; TARGET_NOT_FOUND; 5 × REROUTE then REROUTE_LIMIT_DROPPED; V2 APPLIED + V1 STALE_INTENT_DROPPED; APPLIED; APPLIED | same |
+| API-1B fixtures | 19 × PASS | 18 × PASS |
+| stress churn / pinned / unpinned | MISSING_TERMINAL 0, unaccounted 0, C10 violations 0, nothing queued at end | same |
+| CORE-MAILBOX fixtures, free-running mode | 8 / 9 runs 69 / 0; 1 run 53 / 7 | 43 / 0 (one run) |
+
+The free-running failure is pre-existing: the trusted 47.4.264 fails 1 / 7 runs with the same
+signature. It is recorded separately as **CORE-MAILBOX-FR-FLAKE-001** (OPEN) and is not a
+regression of the candidate. **47.4.306 meets both §6 rule 1 conditions** (regression and
+telemetry smoke). It becomes the TRUSTED PERF-1B REFERENCE subject to the owner's acceptance of
+the FR-flake classification.
