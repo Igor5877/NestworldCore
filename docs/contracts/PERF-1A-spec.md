@@ -1,5 +1,7 @@
 # PERF-1A — scheduler scaling baseline (spec, DRAFT for owner review)
 
+**PERF-1A: CLOSED / VERIFIED / FROZEN (owner, 2026-10-06).** W1 (16 independent domains, S(8) = 8.409) and W2 (one unsplittable domain, S(8) = 1.404) together show that scaling depends on available region-level parallelism. N = 8 is the final maximum for this campaign; PERF-1A-EXTENDED (> 8 cores) is out of the current scope, not a blocker and not an open DoD item. Not to be done: N12/N16, a third synthetic workload, repeating W1, another hotspot geometry, or optimising TickAttribution only because contention was observed. Next gate: PERF-1B.
+
 **Status (2026-10-05, owner): PERF-1A W1 Revision 1 — HARNESS VERIFIED / RE-FROZEN.**
 
 | Item | Value |

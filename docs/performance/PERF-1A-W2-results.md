@@ -2,7 +2,9 @@
 
 **Status: PERF-1A W2 — negative control PASS by the owner-approved reading rule
 (S(8) = 1.404 ≤ 1.5, single-domain invariant intact). 12 / 12 VALID runs (3 per N), CV ≤ 1.7%.**
-Pending owner acceptance.
+Accepted by the owner 2026-10-06: **PERF-1A W2 — CLOSED / VERIFIED / FROZEN.**
+
+**PERF-1A: CLOSED / VERIFIED / FROZEN (owner, 2026-10-06).** W1 (16 independent domains, S(8) = 8.409) and W2 (one unsplittable domain, S(8) = 1.404) together show that scaling depends on available region-level parallelism. N = 8 is the final maximum for this campaign; PERF-1A-EXTENDED (> 8 cores) is out of the current scope, not a blocker and not an open DoD item. Not to be done: N12/N16, a third synthetic workload, repeating W1, another hotspot geometry, or optimising TickAttribution only because contention was observed. Next gate: PERF-1B.
 
 W2 is a negative control, not a performance target (`docs/contracts/PERF-1A-W2-spec.md`). The question
 was whether adding CPUs to one ownership domain that cannot be split leaves throughput flat. It
