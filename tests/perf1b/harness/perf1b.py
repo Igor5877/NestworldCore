@@ -7,10 +7,13 @@ frozen file.
 
   perf1b.py run <server> <snapshot.tar> <datapack> <platform nestworld|forge> <mode API|RAW>
                 <target self|partner> <N> <cpus> <tag> <out-dir>
-                [--k 64] [--warmup-ops 20000000] [--warmup 120] [--window 300]
+                [--k 64] [--warmup-ops 20000000] [--warmup 120] [--window 300] [--api-stats 1]
   perf1b.py validate <run.json>...
 
 B0 = forge RAW self, B1 = forge API self, B2 = nestworld API self, B3 = nestworld API partner.
+--api-stats 0 runs without the D1 counters (Step 7 OFF/ON sanity): throughput then comes from the
+consumer's submitted count, accounting closure and owner-loss terminals are not measurable, and
+latency is not available. Only meaningful for B2, where every call applies synchronously.
 Interference policy: v2-shared (docs/contracts/PERF-HOST-INTERFERENCE-POLICY.md).
 """
 import json, os, re, subprocess, sys, tarfile, time, shutil
@@ -101,8 +104,10 @@ def run(a, o):
         if os.path.exists(p):
             os.remove(p)
     opts = (f"-Xlog:gc*:file={gclog}:uptime,time -Dperf1b.mode={mode} -Dperf1b.k={o['--k']} "
-            f"-Dperf1b.statsFile={stats_c} -Dnestworld.apiStats=true -Dnestworld.apiStatsFile={stats_a} "
-            f"-Dnestworld.ownershipAssertionsEnabled=true")   # wrong-owner gate (diagnostic mode)
+            f"-Dperf1b.statsFile={stats_c} "
+            + (f"-Dnestworld.apiStats=true -Dnestworld.apiStatsFile={stats_a} " if o["--api-stats"] else "")
+            + "-Dnestworld.ownershipAssertionsEnabled=true")   # wrong-owner gate (diagnostic mode)
+    res["api_stats"] = bool(o["--api-stats"])
     res["run_java_opts"] = opts
     pid = perf1.boot(server, os.path.join(out_dir, f"{tag}-console.log"), cpus, java_opts=opts)
     res["server"] = os.path.realpath(server)
@@ -158,6 +163,7 @@ def run(a, o):
     tele = [(time.time(), host0, proc0, perf1.jit_cpu(pid))]
     seen_aff, blocks, g_last = {perf1.affinity(pid)}, [], g0
     seen_jit = set(perf1.jit_affinities(pid))
+    fair = [perf1.fairness(rc)] if platform == "nestworld" else []
     while time.time() - t0 < o["--window"]:
         time.sleep(1)
         seen_aff.add(perf1.affinity(pid))
@@ -167,6 +173,8 @@ def run(a, o):
         if g - g_last >= 100:
             blocks.append(perf1.mspt(rc))
             g_last = perf1.gametime(rc)
+        if platform == "nestworld" and len(fair) <= int((time.time() - t0) // 30):
+            fair.append(perf1.fairness(rc))   # ownership gate: owned = ticked = targets per cell
     g1 = perf1.gametime(rc)
     t1 = time.time()
     c1, s1 = consumer_submitted(stats_c), api_stats(stats_a)
@@ -174,6 +182,11 @@ def run(a, o):
     subprocess.run(["jcmd", str(pid), "JFR.stop", "name=perf1b"], capture_output=True)
     if platform == "nestworld":
         res["layout_end"], _ = perf1.layout(rc)
+        fair.append(perf1.fairness(rc))
+        res["fairness_samples"] = fair
+    res["targets_end"] = perf1.entity_count(rc, "@e[tag=perf1]")
+    res["targets_expected"] = sum(perf1.expected_cows(cells))
+    res["targets_per_cell"] = cells["cows_per_cell"]
 
     # quiescence: stop producers, wait until every accepted operation has a terminal
     rc.cmd("perf1b pause")
@@ -181,7 +194,7 @@ def run(a, o):
     for _ in range(60):
         time.sleep(1.5)
         q = api_stats(stats_a)
-        if mode == "RAW" or (q and q.get("accepted", 0) == terminals(q)):
+        if mode == "RAW" or not o["--api-stats"] or (q and q.get("accepted", 0) == terminals(q)):
             break
     res["quiescent_stats"] = q
     res["check"] = strip(rc.cmd("perf1b check"))
@@ -193,7 +206,7 @@ def run(a, o):
                 "affinity_seen": sorted(seen_aff), "jit_affinity_seen": sorted(seen_jit),
                 "window_stats_start": s0, "window_stats_end": s1})
     res["submitted_per_s"] = (c1[1] - c0[1]) / ((c1[0] - c0[0]) / 1000.0) if c1[0] > c0[0] else 0.0
-    if mode == "RAW":                        # B0: a raw call is applied in the call itself
+    if mode == "RAW" or not o["--api-stats"]:   # B0 / counters off: throughput = submitted
         res["accepted_per_s"] = res["terminal_per_s"] = res["submitted_per_s"]
     else:
         span = (s1.get("ts", 0) - s0.get("ts", 0)) / 1000.0
@@ -248,22 +261,45 @@ def validate(paths):
             "warmup converged": r.get("warmup_actual_s", -1) > 0,
             "LATEST_INTENT_WINS final state (mismatch = 0, removed = 0)": mismatch == 0 and removed == 0,
             "accounting closed (accepted = sum of terminals)":
-                r["consumer_mode"] == "RAW" or (q and q.get("accepted", -1) == terminals(q)),
+                r["consumer_mode"] == "RAW" or not r.get("api_stats", True)
+                or (q and q.get("accepted", -1) == terminals(q)),
             "stopped cleanly": r.get("stopped_cleanly", False),
             "not capped by 20 TPS": r["tps"] < 19.0,
         }
+        # Ownership validity gate (owner, 2026-10-06; CORE-MAILBOX-FR-FLAKE-001): every run must
+        # prove in its own window that no target lost its authoritative owner. A failure makes the
+        # run INVALID -- it is never just another terminal outcome.
+        own = {}
         if r["platform"] == "nestworld":
-            checks["layout unchanged in window"] = r.get("layout_start") == r.get("layout_end")
+            exp = r.get("targets_expected")
+            per_cell = r.get("targets_per_cell")
+            own["layout unchanged in window (topology matches the scenario)"] = \
+                r.get("layout_start") == r.get("layout_end") and len(r.get("layout_start") or []) == 16
             oa = r.get("ownership_assertions", "")
-            checks["ownership assertions enabled, wrong-owner = 0"] = \
+            own["ownership assertions enabled, wrong-owner = 0"] = \
                 "violations=0 " in oa + " " and "DISABLED" not in oa
+            own["targets expected = present at start = at end"] = \
+                exp is not None and r.get("targets") == exp == r.get("targets_end")
+            own["targets expected = owned = ticked in every sample, one region per cell"] = \
+                bool(r.get("fairness_samples")) and all(
+                    sorted(o_ for _, o_, _, _ in smp if o_) == [per_cell] * 16
+                    and all(t == o_ for _, o_, t, _ in smp)
+                    for smp in r["fairness_samples"])
+            if r.get("api_stats", True):
+                own["no owner-loss terminals (target_not_found = target_removed = 0)"] = \
+                    q.get("target_not_found", 0) == 0 and q.get("target_removed", 0) == 0
+            # counters off (Step 7 OFF runs): terminals are not observable; the owned = ticked
+            # samples and the final-state check above still cover ownership loss
+        invalid = [k for k, v in own.items() if not v]
         bad = [k for k, v in checks.items() if not v]
         # path purity is a WORKLOAD-validity criterion, not an API correctness invariant (owner,
         # 2026-10-05): a B3 run at 98.7% mailbox due to real race / topology behaviour is
         # INVESTIGATE for path purity, not a correctness failure. Correctness stays the checks
         # above (accounting, owner, final state / ordering).
         purity = None
-        if r["mode"] == "B2":
+        if not r.get("api_stats", True):
+            pass                              # no path counters with the counters off
+        elif r["mode"] == "B2":
             purity = wp.get("path_owner_fast", 0) / total_paths
         elif r["mode"] == "B3":
             purity = wp.get("path_mailbox_cross", 0) / total_paths
@@ -277,8 +313,10 @@ def validate(paths):
                 bad.append(f"reviewed VOID: {review['reason']}")
         elif tier == "investigate" and not bad:
             bad.append("PENDING REVIEW (interference investigate tier)")
-        rc |= bool(bad)
-        print(f"{r['tag']} {r['mode']} N={r['N']}: {'VALID' if not bad else 'VOID: ' + '; '.join(bad)}{note}")
+        rc |= bool(bad) or bool(invalid)
+        verdict = ("INVALID (ownership gate): " + "; ".join(invalid + bad) if invalid
+                   else "VOID: " + "; ".join(bad) if bad else "VALID")
+        print(f"{r['tag']} {r['mode']} N={r['N']}: {verdict}{note}")
     return rc
 
 
@@ -288,7 +326,7 @@ def main():
         sys.exit(validate(a[1:]))
     if not a or a[0] != "run":
         sys.exit(__doc__)
-    o = {"--k": 64, "--warmup-ops": 20_000_000, "--warmup": 120, "--window": 300}
+    o = {"--k": 64, "--warmup-ops": 20_000_000, "--warmup": 120, "--window": 300, "--api-stats": 1}
     pos, it = [], iter(a[1:])
     for x in it:
         if x in o:
