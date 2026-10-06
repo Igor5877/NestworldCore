@@ -1,6 +1,6 @@
 # PERF-1A W2 — single unsplittable hotspot (negative control) — spec DRAFT
 
-**Status (2026-10-05, owner): PERF-1A W2 HARNESS VERIFIED / FROZEN.**
+**Status (2026-10-06): official series complete — negative control PASS by the reading rule (S(8) = 1.404, 12 / 12 VALID, single-domain invariant intact); pending owner acceptance. Results: `docs/performance/PERF-1A-W2-results.md`.** Earlier status (2026-10-05, owner): PERF-1A W2 HARNESS VERIFIED / FROZEN.
 
 | Item | Value |
 |---|---|
@@ -28,7 +28,7 @@ throughput flat? If W2 scaled like W1, the benchmark would be painting scaling t
 | Workload | Expectation | Result |
 |---|---|---|
 | W1 (independent regions) | scaling | measured 8.41× on 8 cores |
-| W2 (one unsplittable hotspot) | saturation | to be measured |
+| W2 (one unsplittable hotspot) | saturation | measured 1.40× on 8 cores (saturates at about one core from N = 2) |
 
 W2 is a negative control, not a performance target. If it scales unexpectedly, the execution path
 must be explained; it does not count as success.
