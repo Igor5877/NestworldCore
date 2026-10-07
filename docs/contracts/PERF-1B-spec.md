@@ -349,3 +349,38 @@ adjacent pairs. Evidence: `/root/perf1-evidence/perf1b-step7/`.
   - What stays equivalent is the operation / workload semantics, not the submissions per tick.
   - B2 calibration point (not a performance claim): N = 4, K = 32 768 → ≈ 4.32 M ops/s, TPS ≈ 8.2,
     100% owner-fast.
+
+## 11. Pilot calibration (2026-10-07; calibration evidence, not performance claims)
+Rigs:
+- NestWorld: `/root/perf1b-rig/server` (47.4.306).
+- Stock Forge: `/root/perf1b-rig/stock-server`.
+  - Forge 47.4.20, official installer, sha1 `237c5a17…` verified against maven; universal
+    `3b203ea6…`.
+  - Provider `nestworld-modapi-provider-1.0.0-SNAPSHOT.jar` `297f9b0e…` (contains
+    `ForgeVelocityTelemetry`).
+  - Consumer `1f46982d…`; same canonical config.
+
+Calibration: 60-s windows, driver `tests/perf1b/harness/calibrate.sh`; evidence
+`/root/perf1-evidence/perf1b-pilot-cal/`.
+
+| Mode | N | K | TPS | ops / s | Note |
+|---|---|---|---|---|---|
+| B0 stock raw `setDeltaMovement` | 1 | 131 072 | 14.6 | 30.6 M | |
+| B1 stock + Mod API provider | 1 | 32 768 | 7.9 | 4.15 M | 100% same-thread path; latency p50 0.13 µs |
+| B2 NestWorld self | 1 | 8 192 / 32 768 | 7.5 / 2.0 | 0.99 M / 1.06 M | 100% owner-fast |
+| B2 | 2 | 16 384 | 7.8 | 2.05 M | |
+| B2 | 4 | 32 768 | ≈ 8.3 | 4.3–4.6 M | Step 7 runs |
+| B2 | 8 | 65 536 | 7.2 | 7.54 M | 6.75 of 8 benchmark cores |
+| B3 NestWorld partner | 1 and 8 | 256 | 20 (cap) | ≈ 82 k | stable |
+| B3 | 1 and 8 | ≥ 512 | ≤ 20 | ceiling ≈ 96 k, then collapse | **PERF-1B-FINDING-001** |
+
+Readings (calibration-quality):
+- B0 → B1 on stock Forge is ≈ 7.4×. Per §10, this is API / provider cost plus D1 measurement
+  cost.
+- B1 → B2 at N = 1 is ≈ 4× (NestWorld owner-fast vs Forge same-thread).
+- B2 grows ≈ 7.6× from N = 1 to N = 8.
+- B3 is bounded by the mailbox backpressure policy (300 per destination region per tick), not by
+  CPU, and collapses under overload. How B3 is measured officially is an owner decision.
+
+Harness: any abort now stops the server (`a3dbdc0cf`). That was found when the B3 K = 32 768 run
+exceeded the 30-s region round and timed out RCON.
