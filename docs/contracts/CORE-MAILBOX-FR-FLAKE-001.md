@@ -54,3 +54,13 @@ tested:
   appears is INVALID.
 - The question is separate from CORE-MAILBOX-MERGE-001: can a live entity end up without an
   authoritative region owner in the free-running lifecycle?
+
+## Related observation (2026-10-07, PERF-1B Step 7 setup; recorded, not investigated)
+Two of 18 PERF-1B runs failed in setup (barrier mode, free-running off) because a freshly
+summoned `minecraft:marker` had no owning region within 60 s:
+- s7-off-5: 4 of 16 layout markers owned;
+- s7-off-15: chunks loaded and 16 markers owned, but the split gap marker unowned.
+
+Diagnostics: `/root/perf1-evidence/perf1b-step7/s7-off-15-setup-failure.json`. This suggests the
+symptom may not be specific to free-running. Not proven. Both runs failed closed before any
+measurement window.

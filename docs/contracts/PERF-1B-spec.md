@@ -265,3 +265,61 @@ another terminal outcome:
   A systematic measurable regression is first quantified; the owner then decides whether the
   instrumentation must be lightened.
 - After Step 7: the B0 / B1 / B2 / B3 pilot, with no further FR-flake investigation now.
+
+## 9. Step 7 — instrumentation OFF/ON sanity: result (2026-10-07)
+**Rig.** The host rebooted on 2026-10-06 at 21:52 and wiped `/tmp`, including the scratchpad rig.
+The rig was rebuilt at `/root/perf1b-rig` from the same artifacts:
+- installer 47.4.306, sha `f82f4c9e…`;
+- consumer jar, sha `1f46982d…`;
+- datapack regenerated (`gen_p1b.py`, T = 256);
+- snapshot regenerated: **`f8bef6d4…`**, superseding `449e0cc6…`, which was lost (entity-free,
+  equivalent content).
+
+The D1 smoke on the rebuilt rig passed (1 repetition, PASS).
+
+**Scenario.** B2, N = 4 (CPUs 2–5), K = 32 768. Calibration: K = 4 096 hits the 20-TPS cap at
+1.31 M ops/s; K = 32 768 runs at TPS ≈ 8 and saturates the benchmark CPUs (≈ 3.7 of 4 cores),
+with 100% of calls on the owner-fast path. Counters OFF (`--api-stats 0`) and ON were run in
+adjacent pairs. Evidence: `/root/perf1-evidence/perf1b-step7/`.
+
+| Pair (OFF, ON) | Throughput ON vs OFF | CPU per M ops ON vs OFF |
+|---|---|---|
+| off-1, on-2 | −3.9% | +4.7% |
+| off-4, on-3 | −5.9% | +6.6% |
+| off-7, on-8 | +2.1% | −3.1% |
+| off-10, on-9 | −10.2% | +12.0% |
+| off-11, on-12 | −2.4% | +2.1% |
+| off-14, on-13 | −3.0% | +3.6% |
+
+- **Paired estimate (n = 6):**
+  - throughput **−3.9%** (SD 4.1%, SE 1.7%, t = −2.33); 95% CI about −8.1% … +0.4%;
+  - CPU per M ops **+4.3%** (SE 2.0%);
+  - five of six pairs point the same way.
+- **Drift.** Between blocks, host drift is of the same order as the effect, despite normal
+  per-CPU telemetry: OFF alone spans 4.11–4.64 M ops/s (CV 5.1%).
+- **Other metrics show no difference between modes:**
+  - allocation per op ≈ 670–850 B in both modes;
+  - GC pauses within spread;
+  - correctness clean in every run: mismatch 0, ownership gate passed, wrong-owner 0.
+- **Latency** exists only with the counters on (p50 ≤ 1.0 µs, p99 ≤ 2.0 µs, sampled 1/64 in
+  log2 buckets), so it cannot be compared.
+- **Reading.**
+  - A small overhead is probable but not proven at the 95% level: about 4% (≈ 30 ns on a
+    ≈ 0.8 µs operation), on the most extreme synthetic hot loop (markers, no physics, owner-fast
+    path, saturated).
+  - No threshold was set beforehand. **The owner decides** whether to accept this as within
+    noise, or to lighten the instrumentation.
+  - Inside PERF-1B, B1, B2 and B3 all run with the counters on, so the overhead is common to the
+    API modes. It affects only the B0 (raw, no API) comparison.
+
+**Setup failures (fail-closed, before any measurement window).**
+- **s7-off-5:** 4 of 16 layout markers became owned within 60 s. The harness raised and left its
+  server running, so s7-on-6 could not start. Fixed in `88344f8ed`: the harness now waits for
+  the cell chunks, records diagnostics and always stops the server.
+- **s7-off-15**, after that fix: the cell chunks loaded in 0.06 s and all 16 cell markers were
+  owned. The freshly summoned split gap marker was not owned by any region within 60 s.
+- The chunk-loading explanation of s7-off-5 is therefore **not** supported. Both are the
+  CORE-MAILBOX-FR-FLAKE-001 symptom class (a live entity without an owning region), here in
+  barrier mode (free-running off) and during setup.
+- Recorded only, not investigated (owner rule). Both runs were discarded before measuring, as the
+  gate requires.
