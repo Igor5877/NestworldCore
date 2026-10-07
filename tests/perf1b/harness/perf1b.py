@@ -360,7 +360,21 @@ def main():
         sys.exit(__doc__)
     if perf1.harness_cpus():
         os.sched_setaffinity(0, perf1.harness_cpus())
-    run(pos, o)
+    try:
+        run(pos, o)
+    except BaseException as e:                 # fail closed: never leave a server behind
+        pid = perf1.server_pid(pos[0])
+        if pid:
+            os.kill(pid, 15)
+            for _ in range(120):
+                if not os.path.exists(f"/proc/{pid}"):
+                    break
+                time.sleep(1)
+            else:
+                os.kill(pid, 9)
+        with open(os.path.join(pos[9], f"{pos[8]}-aborted.txt"), "w") as f:
+            f.write(f"run aborted: {type(e).__name__}: {e}; server pid {pid} stopped\n")
+        raise
 
 
 if __name__ == "__main__":
