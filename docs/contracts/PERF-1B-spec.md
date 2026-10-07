@@ -223,7 +223,7 @@ scratch `api1b7/server`, cwd-confirmed; evidence `/root/perf1-evidence/perf1b-re
 | CORE-MAILBOX fixtures, free-running mode | 8 / 9 runs 69 / 0; 1 run 53 / 7 | 43 / 0 (one run) |
 
 The free-running failure is pre-existing: the trusted 47.4.264 fails 1 / 7 runs with the same
-signature. It is recorded separately as **CORE-MAILBOX-FR-FLAKE-001** (OPEN) and is not a
+signature. It is recorded separately as **CORE-ENTITY-OWNERLESS-001 (alias CORE-MAILBOX-FR-FLAKE-001)** (OPEN) and is not a
 regression of the candidate. **47.4.306 meets both §6 rule 1 conditions** (regression and
 telemetry smoke). It becomes the TRUSTED PERF-1B REFERENCE subject to the owner's acceptance of
 the FR-flake classification.
@@ -236,7 +236,7 @@ the FR-flake classification.
   only by the test fixture code needed for that validation.
 - **D1 deterministic accounting:** VERIFIED.
 - **API regression** for moving to the next step: ACCEPTED.
-- **CORE-MAILBOX-FR-FLAKE-001:** OPEN / PRE-EXISTING / DEFERRED INVESTIGATION / NON-BLOCKING FOR
+- **CORE-ENTITY-OWNERLESS-001 (alias CORE-MAILBOX-FR-FLAKE-001):** OPEN / PRE-EXISTING / DEFERRED INVESTIGATION / NON-BLOCKING FOR
   PERF-1B, on condition that every PERF-1B run proves that state absent in its own measurement
   window (per-run ownership validity gate below). Not to be investigated now.
 - **CORE-MAILBOX-MERGE-001** stays CLOSED / FROZEN. Its proven closure property (no accepted
@@ -319,7 +319,33 @@ adjacent pairs. Evidence: `/root/perf1-evidence/perf1b-step7/`.
 - **s7-off-15**, after that fix: the cell chunks loaded in 0.06 s and all 16 cell markers were
   owned. The freshly summoned split gap marker was not owned by any region within 60 s.
 - The chunk-loading explanation of s7-off-5 is therefore **not** supported. Both are the
-  CORE-MAILBOX-FR-FLAKE-001 symptom class (a live entity without an owning region), here in
+  CORE-ENTITY-OWNERLESS-001 (alias CORE-MAILBOX-FR-FLAKE-001) symptom class (a live entity without an owning region), here in
   barrier mode (free-running off) and during setup.
 - Recorded only, not investigated (owner rule). Both runs were discarded before measuring, as the
   gate requires.
+
+## 10. Owner decisions (2026-10-07)
+- **PERF-1B STEP-7: PASS / OVERHEAD CHARACTERIZED / NO OPTIMIZATION REQUIRED BEFORE PILOT.**
+  Wording to use:
+  > D1 telemetry has a likely small positive execution cost, with point estimate ≈ 4% under the
+  > deliberately extreme B2 owner-fast saturation workload. The current experiment does not
+  > establish a non-zero overhead at the 95% confidence level. No correctness, allocation, or GC
+  > regression was observed.
+  - Do not state "overhead = 3.9%" as an established fact.
+  - Do not state that there is no overhead.
+- **D1 is not changed** (no lighter counters). That is justified only if the pilot shows the
+  telemetry materially limits B1 / B2 / B3. B1 / B2 / B3 run with identical D1 instrumentation.
+- **Reading B0 vs B1:** the observed delta from B0 to B1 = API / provider cost + measurement
+  instrumentation cost. It is not a pure Mod API abstraction cost. Step 7 estimates the second
+  component separately; do not subtract it arithmetically, because the CI is too wide.
+- **Ownerless entity finding renamed CORE-ENTITY-OWNERLESS-001** (alias CORE-MAILBOX-FR-FLAKE-001):
+  OPEN / PRE-EXISTING / INTERMITTENT / ROOT CAUSE UNKNOWN / NON-BLOCKING FOR PERF-1B WITH
+  FAIL-CLOSED VALIDITY GATE. Return to it after PERF-1B.
+- **Pilot allowed.**
+  - First restore the stock Forge rig under `/root/perf1b-rig/`.
+  - Order: B0 N1 → B1 N1 → B2 N1 → B3 N1 → B2 N2 / N8 → B3 N2 / N8.
+  - Workload intensity (K) is calibrated per mode where the execution model needs it, to avoid
+    the 20-TPS ceiling or producer starvation.
+  - What stays equivalent is the operation / workload semantics, not the submissions per tick.
+  - B2 calibration point (not a performance claim): N = 4, K = 32 768 → ≈ 4.32 M ops/s, TPS ≈ 8.2,
+    100% owner-fast.

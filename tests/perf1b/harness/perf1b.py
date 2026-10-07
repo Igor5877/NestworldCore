@@ -289,7 +289,7 @@ def validate(paths):
             "stopped cleanly": r.get("stopped_cleanly", False),
             "not capped by 20 TPS": r["tps"] < 19.0,
         }
-        # Ownership validity gate (owner, 2026-10-06; CORE-MAILBOX-FR-FLAKE-001): every run must
+        # Ownership validity gate (owner, 2026-10-06; CORE-ENTITY-OWNERLESS-001, alias CORE-MAILBOX-FR-FLAKE-001): every run must
         # prove in its own window that no target lost its authoritative owner. A failure makes the
         # run INVALID -- it is never just another terminal outcome.
         own = {}
