@@ -116,9 +116,32 @@ def run(a, o):
     rc = Rcon()
     rc.cmd("reload")
     time.sleep(3)
+    # every cell chunk must be loaded before the layout markers are summoned (same rule as
+    # perf1.prepare's walls): s7-off-5 (2026-10-07) lost 12 of 16 markers' ownership when the
+    # layout was built while forceloaded chunks were still coming up after boot
+    corners = sorted({(x, z) for cl in cells["cells"] for bx, _, bz, dx, _, dz in [perf1.cell_bounds(cells, cl)]
+                      for x in (bx, bx + dx) for z in (bz, bz + dz)})
+    t_l = time.time()
+    while not all("passed" in strip(rc.cmd(f"execute if loaded {x} -60 {z}")) for x, z in corners):
+        if time.time() - t_l > 180:
+            res["setup_failure"] = "cell chunks did not load within 180 s"
+            perf1.stop(pid, rc)
+            sys.exit(res["setup_failure"])
+        time.sleep(1)
+    res["cells_loaded_after_s"] = time.time() - t_l
     if platform == "nestworld":
         log = []
-        res["layout_splits"] = perf1.build_layout(rc, cells, log)   # also runs perf1:cows
+        try:
+            res["layout_splits"] = perf1.build_layout(rc, cells, log)   # also runs perf1:cows
+        except RuntimeError as e:                 # fail closed, but leave no server behind
+            res["setup_failure"] = str(e)
+            res["setup_diag"] = {"fairness": perf1.fairness(rc),
+                                 "cell_markers_existing": perf1.entity_count(rc, "@e[tag=perf1cell]"),
+                                 "layout_log": log}
+            with open(os.path.join(out_dir, f"{tag}-setup-failure.json"), "w") as f:
+                json.dump(res, f, indent=1)
+            perf1.stop(pid, rc)
+            raise
         res["layout_log"] = log
         res["layout_start"], _ = perf1.layout(rc)
     else:
