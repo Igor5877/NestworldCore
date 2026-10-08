@@ -1,4 +1,18 @@
-# CORE-MAILBOX-FR-FLAKE-001 — intermittent free-running mailbox fixture failure (OPEN)
+# CORE-ENTITY-OWNERLESS-001 — a newly created live entity can remain without an owning region
+
+**Alias / historical origin:** CORE-MAILBOX-FR-FLAKE-001 (first seen as an intermittent free-running mailbox fixture failure). Renamed by the owner on 2026-10-07: the symptom was also reproduced with free-running off, so the old name misleads.
+
+**Status (owner, 2026-10-07): OPEN / PRE-EXISTING / INTERMITTENT / ROOT CAUSE UNKNOWN / NON-BLOCKING FOR PERF-1B WITH FAIL-CLOSED VALIDITY GATE.**
+
+**Known observable invariant violation (cause UNKNOWN; not tied to the mailbox or free-running):** a newly created live entity can intermittently remain without an authoritative region owner for at least 60 seconds.
+
+- **Potential impact.** This is potentially serious Core correctness debt. If the same can happen on production entity creation, a live entity is not ticked by any region.
+- **Why PERF-1B is protected.** The state appeared before the measurement window. The ownership gate detects it, the run stays out of the dataset, and the harness stops the server (fail closed).
+- **Next.** Return to it after PERF-1B.
+
+---
+
+## Original record (as CORE-MAILBOX-FR-FLAKE-001)
 
 **Status (owner, 2026-10-06): OPEN / PRE-EXISTING / DEFERRED INVESTIGATION / NON-BLOCKING FOR PERF-1B**, on the condition that every PERF-1B run proves this state absent in its own window (per-run ownership validity gate, `PERF-1B-spec.md` §8). Not to be closed as a "fixture race" until that is proven. The A/B (same signature on 264 and 306) excludes the D1 instrumentation as the cause, but does not decide whether the defect is in production Core or in the fixture. Related gate: CORE-MAILBOX-MERGE-001 stays CLOSED / FROZEN (its closure property, no accepted message lost, holds in these runs).
 
