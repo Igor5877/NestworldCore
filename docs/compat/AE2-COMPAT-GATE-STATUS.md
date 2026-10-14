@@ -17,7 +17,9 @@ before canary, unless a regression requires one.
 | GRID-PHASE-001: structural topology mutation races an active grid phase (the pivot NPE was its first runtime manifestation) | OPEN. 001.1 (phase side effects) AUDITED; 001.2 (reentrancy / synchronicity) AUDITED. **Asymmetric P(G) APPROVED IN PRINCIPLE**: non-main threads all-or-nothing with no wait (bounded backoff or park, no busy spin); main may reentrantly take its own P and wait for others. **Progress invariant:** a synchronous topology mutation that remains applicable must eventually obtain phase exclusion; repeated main phases may not starve it. Implementation **BLOCKED ON TOPOLOGY-CALLBACK-001** |
 | TOPOLOGY-CALLBACK-001 | AUDITED. The add/remove path is AE2 / addon bookkeeping only: no foreign capability code (the storage bus mounts a pre-built handler), no wait for main, no synchronous topology or recursion. NEW: structural service mutations outside topology (provider `requestUpdate`, `StackWatcher`, `P2P updateFreq`) must join the P(G) set. Owner choice needed: P or defer-safe handoff |
 | Selective energy-only unpin | **BLOCKED on GRID-PHASE-001** too: region-thread block-entity removal reaches `Grid.remove` |
-| LEGACY-ORIENTATION-001 | disk / chunk-load path: **IMPLEMENTED + fixtures PASS** (`dad15e74b`; client-side and visual neighbour shapes not verified) (migration in `promotePendingBlockEntity`). Live-world `loadTag` mutation: **REJECTED**. Owner-routed bounded live migration: APPROVED DIRECTION; record the requirement and do not add a primitive now. Until then the live-world case is fail-closed: detect, emit a diagnostic, no automatic write |
+| LEGACY-ORIENTATION-DISK-001 | **CLOSED / VERIFIED** (`dad15e74b`) |
+| LEGACY-ORIENTATION-LIVE-001 | OPEN / FAIL-CLOSED (owner-routed bounded migration requirement recorded; no primitive now) |
+| (former LEGACY-ORIENTATION-001 row) | disk / chunk-load path: **IMPLEMENTED + fixtures PASS** (`dad15e74b`; client-side and visual neighbour shapes not verified) (migration in `promotePendingBlockEntity`). Live-world `loadTag` mutation: **REJECTED**. Owner-routed bounded live migration: APPROVED DIRECTION; record the requirement and do not add a primitive now. Until then the live-world case is fail-closed: detect, emit a diagnostic, no automatic write |
 | SOLARFLUX-COMPAT-001: cross-mod shared mutable state | OPEN / gate 8 BLOCKED |
 | shadow / canary (pin still enabled) | PENDING |
 | final selective/full unpin review | PENDING |
@@ -62,3 +64,13 @@ before canary, unless a regression requires one.
 `nestworld-compat-ae2` has no `net.nestworld.modapi` and no Core imports, and no Core compile
 dependency. It is an ordinary Forge compatibility jar, not a hidden Core plugin. This boundary is
 intended and is to be kept.
+
+## GRID-PHASE boundary (owner, 2026-10-14) and SERVICE-MUTATION-001
+| Item | Status |
+|---|---|
+| P(G) topology exclusion | APPROVED |
+| Storage / Crafting `requestUpdate` staging (coalesced per grid, provider, kind) | APPROVED |
+| `StackWatcher` semantics | AUDITED: phase-deferred → staging (FIFO per watcher) — proposed |
+| P2P `updateFreq` semantics | AUDITED: synchronous postcondition. The real race is with transfer readers, so it falls outside GRID-PHASE → AE2-COMPAT-P2P-001 — proposed |
+| Startup compatibility manifest | APPROVED. Allowlist by mod id, mod version, fully qualified class name and compat contract version; unknown → eligibility UNKNOWN → DEGRADED / no unpin. P(G) is **not** disabled by unknowns: no fail-open |
+| Mechanism classes | SYNCHRONOUS STRUCTURAL → P(G); PHASE-DEFERRED INVALIDATION → staging; UNKNOWN → fail-closed |
