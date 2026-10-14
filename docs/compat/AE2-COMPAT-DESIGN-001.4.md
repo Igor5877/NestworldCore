@@ -1,6 +1,9 @@
 # AE2-COMPAT-DESIGN-001.4 — T2 suspension, TickHandler phase contract, M1 detector scoping
 
-**Status: DESIGN-1.4 (2026-10-14).**
+**Status: DESIGN-1.4 (2026-10-14). Reviewed by the owner the same day; see 001.5:**
+- §2.5 option (a) REJECTED;
+- §3.2 snapshot WITHDRAWN;
+- §5 → AE2-COMPAT-QUEUE-001.
 - Records the owner's three Design-1.4 decisions.
 - Records the phase-contract audit those decisions required.
 - Specifies the T2 continuation the Mixin glue must implement.
