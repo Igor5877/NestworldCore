@@ -54,6 +54,15 @@ public final class Ae2Compat {
         public final LongAdder m1Unaudited = new LongAdder();
         public final LongAdder mainAffinityViolation = new LongAdder();
         public final LongAdder staleServiceRetry = new LongAdder();
+        public final LongAdder queueStagedServer = new LongAdder();
+        public final LongAdder queueStagedLevel = new LongAdder();
+        public final LongAdder queueDroppedLevelUnload = new LongAdder();
+        public final LongAdder setChangedDirty = new LongAdder();
+        public final LongAdder setChangedRequeue = new LongAdder();
+        public final LongAdder setChangedSelfSuppressed = new LongAdder();
+        public final LongAdder setChangedUnexpectedClaim = new LongAdder();
+        public final LongAdder initCancelled = new LongAdder();
+        public final LongAdder lifeOrderViolation = new LongAdder();
     }
 
     public static final Counters COUNTERS = new Counters();

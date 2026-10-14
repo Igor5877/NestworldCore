@@ -115,6 +115,18 @@ What these runs do **not** show:
 
 Logs: `/root/compat-ae2-rig/evidence/multi-region-*.log`.
 
+## Gate item 9 — soak, 60 min (2026-10-14)
+`rig/soak.sh 60`, on the same rig.
+- Load: 6 grids in 4 free-running regions (one grid spans a region boundary), continuous FE injection
+  from region threads, and rotating topology churn on main.
+- One T2 fixture per 5-minute chunk, cycling STALE / WAKE / ALERT / SELF.
+
+| | Result |
+|---|---|
+| chunks | **12/12 with 0 exceptions; 12/12 fixtures PASS** |
+| totals | NORMAL throughout; 22 843 514 guarded entries; `contended 53 643`; `retries 6 921`; 0 refusals, transitions, unaudited paths or main-affinity violations; T2 340 834 suspensions = 340 834 resumes |
+| log | `/root/compat-ae2-rig/evidence/soak-60min.log`, `evidence/soak.tsv` |
+
 ## Next (001.3 §8)
 1. Deadlock tests.
 2. AE2/Pipez reproduction of the island race.

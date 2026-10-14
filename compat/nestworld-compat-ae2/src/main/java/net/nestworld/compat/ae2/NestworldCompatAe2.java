@@ -12,6 +12,7 @@ import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.nestworld.compat.ae2.glue.Ae2Compat;
 import net.nestworld.compat.ae2.glue.Ae2CompatMixinPlugin;
+import net.nestworld.compat.ae2.glue.QueueFixtures;
 import net.nestworld.compat.ae2.glue.T2Fixtures;
 
 /** nestworld-compat-ae2: AE2 energy concurrency domain for NestWorld (docs/compat/AE2-COMPAT-DESIGN-001*.md). */
@@ -23,7 +24,10 @@ public final class NestworldCompatAe2 {
         MinecraftForge.EVENT_BUS.addListener((RegisterCommandsEvent e) -> register(e.getDispatcher()));
         if (T2Fixtures.ENABLED) {
             MinecraftForge.EVENT_BUS.addListener((TickEvent.ServerTickEvent e) -> {
-                if (e.phase == TickEvent.Phase.END) T2Fixtures.onServerTickEnd();
+                if (e.phase == TickEvent.Phase.END) {
+                    T2Fixtures.onServerTickEnd();
+                    QueueFixtures.onServerTickEnd(e.getServer().getTickCount());
+                }
             });
         }
     }
@@ -47,7 +51,21 @@ public final class NestworldCompatAe2 {
                     return 1;
                 }));
             }
-            root = root.then(fx);
+            var qx = Commands.literal("queuefixture").then(Commands.literal("status").executes(c -> {
+                c.getSource().sendSuccess(() -> Component.literal(QueueFixtures.status()), false);
+                return 1;
+            }));
+            for (QueueFixtures.Kind k : QueueFixtures.Kind.values()) {
+                qx = qx.then(Commands.literal(k.name().toLowerCase())
+                        .then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                .executes(c -> {
+                                    String r = QueueFixtures.start(k, c.getSource().getLevel(),
+                                            net.minecraft.commands.arguments.coordinates.BlockPosArgument.getLoadedBlockPos(c, "pos"));
+                                    c.getSource().sendSuccess(() -> Component.literal(r), false);
+                                    return 1;
+                                })));
+            }
+            root = root.then(fx).then(qx);
         }
         d.register(root);
     }
