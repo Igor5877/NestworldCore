@@ -62,6 +62,29 @@ In the ALERT fixture the node therefore stays at rate 1, because the alert set t
 device's IDLE was not applied. It remains there until the device returns a different modulation.
 Devices already accept this from `alertDevice`.
 
+## Gate item 4 — race reproduction, A/B (2026-10-14)
+**Rig:** the same scratch server, with Mekanism 10.4.16.80 added (startup gate PASS, 17 788
+classes), `-Dnestworld.freeRunningRegions=true`, region #0 set to free-running.
+- Grid: a controller and 40 energy cells.
+- Inputs: 20 energy acceptors, each fed by a Mekanism creative energy cube that ejects FE from its
+  own block-entity tick on the region thread.
+- Main thread: AE2's E8 tick plus churn (cell break/place over RCON). Scripts:
+  `rig/build-race.sh`, `rig/drive-race.sh`.
+
+| Run | Result |
+|---|---|
+| **Addon disabled** (`-Dnestworld.compatAe2.disable=true`) | **Race reproduced in about 30 s**: `IllegalStateException: Cannot modify energy requesters while energy is being injected` (13×), via `EnergyCellBlockEntity.emitPowerEvent → GridEventBus → EnergyService.storagePowerChangeHandler → addRequester` on main while the region thread's injection held AE2's `ongoingInjectOperation`. Reached as "Readying AE2 block entity" and "Ticking grid on end of server tick". 6 tick failures in 60 s ended in a full crash shutdown after 17 churn rounds. Log: `/root/compat-ae2-rig/evidence/race-baseline-addon-disabled.log` |
+| **Addon active** | **180 s, 5 101 churn rounds, 0 exceptions, TPS 20.** Mode NORMAL; 156 344 guarded outer entries; `contended=785`, `retries=11`; 0 refusals, unaudited paths or main-affinity violations; 5 751/5 751 T2 suspensions resumed; 491 701 post-commit deliveries. Log: `/root/compat-ae2-rig/evidence/race-addon-active.log` |
+
+Confidence:
+- CONFIRMED: the addon removes this race class (the island's EnergyService injection-flag race) in
+  this rig.
+- Scope: the input path here is a Mekanism cube pushing FE from its own block-entity tick on the
+  region thread. It enters AE2 through the same external `receiveEnergy → funnelPowerIntoStorage →
+  injectPower` path as Pipez. **A Pipez-pipe variant has not been run yet.**
+- Only one region (single region thread versus main) was tested. Multi-region cases are gate items
+  5 and 6.
+
 ## Next (001.3 §8)
 1. Deadlock tests.
 2. AE2/Pipez reproduction of the island race.
