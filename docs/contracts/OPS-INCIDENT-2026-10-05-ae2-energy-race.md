@@ -90,3 +90,48 @@ Open items unchanged: reproduce on an isolated island copy (deferred by the owne
 free-running sizing, island inventory. A thread dump taken at the moment of the exception would
 name the injecting thread. The existing island dump tooling only triggers on hangs, not on
 skipped ticks.
+
+## 2026-10-14: full crash (Mekanism) and AE2 tally (from crash-reports read by the owner, read-only)
+**AE2 EnergyService race keeps recurring.** Same signature in every report:
+- 2026-10-06: 20:01:08, 20:01:26, 20:18:15, 20:58:23;
+- 2026-10-07: 01:27:42, 23:18:53, 23:19:49, 23:21:17;
+- 2026-10-11: 16:19:57, 19:23:05, 19:48:46;
+- 2026-10-12: 22:25:17, 22:28:56, 22:41:54, 23:10:47, 23:11:15, 23:27:07 (the last three are not
+  fully shown but carry the same description).
+
+Each one is a skipped tick; none was a full crash.
+
+**New race, 2026-10-14, full server crash.**
+- Three skipped ticks in two seconds (03:46:33, 03:46:34, 03:46:35), then the tick-loop circuit
+  breaker stopped the server (`crash-2026-10-14_03.46.35`).
+- Only the first report, 03:46:33, has a stack. The later ones are stackless because the JIT had
+  started throwing that NPE without a stack trace (OmitStackTraceInFastThrow):
+
+```
+java.lang.NullPointerException: Cannot invoke "it.unimi.dsi.fastutil.objects.ObjectArrayList.get(int)" because "this.wrapped" is null
+  at fastutil Object2ObjectOpenHashMap$MapIterator.nextEntry(631) / EntryIterator.next(725)
+  at mekanism.common.lib.transmitter.acceptor.NetworkAcceptorCache.commit(NetworkAcceptorCache.java:63)
+  at mekanism.common.lib.transmitter.DynamicNetwork.commit(DynamicNetwork.java:72)
+  at mekanism.common.lib.transmitter.TransmitterNetworkRegistry.commitChanges(253) / onTick(140)
+  at ForgeEventFactory.onPostServerTick -> MinecraftServer.tickServer (Server thread, END of tick)
+```
+
+**Reading (from the stack and the known pattern; not reproduced):**
+- Main, at the END of the server tick, iterates a network's acceptor-cache fastutil map. A null
+  `wrapped` in the fastutil iterator is the signature of that map being modified concurrently
+  during the iteration.
+- **Hypothesis:** a region thread changed the same Mekanism network's acceptors at the same time,
+  for example a transmitter or neighbor update from a block entity ticking in a free-running
+  region.
+- It is the same structural class as the AE2 race: a mod's main-thread END-of-tick handler racing
+  with region threads that mutate the same mod network.
+- **Not yet in `docs/RACE_CLASSIFICATION.md`**, which lists the Mekanism `flowingStacks`,
+  `PathfinderCache` and `FrequencyManager` races, but not `NetworkAcceptorCache`.
+- `2026-10-14-1.log.gz` and `debug-1.log.gz` contain no matching NPE line.
+
+**Island state at that time:**
+- Core 47.4.234. Inferred to be about `d405f5187` (2026-09-29) from the build numbering; there is
+  no recorded provenance.
+- `freeRunningRegions` and `autoFreeRunning` on.
+- The JVM sees 30 CPUs.
+- JVM flags only `-Xmx4G -Xms1G` (no `-XX:-OmitStackTraceInFastThrow`).

@@ -931,3 +931,16 @@ targeted reproduction of the original race → an ownership-churn/region-split s
 every confirmed fix at once. `ConcurrentHashMap` removing a `ConcurrentModificationException`
 is not proof the underlying race is actually fixed at the semantic level — see Mekanism
 `TransporterManager` above for exactly why that distinction matters.
+
+### Mekanism — `NetworkAcceptorCache` (acceptor map of a transmitter network) — RECORDED 2026-10-14, NOT REPRODUCED
+Race: Mekanism 10.4.16.80 `lib.transmitter.acceptor.NetworkAcceptorCache` fastutil
+`Object2ObjectOpenHashMap`, iterated by `commit()`.
+- **Reader:** main, `TransmitterNetworkRegistry.onTick` → `commitChanges` → `DynamicNetwork.commit`,
+  at the END of the server tick.
+- **Writer:** presumed to be a region thread changing the network's acceptors in the same window.
+  Not identified; the report holds the main thread only.
+- **Seen:** a live SkyBlock island (Core 47.4.234, free-running on), 2026-10-14 03:46:33. Three
+  skipped ticks led to a full crash via the circuit breaker. Details are in
+  `docs/contracts/OPS-INCIDENT-2026-10-05-ae2-energy-race.md`.
+- **Class:** same structure as item 17 (the AE2 `EnergyService` race): a mod's END-of-tick handler
+  on main overlaps a mutation of the same mod network from a region thread.
