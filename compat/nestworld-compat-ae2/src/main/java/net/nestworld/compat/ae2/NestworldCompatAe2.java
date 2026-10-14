@@ -12,6 +12,7 @@ import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.nestworld.compat.ae2.glue.Ae2Compat;
 import net.nestworld.compat.ae2.glue.Ae2CompatMixinPlugin;
+import net.nestworld.compat.ae2.glue.GridPhaseFixtures;
 import net.nestworld.compat.ae2.glue.IntegrationFixtures;
 import net.nestworld.compat.ae2.glue.LegacyFixtures;
 import net.nestworld.compat.ae2.glue.QueueFixtures;
@@ -30,6 +31,7 @@ public final class NestworldCompatAe2 {
                     T2Fixtures.onServerTickEnd();
                     QueueFixtures.onServerTickEnd(e.getServer().getTickCount());
                     IntegrationFixtures.onServerTickEnd(e.getServer().getTickCount());
+                    GridPhaseFixtures.onServerTickEnd(e.getServer().getTickCount());
                 }
             });
         }
@@ -110,7 +112,27 @@ public final class NestworldCompatAe2 {
                                                     net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"),
                                                     com.mojang.brigadier.arguments.StringArgumentType.getString(c, "forward"),
                                                     com.mojang.brigadier.arguments.StringArgumentType.getString(c, "up"))))))));
-            root = root.then(fx).then(qx).then(ix).then(lx);
+            var gx = Commands.literal("gridphase")
+                    .then(Commands.literal("status").executes(c -> say(c.getSource(), GridPhaseFixtures.status())))
+                    .then(Commands.literal("staging")
+                            .then(Commands.argument("kind", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                    .then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                            .executes(c -> say(c.getSource(), GridPhaseFixtures.staging(
+                                                    com.mojang.brigadier.arguments.StringArgumentType.getString(c, "kind"), c.getSource().getLevel(),
+                                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getLoadedBlockPos(c, "pos")))))))
+                    .then(Commands.literal("overlap")
+                            .then(Commands.argument("drive", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                    .then(Commands.argument("target", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                            .executes(c -> say(c.getSource(), GridPhaseFixtures.overlap(c.getSource().getLevel(),
+                                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getLoadedBlockPos(c, "drive"),
+                                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "target")))))))
+                    .then(Commands.literal("stress")
+                            .then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                    .then(Commands.argument("seconds", com.mojang.brigadier.arguments.IntegerArgumentType.integer(5, 3600))
+                                            .executes(c -> say(c.getSource(), GridPhaseFixtures.stress(c.getSource().getLevel(),
+                                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"),
+                                                    com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "seconds")))))));
+            root = root.then(fx).then(qx).then(ix).then(lx).then(gx);
         }
         d.register(root);
     }
@@ -122,7 +144,8 @@ public final class NestworldCompatAe2 {
 
     public static String stats() {
         StringBuilder sb = new StringBuilder();
-        sb.append("active=").append(Ae2CompatMixinPlugin.isActive()).append(" mode=").append(Ae2Compat.KERNEL.mode());
+        sb.append("active=").append(Ae2CompatMixinPlugin.isActive()).append(" mode=").append(Ae2Compat.KERNEL.mode())
+                .append(" manifestEligible=").append(Ae2Compat.manifestEligible);
         append(sb, Ae2Compat.KERNEL.metrics);
         append(sb, Ae2Compat.COUNTERS);
         return sb.toString();
@@ -131,7 +154,9 @@ public final class NestworldCompatAe2 {
     private static void append(StringBuilder sb, Object counters) {
         for (Field f : counters.getClass().getFields()) {
             try {
-                if (f.get(counters) instanceof LongAdder a) sb.append(' ').append(f.getName()).append('=').append(a.sum());
+                Object v = f.get(counters);
+                if (v instanceof LongAdder a) sb.append(' ').append(f.getName()).append('=').append(a.sum());
+                else if (v instanceof java.util.concurrent.atomic.LongAccumulator a) sb.append(' ').append(f.getName()).append('=').append(a.get());
             } catch (IllegalAccessException ignored) {
                 // public fields only
             }

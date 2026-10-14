@@ -7,6 +7,7 @@ if [ -z "$NODEPLOY" ]; then
   cp /root/nestworldcore/compat/nestworld-compat-ae2/build/libs/nestworld-compat-ae2-0.1.0-all.jar server/mods/
   cd server; mv console.log console-$(date +%H%M%S).log; (setsid nohup bash run.sh nogui > console.log 2>&1 < /dev/null &); sleep 1
   timeout 300 bash -c 'until grep -qE "Done \(|Exception in thread" console.log; do sleep 2; done'; cd ..
+$R "forceload remove all" >/dev/null
 fi
 Y=-60; Z=1000; declare -A B=([1001]=ae2:drive [1002]=ae2:inscriber [1003]=ae2:molecular_assembler [1004]=ae2:pattern_provider)
 declare -A F=([1001]=east [1002]=south [1003]=west [1004]=down); declare -A U=([1001]=up [1002]=up [1003]=up [1004]=north)

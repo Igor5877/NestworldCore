@@ -49,11 +49,13 @@ public final class IntegrationFixtures {
         long[] t = new long[3];                           // 0 removeStart, 1 removeEnd, 2 initDone
         boolean[] flags = new boolean[3];                 // 0 removerBlocked, 1 removedBeforeLock, 2 cancelled
         String[] cancelReason = {null};
+        boolean[] routed = {false};
         Runnable remover = () -> {
             removerThread[0] = Thread.currentThread().getName();
             t[0] = System.nanoTime();
             level.removeBlock(target, false);
             t[1] = System.nanoTime();
+            routed[0] = !level.getBlockState(target).isAir();   // Core routed/deferred the write: not a same-thread removal
         };
         LifeHooks.hook = (point, be) -> {
             if (!be.getBlockPos().equals(target)) return;
@@ -92,6 +94,11 @@ public final class IntegrationFixtures {
         evaluateAt = level.getServer().getTickCount() + 100;
         pending = () -> {
             LifeHooks.hook = null;
+            if (routed[0]) {
+                status = "LIFE " + kind + ": INVALID (removal was routed/deferred by Core, not performed on the region thread) remover=" + removerThread[0];
+                Ae2Compat.LOG.info("[nestworld-compat-ae2] integration fixture {}", status);
+                return;
+            }
             List<String> f = new ArrayList<>(notes);
             boolean air = level.getBlockState(target).isAir();
             boolean ghost = be0 instanceof IGridConnectedBlockEntity g && g.getMainNode().getNode() != null;
@@ -151,7 +158,11 @@ public final class IntegrationFixtures {
             List<String> f = new ArrayList<>();
             long staged = Ae2Compat.COUNTERS.queueStagedServer.sum() - stagedBefore;
             long phase = ((NwAeBlockEntity) be).nw$sc().get() & SetChangedProtocol.PHASE;
-            if (regionPublishes.get() == 0) f.add("no publish came from a region thread (path not exercised)");
+            if (regionPublishes.get() == 0) {
+                status = "STAGING: INVALID (no publish came from a region thread: the hopper did not tick on one; path not exercised) publishes=" + publishes.get();
+                Ae2Compat.LOG.info("[nestworld-compat-ae2] integration fixture {}", status);
+                return;
+            }
             if (claims.get() != publishes.get() + requeues.get())
                 f.add("claims " + claims.get() + " != publishes " + publishes.get() + " + requeues " + requeues.get());
             if (staged < regionPublishes.get()) f.add("staged " + staged + " < region publishes " + regionPublishes.get());

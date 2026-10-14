@@ -85,3 +85,9 @@ intended and is to be kept.
 | Startup manifest | APPROVED FOR IMPLEMENTATION. Checked before the layer runs NORMAL. Unknown → `COMPAT_MANIFEST_UNKNOWN_PROVIDER mod=… class=… interface=…` → eligibility failure → DEGRADED / retain pin |
 | AE2-COMPAT-P2P-001 | NEW SEPARATE OPEN finding (CONFIRMED FROM CODE). `updateFreq` under P(G) REJECTED as insufficient. Direction: a dedicated per-grid P2P state guard (snapshot reads; linearizable `newFrequency` allocation as one writer transaction; never held across external transfer) |
 | Selective energy unpin | GRID-PHASE no longer blocks it once implemented. P2P-001 blocks it only if FE P2P runs region-parallel in scope, so FE P2P has to be excluded by **real enforcement**, not documentation |
+
+## Implementation round result (2026-10-14)
+| Item | Status |
+|---|---|
+| P(G) + Storage / Crafting staging + StackWatcher staging + startup manifest | **IMPLEMENTED, fixtures PASS** (docs/compat/AE2-COMPAT-GRID-PHASE-001-RESULTS.md); deterministic OVERLAP negative control FAILS as required; awaiting owner review |
+| region-thread topology stress | 0 exceptions, but **not discriminating** (also 0 without P); OVERLAP is the evidence |

@@ -11,7 +11,9 @@ import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.core.Direction;
+import net.nestworld.compat.ae2.glue.GridPhaseGate;
 import net.nestworld.compat.ae2.glue.Specs;
+import java.util.function.Supplier;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 
@@ -23,21 +25,23 @@ public abstract class GridConnectionMixin {
 
     @WrapMethod(method = "create")
     private static GridConnection nw$create(IGridNode a, IGridNode b, Direction dir, Operation<GridConnection> op) {
-        return KERNEL.guardedStrictUnchecked(Specs.topology(() -> {
+        Supplier<List<Grid>> grids = () -> {
             List<Grid> l = new ArrayList<>(2);
             if (a instanceof GridNode ga) l.add(Specs.myGrid(ga));
             if (b instanceof GridNode gb) l.add(Specs.myGrid(gb));
             return l;
-        }), () -> op.call(a, b, dir));
+        };
+        return GridPhaseGate.topology(grids, () -> KERNEL.guardedStrictUnchecked(Specs.topology(grids), () -> op.call(a, b, dir)));
     }
 
     @WrapMethod(method = "destroy")
     private void nw$destroy(Operation<Void> op) {
-        KERNEL.guardedStrictUnchecked(Specs.topology(() -> {
+        Supplier<List<Grid>> grids = () -> {
             List<Grid> l = new ArrayList<>(2);
             l.add(Specs.myGrid(sideA));
             l.add(Specs.myGrid(sideB));
             return l;
-        }), () -> op.call());
+        };
+        GridPhaseGate.topology(grids, () -> KERNEL.guardedStrictUnchecked(Specs.topology(grids), () -> op.call()));
     }
 }

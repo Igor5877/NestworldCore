@@ -28,9 +28,18 @@ public final class Ae2CompatMixinPlugin implements IMixinConfigPlugin {
             return;
         }
         active = r.active();
+        if (active && !r.manifestProblems().isEmpty()) {
+            // eligibility failure: the layer stays on (no fail-open) but runs DEGRADED and unpin is refused
+            Ae2Compat.manifestEligible = false;
+            Ae2Compat.manifestProblems = r.manifestProblems();
+            for (String m : r.manifestProblems()) Ae2Compat.LOG.error("[nestworld-compat-ae2] {}", m);
+            Ae2Compat.KERNEL.unaudited("compatibility manifest eligibility failure (" + r.manifestProblems().size()
+                    + " problem(s)); parallel mode not proven: DEGRADED, keep pins");
+        }
         if (active) {
-            Ae2Compat.LOG.info("[nestworld-compat-ae2] startup gate PASS ({} classes scanned in {} ms); energy concurrency domain active",
-                    r.scannedClasses(), r.millis());
+            Ae2Compat.LOG.info("[nestworld-compat-ae2] startup gate PASS ({} classes scanned in {} ms); energy concurrency domain active; "
+                    + "compatibility manifest {}", r.scannedClasses(), r.millis(),
+                    r.manifestProblems().isEmpty() ? "ELIGIBLE" : "NOT ELIGIBLE (" + r.manifestProblems().size() + ")");
         } else {
             Ae2Compat.LOG.error("[nestworld-compat-ae2] startup gate FAIL; addon INACTIVE, AE2 runs unmodified (keep the pins). Problems:");
             for (String p : r.problems()) Ae2Compat.LOG.error("[nestworld-compat-ae2]   {}", p);

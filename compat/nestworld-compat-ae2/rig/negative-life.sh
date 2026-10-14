@@ -10,7 +10,7 @@ for p in $(pgrep -f "java.*unix_args"); do [ "$(readlink /proc/$p/cwd)" = /root/
 cp $REPO/compat/nestworld-compat-ae2/build/libs/nestworld-compat-ae2-0.1.0-all.jar server/mods/
 cd server; mv console.log console-negl-$NAME.log; (setsid nohup bash run.sh nogui > console.log 2>&1 < /dev/null &); sleep 1
 timeout 300 bash -c 'until grep -qE "Done \(|Exception in thread" console.log; do sleep 2; done'; cd ..
-for i in $(seq 0 60); do $R "nestworld freerun $i" >/dev/null 2>&1; done
+/root/compat-ae2-rig/freerun-all.sh >/dev/null
 $R "forceload add 192 192 223 223" "fill 196 -60 196 212 -56 206 air" "kill @e[type=minecraft:armor_stand]" "summon minecraft:armor_stand 202.5 -60 201.5 {NoGravity:1b}" >/dev/null; sleep 2
 $R "nwcompatae2 integration life_$FX 200 -60 201" >/dev/null
 timeout 60 bash -c "until $R 'nwcompatae2 integration status' | grep -qE 'PASS|FAIL'; do sleep 1; done"

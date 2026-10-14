@@ -63,9 +63,27 @@ public final class Ae2Compat {
         public final LongAdder setChangedUnexpectedClaim = new LongAdder();
         public final LongAdder initCancelled = new LongAdder();
         public final LongAdder lifeOrderViolation = new LongAdder();
+        public final LongAdder pTryFailures = new LongAdder();
+        public final LongAdder pRetryCount = new LongAdder();
+        public final LongAdder pWaitNs = new LongAdder();
+        public final java.util.concurrent.atomic.LongAccumulator pMaxRetry = new java.util.concurrent.atomic.LongAccumulator(Math::max, 0);
+        public final LongAdder pWriterStarvationWarning = new LongAdder();
+        public final LongAdder pNestedUnresolved = new LongAdder();
+        public final LongAdder stagedRebuild = new LongAdder();
+        public final LongAdder coalescedRebuild = new LongAdder();
+        public final LongAdder stagedWatcherOps = new LongAdder();
+        public final LongAdder drainedRebuild = new LongAdder();
+        public final LongAdder drainedWatcherOps = new LongAdder();
+        public final LongAdder droppedStaged = new LongAdder();
+        public final LongAdder stagingErrors = new LongAdder();
+        public final LongAdder stagingRunUnderP = new LongAdder();
     }
 
     public static final Counters COUNTERS = new Counters();
+
+    /** Startup compatibility manifest result: true = every provider/service is in the audited manifest. */
+    public static volatile boolean manifestEligible = true;
+    public static volatile java.util.List<String> manifestProblems = java.util.List.of();
 
     /**
      * Canonical main-server-thread identity (001.5 §4): {@code BlockableEventLoop.isSameThread()} compares

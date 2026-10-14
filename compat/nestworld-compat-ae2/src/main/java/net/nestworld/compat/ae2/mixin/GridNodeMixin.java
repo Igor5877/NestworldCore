@@ -10,7 +10,9 @@ import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import java.util.ArrayList;
 import java.util.List;
+import net.nestworld.compat.ae2.glue.GridPhaseGate;
 import net.nestworld.compat.ae2.glue.Specs;
+import java.util.function.Supplier;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 
@@ -20,18 +22,20 @@ public abstract class GridNodeMixin {
     @WrapMethod(method = "setGrid")
     private void nw$setGrid(Grid grid, Operation<Void> op) {
         GridNode self = (GridNode) (Object) this;
-        KERNEL.guardedStrictUnchecked(Specs.topology(() -> {
+        Supplier<List<Grid>> grids = () -> {
             List<Grid> l = new ArrayList<>(2);
             l.add(Specs.myGrid(self));
             l.add(grid);
             return l;
-        }), () -> op.call(grid));
+        };
+        GridPhaseGate.topology(grids, () -> KERNEL.guardedStrictUnchecked(Specs.topology(grids), () -> op.call(grid)));
     }
 
     @WrapMethod(method = "destroy")
     private void nw$destroy(Operation<Void> op) {
         GridNode self = (GridNode) (Object) this;
-        KERNEL.guardedStrictUnchecked(Specs.topology(() -> Specs.around(self)), () -> op.call());
+        Supplier<List<Grid>> grids = () -> Specs.around(self);
+        GridPhaseGate.topology(grids, () -> KERNEL.guardedStrictUnchecked(Specs.topology(grids), () -> op.call()));
     }
 
     @WrapOperation(method = "setGrid", at = @At(value = "INVOKE",

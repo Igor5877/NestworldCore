@@ -65,7 +65,35 @@ public final class StartupGate {
             Map.entry("org/zeith/solarflux/mixins/compat/ae2/SolarPanelTileMixin", SOLARFLUX),
             Map.entry("org/zeith/solarflux/block/SolarPanelTile", SOLARFLUX));
 
-    public record Result(boolean active, List<String> problems, long scannedClasses, long millis) {
+    public record Result(boolean active, List<String> problems, long scannedClasses, long millis, List<String> manifestProblems) {
+    }
+
+    static final String MANIFEST_CONTRACT = "AE2-COMPAT-MANIFEST-1";
+    static final List<String> MANIFEST_INTERFACES = List.of(
+            "appeng/api/networking/IGridServiceProvider",
+            "appeng/api/storage/IStorageProvider",
+            "appeng/api/networking/crafting/ICraftingProvider");
+
+    private record ManifestEntry(String iface, String modId, String version, String sha256) {
+    }
+
+    /** iface simple name + "|" + internal class name → entry. */
+    private static Map<String, ManifestEntry> loadManifest(List<String> problems) {
+        Map<String, ManifestEntry> m = new HashMap<>();
+        try (InputStream in = StartupGate.class.getResourceAsStream("/compat-manifest.tsv")) {
+            if (in == null) {
+                problems.add("COMPAT_MANIFEST_MISSING");
+                return m;
+            }
+            for (String line : new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).split("\n")) {
+                if (line.isBlank() || line.startsWith("#")) continue;
+                String[] f = line.split("\t");
+                m.put(f[0] + "|" + f[1], new ManifestEntry(f[0], f[2], f[3], f[4]));
+            }
+        } catch (IOException e) {
+            problems.add("COMPAT_MANIFEST_UNREADABLE " + e);
+        }
+        return m;
     }
 
     private record Header(String superName, String[] interfaces, List<String> mixinTargets, Owner owner) {
@@ -122,21 +150,54 @@ public final class StartupGate {
                         + ", audited " + a.modId() + " " + a.version() + " " + a.sha256());
             }
         }
-        return new Result(problems.isEmpty(), problems, classes.size(), (System.nanoTime() - t0) / 1_000_000);
+        // compatibility manifest (provider / service sets) — eligibility, not activation (owner: no fail-open)
+        List<String> manifestProblems = new ArrayList<>();
+        Map<String, ManifestEntry> manifest = loadManifest(manifestProblems);
+        for (String iface : MANIFEST_INTERFACES) {
+            String simple = iface.substring(iface.lastIndexOf('/') + 1);
+            Map<String, List<String>> added = new HashMap<>();
+            classes.forEach((name, h) -> {
+                if (!h.mixinTargets().isEmpty() && reachesTarget(iface, name, classes, Map.of(), new HashMap<>(), 0)) {
+                    for (String tgt : h.mixinTargets()) added.computeIfAbsent(tgt, k -> new ArrayList<>()).add(name);
+                }
+            });
+            Map<String, Boolean> memo2 = new HashMap<>();
+            for (String name : new TreeSet<>(classes.keySet())) {
+                if (name.equals(iface) || !reachesTarget(iface, name, classes, added, memo2, 0)) continue;
+                Header h = classes.get(name);
+                ManifestEntry e = manifest.get(simple + "|" + name);
+                if (e == null) {
+                    manifestProblems.add("COMPAT_MANIFEST_UNKNOWN_PROVIDER mod=" + h.owner().modId() + " version=" + h.owner().version()
+                            + " class=" + name.replace('/', '.') + " interface=" + simple);
+                    continue;
+                }
+                String sha = sha256(h.owner().file(), shaCache);
+                if (!e.modId().equals(h.owner().modId()) || !e.version().equals(h.owner().version()) || !e.sha256().equals(sha)) {
+                    manifestProblems.add("COMPAT_MANIFEST_VERSION_MISMATCH mod=" + h.owner().modId() + " version=" + h.owner().version()
+                            + " class=" + name.replace('/', '.') + " interface=" + simple + " audited=" + e.modId() + " " + e.version());
+                }
+            }
+        }
+        return new Result(problems.isEmpty(), problems, classes.size(), (System.nanoTime() - t0) / 1_000_000, manifestProblems);
     }
 
     private static boolean reachesWithMixins(String name, Map<String, Header> classes, Map<String, List<String>> added,
                                              Map<String, Boolean> memo, int depth) {
+        return reachesTarget(TARGET, name, classes, added, memo, depth);
+    }
+
+    private static boolean reachesTarget(String target, String name, Map<String, Header> classes, Map<String, List<String>> added,
+                                         Map<String, Boolean> memo, int depth) {
         if (name == null || depth > 64) return false;
-        if (name.equals(TARGET)) return true;
+        if (name.equals(target)) return true;
         Boolean m = memo.get(name);
         if (m != null) return m;
         memo.put(name, false);
         boolean r = added.containsKey(name);
         Header h = classes.get(name);
         if (!r && h != null) {
-            for (String i : h.interfaces()) r |= reachesWithMixins(i, classes, added, memo, depth + 1);
-            r = r || reachesWithMixins(h.superName(), classes, added, memo, depth + 1);
+            for (String i : h.interfaces()) r |= reachesTarget(target, i, classes, added, memo, depth + 1);
+            r = r || reachesTarget(target, h.superName(), classes, added, memo, depth + 1);
         }
         memo.put(name, r);
         return r;

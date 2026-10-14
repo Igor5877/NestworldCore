@@ -6,10 +6,12 @@
   "compatibilityLevel": "JAVA_17",
   "refmap": "nestworld_compat_ae2.refmap.json",
   "mixins": [
-    "ArmorStandMixin",
     "AEBaseBlockEntityInvoker",
     "AEBaseBlockEntityMixin",
+    "ArmorStandMixin",
     "ControllerBlockEntityMixin",
+    "CraftingServiceAccessor",
+    "CraftingServiceMixin",
     "EnergyAcceptorBlockEntityMixin",
     "EnergyAcceptorPartMixin",
     "EnergyServiceMixin",
@@ -18,16 +20,24 @@
     "GridMixin",
     "GridNodeAccessor",
     "GridNodeMixin",
+    "InterestManagerMixin",
     "LevelChunkMixin",
     "LevelMixin",
     "ServerBlockEntityRepoMixin",
     "ServerGridRepoMixin",
+    "StackWatcherMixin",
+    "StorageServiceAccessor",
+    "StorageServiceMixin",
     "TickHandlerMixin",
     "TickManagerServiceAccessor",
     "TickManagerServiceInvoker",
     "TickManagerServiceMixin",
     "TickTrackerMixin"
   ],
-  "injectors": { "defaultRequire": 1 },
-  "mixinextras": { "minVersion": "0.4.1" }
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "mixinextras": {
+    "minVersion": "0.4.1"
+  }
 }
