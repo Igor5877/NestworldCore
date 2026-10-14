@@ -14,9 +14,10 @@ before canary, unless a regression requires one.
 | QUEUE-LIFE-001 | **VERIFIED** (`6e67c7e44`; GHOST negative controls) |
 | QUEUE-STAGING-001 | **VERIFIED** (`6e67c7e44`; hopper → charger on a RegionThread) |
 | **QUEUE-001 overall** | **CLOSED / VERIFIED** (owner, 2026-10-14); discarded fixture designs kept as evidence |
-| GRID-PHASE-001: structural topology mutation races an active grid phase (the pivot NPE was its first runtime manifestation) | CONFIRMED. Direction: P(G) phase/topology exclusion, order `P → T0 → domains`. Implementation BLOCKED on the 001.2 audit (submitted). The pivot liveness lease is defense in depth only |
+| GRID-PHASE-001: structural topology mutation races an active grid phase (the pivot NPE was its first runtime manifestation) | OPEN. 001.1 (phase side effects) AUDITED; 001.2 (reentrancy / synchronicity) AUDITED. **Asymmetric P(G) APPROVED IN PRINCIPLE**: non-main threads all-or-nothing with no wait (bounded backoff or park, no busy spin); main may reentrantly take its own P and wait for others. **Progress invariant:** a synchronous topology mutation that remains applicable must eventually obtain phase exclusion; repeated main phases may not starve it. Implementation **BLOCKED ON TOPOLOGY-CALLBACK-001** |
+| TOPOLOGY-CALLBACK-001 (new blocker): callbacks inside the add/remove topology path (`mountInventories`, the unmount path, node listeners, grid events, addon hooks): foreign code? can it wait for main? mutate topology? recurse into another grid? must it run before `addNode` returns? | OPEN |
 | Selective energy-only unpin | **BLOCKED on GRID-PHASE-001** too: region-thread block-entity removal reaches `Grid.remove` |
-| LEGACY-ORIENTATION-001 | OPEN (direction decided, see below) |
+| LEGACY-ORIENTATION-001 | disk / chunk-load path: **APPROVED FOR IMPLEMENTATION** (migration in `promotePendingBlockEntity`). Live-world `loadTag` mutation: **REJECTED**. Owner-routed bounded live migration: APPROVED DIRECTION; record the requirement and do not add a primitive now. Until then the live-world case is fail-closed: detect, emit a diagnostic, no automatic write |
 | SOLARFLUX-COMPAT-001: cross-mod shared mutable state | OPEN / gate 8 BLOCKED |
 | shadow / canary (pin still enabled) | PENDING |
 | final selective/full unpin review | PENDING |
