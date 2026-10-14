@@ -94,6 +94,27 @@ region thread. Scripts: `rig/build-race-pipez.sh`, `rig/drive-churn.sh`. Each ru
 - Only one region (single region thread versus main) was tested. Multi-region cases are gate items
   5 and 6.
 
+## Gate items 5–7 — several free-running regions (2026-10-14)
+**Setup:** region #0 split into 4 pinned quadrant regions (#3–#6), all free-running.
+- Scripts: `rig/build-grid.sh` (one grid = controller, 20–50 cells, and acceptors fed by
+  region-thread creative cubes) and `rig/drive-multi.sh` (rotating cell break/place on main).
+- Each run lasted 120 s.
+
+| Item | Setup | Result |
+|---|---|---|
+| 6, different-domain parallelism | 4 independent grids, one per region, injected concurrently by 4 region threads | 3 606 churn rounds; **0 exceptions**; NORMAL; TPS 20; +459 081 guarded entries; `contended +2 102`; `retries +275` (validation re-resolves during churn); 0 refusals, unaudited paths, transitions or main-affinity violations |
+| 5, same-domain contention | 1 grid (50 cells) crossing the #3/#4 boundary (block x 15/16), injected from both region threads and churned on main | 3 619 churn rounds; **0 exceptions; no deadlock**; TPS 20; +727 330 entries; `contended +1 123`; `retries 0`; 0 refusals, unaudited paths or transitions |
+| 7, topology churn under load | cell break/place during injection, in every run above (gate 4 included: 5 101 to 5 184 rounds) | no exception in any addon-active run |
+
+What these runs do **not** show:
+- **Throughput.** The load is tiny (region ticks ≈ 0.0–0.1 ms), so this is correctness under
+  concurrency, not a parallel-speedup measurement. "Parallelism" here means only that, by
+  construction, the four domains share no lock in NORMAL.
+- **Contention source.** `contended` does not separate main-versus-region contention from
+  region-versus-region contention.
+
+Logs: `/root/compat-ae2-rig/evidence/multi-region-*.log`.
+
 ## Next (001.3 §8)
 1. Deadlock tests.
 2. AE2/Pipez reproduction of the island race.
