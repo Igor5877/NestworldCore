@@ -1,0 +1,26 @@
+{
+  "required": true,
+  "minVersion": "0.8.5",
+  "package": "net.nestworld.compat.ae2.mixin",
+  "plugin": "net.nestworld.compat.ae2.glue.Ae2CompatMixinPlugin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "nestworld_compat_ae2.refmap.json",
+  "mixins": [
+    "ControllerBlockEntityMixin",
+    "EnergyAcceptorBlockEntityMixin",
+    "EnergyAcceptorPartMixin",
+    "EnergyServiceMixin",
+    "GridConnectionMixin",
+    "GridMixin",
+    "GridNodeAccessor",
+    "GridNodeMixin",
+    "LevelMixin",
+    "ServerGridRepoMixin",
+    "TickHandlerMixin",
+    "TickManagerServiceInvoker",
+    "TickManagerServiceMixin",
+    "TickTrackerMixin"
+  ],
+  "injectors": { "defaultRequire": 1 },
+  "mixinextras": { "minVersion": "0.4.1" }
+}

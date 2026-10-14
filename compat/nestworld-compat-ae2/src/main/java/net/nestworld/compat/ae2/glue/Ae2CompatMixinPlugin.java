@@ -1,0 +1,66 @@
+package net.nestworld.compat.ae2.glue;
+
+import java.util.List;
+import java.util.Set;
+import org.objectweb.asm.tree.ClassNode;
+import org.spongepowered.asm.mixin.extensibility.IMixinConfigPlugin;
+import org.spongepowered.asm.mixin.extensibility.IMixinInfo;
+
+/** Fail-closed activation: every mixin of the addon applies, or none does (001.2 §1a). */
+public final class Ae2CompatMixinPlugin implements IMixinConfigPlugin {
+    private static volatile boolean active;
+
+    public static boolean isActive() {
+        return active;
+    }
+
+    @Override
+    public void onLoad(String mixinPackage) {
+        if (Boolean.getBoolean("nestworld.compatAe2.disable")) {
+            Ae2Compat.LOG.warn("[nestworld-compat-ae2] disabled by -Dnestworld.compatAe2.disable=true; AE2 runs unmodified (keep the pins)");
+            return;
+        }
+        StartupGate.Result r;
+        try {
+            r = StartupGate.evaluate();
+        } catch (Throwable t) {
+            Ae2Compat.LOG.error("[nestworld-compat-ae2] startup gate failed; addon INACTIVE, AE2 runs unmodified (keep the pins)", t);
+            return;
+        }
+        active = r.active();
+        if (active) {
+            Ae2Compat.LOG.info("[nestworld-compat-ae2] startup gate PASS ({} classes scanned in {} ms); energy concurrency domain active",
+                    r.scannedClasses(), r.millis());
+        } else {
+            Ae2Compat.LOG.error("[nestworld-compat-ae2] startup gate FAIL; addon INACTIVE, AE2 runs unmodified (keep the pins). Problems:");
+            for (String p : r.problems()) Ae2Compat.LOG.error("[nestworld-compat-ae2]   {}", p);
+        }
+    }
+
+    @Override
+    public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
+        return active;
+    }
+
+    @Override
+    public String getRefMapperConfig() {
+        return null;
+    }
+
+    @Override
+    public void acceptTargets(Set<String> myTargets, Set<String> otherTargets) {
+    }
+
+    @Override
+    public List<String> getMixins() {
+        return null;
+    }
+
+    @Override
+    public void preApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {
+    }
+
+    @Override
+    public void postApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {
+    }
+}

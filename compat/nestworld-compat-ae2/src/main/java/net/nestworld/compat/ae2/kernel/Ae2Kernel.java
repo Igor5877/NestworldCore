@@ -89,13 +89,32 @@ public final class Ae2Kernel {
 
     // ------------------------------------------------------------------ guarded execution
 
-    /** Runs {@code body} as a guarded AE2 entry described by {@code spec}. */
+    /**
+     * Runs {@code body} as a guarded AE2 entry described by {@code spec}. A nested entry that cannot
+     * take a lower-order lock without blocking throws {@link NestedRefusal} (M2): callers whose AE2
+     * contract has a "nothing moved" result catch it.
+     */
     public <T> T guarded(DomainSpec spec, Body<T> body) throws Throwable {
+        return run(spec, body, true);
+    }
+
+    /**
+     * {@link #guarded} for entries with no refusal value (topology, accounting, TickManager). A nested
+     * lower-order lock that cannot be taken without blocking is an unaudited path here: aborting the
+     * entry halfway would corrupt AE2, and blocking could deadlock, so it fails loud and the kernel
+     * switches to serialization (001.4 §4: lock-order enforcement stays active everywhere).
+     */
+    public <T> T guardedStrict(DomainSpec spec, Body<T> body) throws Throwable {
+        return run(spec, body, false);
+    }
+
+    private <T> T run(DomainSpec spec, Body<T> body, boolean refusable) throws Throwable {
         Section s = sections.get();
         if (s.depth > 0) {
-            return nested(s, spec, body);
+            return nested(s, spec, body, refusable);
         }
         enterOuter(s, spec);
+        if (spec.topology()) s.topology++;
         s.entered = true;
         s.depth = 1;
         T result = null;
@@ -107,6 +126,7 @@ public final class Ae2Kernel {
             opEx = t;
         }
         s.depth = 0;
+        if (spec.topology()) s.topology--;
         if (s.entered) {                                   // false only if a T2 resume failed to re-enter
             s.entered = false;
             exitOuter(s);
@@ -140,6 +160,21 @@ public final class Ae2Kernel {
         }
     }
 
+    /** {@link #guardedStrict} without checked exceptions (for Mixin wrappers). */
+    public <T> T guardedStrictUnchecked(DomainSpec spec, Body<T> body) {
+        try {
+            return guardedStrict(spec, body);
+        } catch (Throwable t) {
+            throw Ae2Kernel.<RuntimeException>sneaky(t);
+        }
+    }
+
+    /** True while the current thread is inside a topology section (T0 entry, any depth, any mode). */
+    public boolean inTopologySection() {
+        Section s = sections.get();
+        return s.depth > 0 && s.topology > 0;
+    }
+
     @SuppressWarnings("unchecked")
     private static <E extends Throwable> E sneaky(Throwable t) throws E {
         throw (E) t;
@@ -167,6 +202,8 @@ public final class Ae2Kernel {
             throw unaudited("T2 suspension requested from depth " + s.depth + (s.redirect != null ? " inside an admission" : ""));
         }
         // leave: exactly the outermost exit of guarded()
+        int savedTopology = s.topology;                    // device code starts with a clean frame stack
+        s.topology = 0;
         s.depth = 0;
         s.entered = false;
         exitOuter(s);
@@ -202,6 +239,7 @@ public final class Ae2Kernel {
         }
         s.entered = true;
         s.depth = 1;
+        s.topology = savedTopology;
         metrics.resumes.increment();
         if (deviceEx != null) throw deviceEx;
         return result;
@@ -367,7 +405,7 @@ public final class Ae2Kernel {
 
     // ------------------------------------------------------------------ nested entry
 
-    private <T> T nested(Section s, DomainSpec spec, Body<T> body) throws Throwable {
+    private <T> T nested(Section s, DomainSpec spec, Body<T> body, boolean refusable) throws Throwable {
         int before = s.held.size();
         boolean tookT0 = false;
         if (!s.degraded) {
@@ -377,12 +415,14 @@ public final class Ae2Kernel {
                 s.holdsT0 = true;
                 tookT0 = true;
             }
-            acquireNested(s, spec, before);
+            acquireNested(s, spec, before, refusable);
         }
         s.depth++;
+        if (spec.topology()) s.topology++;
         try {
             return body.run();
         } finally {
+            if (spec.topology()) s.topology--;
             s.depth--;
             releaseDomainsDownTo(s, before);
             if (tookT0) {
@@ -392,7 +432,7 @@ public final class Ae2Kernel {
         }
     }
 
-    private void acquireNested(Section s, DomainSpec spec, int base) {
+    private void acquireNested(Section s, DomainSpec spec, int base, boolean refusable) {
         for (int attempt = 0; ; attempt++) {
             boolean ok = true;
             for (DomainLock d : sortedDistinct(spec.resolve())) {
@@ -411,6 +451,7 @@ public final class Ae2Kernel {
             }
             if (!ok) {
                 releaseDomainsDownTo(s, base);
+                if (!refusable) throw unaudited("nested lower-order AE2 domain unavailable in a non-refusable entry");
                 metrics.refusals.increment();
                 throw NestedRefusal.INSTANCE;
             }
@@ -418,6 +459,7 @@ public final class Ae2Kernel {
             releaseDomainsDownTo(s, base);
             metrics.retries.increment();
             if (attempt > MAX_VALIDATE_RETRIES) {
+                if (!refusable) throw unaudited("nested AE2 domain validation did not converge");
                 metrics.refusals.increment();
                 throw NestedRefusal.INSTANCE;
             }
@@ -515,6 +557,7 @@ public final class Ae2Kernel {
 
     static final class Section {
         int depth;
+        int topology;                                       // open frames whose spec is topology
         boolean entered;                                    // this thread currently holds an outer entry
         boolean degraded;
         int stripe = -1;

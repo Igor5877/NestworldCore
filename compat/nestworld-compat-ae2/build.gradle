@@ -1,15 +1,48 @@
 // nestworld-compat-ae2: an ordinary Forge mod (docs/compat/AE2-COMPAT-DESIGN-001.3.md). Not part of
 // NestWorld Core, not a NestWorld Module. The kernel package is plain Java (no Minecraft types) so
-// its concurrency protocol is unit-tested deterministically.
-plugins { id 'net.minecraftforge.gradle' version '[6.0,6.2)' }
+// its concurrency protocol is unit-tested deterministically; the glue package holds the Mixins.
+//
+// AE2 is a compile-only dependency staged by hand (it is not redistributed from this repository):
+//   cp appliedenergistics2-forge-15.4.10.jar compat/nestworld-compat-ae2/libs/
+// sha256 fbfee05c6674cb6b00fe425e945ca4818d41eb34069b60dcb4a36221a0390fcc (checked by verifyAe2Jar).
+plugins {
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+    id 'org.spongepowered.mixin' version '0.7.38'
+}
 java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+version = '0.1.0'
+group = 'net.nestworld.compat'
+
+def ae2Jar = file('libs/appliedenergistics2-forge-15.4.10.jar')
+def ae2Sha256 = 'fbfee05c6674cb6b00fe425e945ca4818d41eb34069b60dcb4a36221a0390fcc'
+
 minecraft { mappings channel: 'official', version: '1.20.1' }
-repositories { mavenCentral() }
+jarJar.enable()
+mixin {
+    add sourceSets.main, 'nestworld_compat_ae2.refmap.json'
+    config 'nestworld_compat_ae2.mixins.json'
+}
+repositories {
+    mavenCentral()
+    flatDir { dirs 'libs' }
+}
 dependencies {
     minecraft 'net.minecraftforge:forge:1.20.1-47.4.20'
+    compileOnly fg.deobf('blank:appliedenergistics2-forge:15.4.10')
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+    compileOnly(annotationProcessor('io.github.llamalad7:mixinextras-common:0.4.1'))
+    implementation(jarJar('io.github.llamalad7:mixinextras-forge:0.4.1')) { jarJar.ranged(it, '[0.4.1,)') }
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.9.2'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.9.2'
 }
+tasks.register('verifyAe2Jar') {
+    doLast {
+        if (!ae2Jar.exists()) throw new GradleException("missing ${ae2Jar} (see build.gradle header)")
+        def sha = java.security.MessageDigest.getInstance('SHA-256').digest(ae2Jar.bytes).encodeHex().toString()
+        if (sha != ae2Sha256) throw new GradleException("AE2 jar sha256 ${sha} != ${ae2Sha256}")
+    }
+}
+tasks.named('compileJava') { dependsOn 'verifyAe2Jar' }
 test {
     useJUnitPlatform()
     maxHeapSize = '1g'
@@ -19,5 +52,7 @@ test {
 }
 tasks.named('jar', Jar).configure {
     archiveBaseName = 'nestworld-compat-ae2'
+    manifest.attributes('MixinConfigs': 'nestworld_compat_ae2.mixins.json')
     finalizedBy 'reobfJar'
 }
+tasks.named('jarJar').configure { archiveBaseName = 'nestworld-compat-ae2' }
