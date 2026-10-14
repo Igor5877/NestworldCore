@@ -1,7 +1,10 @@
 # AE2-COMPAT-001 — Applied Energistics 2 energy service vs NestWorld region threads
 
-**Status: AUDIT-1 COMPLETE (2026-10-14). No implementation yet (MOD-COMPAT-1 §26 stopping
-point).**
+**Status: AUDIT-1 PASS (owner, 2026-10-14).**
+- Direction A approved.
+- Design-1 promising; implementation blocked on Design-1.1 (`AE2-COMPAT-DESIGN-001.1.md`).
+- B parked; C is a production mitigation.
+- Only the Energy subsystem is in scope. A whole-AE2 unpin after this addon is forbidden: storage, pathing and P2P stay outside.
 
 ## Exact version
 | Item | Value |
