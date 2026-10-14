@@ -172,3 +172,66 @@ One structured record, written to the log and to a world-data file:
 | M5c startup | fail-closed (approved) |
 | M5c runtime | DEGRADED via the §2–§4 handover; for review |
 | Implementation | still not started |
+
+## 8. Owner approval and binding invariants (2026-10-14)
+**Design-1.3 APPROVED. AE2 compatibility addon implementation APPROVED. Production unpin NOT
+approved yet.** Designs 1, 1.1 and 1.2 are superseded by 1.3. M3: WITHDRAWN / VERIFIED UNNECESSARY.
+
+Invariants that the code and tests must hold:
+
+1. **Correctness-grade stripes.** The in-flight count is an `AtomicIntegerArray` (or `VarHandle`
+   equivalent) with explicit volatile semantics. `LongAdder.sum()` is **not** a quiescence proof.
+   - Publishing QUIESCING is a volatile write.
+   - The final NORMAL check before the first mutation is a volatile read.
+   - Both are memory-ordering boundaries.
+2. **No dependence on the next main tick.** Every NORMAL exit that observes QUIESCING calls
+   `tryCompleteTransition()`, including detector thread B after its own decrement.
+   - Contract: transition latency ≤ the time until the longest already-active guarded operation
+     completes, plus scheduling overhead.
+   - The "at most one tick" claim of §3 is withdrawn. A hung operation also holds back DEGRADED.
+3. **Exactly one transition owner.** QUIESCING → DEGRADED is a CAS. Only the winner finalizes
+   and drains pending admissions. The others observe DEGRADED and use G.
+4. **Synchronous `addNode` stays synchronous.**
+   - The queued item is the **exact continuation** of the unfinished part of `addNode`: the
+     `IAEPowerStorage` branch, with its accounting and `addProvider` / `addRequester`. It is not
+     a re-run of `addNode`, so `localStorage.addNode`, topology bookkeeping and the other branches
+     are never duplicated.
+   - The detector's **original outermost call does not return to its caller until its
+     continuation has executed under G.**
+   - Order at B's outermost exit:
+     1. release the locks;
+     2. decrement;
+     3. `tryCompleteTransition()`;
+     4. wait for its own continuation, retrying the completion;
+     5. deliver post-commit callbacks (M1 and G2);
+     6. return.
+
+**M1 note.** The `E_op` rule of §6 is an **exception-path semantic approximation**, not vanilla
+equivalence. Side effects AE2 performed after the point where vanilla would already have thrown are
+not rolled back.
+
+**Required gate after implementation, in this order:**
+1. deterministic tests;
+2. transition-race tests;
+3. deadlock tests;
+4. AE2/Pipez reproduction;
+5. same-domain contention;
+6. different-domain parallelism;
+7. topology churn;
+8. the SolarFlux conservative case;
+9. soak;
+10. production shadow / canary;
+11. only then an unpin review.
+
+**Mandatory deterministic scenario:**
+1. A holds D1.
+2. B detects an unknown participant under NORMAL.
+3. C attempts a new NORMAL entry.
+4. A exits.
+5. B and C race to complete.
+
+Expected, over thousands to tens of thousands of controlled iterations:
+- exactly one DEGRADED transition;
+- exactly one admission;
+- zero overlap between NORMAL and G mutation;
+- B's original call returns only after its admission.
