@@ -135,3 +135,29 @@ java.lang.NullPointerException: Cannot invoke "it.unimi.dsi.fastutil.objects.Obj
 - `freeRunningRegions` and `autoFreeRunning` on.
 - The JVM sees 30 CPUs.
 - JVM flags only `-Xmx4G -Xms1G` (no `-XX:-OmitStackTraceInFastThrow`).
+
+## Auto-pin state on the island (read by the owner, 2026-10-14)
+`user_jvm_args.txt` has `-Dnestworld.autoPin=true` and `-Dnestworld.autoPinThreshold=2` (marked as
+temporary for a test, 2026-09-23), with free-running on.
+
+| Pin | When (Europe/Kyiv, from pin reasons) | What followed |
+|---|---|---|
+| `mod:ae2` (caught-elsewhere, TickHandler.onServerTickEnd) | 2026-10-06 18:01:53 | AE2 race **recurred 17 more times** (10-06 20:01 … 10-12 23:27) |
+| `be:pipez:energy_pipe` (own-tick error) | 2026-10-12 23:45:37 | **no AE2 race after it** |
+| `entity:botania:mana_burst` | 2026-10-06 19:29:31 | — |
+| `mod:mekanism` (caught-elsewhere, NetworkAcceptorCache NPE) | 2026-10-14 03:46:33, on the first NPE | **two more NPEs** (03:46:34, 03:46:35), then the circuit-breaker crash |
+
+Pinned mods: `ae2`, `edexpandere`, `exdeorum`, `mekanism`.
+
+**Readings:**
+- **Auto-pin works as designed.** It attributes the mod and pins it.
+- **Pinning the mod whose handler throws does not stop these races.** For AE2 and for Mekanism the
+  race went on after the pin. The mutating side is evidently not that mod's own entities or block
+  entities.
+- **Pipez may be the AE2 injector.** The AE2 race stopped after `pipez:energy_pipe` was pinned.
+  This is a correlation, not proven: Pipez energy pipes push FE into AE2 acceptors from their
+  own tick.
+- **Structural mitigation (owner decision):** free-running off on islands. Barrier-mode region
+  rounds finish before the main thread's END-of-tick handlers, so this class cannot overlap
+  whichever mod injects. Recommended together with `-XX:-OmitStackTraceInFastThrow`, keeping the
+  existing pins.
