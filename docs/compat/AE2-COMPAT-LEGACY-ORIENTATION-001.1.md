@@ -1,6 +1,7 @@
 # AE2-COMPAT-LEGACY-ORIENTATION-001.1 — load-path audit for the pre-publication migration
 
-**Status: AUDIT (2026-10-14). No code.**
+**Status:** AUDIT (2026-10-14). Disk path APPROVED by the owner and IMPLEMENTED. **§1–§2 are
+corrected by §8** (runtime evidence).
 - Owner direction: **pre-publication chunk-load migration**. Fallback: a Core owner-local block
   write. Last resort: main under the owner's chunk lock.
 - β "first owner tick" is REJECTED.
@@ -96,3 +97,59 @@ Fixtures:
    of legacy keys.
 2. Region removal of that block right after the chunk starts ticking: no resurrection.
 3. Negative control: hook removed → the `onReady` live write happens (counter / log).
+
+## 8. Correction from runtime (2026-10-14): the regular disk path is `ChunkSerializer.postLoadChunk`
+The first implementation hooked only `promotePendingBlockEntity`, and **migrated nothing** on reload
+(`migrated=0`).
+
+The regular disk path for FULL chunks is different:
+```
+protoChunkToFullChunk → runPostLoad → ChunkSerializer.postLoadChunk (lambda):
+    keepPacked ? chunk.setBlockEntityNbt(tag)                       // pending path (§1), rare
+               : BlockEntity.loadStatic(pos, state, tag) → chunk.setBlockEntity(be)   // regular path
+→ setLoaded(true) → registerAllBlockEntitiesAfterLevelLoad → … → startTickingChunk
+```
+- `promotePendingBlockEntity` handles only `keepPacked` entries and proto-chunk NBT.
+- §1 overstated it as *the* path. The safety argument is unchanged.
+- **Pre-publication point used:** the head of `LevelChunk.setBlockEntity` while `LevelChunk.loaded`
+  is false. That is exactly the `runPostLoad` window: before `setLoaded(true)`, before the block
+  entity is in the chunk's map, before ticking.
+- Live placements reach `setBlockEntity` with `loaded == true` and are not migrated.
+- The `promotePendingBlockEntity` hook is kept for the `keepPacked` path.
+
+## 9. Implementation and fixture results (jar on the scratch rig; `rig/legacy-run.sh`)
+Real disk path:
+1. place blocks;
+2. `save-all flush`;
+3. unload the chunk;
+4. inject legacy `forward` / `up` into the saved block-entity NBT through `ChunkMap` storage, the
+   loader's own IOWorker;
+5. reload.
+
+| Check | Result |
+|---|---|
+| drive `forward=east, up=up` | **migrated** → `DriveBlock[facing=east,spin=0]`, orientation `EAST_UP`, `pending=null` |
+| inscriber `forward=south` | **migrated** → `facing=south`, `SOUTH_UP` |
+| molecular assembler, pattern provider | no orientation BlockState properties: `unchanged` (computed state = old state); nothing written |
+| node and connectivity | node present. After migration the drive's front faces the inscriber, and the drive's grid separated (2 nodes vs 4): AE2's front-not-connectable semantics, applied through `be.setBlockState → onOrientationChanged` on the unpublished block entity. Correct AE2 behaviour |
+| save after migration | **no `forward` / `up` keys** in the saved NBT of all four |
+| second reload | `migrated` counter unchanged: migration does not run again |
+| `onReady` live write | none; `liveSkipped=0` on the migrated path |
+| exceptions | 0 |
+| regression (integration 3/3, queue 8/8, T2 4/4) | all PASS, 0 exceptions |
+
+**Natural negative control:** the first run, with the hook at the wrong point.
+- The legacy orientation was not migrated and reached `onReady` (`liveSkipped=4`).
+- The fail-closed wrapper suppressed the live world write: the states stayed `facing=north`.
+- This shows both that the pre-publication hook is what migrates, and that the live-world path is
+  fail-closed.
+
+Not verified, recorded:
+- **Client receives the migrated state.** No client on the rig. Holds by construction: the section
+  state is migrated before the chunk is sent.
+- **Neighbour-shape effects.** Node connectivity is verified. Visual neighbour shapes (cable
+  rendering) need a client: still a HYPOTHESIS.
+- **Deliberate live-world `/setblock … {forward,up}` via RCON** did not reach `loadTag` with the
+  keys. STRONGLY INDICATED cause: main's write into a region-owned chunk is routed by Core, so
+  `getBlockEntity` right after `setBlock` saw no block entity and the command's NBT was not applied.
+  UNKNOWN. The live-world fail-closed behaviour is evidenced by the negative-control run above.

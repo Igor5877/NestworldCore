@@ -20,6 +20,11 @@ public interface NwAeBlockEntity {
 
     void nw$markRemoved();
 
+    /** AE2's legacy-orientation marker set by loadTag ("forward"/"up" NBT), or null. */
+    appeng.api.orientation.BlockOrientation nw$pendingOrientation();
+
+    void nw$clearPendingOrientation();
+
     /** Re-enqueue one follow-up end-of-tick callback (main thread). */
     void nw$requeueSetChanged();
 }

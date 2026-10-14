@@ -13,6 +13,7 @@ import net.minecraftforge.fml.common.Mod;
 import net.nestworld.compat.ae2.glue.Ae2Compat;
 import net.nestworld.compat.ae2.glue.Ae2CompatMixinPlugin;
 import net.nestworld.compat.ae2.glue.IntegrationFixtures;
+import net.nestworld.compat.ae2.glue.LegacyFixtures;
 import net.nestworld.compat.ae2.glue.QueueFixtures;
 import net.nestworld.compat.ae2.glue.T2Fixtures;
 
@@ -92,9 +93,31 @@ public final class NestworldCompatAe2 {
                                         c.getSource().sendSuccess(() -> Component.literal(r), false);
                                         return 1;
                                     }))));
-            root = root.then(fx).then(qx).then(ix);
+            var lx = Commands.literal("legacy")
+                    .then(Commands.literal("loaded").then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .executes(c -> say(c.getSource(), LegacyFixtures.loaded(c.getSource().getLevel(),
+                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"))))))
+                    .then(Commands.literal("check").then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .executes(c -> say(c.getSource(), LegacyFixtures.check(c.getSource().getLevel(),
+                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"))))))
+                    .then(Commands.literal("savednbt").then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .executes(c -> say(c.getSource(), LegacyFixtures.savedNbt(c.getSource().getLevel(),
+                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"))))))
+                    .then(Commands.literal("inject").then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .then(Commands.argument("forward", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                    .then(Commands.argument("up", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                            .executes(c -> say(c.getSource(), LegacyFixtures.inject(c.getSource().getLevel(),
+                                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"),
+                                                    com.mojang.brigadier.arguments.StringArgumentType.getString(c, "forward"),
+                                                    com.mojang.brigadier.arguments.StringArgumentType.getString(c, "up"))))))));
+            root = root.then(fx).then(qx).then(ix).then(lx);
         }
         d.register(root);
+    }
+
+    private static int say(CommandSourceStack src, String msg) {
+        src.sendSuccess(() -> Component.literal(msg), false);
+        return 1;
     }
 
     public static String stats() {

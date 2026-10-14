@@ -12,12 +12,15 @@ import net.nestworld.compat.ae2.glue.NwAeBlockEntity;
 import net.nestworld.compat.ae2.glue.SetChangedProtocol;
 import org.objectweb.asm.Opcodes;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 
 /** QUEUE-001: four-state setChanged protocol and the per-block-entity lifecycle lock. */
 @Mixin(value = AEBaseBlockEntity.class, remap = false)
 public abstract class AEBaseBlockEntityMixin implements NwAeBlockEntity {
+    @Shadow private appeng.api.orientation.BlockOrientation pendingOrientationChange;
+
     @Unique private final AtomicLong nw$sc = new AtomicLong();
     @Unique private volatile int nw$cbGen;
     @Unique private final ReentrantLock nw$life = new ReentrantLock();
@@ -51,6 +54,29 @@ public abstract class AEBaseBlockEntityMixin implements NwAeBlockEntity {
     @Override
     public void nw$markRemoved() {
         nw$removed = true;
+    }
+
+    @Override
+    public appeng.api.orientation.BlockOrientation nw$pendingOrientation() {
+        return pendingOrientationChange;
+    }
+
+    @Override
+    public void nw$clearPendingOrientation() {
+        pendingOrientationChange = null;
+    }
+
+    /**
+     * LEGACY-ORIENTATION-001 live-world case (owner: loadTag/onReady world mutation REJECTED; fail-closed
+     * until an owner-routed bounded migration exists): the disk path is migrated before publication
+     * (LegacyOrientation), so a pending orientation reaching onReady comes from NBT loaded into a live
+     * world. Do not write the world; record it.
+     */
+    @WrapOperation(method = "onReady", at = @At(value = "INVOKE", remap = true,
+            target = "Lnet/minecraft/world/level/Level;setBlockAndUpdate(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;)Z"))
+    private boolean nw$noLiveWorldOrientationWrite(Level level, net.minecraft.core.BlockPos pos, net.minecraft.world.level.block.state.BlockState state, Operation<Boolean> op) {
+        net.nestworld.compat.ae2.glue.LegacyOrientation.liveWorldSkipped(this, pos, state);
+        return false;
     }
 
     @Override

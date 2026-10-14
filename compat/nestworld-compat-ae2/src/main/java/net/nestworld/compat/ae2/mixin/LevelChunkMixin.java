@@ -19,6 +19,34 @@ import org.spongepowered.asm.mixin.injection.At;
  */
 @Mixin(LevelChunk.class)
 public abstract class LevelChunkMixin {
+    @org.spongepowered.asm.mixin.Shadow private boolean loaded;
+
+    /**
+     * LEGACY-ORIENTATION-001.1 (corrected): the regular disk path creates block entities in
+     * ChunkSerializer.postLoadChunk (run by runPostLoad inside protoChunkToFullChunk, before
+     * setLoaded(true)): loadStatic → setBlockEntity. While {@code loaded} is false the block entity is
+     * not yet published and the chunk is neither loaded into the level nor ticking. Live placements
+     * reach setBlockEntity with {@code loaded == true} and are not migrated here.
+     */
+    @org.spongepowered.asm.mixin.injection.Inject(method = "setBlockEntity", at = @At("HEAD"))
+    private void nw$migrateLegacyOnLoad(BlockEntity be, org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        if (!loaded && be instanceof NwAeBlockEntity ae) {
+            net.nestworld.compat.ae2.glue.LegacyOrientation.migratePrePublication((LevelChunk) (Object) this, be.getBlockPos(), be, ae);
+        }
+    }
+
+    /** LEGACY-ORIENTATION-001.1: pre-publication migration of AE2's legacy orientation (disk path). */
+    @WrapOperation(method = "promotePendingBlockEntity", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/world/level/block/entity/BlockEntity;loadStatic(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/nbt/CompoundTag;)Lnet/minecraft/world/level/block/entity/BlockEntity;"))
+    private BlockEntity nw$migrateLegacy(net.minecraft.core.BlockPos pos, net.minecraft.world.level.block.state.BlockState state,
+                                         net.minecraft.nbt.CompoundTag tag, Operation<BlockEntity> op) {
+        BlockEntity be = op.call(pos, state, tag);
+        if (be instanceof NwAeBlockEntity ae) {
+            net.nestworld.compat.ae2.glue.LegacyOrientation.migratePrePublication((LevelChunk) (Object) this, pos, be, ae);
+        }
+        return be;
+    }
+
     @WrapOperation(method = {"setBlockEntity", "removeBlockEntity"}, at = @At(value = "INVOKE",
             target = "Lnet/minecraft/world/level/block/entity/BlockEntity;setRemoved()V"))
     private void nw$lockedRemoval(BlockEntity be, Operation<Void> op) {
