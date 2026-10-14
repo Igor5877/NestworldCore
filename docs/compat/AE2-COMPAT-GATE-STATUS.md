@@ -6,15 +6,16 @@ before canary, unless a regression requires one.
 
 | Item | Status |
 |---|---|
-| ENERGY-001 runtime gate (60-min soak, multi-region, border grid) | **VERIFIED** |
-| T2 / Design-1.5 | **VERIFIED** |
+| ENERGY-001 runtime gate (60-min soak, multi-region, border grid) | **CLOSED / VERIFIED** |
+| T2 / Design-1.5 | **CLOSED / VERIFIED** |
 | QUEUE `setChanged` protocol | **VERIFIED** |
 | QUEUE staging protocol | **VERIFIED** |
 | QUEUE T2 regression | **PASS** |
 | QUEUE-LIFE-001 | **VERIFIED** (`6e67c7e44`; GHOST negative controls) |
 | QUEUE-STAGING-001 | **VERIFIED** (`6e67c7e44`; hopper → charger on a RegionThread) |
 | **QUEUE-001 overall** | **CLOSED / VERIFIED** (owner, 2026-10-14); discarded fixture designs kept as evidence |
-| GRID-PHASE-001 (pivot NPE when a grid dies during main's phase) | OPEN / CONFIRMED FROM RUNTIME / full-unpin blocker. Option 2 (phase lease) chosen; the 001.1 audit found that logical removal races the phase too. Owner decision (a) 2-bis or (b) needed |
+| GRID-PHASE-001: structural topology mutation races an active grid phase (the pivot NPE was its first runtime manifestation) | CONFIRMED. Direction: P(G) phase/topology exclusion, order `P → T0 → domains`. Implementation BLOCKED on the 001.2 audit (submitted). The pivot liveness lease is defense in depth only |
+| Selective energy-only unpin | **BLOCKED on GRID-PHASE-001** too: region-thread block-entity removal reaches `Grid.remove` |
 | LEGACY-ORIENTATION-001 | OPEN (direction decided, see below) |
 | SOLARFLUX-COMPAT-001: cross-mod shared mutable state | OPEN / gate 8 BLOCKED |
 | shadow / canary (pin still enabled) | PENDING |
