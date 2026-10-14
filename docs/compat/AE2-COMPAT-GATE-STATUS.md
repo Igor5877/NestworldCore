@@ -74,3 +74,14 @@ intended and is to be kept.
 | P2P `updateFreq` semantics | AUDITED: synchronous postcondition. The real race is with transfer readers, so it falls outside GRID-PHASE → AE2-COMPAT-P2P-001 — proposed |
 | Startup compatibility manifest | APPROVED. Allowlist by mod id, mod version, fully qualified class name and compat contract version; unknown → eligibility UNKNOWN → DEGRADED / no unpin. P(G) is **not** disabled by unknowns: no fail-open |
 | Mechanism classes | SYNCHRONOUS STRUCTURAL → P(G); PHASE-DEFERRED INVALIDATION → staging; UNKNOWN → fail-closed |
+
+## Owner decisions, implementation round (2026-10-14)
+| Item | Decision |
+|---|---|
+| P(G) | **APPROVED FOR IMPLEMENTATION**: non-main all-or-nothing tryLock, bounded backoff, rediscover / revalidate; main blocks; progress instrumentation (`p_try_failures`, `p_retry_count`, `p_wait_ns`, `p_max_retry`, `p_writer_starvation_warning`) |
+| Storage / Crafting `requestUpdate` | STAGING APPROVED, coalesced per (grid, provider, kind); deterministic boundary test at the drain cut |
+| `StackWatcher` | FIFO STAGING APPROVED, **no coalescing** in v1; destroyed at drain → drop |
+| Immediate execution while the relevant phase is active | **FORBIDDEN**, even from main. Normative: *mutations published while a service phase is active never alter that phase's structural view; they become visible at the next permitted phase boundary* |
+| Startup manifest | APPROVED FOR IMPLEMENTATION. Checked before the layer runs NORMAL. Unknown → `COMPAT_MANIFEST_UNKNOWN_PROVIDER mod=… class=… interface=…` → eligibility failure → DEGRADED / retain pin |
+| AE2-COMPAT-P2P-001 | NEW SEPARATE OPEN finding (CONFIRMED FROM CODE). `updateFreq` under P(G) REJECTED as insufficient. Direction: a dedicated per-grid P2P state guard (snapshot reads; linearizable `newFrequency` allocation as one writer transaction; never held across external transfer) |
+| Selective energy unpin | GRID-PHASE no longer blocks it once implemented. P2P-001 blocks it only if FE P2P runs region-parallel in scope, so FE P2P has to be excluded by **real enforcement**, not documentation |
