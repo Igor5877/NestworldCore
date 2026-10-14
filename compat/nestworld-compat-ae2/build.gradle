@@ -1,0 +1,23 @@
+// nestworld-compat-ae2: an ordinary Forge mod (docs/compat/AE2-COMPAT-DESIGN-001.3.md). Not part of
+// NestWorld Core, not a NestWorld Module. The kernel package is plain Java (no Minecraft types) so
+// its concurrency protocol is unit-tested deterministically.
+plugins { id 'net.minecraftforge.gradle' version '[6.0,6.2)' }
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+minecraft { mappings channel: 'official', version: '1.20.1' }
+repositories { mavenCentral() }
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.4.20'
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.9.2'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.9.2'
+}
+test {
+    useJUnitPlatform()
+    maxHeapSize = '1g'
+    ['nw.iterations', 'nw.stressOps'].each { k -> if (project.hasProperty(k)) systemProperty k, project.property(k) }
+    if (project.hasProperty('nw.negative')) systemProperty 'nw.negative', 'true'
+    testLogging { events 'failed'; exceptionFormat 'full'; showStandardStreams = false }
+}
+tasks.named('jar', Jar).configure {
+    archiveBaseName = 'nestworld-compat-ae2'
+    finalizedBy 'reobfJar'
+}
