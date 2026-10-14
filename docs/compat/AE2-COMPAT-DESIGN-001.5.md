@@ -1,6 +1,6 @@
 # AE2-COMPAT-DESIGN-001.5 — T2 marker semantics across suspension
 
-**Status: DESIGN-1.5 (2026-10-14).**
+**Status: DESIGN-1.5 (2026-10-14). §3.3 APPROVED by the owner (2026-10-14), conditional on fixture 4. Invariant: `wakeDevice()` returns `true` only after a real scheduling change under the guard.**
 - Replaces 001.4 §2.5 (option (a) is rejected by the owner) and 001.4 §2.4 (the continuation gate
   is extended).
 - Also amends 001.4 §3.2 (the assertion's thread identity).
@@ -125,7 +125,11 @@ Deviation from vanilla, recorded:
    is ticked again.
    **Negative control:** keep the `currentlyTicking` suppression for foreign threads. The test
    must detect the node asleep with no pending tick.
-4. **Same-phase double-tick fixture.** A foreign `alertDevice` during the callback. Expected: the
+4. **Same-phase double-tick fixture** (owner condition, 2026-10-14). Cover both a foreign `wakeDevice` and a foreign `alertDevice` during the callback.
+   - The assertion is on a per-node tick log keyed by server tick number, independent of `PriorityQueue` order.
+   - It must hold: the node is **not** ticked a second time in the same server tick, and it is eligible from the next permitted tick.
+   - Negative control: drop the `lastTick := currentTick` step. The test must catch the same-tick re-tick.
+   Original wording follows. A foreign `alertDevice` during the callback. Expected: the
    node is ticked once in this phase and once on the next tick.
 5. **Self-call fixture.** A MolecularAssembler-shaped device calls `sleepDevice(self)` and then
    returns `IDLE`. Expected: vanilla result, i.e. the node is awake and re-queued, and the
