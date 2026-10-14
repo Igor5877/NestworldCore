@@ -1,6 +1,9 @@
 # FAST-TRANSITION-1 — NestWorld seamless backend migration (architecture)
 
 **Status: ARCHITECTURE DESIGN (2026-10-14).**
+Implementation follow-up: [first server module integration](FAST-TRANSITION-MODULE.md) was
+subsequently authorized. The restrictions below describe the original design phase; the
+follow-up implements bounded batching and preparation, not FAST_ATTACH or skipped negotiation.
 - Documentation only. No code, Module, Mixin, packet, Velocity or deployment change is part of
   this phase.
 - Implementation is forbidden until the gates in §20 are closed and reviewed.

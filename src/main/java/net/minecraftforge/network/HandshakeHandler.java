@@ -99,8 +99,17 @@ public class HandshakeHandler
 
     static boolean tickLogin(Connection networkManager)
     {
-        return networkManager.channel().attr(NetworkConstants.FML_HANDSHAKE_HANDLER).get().tickServer();
+        return tickLogin(networkManager, net.nestworld.module.LoginBudget.VANILLA);
     }
+
+    static boolean tickLogin(Connection networkManager, net.nestworld.module.LoginBudget budget)
+    {
+        HandshakeHandler handler = networkManager.channel().attr(NetworkConstants.FML_HANDSHAKE_HANDLER).get();
+        handler.nestworldLoginBudget = budget;
+        return handler.tickServer();
+    }
+
+    private net.nestworld.module.LoginBudget nestworldLoginBudget = net.nestworld.module.LoginBudget.VANILLA;
 
     private List<NetworkRegistry.LoginPayload> messageList;
 
@@ -347,14 +356,20 @@ public class HandshakeHandler
             negotiationStarted = true;
         }
 
-        if (packetPosition < messageList.size()) {
+        int sentThisTick = 0;
+        long bytesThisTick = 0;
+        while (packetPosition < messageList.size()) {
             NetworkRegistry.LoginPayload message = messageList.get(packetPosition);
+            int bytes = message.getData().readableBytes();
+            if (!nestworldLoginBudget.permits(sentThisTick, bytesThisTick, bytes)) break;
 
             LOGGER.debug(FMLHSMARKER, "Sending ticking packet info '{}' to '{}' sequence {}", message.getMessageContext(), message.getChannelName(), packetPosition);
             if (message.needsResponse())
                 sentMessages.add(packetPosition);
             loginWrapper.sendServerToClientLoginPacket(message.getChannelName(), message.getData(), packetPosition, this.manager);
             packetPosition++;
+            sentThisTick++;
+            bytesThisTick += bytes;
         }
 
         pendingFutures.removeIf(future -> {
@@ -374,7 +389,7 @@ public class HandshakeHandler
         });
 
         // we're done when sentMessages is empty
-        if (sentMessages.isEmpty() && packetPosition >= messageList.size()-1 && pendingFutures.isEmpty()) {
+        if (sentMessages.isEmpty() && packetPosition >= messageList.size() && pendingFutures.isEmpty()) {
             // clear ourselves - we're done!
             this.manager.channel().attr(NetworkConstants.FML_HANDSHAKE_HANDLER).set(null);
             LOGGER.debug(FMLHSMARKER, "Handshake complete!");

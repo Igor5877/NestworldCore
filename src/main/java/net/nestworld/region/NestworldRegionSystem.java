@@ -297,6 +297,9 @@ public class NestworldRegionSystem {
         net.nestworld.module.ModuleRegistry modules = net.nestworld.module.ModuleRegistry.create(server);
         modules.discover(new net.nestworld.module.ExampleModule());
         modules.discover(new net.nestworld.module.FailingExampleModule());
+        if (Boolean.getBoolean("nestworld.fastTransition")) {
+            modules.discover(new net.nestworld.module.fasttransition.FastTransitionModule());
+        }
         modules.enableAll();
     }
 

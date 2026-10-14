@@ -149,6 +149,16 @@ public class NetworkHooks
         return HandshakeHandler.tickLogin(networkManager);
     }
 
+    /** NestWorld server-bound entry point. The explicit owner avoids a JVM-global current-server
+     * lookup when an integrated server is stopped and another starts in the same process. */
+    public static boolean tickNegotiation(ServerLoginPacketListenerImpl netHandlerLoginServer, Connection networkManager,
+                                          ServerPlayer player, net.minecraft.server.MinecraftServer server)
+    {
+        var modules = net.nestworld.module.ModuleRegistry.forServer(server);
+        return HandshakeHandler.tickLogin(networkManager,
+                modules == null ? net.nestworld.module.LoginBudget.VANILLA : modules.loginBudget());
+    }
+
     /**
      * Request to open a GUI on the client, from the server
      *

@@ -1,0 +1,71 @@
+// Explicit test-only init script. Never used by the normal build or production startup.
+// ./gradlew :forge:forge_server -x :forge:downloadAssets -I tests/fast-transition/server-probe.gradle
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.findProject(':forge')
+    if (p == null) return // buildSrc also evaluates init scripts
+    def testRoot = gradle.rootProject.file('tests/fast-transition')
+    def work = new File(gradle.startParameter.projectProperties.getOrDefault('ftWork', '/tmp/nestworld-ft-probe'))
+    def compile = p.tasks.register('compileFastTransitionProbe', JavaCompile) {
+        dependsOn p.tasks.named('classes'), gradle.rootProject.project(':javafmllanguage').tasks.named('classes')
+        source new File(testRoot, 'ServerProbe.java')
+        classpath = p.sourceSets.main.runtimeClasspath + gradle.rootProject.project(':javafmllanguage').sourceSets.main.output
+        destinationDirectory = p.layout.buildDirectory.dir('fast-transition-probe/classes')
+        options.release = 17
+        options.compilerArgs += ['-proc:none']
+    }
+    def jar = p.tasks.register('jarFastTransitionProbe', Jar) {
+        from compile
+        from new File(testRoot, 'probe-resources')
+        archiveFileName = 'fasttransitionprobe.jar'
+        destinationDirectory = p.layout.buildDirectory.dir('fast-transition-probe')
+    }
+    def prepare = p.tasks.register('prepareFastTransitionProbe') {
+        dependsOn jar
+        doLast {
+            def marker = new File(work, '.fast-transition-probe')
+            if (work.exists() && work.list().length > 0 && !marker.exists())
+                throw new GradleException("Refusing to modify non-probe directory: ${work}")
+            work.mkdirs()
+            marker.text = 'Disposable Fast Transition server fixture\n'
+            new File(work, 'mods').mkdirs()
+            new File(work, 'eula.txt').text = 'eula=true\n'
+            new File(work, 'server.properties').text = '''server-ip=127.0.0.1
+server-port=25872
+online-mode=false
+level-type=minecraft:flat
+generate-structures=false
+view-distance=3
+simulation-distance=3
+max-tick-time=120000
+'''
+        }
+    }
+    gradle.taskGraph.whenReady {
+        p.tasks.matching { it.name == 'forge_server' }.each { t ->
+            t.runtimeClasspathArtifacts.setFrom(t.runtimeClasspathArtifacts.files.findAll { !it.name.startsWith('modapi-') })
+        }
+    }
+    p.tasks.matching { it.name == 'forge_server' }.configureEach {
+        dependsOn prepare
+        doFirst {
+            def rc = runConfig.get()
+            // a modapi jar on the classpath would be a second provider of net.nestworld.modapi
+            classpath = classpath.filter { !it.name.startsWith('modapi-') }
+            def cpFile = new File(p.layout.buildDirectory.get().asFile, 'classpath/forge_forge_server_runtimeClasspath.txt')
+            if (cpFile.exists())
+                cpFile.text = cpFile.readLines().findAll { !it.contains('/modapi-') }.join('\n') + '\n'
+            rc.setWorkingDirectory(work.absolutePath)
+            // dev classpath: :modapi (with its generated mods.toml) must be its own mod
+            def ss = p.sourceSets.maybeCreate('ftprobe')
+            ss.java.destinationDirectory.set(compile.get().destinationDirectory)
+            ss.output.resourcesDir = new File(testRoot, 'probe-resources')
+            rc.mods.maybeCreate('fasttransitionprobe').source(ss)
+            def api = rc.mods.maybeCreate('nestworld_modapi')
+            api.source(gradle.rootProject.project(':modapi').sourceSets.main)
+        }
+        systemProperty 'nestworld.fastTransition', 'true'
+        systemProperty 'nestworld.fastTransition.probe', 'true'
+        jvmArgs '-Xmx2G'
+        args 'nogui'
+    }
+}

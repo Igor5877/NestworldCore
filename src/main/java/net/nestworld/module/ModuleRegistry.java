@@ -149,7 +149,7 @@ public final class ModuleRegistry {
         rt.identity = new ModuleIdentity(rt.descriptor.id(), rt.descriptor.version(), new ModuleGeneration(gen));
         rt.ledger = new ResourceLedger(rt.descriptor.id());
         // I4: a declaration made during enable is bound into the server's ACTIVE dispatcher at once.
-        rt.context = new ModuleContextImpl(rt.identity, rt.ledger,
+        rt.context = new ModuleContextImpl(server, rt.identity, rt.ledger,
                 declaration -> declaration.bindInto(server.getCommands().getDispatcher()));
 
         rt.state = ModuleLifecycleState.ENABLED;
@@ -186,6 +186,19 @@ public final class ModuleRegistry {
         dispatcherBindings++;
         LOGGER.info("NestWorld modules: bound {} command declaration(s) into dispatcher generation {}", bound, dispatcherBindings + 1);
         return bound;
+    }
+
+    /** Core login hook. No module callback runs on the network thread. Multiple policies use
+     * their most restrictive bounds. Without a RUNNING policy, vanilla one-packet pacing applies. */
+    public synchronized LoginBudget loginBudget() {
+        requireServerThread("loginBudget");
+        LoginBudget result = null;
+        for (ModuleRuntime rt : modules.values()) {
+            if (rt.state != ModuleLifecycleState.RUNNING) continue;
+            LoginBudget budget = rt.context.loginBudget();
+            if (budget != null) result = result == null ? budget : result.intersect(budget);
+        }
+        return result == null ? LoginBudget.VANILLA : result;
     }
 
     /** Drives every RUNNING module through QUIESCING -> DISABLED (or FAILED). */

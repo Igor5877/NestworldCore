@@ -7,10 +7,9 @@ import net.minecraft.commands.CommandSourceStack;
  * `docs/MODULE0_AUDIT.md` §D: the Core-controlled boundary a module uses to acquire resources
  * during and after {@code onEnable}. Every successful registration is recorded in this module's
  * {@link ResourceLedger} and returns a {@link ResourceHandle} the module never needs to call
- * itself -- Core revokes centrally on quiesce/failure. Deliberately narrow: only the two
- * resource types `docs/MODULE0_AUDIT.md` §D actually evidenced as low-risk and Core-precedented
- * (listeners, commands) -- per explicit instruction not to invent APIs for resource types with
- * no current use.
+ * itself -- Core revokes centrally on quiesce/failure. Initially listeners and commands;
+ * Fast Transition adds bounded login policies and chunk leases for its concrete use case.
+ * No raw scheduler, worker pool or arbitrary Core object access is exposed.
  *
  * <pre>
  * Responsibility:
@@ -24,6 +23,7 @@ import net.minecraft.commands.CommandSourceStack;
  *   - registerCommand(String, Command<CommandSourceStack>) -- a top-level Brigadier literal,
  *     added as a sibling to NestWorld's own command tree, never touching it
  *   - identity() -- this module's ModuleIdentity, for the module's own logging/attribution use
+ *   - bounded login send policies, non-blocking chunk preparation and sync-data snapshots
  *
  * Does NOT:
  *   - accept registrations once this module's generation is no longer current (QUIESCING or
@@ -38,8 +38,7 @@ import net.minecraft.commands.CommandSourceStack;
  *     exposes entity/region mutation at all in MODULE-1's scope
  *
  * Threading:
- *   Registration methods are expected to be called from the main/server thread (the thread
- *   ModuleRegistry drives onEnable/RUNNING work from in MODULE-1's scope).
+ *   Registration/capability methods require the owning server thread; Core enforces this.
  *
  * Failure:
  *   A rejected registration (module not live) returns null -- outcome-only, never throws for
@@ -59,6 +58,22 @@ import net.minecraft.commands.CommandSourceStack;
  */
 public interface ModuleContext {
     ModuleIdentity identity();
+
+    /** Identity check for filtering global Forge events; grants no access to server internals. */
+    boolean ownsServer(net.minecraft.server.MinecraftServer server);
+
+    /** Register one bounded login send policy. Null on quiesce; a second live policy is rejected.
+     * Does not authorize skipping ANY payload, mod check, acknowledgement or lifecycle hook. */
+    ResourceHandle registerLoginBudget(LoginBudget budget);
+
+    /** Prepare FULL, lit chunks under a bounded lease. Null on quiesce. All calls require the
+     * owning server thread; completion is observed on server END ticks. Core revokes all leases
+     * on failure/shutdown. At most 8 live preparations, radius <= 4, lifetime <= 1200 ticks. */
+    ChunkPreparation prepareChunks(ChunkPreparationRequest request);
+
+    /** Capture registry/recipe content generations on the server thread. Potentially expensive;
+     * call at startup/reload, not per connection. Throws after quiesce or serialization failure. */
+    SyncDataSnapshot snapshotSyncData();
 
     /** Registers {@code listener} with the Forge event bus. Returns null if this module is no
      *  longer accepting registrations (QUIESCING or later). */

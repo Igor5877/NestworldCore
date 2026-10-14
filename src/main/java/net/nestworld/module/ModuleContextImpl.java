@@ -66,9 +66,13 @@ final class ModuleContextImpl implements ModuleContext {
     private final java.util.function.Consumer<CommandDeclaration> currentDispatcherBinder;
     private final java.util.List<CommandDeclaration> declarations = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final AtomicBoolean accepting = new AtomicBoolean(true);
+    private final net.minecraft.server.MinecraftServer server;
+    private LoginBudget loginBudget;
+    private ModuleChunkPreparations preparations;
 
-    ModuleContextImpl(ModuleIdentity identity, ResourceLedger ledger,
+    ModuleContextImpl(net.minecraft.server.MinecraftServer server, ModuleIdentity identity, ResourceLedger ledger,
                       java.util.function.Consumer<CommandDeclaration> currentDispatcherBinder) {
+        this.server = server;
         this.identity = identity;
         this.ledger = ledger;
         this.currentDispatcherBinder = currentDispatcherBinder;
@@ -90,8 +94,54 @@ final class ModuleContextImpl implements ModuleContext {
         return identity;
     }
 
+    @Override public boolean ownsServer(net.minecraft.server.MinecraftServer candidate) { return server == candidate; }
+
+    private void requireServerThread() {
+        if (!server.isSameThread()) throw new IllegalStateException("module capability requires owning server thread");
+    }
+
+    LoginBudget loginBudget() { return accepting.get() ? loginBudget : null; }
+
+    @Override
+    public ResourceHandle registerLoginBudget(LoginBudget budget) {
+        requireServerThread();
+        if (!accepting.get()) return null;
+        java.util.Objects.requireNonNull(budget);
+        if (loginBudget != null) throw new IllegalStateException("module already registered a login budget");
+        loginBudget = budget;
+        ResourceHandle handle = new ResourceHandle() {
+            private boolean revoked;
+            @Override public String kind() { return "login-budget"; }
+            @Override public void revoke() {
+                requireServerThread();
+                if (!revoked) { revoked = true; loginBudget = null; }
+            }
+        };
+        ledger.record(handle);
+        return handle;
+    }
+
+    @Override
+    public ChunkPreparation prepareChunks(ChunkPreparationRequest request) {
+        requireServerThread();
+        if (!accepting.get()) return null;
+        if (preparations == null) {
+            preparations = new ModuleChunkPreparations(server, identity);
+            ledger.record(preparations);
+        }
+        return preparations.prepare(java.util.Objects.requireNonNull(request));
+    }
+
+    @Override
+    public SyncDataSnapshot snapshotSyncData() {
+        requireServerThread();
+        if (!accepting.get()) throw new IllegalStateException("module context revoked");
+        return ModuleSyncData.capture(server);
+    }
+
     @Override
     public ResourceHandle registerListener(Object listener) {
+        requireServerThread();
         if (!accepting.get()) {
             LOGGER.info("NestWorld module {}: listener registration REJECTED (no longer accepting)", identity);
             return null;
@@ -118,6 +168,7 @@ final class ModuleContextImpl implements ModuleContext {
 
     @Override
     public ResourceHandle registerCommand(String name, Command<CommandSourceStack> executor) {
+        requireServerThread();
         if (!accepting.get()) {
             LOGGER.info("NestWorld module {}: command '{}' registration REJECTED (no longer accepting)", identity, name);
             return null;
