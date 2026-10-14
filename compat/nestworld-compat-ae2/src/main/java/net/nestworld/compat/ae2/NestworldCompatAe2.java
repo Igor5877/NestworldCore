@@ -8,9 +8,11 @@ import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.RegisterCommandsEvent;
+import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.nestworld.compat.ae2.glue.Ae2Compat;
 import net.nestworld.compat.ae2.glue.Ae2CompatMixinPlugin;
+import net.nestworld.compat.ae2.glue.T2Fixtures;
 
 /** nestworld-compat-ae2: AE2 energy concurrency domain for NestWorld (docs/compat/AE2-COMPAT-DESIGN-001*.md). */
 @Mod(NestworldCompatAe2.MOD_ID)
@@ -19,15 +21,35 @@ public final class NestworldCompatAe2 {
 
     public NestworldCompatAe2() {
         MinecraftForge.EVENT_BUS.addListener((RegisterCommandsEvent e) -> register(e.getDispatcher()));
+        if (T2Fixtures.ENABLED) {
+            MinecraftForge.EVENT_BUS.addListener((TickEvent.ServerTickEvent e) -> {
+                if (e.phase == TickEvent.Phase.END) T2Fixtures.onServerTickEnd();
+            });
+        }
     }
 
     /** Read-only counters (001 §9: the addon publishes its counters through a read-only command). */
     private static void register(CommandDispatcher<CommandSourceStack> d) {
-        d.register(Commands.literal("nwcompatae2").requires(s -> s.hasPermission(2))
+        var root = Commands.literal("nwcompatae2").requires(s -> s.hasPermission(2))
                 .then(Commands.literal("stats").executes(c -> {
                     c.getSource().sendSuccess(() -> Component.literal(stats()), false);
                     return 1;
-                })));
+                }));
+        if (T2Fixtures.ENABLED) {
+            var fx = Commands.literal("fixture").then(Commands.literal("status").executes(c -> {
+                c.getSource().sendSuccess(() -> Component.literal(T2Fixtures.status()), false);
+                return 1;
+            }));
+            for (T2Fixtures.Kind k : T2Fixtures.Kind.values()) {
+                fx = fx.then(Commands.literal(k.name().toLowerCase()).executes(c -> {
+                    String r = T2Fixtures.start(k, c.getSource().getLevel());
+                    c.getSource().sendSuccess(() -> Component.literal(r), false);
+                    return 1;
+                }));
+            }
+            root = root.then(fx);
+        }
+        d.register(root);
     }
 
     public static String stats() {
