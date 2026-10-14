@@ -6,13 +6,15 @@ before canary, unless a regression requires one.
 
 | Item | Status |
 |---|---|
-| ENERGY-001 runtime gate (60-min soak, multi-region, border grid) | **PASS** |
-| T2 / Design-1.5 | **PASS** |
-| QUEUE `setChanged` protocol | **PASS** |
-| QUEUE staging protocol | **PASS** |
+| ENERGY-001 runtime gate (60-min soak, multi-region, border grid) | **VERIFIED** |
+| T2 / Design-1.5 | **VERIFIED** |
+| QUEUE `setChanged` protocol | **VERIFIED** |
+| QUEUE staging protocol | **VERIFIED** |
 | QUEUE T2 regression | **PASS** |
-| QUEUE-LIFE-001: deterministic real RegionThread removal while main is inside `callInit` → no ghost node, no resurrection | PENDING |
-| QUEUE-STAGING-001: at least one real AE2 path from a RegionThread → `addCallable` / `serverQueue` staging → exactly-once consumption | PENDING |
+| QUEUE-LIFE-001 | **VERIFIED** (`6e67c7e44`; GHOST negative controls) |
+| QUEUE-STAGING-001 | **VERIFIED** (`6e67c7e44`; hopper → charger on a RegionThread) |
+| **QUEUE-001 overall** | **CLOSED / VERIFIED** (owner, 2026-10-14); discarded fixture designs kept as evidence |
+| GRID-PHASE-001 (pivot NPE when a grid dies during main's phase) | OPEN / CONFIRMED FROM RUNTIME / full-unpin blocker. Option 2 (phase lease) chosen; the 001.1 audit found that logical removal races the phase too. Owner decision (a) 2-bis or (b) needed |
 | LEGACY-ORIENTATION-001 | OPEN (direction decided, see below) |
 | SOLARFLUX-COMPAT-001: cross-mod shared mutable state | OPEN / gate 8 BLOCKED |
 | shadow / canary (pin still enabled) | PENDING |
@@ -53,3 +55,8 @@ before canary, unless a regression requires one.
 4. SOLARFLUX-COMPAT-001 audit.
 5. Shadow/canary with the pin still enabled.
 6. Only then review a selective or full unpin.
+
+## Architecture note (owner, 2026-10-14)
+`nestworld-compat-ae2` has no `net.nestworld.modapi` and no Core imports, and no Core compile
+dependency. It is an ordinary Forge compatibility jar, not a hidden Core plugin. This boundary is
+intended and is to be kept.
