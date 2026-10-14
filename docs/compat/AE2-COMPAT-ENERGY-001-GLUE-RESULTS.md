@@ -79,9 +79,18 @@ classes), `-Dnestworld.freeRunningRegions=true`, region #0 set to free-running.
 Confidence:
 - CONFIRMED: the addon removes this race class (the island's EnergyService injection-flag race) in
   this rig.
-- Scope: the input path here is a Mekanism cube pushing FE from its own block-entity tick on the
-  region thread. It enters AE2 through the same external `receiveEnergy → funnelPowerIntoStorage →
-  injectPower` path as Pipez. **A Pipez-pipe variant has not been run yet.**
+- Scope, first variant: the input path is a Mekanism cube pushing FE from its own block-entity tick
+  on the region thread. It enters AE2 through the external `receiveEnergy → funnelPowerIntoStorage →
+  injectPower` path.
+
+**Pipez variant (the island path).** Each cube ejects into an extracting Pipez energy pipe, and
+Pipez routes the energy into the AE2 acceptor (`EnergyPipeType.receive → receiveEnergy`) on the
+region thread. Scripts: `rig/build-race-pipez.sh`, `rig/drive-churn.sh`. Each run lasted 180 s.
+
+| Run | Result |
+|---|---|
+| Addon disabled | Race reproduced: 4× `Cannot modify energy requesters while energy is being injected`, via "Readying AE2 block entity". The server survived through Core catch-and-continue (fewer than 6 failures per 60 s). 5 142 churn rounds. Log: `evidence/race-pipez-baseline-addon-disabled.log` |
+| Addon active | **0 exceptions.** 5 184 churn rounds, TPS 20, NORMAL. 728 452 guarded entries, `contended=1 382`, `retries=11`; 0 refusals, transitions, unaudited paths or main-affinity violations. Log: `evidence/race-pipez-addon-active.log` |
 - Only one region (single region thread versus main) was tested. Multi-region cases are gate items
   5 and 6.
 
