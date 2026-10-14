@@ -27,13 +27,16 @@ import java.util.function.Consumer;
  *   <li>M1 (001.2 §2, 001.3 §6): notifications deferred inside a section are delivered in exact FIFO
  *       order on the same thread at the outermost exit, after the locks are released; delivery stops
  *       at the first exception, which propagates; the rest are discarded.</li>
+ *   <li>T2 (001.4 §2): {@link #suspended} fully leaves the outermost section before device code runs
+ *       and re-enters through a fresh outer entry under the current mode; a suspended thread is
+ *       never counted in flight, so device code may itself enter AE2 during QUIESCING.</li>
  * </ul>
  */
 public final class Ae2Kernel {
     public enum Mode { NORMAL, QUIESCING, DEGRADED }
 
     /** Test hook points (deterministic interleaving tests only; {@code null} in production). */
-    public enum Point { AFTER_MODE_READ, AFTER_INCREMENT, BEFORE_MODE_CHECK, BEFORE_BODY, AFTER_DECREMENT, AFTER_PUBLISH, BEFORE_CAS, AFTER_CAS }
+    public enum Point { AFTER_MODE_READ, AFTER_INCREMENT, BEFORE_MODE_CHECK, BEFORE_BODY, AFTER_DECREMENT, AFTER_PUBLISH, BEFORE_CAS, AFTER_CAS, SUSPENDED }
 
     @FunctionalInterface
     public interface Body<T> {
@@ -93,6 +96,7 @@ public final class Ae2Kernel {
             return nested(s, spec, body);
         }
         enterOuter(s, spec);
+        s.entered = true;
         s.depth = 1;
         T result = null;
         Throwable opEx = null;
@@ -103,7 +107,10 @@ public final class Ae2Kernel {
             opEx = t;
         }
         s.depth = 0;
-        exitOuter(s);
+        if (s.entered) {                                   // false only if a T2 resume failed to re-enter
+            s.entered = false;
+            exitOuter(s);
+        }
         Throwable admissionEx = null;
         for (Admission a : s.own) {
             if (a.failure != null && admissionEx == null) admissionEx = a.failure;
@@ -136,6 +143,77 @@ public final class Ae2Kernel {
     @SuppressWarnings("unchecked")
     private static <E extends Throwable> E sneaky(Throwable t) throws E {
         throw (E) t;
+    }
+
+    // ------------------------------------------------------------------ T2 suspension
+
+    /**
+     * T2 suspension (AE2-COMPAT-DESIGN-001.4 §2): runs arbitrary device code from inside an outermost
+     * guarded section without holding anything. The section is fully left first (locks released,
+     * in-flight decremented, a pending transition completed, the section's own admissions awaited,
+     * M1 notifications delivered), {@code device} runs at depth 0, and the section is then re-entered
+     * as a fresh outer entry under the mode current at that moment, resolving and validating
+     * {@code resumeSpec} again. No kernel state is carried across; the caller must revalidate every
+     * piece of AE2 state it read before the call.
+     *
+     * <p>The section is re-entered on every path (also when delivery or {@code device} throws), so
+     * the code that unwinds afterwards still runs guarded; the first exception then propagates and
+     * {@code device} is not run if delivery failed. Only the outermost frame may suspend; anything
+     * else is an unaudited path.
+     */
+    public <T> T suspended(DomainSpec resumeSpec, Body<T> device) throws Throwable {
+        Section s = sections.get();
+        if (s.depth != 1 || !s.entered || s.redirect != null) {
+            throw unaudited("T2 suspension requested from depth " + s.depth + (s.redirect != null ? " inside an admission" : ""));
+        }
+        // leave: exactly the outermost exit of guarded()
+        s.depth = 0;
+        s.entered = false;
+        exitOuter(s);
+        Throwable leaveEx = null;
+        for (Admission a : s.own) {
+            if (a.failure != null && leaveEx == null) leaveEx = a.failure;
+        }
+        s.own.clear();
+        ArrayList<Object> queue = s.deferred;
+        s.deferred = new ArrayList<>();
+        Throwable callbackEx = deliver(queue);
+        if (callbackEx != null) {
+            if (leaveEx != null) diagnostics.accept("AE2 admission exception superseded by a deferred callback exception: " + leaveEx);
+            leaveEx = callbackEx;
+        }
+        metrics.suspensions.increment();
+        T result = null;
+        Throwable deviceEx = leaveEx;
+        if (leaveEx == null) {
+            point(Point.SUSPENDED);
+            try {
+                result = device.run();
+            } catch (Throwable t) {
+                deviceEx = t;
+            }
+        }
+        // resume: a fresh outer entry under the current mode
+        try {
+            enterOuter(s, resumeSpec);
+        } catch (Throwable t) {
+            if (deviceEx != null) t.addSuppressed(deviceEx);
+            throw t;                                       // not entered: guarded() skips the exit
+        }
+        s.entered = true;
+        s.depth = 1;
+        metrics.resumes.increment();
+        if (deviceEx != null) throw deviceEx;
+        return result;
+    }
+
+    /** {@link #suspended} without checked exceptions (for Mixin wrappers). */
+    public <T> T suspendedUnchecked(DomainSpec resumeSpec, Body<T> device) {
+        try {
+            return suspended(resumeSpec, device);
+        } catch (Throwable t) {
+            throw Ae2Kernel.<RuntimeException>sneaky(t);
+        }
     }
 
     // ------------------------------------------------------------------ M1 deferral
@@ -437,6 +515,7 @@ public final class Ae2Kernel {
 
     static final class Section {
         int depth;
+        boolean entered;                                    // this thread currently holds an outer entry
         boolean degraded;
         int stripe = -1;
         boolean holdsT0;
@@ -472,5 +551,7 @@ public final class Ae2Kernel {
         public final LongAdder admissions = new LongAdder();
         public final LongAdder transitions = new LongAdder();
         public final LongAdder unauditedPaths = new LongAdder();
+        public final LongAdder suspensions = new LongAdder();
+        public final LongAdder resumes = new LongAdder();
     }
 }
