@@ -58,7 +58,7 @@ public final class SetChangedProtocol {
             if (sc.compareAndSet(v, next)) {
                 if (ph == RUNNING && self) Ae2Compat.COUNTERS.setChangedSelfSuppressed.increment();
                 if (ph == RUNNING && !self) Ae2Compat.COUNTERS.setChangedDirty.increment();
-                point("P-LP", be);
+                point(covered ? "P-LP" : "P-publish", be);
                 return covered;
             }
         }
@@ -89,6 +89,7 @@ public final class SetChangedProtocol {
                 if (ph == DIRTY) {
                     if (sc.compareAndSet(v, (v & ~PHASE) | QUEUED)) {
                         Ae2Compat.COUNTERS.setChangedRequeue.increment();
+                        point("C-requeue", be);
                         be.nw$requeueSetChanged();        // exactly one follow-up
                         break;
                     }

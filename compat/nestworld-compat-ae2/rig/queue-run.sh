@@ -6,7 +6,7 @@ for p in $(pgrep -f "java.*unix_args"); do [ "$(readlink /proc/$p/cwd)" = /root/
 cp /root/nestworldcore/compat/nestworld-compat-ae2/build/libs/nestworld-compat-ae2-0.1.0-all.jar server/mods/
 cd server; mv console.log console-$(date +%H%M%S).log; (setsid nohup bash run.sh nogui > console.log 2>&1 < /dev/null &); sleep 1
 timeout 300 bash -c 'until grep -qE "Done \(|Exception in thread" console.log; do sleep 2; done'; grep -E "gate|Exception in thread" console.log | cut -c1-140; cd ..
-$R "forceload add 192 192 207 207" "setblock 200 -60 200 ae2:inscriber" >/dev/null; sleep 3
+for i in $(seq 0 60); do $R "nestworld freerun $i" >/dev/null 2>&1; done; $R "forceload add 192 192 207 207" "setblock 200 -60 200 ae2:inscriber" >/dev/null; sleep 3
 for k in idle before_dequeue during many_during self at_finish after_finish; do
   $R "nwcompatae2 queuefixture $k 200 -60 200" >/dev/null
   timeout 60 bash -c "until $R 'nwcompatae2 queuefixture status' | grep -qE 'PASS|FAIL'; do sleep 1; done"

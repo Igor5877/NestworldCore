@@ -49,7 +49,35 @@ Regression on the same jar (sha256 `f1b61328…`):
 - 120 s of multi-region injection plus churn: 0 exceptions, NORMAL, TPS 20, 0 lifecycle-order
   violations.
 
-## Not covered yet
+## Integration subgates (owner, AE2-COMPAT-GATE-STATUS)
+Fixtures: `glue/IntegrationFixtures`, `/nwcompatae2 integration …`, `rig/integration-run.sh`.
+- **Region-thread host:** an armor stand whose `tick` runs fixture tasks (`ArmorStandMixin`, fixture
+  mode only). Entity ticks of a free-running region are not coordinated by main.
+- **Why not a ticking block entity:** block-entity ticks are dispatched and awaited by main
+  (NestWorld's BE phase), so a task parked in one blocks main. Two earlier fixture designs failed on
+  exactly that, and one run had the target in a non-free-running auto-split region. Those runs were
+  discarded as fixture defects. All regions are now set free-running.
+
+| Subgate | Result |
+|---|---|
+| **QUEUE-LIFE-001, DURING:** `NestWorld-Region-18` (later 21) removes the inscriber while main is inside `callInit` under `nw$life` | **PASS.** The remover was blocked on `nw$life`; `onReady` ran once; the removal completed after init; no ghost node, no resurrection |
+| **QUEUE-LIFE-001, BEFORE:** the region removes before main takes `nw$life` | **PASS.** Revalidation inside the lock cancelled the init (`removed`); `onReady` 0; no ghost node |
+| **QUEUE-STAGING-001:** a vanilla hopper on a RegionThread feeds a powered AE2 charger | **PASS.** 5 publishes from the region thread were staged; claims 9 = publishes 9 + requeues 0 (exactly once); final phase IDLE; 4 crystals charged and moved |
+
+| Negative control (temporary patch, reverted) | Result |
+|---|---|
+| remover without `nw$life` (DURING) | **FAIL as required: GHOST.** The removed block entity kept a grid node; the remover was not blocked |
+| no revalidation inside the lock (BEFORE) | **FAIL as required: GHOST.** `onReady` ran on the removed block entity |
+
+Clean-jar regression (`5bf32db6…`):
+- integration fixtures 3/3 PASS;
+- queue fixtures 8/8 PASS;
+- T2 fixtures 4/4 PASS;
+- kernel tests pass.
+- The integration run logged a **`PathingService` pivot NPE**. This is a new, separate finding:
+  AE2-COMPAT-GRID-PHASE-001.
+
+## Not covered yet (superseded by the subgates above, kept for history)
 - **Lifecycle lock under a real cross-thread removal during `callInit`.**
   - Implemented, but no deterministic fixture yet.
   - A plain test thread cannot remove a block entity from a region-owned chunk safely. It needs a

@@ -12,6 +12,7 @@ import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.nestworld.compat.ae2.glue.Ae2Compat;
 import net.nestworld.compat.ae2.glue.Ae2CompatMixinPlugin;
+import net.nestworld.compat.ae2.glue.IntegrationFixtures;
 import net.nestworld.compat.ae2.glue.QueueFixtures;
 import net.nestworld.compat.ae2.glue.T2Fixtures;
 
@@ -27,6 +28,7 @@ public final class NestworldCompatAe2 {
                 if (e.phase == TickEvent.Phase.END) {
                     T2Fixtures.onServerTickEnd();
                     QueueFixtures.onServerTickEnd(e.getServer().getTickCount());
+                    IntegrationFixtures.onServerTickEnd(e.getServer().getTickCount());
                 }
             });
         }
@@ -65,7 +67,32 @@ public final class NestworldCompatAe2 {
                                     return 1;
                                 })));
             }
-            root = root.then(fx).then(qx);
+            var ix = Commands.literal("integration")
+                    .then(Commands.literal("status").executes(c -> {
+                        c.getSource().sendSuccess(() -> Component.literal(IntegrationFixtures.status()), false);
+                        return 1;
+                    }));
+            for (IntegrationFixtures.Life k : IntegrationFixtures.Life.values()) {
+                ix = ix.then(Commands.literal("life_" + k.name().toLowerCase())
+                        .then(Commands.argument("target", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                .executes(c -> {
+                                    String r = IntegrationFixtures.life(k, c.getSource().getLevel(),
+                                            net.minecraft.commands.arguments.coordinates.BlockPosArgument.getLoadedBlockPos(c, "target"));
+                                    c.getSource().sendSuccess(() -> Component.literal(r), false);
+                                    return 1;
+                                })));
+            }
+            ix = ix.then(Commands.literal("staging")
+                    .then(Commands.argument("target", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .then(Commands.argument("seconds", com.mojang.brigadier.arguments.IntegerArgumentType.integer(5, 600))
+                                    .executes(c -> {
+                                        String r = IntegrationFixtures.staging(c.getSource().getLevel(),
+                                                net.minecraft.commands.arguments.coordinates.BlockPosArgument.getLoadedBlockPos(c, "target"),
+                                                com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "seconds"));
+                                        c.getSource().sendSuccess(() -> Component.literal(r), false);
+                                        return 1;
+                                    }))));
+            root = root.then(fx).then(qx).then(ix);
         }
         d.register(root);
     }

@@ -8,6 +8,7 @@ import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.nestworld.compat.ae2.glue.LifeHooks;
 import net.nestworld.compat.ae2.glue.NwAeBlockEntity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -19,6 +20,7 @@ import org.spongepowered.asm.mixin.Shadow;
  */
 @Mixin(targets = "appeng.hooks.ticking.ServerBlockEntityRepo$FirstTickInfo", remap = false)
 public abstract class FirstTickInfoMixin {
+
     @Shadow
     public abstract BlockEntity blockEntity();
 
@@ -33,14 +35,19 @@ public abstract class FirstTickInfoMixin {
             COUNTERS.lifeOrderViolation.increment();
             throw KERNEL.unaudited("AE2 block-entity initialization inside a guarded section");
         }
+        LifeHooks.Hook h = LifeHooks.hook;
+        if (h != null) h.at("init-prelock", be);
         life.nw$life().lock();
         try {
             String reason = nw$invalid(be, life);
             if (reason != null) {
                 COUNTERS.initCancelled.increment();
+                if (h != null) h.at("init-cancelled:" + reason, be);
                 return;
             }
+            if (h != null) h.at("init-locked", be);
             op.call();
+            if (h != null) h.at("init-done", be);
         } finally {
             life.nw$life().unlock();
         }
