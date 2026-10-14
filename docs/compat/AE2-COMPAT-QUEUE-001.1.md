@@ -1,6 +1,14 @@
 # AE2-COMPAT-QUEUE-001.1 — `setChangedQueued` clear ordering and `blockEntities` cancellation
 
-**Status: AUDIT (2026-10-14) — for owner review. No code.** Narrow follow-up to AE2-COMPAT-QUEUE-001.
+**Status: AUDIT (2026-10-14). Owner review the same day (§4 is normative):**
+
+| Item | Ruling |
+|---|---|
+| `setChanged` four-state machine | APPROVED |
+| `serverQueue` / `callQueue` staging | APPROVED IN PRINCIPLE |
+| block lifecycle lock | APPROVED WITH REVALIDATION |
+| legacy orientation | split out to AE2-COMPAT-LEGACY-ORIENTATION-001 |
+| Full AE2 unpin | STILL BLOCKED | Narrow follow-up to AE2-COMPAT-QUEUE-001.
 
 Owner rulings this audit answers:
 - `serverQueue` / `callQueue` staging: APPROVED IN PRINCIPLE.
@@ -198,3 +206,63 @@ Notes:
    (case f).
 2. §2.2: per-block-entity lifecycle exclusion, with initialization on main.
 3. §2.3: option β for the legacy orientation write, or accept α / leave it as recorded.
+
+## 4. Owner refinements (2026-10-14): normative, supersede §1.3 and §2.2 where they differ
+
+### 4.1 Self-call detection is callback-context, not thread identity
+> self-call = `saveChanges` of **this same block entity**, arising within the dynamic extent of
+> **its own** currently running `setChangedAtEndOfTick` callback.
+
+- The glue keeps a thread-local `CallbackContext {be, callbackGen}`, set by the consumer around
+  `setChanged()`, together with the per-block-entity `callbackGen` stamped at C-claim.
+- A producer call is a self-call iff `ctx.be == this && ctx.callbackGen == this.callbackGen`.
+- Main, while running callback A, that modifies block entity B is a **foreign** producer for B. It
+  is never suppressed.
+- §1.3's "runner thread inside the callback's extent" wording is replaced by this rule.
+
+### 4.2 Exact CAS completion rules
+| Actor | Observed | Action |
+|---|---|---|
+| Consumer finish | `RUNNING` | CAS `RUNNING → IDLE`. On success: done. |
+| Consumer finish | CAS lost (the state is now `RUNNING_DIRTY`) | CAS `RUNNING_DIRTY → QUEUED` (only the consumer leaves `RUNNING_DIRTY`), then enqueue **exactly one** follow-up callback. |
+| Producer (foreign) | `RUNNING` | CAS `RUNNING → RUNNING_DIRTY`. If the CAS loses, re-read and apply the row for the new state. |
+| Producer | `IDLE` (the consumer already finished) | CAS `IDLE → QUEUED` and publish **before returning**. |
+| Producer | `QUEUED` / `RUNNING_DIRTY` | `seq++` only (coalesced). |
+
+Every transition is a CAS loop on the single atomic word, with `phase` and `seq` packed. There is
+no read-then-write window, so the completion boundary cannot lose a notification.
+
+**Invariant (normative):**
+> Every foreign `saveChanges` either is covered by an already-pending callback or causes a future
+> callback to become pending before it returns.
+
+Coalescing is permitted: N foreign writes during one `RUNNING` give 1 additional callback.
+Fixtures (§1.5) gain a completion-boundary case: the producer CAS races the consumer's finish CAS
+in both orders.
+
+### 4.3 Lifecycle revalidation inside `nw$life`
+The check must happen **after** acquiring `nw$life`, never before it.
+
+```
+initializer (main):
+  lock(nw$life)
+    revalidate: state != REMOVED
+                && !isRemoved()
+                && level still loaded/valid
+                && level.getBlockEntity(pos) == this
+                && level.getBlockState(pos) still corresponds to this BE's block
+    only then: INITIALIZING → callInit (create: T0 → domains) → READY
+    else: skip, initCancelled{reason}++
+  unlock
+
+remover (any thread), setRemoved / onChunkUnloaded:
+  lock(nw$life)
+    state := REMOVED
+    original body (destroy: T0 → domains as required)
+  unlock
+```
+- Per block entity, `onReady`/create and `setRemoved`/destroy are mutually exclusive (XOR).
+- Lock order is `nw$life → T0 → domains`. Acquiring `nw$life` while holding T0 or a domain is a
+  **lock-order violation** (`kernel.unaudited`), not an attempt.
+- `level.getBlockEntity(pos)` from main reads a region-owned chunk. That read uses Core's existing
+  cross-region read path, and its threading is noted for the glue-stage review.
