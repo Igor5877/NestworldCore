@@ -1,6 +1,6 @@
 # OPS-INCIDENT-2026-10-15 — AE2 `TickHandler.processQueue` NPE spin on island airisminhistory
 
-**Status: RECORDED, not reproduced** (owner rule for live-island races). Evidence: a log excerpt
+**Status: CONFIRMED from island evidence (2026-10-15), not reproduced** (owner rule for live-island races). Evidence: a log excerpt
 pasted by the owner on 2026-10-15. The nestworld-compat-ae2 addon is **not** deployed on islands.
 
 ## Observation (from the owner's paste)
@@ -46,8 +46,20 @@ while (!queue.isEmpty()) {
   that hazard, and worse than predicted: **an infinite main-thread spin, not just lost callbacks.**
 - The `callQueue[level]` path, with the same pattern, is equally possible.
 
-Confidence: STRONGLY INDICATED. It becomes CONFIRMED if a thread dump or crash report of 01:52
-shows the server thread in `TickHandler.processQueue`.
+Confidence: **CONFIRMED** (owner-run read-only checks, 2026-10-15):
+- **NestWorld watchdog thread dump** `crash-reports/threaddump-2026-10-15_01.51.59-server.txt`:
+  - Reason: `watchdog api-world: Minecraft мовчить 92 с (hung)`.
+  - Run ID `39e8c798-336a-468f-a7cb-ff59a3df61ef`; 3 snapshots, 7 s apart.
+  - Server thread at `appeng.hooks.ticking.TickHandler.processQueue(TickHandler.java:451)` ←
+    `onServerTickEnd(:334)` ← `onServerTick(:299)`, in the snapshots (lines 358 and 85169 of the
+    dump). So it is the **`serverQueue`** drain (server END), the `addCallable(null, …)` path fed by
+    `AEBaseBlockEntity.saveChanges`.
+  - The NPE spam already appears in the dump's interleaved log at 01:51:59.
+- **Volume:** `AE2:S/]: Exception:` lines — `debug-1.log.gz` 1 955 766, `debug-2.log.gz` 210 273.
+  The spin ran for at least ~92 s before the watchdog, then a restart (01:53:50).
+- Still UNKNOWN: which thread corrupted the deque. Read-only follow-up:
+  `grep -n "addCallable\|saveChanges\|ArrayDeque" crash-reports/threaddump-2026-10-15_01.51.59-server.txt | head`.
+
 
 ## Read-only checks for the owner (on the island)
 ```
