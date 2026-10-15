@@ -98,3 +98,5 @@ intended and is to be kept.
 | **GRID-PHASE-001** | **CLOSED / VERIFIED** (owner criterion: all review items fixed, regression clean, negative controls discriminate). docs/compat/AE2-COMPAT-GRID-PHASE-001-RESULTS.md § Review fixes |
 | ENERGY-001, T2, QUEUE-001, LEGACY-DISK | unchanged (regression PASS); not refactored |
 | Still open | AE2-COMPAT-P2P-001, SOLARFLUX-COMPAT-001, LEGACY-ORIENTATION-LIVE-001 (fail-closed), shadow / canary, unpin review |
+| **Frozen** (owner, 2026-10-15) | ENERGY-001, T2 / Design-1.5, QUEUE-001, GRID-PHASE-001: not to be touched unless a regression appears. Any change needs its own regression evidence |
+| Order (owner, 2026-10-15) | P2P-001 → SOLARFLUX-COMPAT-001 → canary → selective unpin → addon v1.0-rc1 |
