@@ -188,6 +188,8 @@ loadClass(name):
   - `onDisable`.
 
   It restores the previous value in `finally`. These are cold paths on the server thread.
+- The TCCL is **not** a listener mechanism. G0 `subscribe-main-tccl`: TCCL = module loader during
+  `register` still fails, because wrapper synthesis is tied to GAME-layer packages.
 - Listener and command callbacks run with whatever TCCL the firing thread has; this is not
   changed on hot paths. A module whose libraries need the TCCL captures its loader and passes it
   explicitly. This is documented in the module author guide.
@@ -242,21 +244,27 @@ Two gates, the same structure as PKG-002:
 - `Minecraft`/`Forge` member references are not checked in v1. Their failures surface as
   `LinkageError`, attributed per module (§10.2).
 
-### 8.3 Listeners (audit E1)
-- New generic capability `listeners` v1:
+### 8.3 Listeners (audit E1, CONFIRMED by G0)
+- G0 (`docs/contracts/MODULE-2-G0-RESULTS.md`) showed the `@SubscribeEvent` path gets **zero
+  deliveries, silently**, from an external loader: the `ClassNotFoundException` happens at
+  registration and EventBus swallows it. The typed path works on main and on `RegionThread`.
+- New generic capability `listeners` v1, **mandatory**:
   `ResourceHandle registerListener(Class<E extends Event> type, EventPriority p, boolean receiveCancelled, Consumer<E> handler)`.
 - It is implemented with `MinecraftForge.EVENT_BUS.addListener(...)`, the lambda path (E1c).
   - The handler is wrapped (the wrapper is the Core-visible resource and the attribution point).
   - Revocation is `EVENT_BUS.unregister(wrapper)`.
 - Exceptions escaping module code at runtime follow §10.4 (D3): attribute, request failure,
   **rethrow the original**. Never swallow-and-continue.
-- `registerListener(Object)` stays in the SPI for built-ins. For a jar-loaded module it returns
-  `null` (REJECTED) with a one-line reason, unless G0 disproves E1a/E1b. If so, the owner
-  re-decides.
+- `registerListener(Object)` stays in the SPI for built-ins only. For a module whose class is
+  defined by a `ModuleClassLoader`, it is **fail-closed**: it returns `null` (REJECTED) together
+  with a `ModuleFailure(capability=listener, "@SubscribeEvent objects cannot be wired from module
+  jars; use registerListener(Class, …)")`.
+  - It never reaches `EVENT_BUS.register`, which would record a resource that delivers nothing.
 - Undeclared capability use is rejected the same way (null + counter), never by throwing.
-- If G0 confirms E1, `registerListener(Object)` is also removed from the built-ins' use
-  (`ExampleModule`, `FastTransitionModule` move to the typed form), so that built-ins and jars use
-  one listener path.
+- Because G0 confirmed E1, the built-ins also move to the typed form (`ExampleModule`,
+  `FastTransitionModule`), so built-ins and jars use one listener path. This is mandatory for G7.
+- A module jar calling `MinecraftForge.EVENT_BUS.register(obj)` directly hits the same silent
+  loss. The module author guide documents this. It can't be prevented (trusted code, §12).
 
 ### 8.4 Commands — ownership registry, never overwrite (audit A11)
 - `ModuleRegistry` keeps a per-server **command ownership table**
@@ -494,7 +502,7 @@ asserts a refusal. No gate starts before the previous one is VERIFIED.
 
 | Gate | Content | PASS requires | Negative control |
 |---|---|---|---|
-| **G0** feasibility probe (throwaway, isolated scratch) | Child `URLClassLoader` → SPI/MC/Forge linkage, command, lambda listener; dedicated + integrated | U1 positive on both; event fired from main **and** a region thread reaches the lambda | U2: `@SubscribeEvent` object from the child loader fails as E1a predicts. If it does **not** fail, §8.3 is re-decided |
+| **G0** feasibility probe (throwaway, isolated scratch) — **DONE 2026-10-15** (dedicated): U1/U5 CONFIRMED; E1 CONFIRMED with corrected mechanism; typed path PASS on main + RegionThread. `docs/contracts/MODULE-2-G0-RESULTS.md` | Child `URLClassLoader` → SPI/MC/Forge linkage, command, lambda listener; dedicated + integrated | U1 positive on both; event fired from main **and** a region thread reaches the lambda | U2: `@SubscribeEvent` object from the child loader fails as E1a predicts. If it does **not** fail, §8.3 is re-decided |
 | **G1** scanner + descriptor (S1–S4) | Directory rules, JSON schema, dedupe, dependency graph | Invalid-jar matrix: each row → the exact FAILED reason, the server starts, other modules RUNNING | Same fixture with refusal disabled → must produce a wrong RUNNING |
 | **G2** loader + static validation (S3, S5, §6) | Reserved roots, shadowing, forbidden manifests, Event subclass | Jar bundling `net/nestworld/module/NestWorldModule.class` → refused; bundling `com/google/gson/Gson.class` → refused; relocated library → RUNNING | Shadowing check off → the bundled Gson copy loads (proves U3 detection works) |
 | **G3** ABI (§8.1, §8.2) | Gate V + Gate A + surface list | Module compiled against SPI 1.1 on a 1.0 runtime → refused (V); member removed with version unchanged → refused (A); `net.nestworld.region` reference → refused | Gate A off → the same jar fails later with `NoSuchMethodError` (shows what A prevents) |
@@ -524,7 +532,7 @@ Islands and production are not touched until the owner decides.
 | D7 | G4 fixes **A5, A6, A10 and A11** (the owner added A5 and A10). Commands use an ownership registry checked before `addChild`; a collision is `REJECTED: command name already owned`, never an overwrite | §8.4, §10, §14 |
 | Dir | Core creates `nestworld-modules/` (next to `mods/`). Scan one level only, with no `libs/` subdirectory | §3 |
 | Ref | FastTransition is the G7 reference module: the hard-coded construction is removed from Core | §13.2 |
-| E1 | If G0 confirms E1, the SPI moves to the typed listener API | §8.3 |
+| E1 | If G0 confirms E1, the SPI moves to the typed listener API. **G0 confirmed it (2026-10-15)**: the typed API is mandatory, and `Object` is fail-closed for jar modules | §8.3 |
 
 Spec adjustments made while recording (for review):
 - `id` admits `-`, since the owner's examples use `fast-transition`.

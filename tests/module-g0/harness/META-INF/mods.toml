@@ -1,0 +1,7 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="test-only"
+[[mods]]
+modId="nwg0harness"
+version="0.0.1"
+displayName="MODULE-2 G0 harness (scratch only)"

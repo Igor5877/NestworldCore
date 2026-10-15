@@ -126,6 +126,18 @@ Facts:
 
 ### 3.2 EventBus 6.0.5 — finding E1
 
+> **G0 correction (2026-10-15, `docs/contracts/MODULE-2-G0-RESULTS.md`).** E1 is **CONFIRMED**, but
+> the mechanism below is wrong. Under FML the factory is `ModLauncherFactory`, not
+> `ClassLoaderFactory$ASMClassLoader` (that is the non-ModLauncher fallback).
+> - The wrapper `<pkg>.__<Listener>_<method>_<Event>` is synthesised by EventBus's ModLauncher
+>   plugin, and only for GAME-layer packages.
+> - For a module package, `EventBus.register` hits a `ClassNotFoundException` **at
+>   registration**, logs it at ERROR and returns normally. The module then gets **zero
+>   deliveries, silently**.
+> - E1a is corrected accordingly, E1b is moot, and E1c is CONFIRMED on main and `RegionThread`.
+>
+> The original analysis is kept below as the record of what was predicted.
+
 Read from `eventbus-6.0.5.jar` (`javap -c`):
 - `ASMEventHandler` generates one wrapper class per `@SubscribeEvent` method.
 - It defines that class through a single static `ClassLoaderFactory$ASMClassLoader LOADER`.
@@ -149,7 +161,7 @@ Therefore (STRONGLY INDICATED; to be confirmed by a G0 negative fixture):
   direct reference to the module's `Consumer`. That reference was resolved by the module's own
   loader when the module created the lambda.
 
-**Consequence:** for an external loader, `registerListener(Object)` is unsafe as implemented. The
+**Consequence (confirmed by G0):** for an external loader, `registerListener(Object)` is non-functional as implemented. The
 spec adds a typed, generic `registerListener(Class<E>, EventPriority, Consumer<E>)` capability
 and refuses the `Object` form for jar-loaded modules until G0 proves otherwise (§8.3).
 
@@ -202,8 +214,8 @@ own gates.
 
 | # | Unknown | Closed by |
 |---|---|---|
-| U1 | Can a child `URLClassLoader` (parent = GAME-layer TCL) link against SPI, Minecraft, and Forge on both dedicated and integrated servers? (L2) | G0 positive probe |
-| U2 | E1a: does the `Object` listener actually fail? Fixture: register a `@SubscribeEvent` object from a child loader and post an event from main and from a region thread | G0 negative probe |
+| U1 | **CLOSED by G0 (dedicated): yes.** Can a child `URLClassLoader` (parent = GAME-layer TCL) link against SPI, Minecraft, and Forge on both dedicated and integrated servers? (L2) | G0 positive probe |
+| U2 | **CLOSED by G0: yes, at registration (silent), not at dispatch.** E1a: does the `Object` listener actually fail? Fixture: register a `@SubscribeEvent` object from a child loader and post an event from main and from a region thread | G0 negative probe |
 | U3 | Does `TransformingClassLoader.getResource("x/Y.class")` reliably report the presence of a parent class? The no-shadowing rule (§6.3) depends on it | G2 fixture: a jar bundling `com/google/gson/Gson.class` must be refused |
 | U4 | What does FML do with a module jar placed by mistake in `mods/` (no `mods.toml`)? | G1 observation only; the spec does not depend on it |
-| U5 | The TCCL of region threads (inherited from the creator?) | G0 log line; affects E1a only |
+| U5 | **CLOSED by G0: `TransformingClassLoader[TRANSFORMER]` on main and RegionThread.** The TCCL of region threads (inherited from the creator?) | G0 log line; affects E1a only |
