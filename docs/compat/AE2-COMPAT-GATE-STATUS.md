@@ -14,7 +14,7 @@ before canary, unless a regression requires one.
 | QUEUE-LIFE-001 | **VERIFIED** (`6e67c7e44`; GHOST negative controls) |
 | QUEUE-STAGING-001 | **VERIFIED** (`6e67c7e44`; hopper → charger on a RegionThread) |
 | **QUEUE-001 overall** | **CLOSED / VERIFIED** (owner, 2026-10-14); discarded fixture designs kept as evidence |
-| GRID-PHASE-001: structural topology mutation races an active grid phase (the pivot NPE was its first runtime manifestation) | OPEN. 001.1 (phase side effects) AUDITED; 001.2 (reentrancy / synchronicity) AUDITED. **Asymmetric P(G) APPROVED IN PRINCIPLE**: non-main threads all-or-nothing with no wait (bounded backoff or park, no busy spin); main may reentrantly take its own P and wait for others. **Progress invariant:** a synchronous topology mutation that remains applicable must eventually obtain phase exclusion; repeated main phases may not starve it. Implementation **BLOCKED ON TOPOLOGY-CALLBACK-001** |
+| GRID-PHASE-001: structural topology mutation races an active grid phase (the pivot NPE was its first runtime manifestation) | **CLOSED / VERIFIED** (owner, 2026-10-15; see the review-round table below). History: 001.1 (phase side effects) AUDITED; 001.2 (reentrancy / synchronicity) AUDITED. **Asymmetric P(G) APPROVED IN PRINCIPLE**: non-main threads all-or-nothing with no wait (bounded backoff or park, no busy spin); main may reentrantly take its own P and wait for others. **Progress invariant:** a synchronous topology mutation that remains applicable must eventually obtain phase exclusion; repeated main phases may not starve it. Implementation **BLOCKED ON TOPOLOGY-CALLBACK-001** |
 | TOPOLOGY-CALLBACK-001 | AUDITED. The add/remove path is AE2 / addon bookkeeping only: no foreign capability code (the storage bus mounts a pre-built handler), no wait for main, no synchronous topology or recursion. NEW: structural service mutations outside topology (provider `requestUpdate`, `StackWatcher`, `P2P updateFreq`) must join the P(G) set. Owner choice needed: P or defer-safe handoff |
 | Selective energy-only unpin | **BLOCKED on GRID-PHASE-001** too: region-thread block-entity removal reaches `Grid.remove` |
 | LEGACY-ORIENTATION-DISK-001 | **CLOSED / VERIFIED** (`dad15e74b`) |
@@ -89,7 +89,7 @@ intended and is to be kept.
 ## Implementation round result (2026-10-14)
 | Item | Status |
 |---|---|
-| P(G) + Storage / Crafting staging + StackWatcher staging + startup manifest | **IMPLEMENTED, fixtures PASS** (docs/compat/AE2-COMPAT-GRID-PHASE-001-RESULTS.md); deterministic OVERLAP negative control FAILS as required; awaiting owner review |
+| P(G) + Storage / Crafting staging + StackWatcher staging + startup manifest | **IMPLEMENTED, fixtures PASS** (docs/compat/AE2-COMPAT-GRID-PHASE-001-RESULTS.md); deterministic OVERLAP negative control FAILS as required; review round done → CLOSED / VERIFIED (owner, 2026-10-15) |
 | region-thread topology stress | 0 exceptions, but **not discriminating** (also 0 without P); OVERLAP is the evidence |
 
 ## Review round result (2026-10-15)

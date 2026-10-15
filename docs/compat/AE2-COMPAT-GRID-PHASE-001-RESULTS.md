@@ -1,6 +1,6 @@
 # AE2-COMPAT-GRID-PHASE-001 — implementation and fixtures (results)
 
-**Status:** IMPLEMENTED in `nestworld-compat-ae2` per the owner's approval:
+**Status: CLOSED / VERIFIED (owner, 2026-10-15)** after the review round (§ Review fixes). IMPLEMENTED in `nestworld-compat-ae2` per the owner's approval:
 - `P(G)`;
 - Storage / Crafting `requestUpdate` staging;
 - StackWatcher FIFO staging;
