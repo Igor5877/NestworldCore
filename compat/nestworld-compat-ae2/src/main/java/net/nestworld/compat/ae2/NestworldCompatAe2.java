@@ -120,6 +120,17 @@ public final class NestworldCompatAe2 {
                                             .executes(c -> say(c.getSource(), GridPhaseFixtures.staging(
                                                     com.mojang.brigadier.arguments.StringArgumentType.getString(c, "kind"), c.getSource().getLevel(),
                                                     net.minecraft.commands.arguments.coordinates.BlockPosArgument.getLoadedBlockPos(c, "pos")))))))
+                    .then(Commands.literal("nested").then(Commands.argument("drive", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .executes(c -> say(c.getSource(), GridPhaseFixtures.nested(c.getSource().getLevel(),
+                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getLoadedBlockPos(c, "drive"))))))
+                    .then(Commands.literal("replayfresh").then(Commands.argument("drive", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .executes(c -> say(c.getSource(), GridPhaseFixtures.replayFresh(c.getSource().getLevel(),
+                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getLoadedBlockPos(c, "drive"))))))
+                    .then(Commands.literal("multigrid").then(Commands.argument("host", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .then(Commands.argument("seconds", com.mojang.brigadier.arguments.IntegerArgumentType.integer(5, 3600))
+                                    .executes(c -> say(c.getSource(), GridPhaseFixtures.multiGrid(c.getSource().getLevel(),
+                                            net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "host"),
+                                            com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "seconds")))))))
                     .then(Commands.literal("overlap")
                             .then(Commands.argument("drive", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
                                     .then(Commands.argument("target", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())

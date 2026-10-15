@@ -29,14 +29,19 @@ public abstract class StorageServiceMixin implements NwGridBound {
     @WrapMethod(method = "refreshNodeStorageProvider")
     private void nw$refreshNode(IGridNode node, Operation<Void> op) {
         StorageService self = (StorageService) (Object) this;
-        Staging.apply(nw$grid, () -> op.call(node),
-                () -> Staging.stageRebuild(nw$grid, node, "storage-node", () -> self.refreshNodeStorageProvider(node)));
+        Grid g = nw$grid;
+        Staging.apply(g, node, () -> op.call(node),
+                () -> Staging.stageRebuild(g, node, "storage-node", () -> {
+                    if (node.getGrid() == g) self.refreshNodeStorageProvider(node);
+                    else Staging.dropStale();                       // node left this grid before the drain
+                }));
     }
 
     @WrapMethod(method = "refreshGlobalStorageProvider")
     private void nw$refreshGlobal(IStorageProvider provider, Operation<Void> op) {
         StorageService self = (StorageService) (Object) this;
-        Staging.apply(nw$grid, () -> op.call(provider),
-                () -> Staging.stageRebuild(nw$grid, provider, "storage-global", () -> self.refreshGlobalStorageProvider(provider)));
+        Grid g = nw$grid;
+        Staging.apply(g, provider, () -> op.call(provider),
+                () -> Staging.stageRebuild(g, provider, "storage-global", () -> self.refreshGlobalStorageProvider(provider)));
     }
 }

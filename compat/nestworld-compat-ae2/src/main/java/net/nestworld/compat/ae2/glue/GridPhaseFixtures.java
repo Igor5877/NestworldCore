@@ -22,6 +22,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.nestworld.compat.ae2.mixin.StorageServiceAccessor;
+import net.nestworld.compat.ae2.glue.Specs;
 
 /**
  * GRID-PHASE-001 fixtures (owner gate list): drain-cut boundary, coalescing, no immediate mutation while
@@ -256,6 +257,189 @@ public final class GridPhaseFixtures {
                     + " completedAfter=" + done[0] + " pTryFailures+" + (c.pTryFailures.sum() - fail0));
         };
         status = "OVERLAP: running";
+        return status;
+    }
+
+    // ---------------------------------------------------------------- review 1.1: nested P fail-closed
+
+    /** Outer kernel section active on a test thread; P(B) held by another thread; nested topology on B. */
+    public static String nested(ServerLevel level, BlockPos drivePos) {
+        if (pending != null) return "a fixture is running: " + status;
+        if (!(level.getBlockEntity(drivePos) instanceof IGridConnectedBlockEntity drive) || drive.getMainNode().getNode() == null)
+            return "no AE2 grid node at " + drivePos;
+        Grid b = (Grid) drive.getMainNode().getNode().getGrid();
+        var c = Ae2Compat.COUNTERS;
+        long nested0 = c.pNestedUnresolved.sum();
+        java.util.concurrent.CountDownLatch held = new java.util.concurrent.CountDownLatch(1), release = new java.util.concurrent.CountDownLatch(1);
+        Thread holder = new Thread(() -> {
+            ((NwGrid) b).nw$p().lock();
+            held.countDown();
+            try {
+                release.await(10, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                ((NwGrid) b).nw$p().unlock();
+            }
+        }, "nw-gridphase-holder");
+        holder.start();
+        boolean[] executed = {false};
+        String[] thrown = {null};
+        String[] modeAfter = {null};
+        Thread t = new Thread(() -> {
+            try {
+                held.await();
+                Ae2Compat.KERNEL.guardedStrictUnchecked(Specs.grid(null), () ->      // outer kernel section, no domain
+                        GridPhaseGate.topology(() -> List.of(b), () -> {
+                            executed[0] = true;
+                            return null;
+                        }));
+            } catch (Throwable e) {
+                thrown[0] = e.getClass().getSimpleName();
+            }
+            modeAfter[0] = String.valueOf(Ae2Compat.KERNEL.mode());
+        }, "nw-gridphase-nested");
+        t.start();
+        try {
+            t.join(10_000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        release.countDown();
+        List<String> f = new ArrayList<>();
+        if (executed[0]) f.add("topology body EXECUTED without the required P (fail-open)");
+        if (!"UnauditedPathException".equals(thrown[0])) f.add("expected UnauditedPathException, got " + thrown[0]);
+        if (c.pNestedUnresolved.sum() - nested0 != 1) f.add("pNestedUnresolved +" + (c.pNestedUnresolved.sum() - nested0) + " (expected 1)");
+        if ("NORMAL".equals(modeAfter[0])) f.add("kernel stayed NORMAL");
+        finish("NESTED", f, "executed=" + executed[0] + " thrown=" + thrown[0] + " mode=" + modeAfter[0]
+                + " pNestedUnresolved+" + (c.pNestedUnresolved.sum() - nested0));
+        return status;
+    }
+
+    // ---------------------------------------------------------------- review 1.3: replay produces a fresh op
+
+    public static String replayFresh(ServerLevel level, BlockPos drivePos) {
+        if (pending != null) return "a fixture is running: " + status;
+        if (!(level.getBlockEntity(drivePos) instanceof IGridConnectedBlockEntity drive) || drive.getMainNode().getNode() == null)
+            return "no AE2 grid node at " + drivePos;
+        IGridNode node = drive.getMainNode().getNode();
+        Grid grid = (Grid) node.getGrid();
+        IStackWatcher[] w = new IStackWatcher[2];
+        IManagedGridNode[] wn = new IManagedGridNode[2];
+        for (int i = 0; i < 2; i++) {
+            final int idx = i;
+            wn[i] = GridHelper.createManagedNode(new Object(), (IGridNodeListener<Object>) (o, n) -> { })
+                    .setInWorldNode(false)
+                    .addService(IStorageWatcherNode.class, new IStorageWatcherNode() {
+                        public void updateWatcher(IStackWatcher x) {
+                            w[idx] = x;
+                        }
+
+                        public void onStackChange(AEKey what, long amount) {
+                        }
+                    });
+            wn[i].create(level, null);
+            GridHelper.createConnection(wn[i].getNode(), node);
+        }
+        if (w[0] == null || w[1] == null) return "watchers not handed out";
+        var im = ((StorageServiceAccessor) grid.getStorageService()).nw$interestManager();
+        AEKey keyA = AEItemKey.of(Items.STONE), keyB = AEItemKey.of(Items.DIRT);
+        List<String> f = new ArrayList<>();
+        AtomicInteger cuts = new AtomicInteger();
+        boolean[] seen = {false, false, false};                         // A after first drain, B after first drain, B later
+        foreign(() -> Staging.stageWatcher(grid, w[0], () -> {           // pre-cut item A; its replay publishes fresh B
+            w[0].add(keyA);
+            w[1].add(keyB);
+        }));
+        Staging.hook = (pt, g) -> {
+            if (g != grid || !pt.equals("drain-done")) return;
+            int n = cuts.incrementAndGet();
+            if (n == 1) {
+                seen[0] = im.containsKey(keyA);
+                seen[1] = im.containsKey(keyB);
+            } else if (n == 2) {
+                seen[2] = im.containsKey(keyB);
+            }
+        };
+        evaluateAt = level.getServer().getTickCount() + 5;
+        pending = () -> {
+            Staging.hook = null;
+            if (!seen[0]) f.add("replayed pre-cut op A not applied in its phase");
+            if (seen[1]) f.add("fresh op B published during the drain was applied in the SAME phase");
+            if (!seen[2]) f.add("fresh op B not applied by the next phase");
+            for (IManagedGridNode m : wn) m.destroy();
+            finish("REPLAY-FRESH", f, "A@cut1=" + seen[0] + " B@cut1=" + seen[1] + " B@cut2=" + seen[2]);
+        };
+        status = "REPLAY-FRESH: running";
+        return status;
+    }
+
+    // ---------------------------------------------------------------- review 1.5: multi-grid progress
+
+    public static String multiGrid(ServerLevel level, BlockPos hostNear, int seconds) {
+        if (pending != null) return "a fixture is running: " + status;
+        var hosts = level.getEntitiesOfClass(net.minecraft.world.entity.decoration.ArmorStand.class,
+                new net.minecraft.world.phys.AABB(hostNear).inflate(8));
+        if (hosts.isEmpty()) return "no armor stand host near " + hostNear;
+        UUID host = hosts.get(0).getUUID();
+        IManagedGridNode[] n = new IManagedGridNode[2];
+        for (int i = 0; i < 2; i++) {
+            n[i] = GridHelper.createManagedNode(new Object(), (IGridNodeListener<Object>) (o, x) -> { }).setInWorldNode(false);
+            n[i].create(level, null);
+        }
+        var c = Ae2Compat.COUNTERS;
+        long fail0 = c.pTryFailures.sum(), retry0 = c.pRetryCount.sum(), starve0 = c.pWriterStarvationWarning.sum();
+        long maxBefore = c.pMaxRetry.get();
+        AtomicInteger ops = new AtomicInteger(), parks = new AtomicInteger();
+        long[] maxOpNs = {0};
+        String[] thread = {null};
+        // Forced contention: main submits the {G1,G2} operation from INSIDE G1's active phase, and while it is
+        // in flight main holds P for 20 ms in every server-END phase of G1 and G2. The region must make
+        // progress through all-or-nothing retries between those windows.
+        long end = System.nanoTime() + seconds * 1_000_000_000L;
+        java.util.concurrent.atomic.AtomicBoolean inFlight = new java.util.concurrent.atomic.AtomicBoolean();
+        java.util.concurrent.atomic.AtomicLong submittedAt = new java.util.concurrent.atomic.AtomicLong();
+        AtomicInteger submitted = new AtomicInteger();
+        Runnable op = () -> {
+            thread[0] = Thread.currentThread().getName();
+            var conn = GridHelper.createConnection(n[0].getNode(), n[1].getNode());   // needs {P(G1), P(G2)}
+            conn.destroy();                                                          // needs P(merged) + fresh split grid
+            maxOpNs[0] = Math.max(maxOpNs[0], System.nanoTime() - submittedAt.get());
+            ops.incrementAndGet();
+            inFlight.set(false);
+        };
+        Staging.hook = (pt, g) -> {
+            if (!pt.equals("phase-active")) return;
+            IGridNode a1 = n[0].getNode(), b1 = n[1].getNode();
+            boolean g1 = a1 != null && a1.getGrid() == g, g2 = b1 != null && b1.getGrid() == g;
+            if (!g1 && !g2) return;
+            if (g1 && !inFlight.get() && System.nanoTime() < end) {
+                inFlight.set(true);
+                submittedAt.set(System.nanoTime());
+                submitted.incrementAndGet();
+                RegionTasks.submit(host, op);                                        // published while main holds P(G1)
+            }
+            if (inFlight.get()) {
+                parks.incrementAndGet();
+                java.util.concurrent.locks.LockSupport.parkNanos(20_000_000L);
+            }
+        };
+        evaluateAt = level.getServer().getTickCount() + seconds * 20 + 40;
+        pending = () -> {
+            Staging.hook = null;
+            for (IManagedGridNode m : n) m.destroy();
+            List<String> f = new ArrayList<>();
+            if (ops.get() < Math.max(1, submitted.get() - 1)) f.add("operations did not complete: submitted " + submitted.get() + ", completed " + ops.get());
+            if (ops.get() < seconds) f.add("too few completed multi-grid operations: " + ops.get());
+            if (c.pTryFailures.sum() - fail0 == 0) f.add("no P contention observed (not discriminating)");
+            long starve = c.pWriterStarvationWarning.sum() - starve0;
+            if (starve > 0) f.add("starvation warnings: " + starve);
+            if (parks.get() == 0) f.add("main never held P in a contended phase (no contention exercised)");
+            finish("MULTIGRID", f, "submitted=" + submitted.get() + " ops=" + ops.get() + " thread=" + thread[0] + " mainParks=" + parks.get()
+                    + " pTryFailures+" + (c.pTryFailures.sum() - fail0) + " pRetryCount+" + (c.pRetryCount.sum() - retry0)
+                    + " pMaxRetry=" + Math.max(maxBefore, c.pMaxRetry.get()) + " maxOpMs=" + maxOpNs[0] / 1_000_000 + " starvation+" + starve);
+        };
+        status = "MULTIGRID: running";
         return status;
     }
 

@@ -11,11 +11,32 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  * Drained by main under P(G) at the head of the grid's server-END phase (the drain cut).
  */
 public final class GridStaging {
-    /** key = provider identity + kind; value = the replay (re-invokes the wrapped AE2 method). */
-    final Map<Object, Runnable> rebuilds = new ConcurrentHashMap<>();
-    final Queue<Runnable> watcherOps = new ConcurrentLinkedQueue<>();
+    /** key = provider IDENTITY + kind (review 1.2: never the provider's equals/hashCode). */
+    final Map<Key, Item> rebuilds = new ConcurrentHashMap<>();
+    final Queue<Item> watcherOps = new ConcurrentLinkedQueue<>();
 
-    record Key(Object provider, String kind) {
+    /** A staged operation and the object it belongs to (the replay owner, review 1.3). */
+    record Item(Object owner, Runnable replay) {
+    }
+
+    static final class Key {
+        final Object provider;
+        final String kind;
+
+        Key(Object provider, String kind) {
+            this.provider = provider;
+            this.kind = kind;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof Key k && k.provider == provider && k.kind.equals(kind);
+        }
+
+        @Override
+        public int hashCode() {
+            return 31 * System.identityHashCode(provider) + kind.hashCode();
+        }
     }
 
     boolean isEmpty() {

@@ -30,27 +30,27 @@ public abstract class StackWatcherMixin {
     private void nw$add(AEKey key, Operation<Void> op) {
         StackWatcher<?> self = (StackWatcher<?>) (Object) this;
         Grid g = nw$grid();
-        Staging.apply(g, () -> op.call(key), () -> Staging.stageWatcher(g, () -> self.add(key)));
+        Staging.apply(g, self, () -> op.call(key), () -> Staging.stageWatcher(g, self, () -> self.add(key)));
     }
 
     @WrapMethod(method = "remove")
     private void nw$remove(AEKey key, Operation<Void> op) {
         StackWatcher<?> self = (StackWatcher<?>) (Object) this;
         Grid g = nw$grid();
-        Staging.apply(g, () -> op.call(key), () -> Staging.stageWatcher(g, () -> self.remove(key)));
+        Staging.apply(g, self, () -> op.call(key), () -> Staging.stageWatcher(g, self, () -> self.remove(key)));
     }
 
     @WrapMethod(method = "reset")
     private void nw$reset(Operation<Void> op) {
         StackWatcher<?> self = (StackWatcher<?>) (Object) this;
         Grid g = nw$grid();
-        Staging.apply(g, () -> op.call(), () -> Staging.stageWatcher(g, self::reset));
+        Staging.apply(g, self, () -> op.call(), () -> Staging.stageWatcher(g, self, self::reset));
     }
 
     @WrapMethod(method = "setWatchAll")
     private void nw$watchAll(boolean all, Operation<Void> op) {
         StackWatcher<?> self = (StackWatcher<?>) (Object) this;
         Grid g = nw$grid();
-        Staging.apply(g, () -> op.call(all), () -> Staging.stageWatcher(g, () -> self.setWatchAll(all)));
+        Staging.apply(g, self, () -> op.call(all), () -> Staging.stageWatcher(g, self, () -> self.setWatchAll(all)));
     }
 }

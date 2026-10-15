@@ -28,7 +28,12 @@ public abstract class CraftingServiceMixin implements NwGridBound {
     @WrapMethod(method = "refreshNodeCraftingProvider")
     private void nw$refreshNode(IGridNode node, Operation<Void> op) {
         CraftingService self = (CraftingService) (Object) this;
-        Staging.apply(nw$grid, () -> op.call(node),
-                () -> Staging.stageRebuild(nw$grid, node, "crafting-node", () -> self.refreshNodeCraftingProvider(node)));
+        Grid g = nw$grid;
+        Staging.apply(g, node, () -> op.call(node),
+                () -> Staging.stageRebuild(g, node, "crafting-node", () -> {
+                    // refreshNodeCraftingProvider would re-ADD a provider of a node that already left: drop instead
+                    if (node.getGrid() == g) self.refreshNodeCraftingProvider(node);
+                    else Staging.dropStale();
+                }));
     }
 }

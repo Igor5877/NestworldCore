@@ -6,8 +6,9 @@
 - StackWatcher FIFO staging;
 - the startup manifest.
 
-Deterministic fixtures PASS, and the negative control fails as required. **Not CLOSED:** owner review
-is pending, and AE2-COMPAT-P2P-001 / SOLARFLUX-COMPAT-001 / LEGACY-ORIENTATION-LIVE-001 stay open.
+Deterministic fixtures PASS, and the negative control fails as required. **CLOSED / VERIFIED after the owner's review round (§ Review fixes):** all four review items were
+fixed, the multi-grid progress fixture was added, and the regression is clean. AE2-COMPAT-P2P-001,
+SOLARFLUX-COMPAT-001 and LEGACY-ORIENTATION-LIVE-001 stay open separately.
 
 ## What was implemented
 | Part | Mechanism |
@@ -66,3 +67,31 @@ is pending, and AE2-COMPAT-P2P-001 / SOLARFLUX-COMPAT-001 / LEGACY-ORIENTATION-L
   it hung one legacy run). Reads now fail on EOF.
 - Accumulated forceloads (35+ regions) made the layout unstable. Every rig script now starts with
   `forceload remove all`.
+
+## Review fixes (owner review of `03b405b74`, 2026-10-15)
+| Item | Fix | Evidence |
+|---|---|---|
+| **1.1 BLOCKER: `acquireNested()` fail-open** | When a required P is unavailable inside a kernel section: release every P this call took, `pNestedUnresolved++`, **throw** `KERNEL.unaudited(…)`. The topology body never runs | `NESTED` fixture (outer kernel section on a test thread, P(B) held by another thread, nested topology on B): **PASS**, with `executed=false`, `UnauditedPathException`, `pNestedUnresolved+1`, kernel → DEGRADED. **Negative control** (old fail-open restored): **FAIL as required**, `executed=true`, nothing thrown |
+| **1.2 coalescing by identity** | `GridStaging.Key` compares the provider with `==` and hashes with `System.identityHashCode`, plus `kind`. A third-party `equals()` / `hashCode()` is never consulted | `coalesce` PASS (3 → 1) |
+| **1.3 drain-cut reentrancy** | The thread-wide `DRAINING` bypass is removed. **Replay-owner** rule: only the operation being replayed, and nested calls on the **same owner** (e.g. `StackWatcher.reset` → `setWatchAll`), runs; any fresh operation published while main drains that grid is after the cut and is staged for the next phase. The drain snapshots its items first | `REPLAY-FRESH`: pre-cut op A's replay publishes fresh op B on another watcher → **PASS**, A applied at cut 1, **B not at cut 1**, B at cut 2 |
+| **1.4 no swallowed staged exceptions** | Only the proven stale case is dropped: `IllegalArgumentException` from `refresh*Provider`, plus an explicit "node left this grid" check in node-keyed replays. The check also stops `refreshNodeCraftingProvider` from re-adding a provider of a departed node. Any other `RuntimeException`: `stagingErrors++` → unaudited (DEGRADED) → rethrow, aborting the drain and the phase. Remaining staged work stays for the next drain | code + regression (`stagingErrors` 0) |
+| **1.5 multi-grid progress** | Fixture `MULTIGRID` with forced contention. Main submits a `{G1, G2}` operation (create a connection between nodes of two grids, then destroy it, which splits) from **inside** G1's active phase, then holds P for 20 ms in every server-END phase of G1 and G2 while the operation is in flight | **PASS**: 1 200/1 200 operations completed in 60 s, `pTryFailures +1 712` (real contention), max operation latency **57 ms**, 0 starvation warnings, no deadlock. Progress for multi-grid sets is claimed **only** on this evidence |
+
+**Final regression (clean jar `29ee1c1e…`):**
+- staging 5/5;
+- OVERLAP 6/6 (blocking on P each time);
+- REPLAY-FRESH;
+- MULTIGRID;
+- 120 s stress (2 400 toggles, 0 exceptions);
+- NESTED;
+- integration LIFE ×2 + STAGING;
+- QUEUE 8/8;
+- T2 4/4;
+- LEGACY disk path.
+
+All PASS. `evidence/review-regression.txt`. The one LEGACY attempt that hit "chunk did not unload"
+(a rig unload timeout) was re-run: PASS.
+
+**Negative controls that discriminate the mechanism:**
+- OVERLAP without the P lock: 6/6 FAIL. The lock path is unchanged by this round.
+- NESTED fail-open: FAIL.

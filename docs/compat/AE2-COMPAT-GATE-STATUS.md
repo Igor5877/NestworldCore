@@ -91,3 +91,10 @@ intended and is to be kept.
 |---|---|
 | P(G) + Storage / Crafting staging + StackWatcher staging + startup manifest | **IMPLEMENTED, fixtures PASS** (docs/compat/AE2-COMPAT-GRID-PHASE-001-RESULTS.md); deterministic OVERLAP negative control FAILS as required; awaiting owner review |
 | region-thread topology stress | 0 exceptions, but **not discriminating** (also 0 without P); OVERLAP is the evidence |
+
+## Review round result (2026-10-15)
+| Item | Status |
+|---|---|
+| **GRID-PHASE-001** | **CLOSED / VERIFIED** (owner criterion: all review items fixed, regression clean, negative controls discriminate). docs/compat/AE2-COMPAT-GRID-PHASE-001-RESULTS.md § Review fixes |
+| ENERGY-001, T2, QUEUE-001, LEGACY-DISK | unchanged (regression PASS); not refactored |
+| Still open | AE2-COMPAT-P2P-001, SOLARFLUX-COMPAT-001, LEGACY-ORIENTATION-LIVE-001 (fail-closed), shadow / canary, unpin review |

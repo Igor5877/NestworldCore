@@ -149,6 +149,11 @@ public final class GridPhaseGate {
         }
     }
 
+    /**
+     * Inside a kernel section (after T0) P is never waited for. If a required P cannot be taken the
+     * topology body MUST NOT run: release what this call took, count, and fail closed (unaudited →
+     * the kernel leaves NORMAL toward DEGRADED). Review item GRID-PHASE-001 1.1.
+     */
     private static List<Grid> acquireNested(List<Grid> affected) {
         List<Grid> got = new ArrayList<>();
         for (Grid g : sortedDistinct(affected)) {
@@ -159,8 +164,9 @@ public final class GridPhaseGate {
             } else if (p.tryLock()) {
                 got.add(g);
             } else {
+                for (int i = got.size() - 1; i >= 0; i--) release(got.get(i));
                 COUNTERS.pNestedUnresolved.increment();
-                KERNEL.unaudited("P(G) unavailable for a grid first touched inside a topology section (after T0)");
+                throw KERNEL.unaudited("P(G) unavailable for a grid first touched inside a topology section (after T0)");
             }
         }
         return got;
