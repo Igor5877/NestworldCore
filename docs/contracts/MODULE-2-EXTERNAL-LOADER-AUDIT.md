@@ -132,7 +132,9 @@ Facts:
 > - The wrapper `<pkg>.__<Listener>_<method>_<Event>` is synthesised by EventBus's ModLauncher
 >   plugin, and only for GAME-layer packages.
 > - For a module package, `EventBus.register` hits a `ClassNotFoundException` **at
->   registration**, logs it at ERROR and returns normally. The module then gets **zero
+>   registration**. EventBus catches and logs it at ERROR, and `register` completes without
+>   throwing. `ModuleContextImpl` then creates a `ResourceHandle` and records it in the ledger, so
+>   Core wrongly treats the registration as successful. The module then gets **zero
 >   deliveries, silently**.
 > - E1a is corrected accordingly, E1b is moot, and E1c is CONFIRMED on main and `RegionThread`.
 >

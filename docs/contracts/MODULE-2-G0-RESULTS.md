@@ -1,6 +1,13 @@
 # MODULE-2 G0 — E1 feasibility probe (results, 2026-10-15)
 
-**Status: G0 DONE — STOP for owner review.** No loader code was written. G1–G7 were not started.
+**Status: MODULE-2 / G0 — PASS / CLOSED (owner, 2026-10-15).** No loader code was written. G1–G7 were not started.
+
+| Item | Status |
+|---|---|
+| E1 | CONFIRMED |
+| Current `registerListener(Object)` | NOT VALID for modules loaded by an external `ModuleClassLoader` |
+| Typed `addListener`-style registration | FEASIBLE / VERIFIED on Server thread and NestWorld `RegionThread` |
+| Integrated server | NOT TESTED IN G0 — deferred to G4/G5 |
 
 **Verdict:**
 - **E1 is CONFIRMED.** `@SubscribeEvent` objects defined by an external class loader never
@@ -28,9 +35,9 @@
 | Mode | `registerListener(Object)` returned | EventBus registration error | `@SubscribeEvent` deliveries | Typed deliveries main / region | Result |
 |---|---|---|---|---|---|
 | `lambda` (positive control) | — | 0 | — | 600 / 3833 | **PASS** |
-| `subscribe-main` (ServerTickEvent, main) | a `listener` handle (looks like success) | 1 | **0** | 600 / 8641 | **E1 CONFIRMED** |
-| `subscribe-region` (LivingTickEvent, region) | a `listener` handle | 1 | **0** | 600 / 13321 | **E1 CONFIRMED** |
-| `subscribe-main-tccl` (TCCL = module loader during `register`, the state spec §6.5 proposes) | a `listener` handle | 1 | **0** | 600 / 18132 | **TCCL does not fix it** |
+| `subscribe-main` (ServerTickEvent, main) | non-null (Core-created `ResourceHandle`, see step 5) | 1 | **0** | 600 / 8641 | **E1 CONFIRMED** |
+| `subscribe-region` (LivingTickEvent, region) | non-null (Core-created) | 1 | **0** | 600 / 13321 | **E1 CONFIRMED** |
+| `subscribe-main-tccl` (TCCL = module loader during `register`, the state spec §6.5 proposes) | non-null (Core-created) | 1 | **0** | 600 / 18132 | **TCCL does not fix it** |
 
 Typed region counts grow across runs because cows breed and accumulate in the persisted world.
 That has no effect on the verdict.
@@ -90,14 +97,18 @@ running **without** ModLauncher. Under FML the factory is `ModLauncherFactory`:
 4. The wrapper name sits in the module's package (`dev.nestworld.g0`). The GAME layer owns no such
    package, so the load is delegated and fails with `ClassNotFoundException`. With TCCL = module
    loader, it is refused by the parent and then not found in the jar.
-5. `EventBus.register` **catches the error, logs it at ERROR, and returns normally**.
-   `ModuleContextImpl` records a ledger handle and returns it. The module sees success and
-   receives nothing.
+5. `MinecraftForge.EVENT_BUS.register(listener)` **completes without throwing**: the
+   `ClassNotFoundException` is caught and logged inside EventBus. EventBus itself returns no handle
+   at all (`register` is `void`).
+   - The `ResourceHandle` is created **by our `ModuleContextImpl`** after `register` returns, and
+     recorded in the module's ledger.
+   - That is why Core wrongly treats the registration as successful. The defect is Core's: it
+     takes "no exception" to mean "wired". The module receives nothing.
 
 Consequences:
 - **Corrected E1a.** The failure is deterministic, at registration, on the registering thread. It
   does not depend on which thread posts later. It is **silent towards the module**: no exception
-  and a non-null handle.
+  and a non-null `ResourceHandle` that Core itself created.
 - **E1b (shared `ASMClassLoader` FQCN collision) is MOOT.** That loader is not used under FML, and
   registration fails before any wrapper exists.
 - **TCCL around `onEnable` (spec §6.5) does not rescue `@SubscribeEvent`.** §6.5 stays valid for

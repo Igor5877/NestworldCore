@@ -255,14 +255,21 @@ Two gates, the same structure as PKG-002:
   - Revocation is `EVENT_BUS.unregister(wrapper)`.
 - Exceptions escaping module code at runtime follow §10.4 (D3): attribute, request failure,
   **rethrow the original**. Never swallow-and-continue.
-- `registerListener(Object)` stays in the SPI for built-ins only. For a module whose class is
-  defined by a `ModuleClassLoader`, it is **fail-closed**: it returns `null` (REJECTED) together
-  with a `ModuleFailure(capability=listener, "@SubscribeEvent objects cannot be wired from module
-  jars; use registerListener(Class, …)")`.
-  - It never reaches `EVENT_BUS.register`, which would record a resource that delivers nothing.
+- **`registerListener(Object)` leaves the public SPI** (owner, 2026-10-15). The typed
+  `registerListener(Class<E>, …)` is the only managed listener API, for built-in and external
+  modules alike, so there is no privileged legacy path for built-ins (§1.1, §13).
+  - SPI 1.0 is first published with MODULE-2, so removing the method before publication breaks no
+    external consumer.
+  - If a transition period is needed in-tree, it is `@Deprecated` and **fail-closed for any module
+    defined by a `ModuleClassLoader`**: it returns `null` (REJECTED) with a `ModuleFailure`, and
+    never reaches `EVENT_BUS.register`. Calling `register` would make Core record a
+    `ResourceHandle` for a registration that delivers nothing (G0).
+- The exact contract of the typed method (event type, priority, receiveCanceled, ownership and
+  revocation, attribution wrapper, D3 exception semantics) is a **separate approval step before
+  G1**.
 - Undeclared capability use is rejected the same way (null + counter), never by throwing.
-- Because G0 confirmed E1, the built-ins also move to the typed form (`ExampleModule`,
-  `FastTransitionModule`), so built-ins and jars use one listener path. This is mandatory for G7.
+- Built-ins (`ExampleModule`, `FastTransitionModule`) migrate to the typed form when the typed
+  SPI is implemented. This is a precondition of G1, not something G7 can defer.
 - A module jar calling `MinecraftForge.EVENT_BUS.register(obj)` directly hits the same silent
   loss. The module author guide documents this. It can't be prevented (trusted code, §12).
 
