@@ -82,6 +82,9 @@ public final class Ae2Compat {
         public final LongAdder p2pDeferredCallbacks = new LongAdder();
         public final LongAdder p2pAllocRebound = new LongAdder();
         public final LongAdder p2pInputDisplaced = new LongAdder();
+        public final LongAdder p2pDepthRejected = new LongAdder();
+        public final LongAdder p2pDepthFalseReject = new LongAdder();
+        public final LongAdder p2pDepthUnderflow = new LongAdder();
     }
 
     public static final Counters COUNTERS = new Counters();

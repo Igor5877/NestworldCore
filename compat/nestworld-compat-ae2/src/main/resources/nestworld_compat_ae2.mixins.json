@@ -9,6 +9,8 @@
     "AEBaseBlockEntityInvoker",
     "AEBaseBlockEntityMixin",
     "ArmorStandMixin",
+    "CapabilityGuardMixin",
+    "CapabilityP2PTunnelPartMixin",
     "ControllerBlockEntityMixin",
     "CraftingServiceAccessor",
     "CraftingServiceMixin",
