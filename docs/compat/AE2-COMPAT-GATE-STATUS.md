@@ -100,3 +100,4 @@ intended and is to be kept.
 | Still open | AE2-COMPAT-P2P-001, SOLARFLUX-COMPAT-001, LEGACY-ORIENTATION-LIVE-001 (fail-closed), shadow / canary, unpin review |
 | **Frozen** (owner, 2026-10-15) | ENERGY-001, T2 / Design-1.5, QUEUE-001, GRID-PHASE-001: not to be touched unless a regression appears. Any change needs its own regression evidence |
 | Order (owner, 2026-10-15) | P2P-001 → SOLARFLUX-COMPAT-001 → canary → selective unpin → addon v1.0-rc1 |
+| AE2-COMPAT-P2P-001 | **AUDITED (2026-10-15), STOP for review**: `docs/compat/AE2-COMPAT-P2P-001-AUDIT.md`. H1 map races + `newFrequency`/bind gap; H2 per-tunnel `accessDepth` recursion counter; **H3 cross-region capability forwarding (ghost-zone detached copy → loss; deep → foreign-thread mutation), present with the pin on**; audit gap in TOPOLOGY-CALLBACK-001 (Redstone P2P synchronous neighbour update under P(G)). Q1–Q5 open |
