@@ -1,6 +1,6 @@
 # MODULE-2 — External Module Loader: specification (2026-10-15)
 
-**Status: SPEC DRAFT — stop for owner review. Do not implement the loader before review.**
+**Status: SPEC — owner decisions D1–D7 RECORDED (2026-10-15, §15). Loader NOT implemented; implementation starts at G0 only on the owner's go.**
 - Audit: `docs/contracts/MODULE-2-EXTERNAL-LOADER-AUDIT.md`. Its facts are cited here as A1… /
   L1… / E1.
 - Preserved unchanged: MODULE-LIFECYCLE-001 I1–I6, and the state chain
@@ -23,8 +23,10 @@
      capability that any module may use.
 2. **Static before dynamic.** Everything decidable without running module code is decided before
    any module class is loaded: identity, versions, dependencies, capabilities, and package layout.
-3. **Fail closed per module, never per server.** An invalid or failing module is FAILED with
-   attribution. Other modules and the server continue, unless strict mode is enabled (§10.3).
+3. **Fail closed per module, never per server** — unless the module is declared
+   `"critical": true` (§10.3). An invalid or failing module is FAILED with attribution. Its
+   dependents become FAILED / `DEPENDENCY_UNAVAILABLE`. Independent modules and the server
+   continue.
 4. **The loader is JVM-lifetime; the instance is server-lifetime** (§11).
 
 ## 2. Startup flow (per MinecraftServer lifetime, server thread, at ServerStartingEvent, I2/I6)
@@ -47,7 +49,7 @@ S9 enable        enableAll: generation++, ledger, ModuleContext, onEnable       
   They take the same S4 duplicate and dependency rules and the same S9 path (§13.2).
 - A failure in S2–S7 marks that jar FAILED with phase `DISCOVERY` or `LOAD`. It never reaches the
   registry's `discover`.
-- A dependent of a FAILED module becomes FAILED with cause `dependency <id> FAILED` (§9).
+- A dependent of a FAILED module becomes FAILED with cause `DEPENDENCY_UNAVAILABLE <id>` (§9).
 - `RegisterCommandsEvent` and `/reload` stay as they are today: `bindCommands` only, no
   S1–S9 (I3).
 
@@ -56,8 +58,10 @@ S9 enable        enableAll: generation++, ledger, ModuleContext, onEnable       
 | Item | Rule |
 |---|---|
 | Directory | `FMLPaths.GAMEDIR/nestworld-modules`. Dedicated: next to `mods/`. Integrated: the client game dir. Override: `-Dnestworld.modules.dir=<path>` |
-| Switch | `-Dnestworld.modules.external` (default `true`). If the directory is missing: zero work, one INFO line |
-| Candidates | Regular files directly in the directory whose name ends with `.jar` (case-sensitive) and does not start with `.`. No recursion. Symlinks are canonicalised, and two names resolving to one canonical file count as one candidate |
+| Creation | Core creates the directory (`Files.createDirectories`) at the first server start where it is missing, then scans it (empty → zero modules, one INFO line). A creation failure (read-only FS) → one WARN, external modules disabled for this lifetime, server continues |
+| Switch | `-Dnestworld.modules.external` (default `true`, D4). Installation is the admin's explicit act of placing a jar: a valid jar in the directory is enabled. No disable list in v1 (a later `config/nestworld/modules.toml` `disabled = [...]` is possible, not specified here) |
+| Candidates | Regular files **directly** in the directory whose name ends with `.jar` (case-sensitive) and does not start with `.`. **One level only, no recursion.** Symlinks are canonicalised, and two names resolving to one canonical file count as one candidate |
+| Subdirectories | Never scanned. There is no `nestworld-modules/libs/` or other dependency directory in v1: a library goes inside the module jar, relocated if it could collide (§6.3). A subdirectory that contains `*.jar` files → one WARN `subdirectories are not scanned: <dir>` |
 | Order | Scan order has **no** semantic effect. Every ordering decision uses ModuleId (§9) |
 | `mods/` | Never scanned by this loader. A module jar in `mods/` is not a module (audit U4) |
 | Locking | The loader keeps the jar open for the JVM lifetime. On Windows the jar cannot be replaced while the process runs, which matches "install → restart" |
@@ -87,16 +91,17 @@ net.nestworld.                                 the whole NestWorld runtime: SPI,
 ```json
 {
   "schema": 1,
-  "id": "fast_transition",
+  "id": "fast-transition",
   "version": "1.2.0",
   "displayName": "Fast Transition",
   "entrypoint": "dev.nestworld.fasttransition.FastTransitionModule",
   "spi": "1.0",
   "capabilities": { "commands": 1, "listeners": 1, "loginBudget": 1, "chunkPreparation": 1, "syncData": 1 },
-  "side": "any",
+  "side": "server",
+  "critical": false,
   "mappings": "srg",
   "dependencies": [
-    { "id": "node_core", "version": "[1.0,2.0)", "kind": "required" },
+    { "id": "node-system", "version": "[1.0,2.0)", "kind": "required" },
     { "id": "metrics",   "version": "[0.3,)",    "kind": "optional" }
   ]
 }
@@ -105,13 +110,14 @@ net.nestworld.                                 the whole NestWorld runtime: SPI,
 | Field | Rule (any violation → FAILED/DISCOVERY with the field named) |
 |---|---|
 | `schema` | Integer, exactly `1`. Unknown future schema → refused, never best-effort |
-| `id` | `[a-z][a-z0-9_]{1,63}`. Same alphabet as Forge mod ids, but a **separate namespace** |
+| `id` | `[a-z][a-z0-9_-]{1,63}` (the owner's examples use `fast-transition`). A **separate namespace** from Forge mod ids |
 | `version` | Maven version, parsed by `org.apache.maven.artifact.versioning.DefaultArtifactVersion` (`maven-artifact`, already an FML library in the parent); ranges by `VersionRange`. Stored as `ModuleVersion` |
 | `displayName` | Optional, ≤ 64 chars, defaults to `id` |
 | `entrypoint` | Binary class name; must not be in a reserved root (§4); the class must exist in the jar |
 | `spi` | `MAJOR.MINOR` the module was compiled against (§8.1) |
 | `capabilities` | Map `name → required capability version`. Unknown name, or version above the runtime's → refused. Use at runtime of an undeclared capability → rejected (§8.3) |
-| `side` | `dedicated` \| `integrated` \| `any` (default `any`). A mismatch is **SKIPPED** (not FAILED): one INFO line, the module does not exist for this server lifetime |
+| `side` | `server` \| `dedicated` \| `integrated` (default `server`). All modules are server-side. `server` = every server kind (dedicated and integrated); `dedicated` / `integrated` restrict to one. A mismatch is **SKIPPED** (not FAILED): one INFO line, the module does not exist for this server lifetime |
+| `critical` | Boolean, default `false`. `true` → any FAILED outcome of this module at startup (DISCOVERY / LOAD / ENABLED, including `DEPENDENCY_UNAVAILABLE` and duplicate id) aborts server start (§10.3). SKIPPED by `side` is not a failure |
 | `mappings` | `srg` or `mcp` (`official` is accepted as an alias of `mcp`). Must equal the runtime's `FMLEnvironment.naming`, otherwise refused (L4). Required |
 | `dependencies` | List; `kind` ∈ `required`, `optional`; `version` is a Maven range (§9) |
 
@@ -240,27 +246,38 @@ Two gates, the same structure as PKG-002:
 - New generic capability `listeners` v1:
   `ResourceHandle registerListener(Class<E extends Event> type, EventPriority p, boolean receiveCancelled, Consumer<E> handler)`.
 - It is implemented with `MinecraftForge.EVENT_BUS.addListener(...)`, the lambda path (E1c).
-  - The handler is wrapped. An exception escaping the handler is attributed as
-    `ModuleFailure(phase=RUNNING, capability=listener)`, counted, logged with a rate limit, and
-    **rethrown** (default). Event-failure semantics stay as they are for built-ins. See
-    decision D3.
+  - The handler is wrapped (the wrapper is the Core-visible resource and the attribution point).
   - Revocation is `EVENT_BUS.unregister(wrapper)`.
+- Exceptions escaping module code at runtime follow §10.4 (D3): attribute, request failure,
+  **rethrow the original**. Never swallow-and-continue.
 - `registerListener(Object)` stays in the SPI for built-ins. For a jar-loaded module it returns
   `null` (REJECTED) with a one-line reason, unless G0 disproves E1a/E1b. If so, the owner
   re-decides.
 - Undeclared capability use is rejected the same way (null + counter), never by throwing.
+- If G0 confirms E1, `registerListener(Object)` is also removed from the built-ins' use
+  (`ExampleModule`, `FastTransitionModule` move to the typed form), so that built-ins and jars use
+  one listener path.
 
-### 8.4 Commands — collision refusal (audit A11)
-- `registerCommand(name, …)` is refused (null + `ModuleFailure` capability=`command`) in any of
-  these cases:
-  - `name` already exists under the dispatcher root, whether from Core, vanilla, a mod, or
-    another module;
-  - `name` was claimed by another live declaration in this registry.
-- First claim wins, and claims happen in topological enable order (§9), so the outcome is
-  deterministic.
-- `bindCommands` on `/reload` re-binds only declarations that won their claim.
-- This also applies to built-ins. It is a behaviour change for built-ins only if they collided,
-  which none does today.
+### 8.4 Commands — ownership registry, never overwrite (audit A11)
+- `ModuleRegistry` keeps a per-server **command ownership table**
+  `literal → owner`, where owner ∈ `CORE` (`nestworld` and every literal Core registers),
+  `PLATFORM` (vanilla / Forge / mods: anything already under the dispatcher root), or
+  `<moduleId>@gen<N>`.
+- The check happens **before** `dispatcher.getRoot().addChild()`. `registerCommand(name, …)` is
+  refused with null + `ModuleFailure(capability=command, "REJECTED: command name already owned
+  by <owner>")` when:
+  - `name` is in the table under another owner, or
+  - `name` already exists under the dispatcher root.
+- `addChild` is never reached for a refused name, so Brigadier's merge/overwrite can't happen.
+- First claim wins; claims happen in topological enable order (§9), so the outcome is
+  deterministic. A claim is released when the owning generation's ledger is revoked.
+- `bindCommands` on `/reload` re-binds only claims this module holds. If the new dispatcher
+  already contains that literal from someone else (listener order inside `RegisterCommandsEvent`
+  is not guaranteed), that one bind is skipped and attributed. The claim is kept and nothing is
+  overwritten.
+- This also applies to built-ins. It changes built-in behaviour only if they collided, and none
+  does today.
+- `/nestworld modules` lists the table.
 
 ### 8.5 Published SPI artifact
 - `net.nestworld:nestworld-module-spi:<spi>` is `compileOnly` and never bundled (S3 would refuse
@@ -274,15 +291,23 @@ Two gates, the same structure as PKG-002:
 
 ## 9. Inter-module dependencies and ordering
 
-- **v1 dependencies affect ordering and availability only. They grant no class visibility.**
-  - Module B cannot link against module A's classes. Each loader's parent is Core only.
-  - Inter-module communication needs a future generic SPI capability (for example a typed
-    service registry with SPI-owned interfaces). That is not in v1.
+- **v1 dependencies affect ordering and availability only. They grant no class visibility (D6).**
+  `requires X` means exactly:
+  - X must exist;
+  - X must be compatible (version range);
+  - X is RUNNING before I enable;
+  - I stop before X stops.
+
+  It never means "I can import X's implementation classes". Module loaders do not see each other;
+  each loader's parent is Core only.
+- Inter-module communication is a future formal SPI capability, for example
+  `ModuleContext.publishService(...)` / `requireService(...)` over SPI-owned contract
+  interfaces. It is not in v1. `((NodeSystemImpl) other).internalMethod()` is never a path.
 - Resolution (S4), over the set that survived S3 plus the built-ins:
   - **required:**
     - absent → FAILED/DISCOVERY `missing dependency <id> <range>`;
     - present but version outside the range → FAILED/DISCOVERY `version`;
-    - the dependency later FAILED (S5–S9) → the dependent is FAILED `dependency <id> FAILED`.
+    - the dependency later FAILED (S5–S9) → the dependent is FAILED `DEPENDENCY_UNAVAILABLE <id>`.
   - **optional:**
     - absent, FAILED or out of range → no effect on availability, only one INFO line;
     - present and in range → it is ordered before the dependent.
@@ -292,7 +317,9 @@ Two gates, the same structure as PKG-002:
   (`quiesceAll`): the **exact reverse** of the actual enable order (fixes A6).
 - A required dependency that FAILED in `onEnable` cascades in enable order: dependents are never
   enabled.
-- A module that reached RUNNING is never retroactively failed by a later failure.
+- A module that reached RUNNING is never retroactively failed by a **startup** failure of a later
+  module. A **runtime** failure of a module (§10.4) quiesces its RUNNING required dependents first,
+  in reverse enable order, then the module itself (D6: "I stop before X").
 
 ## 10. Failure isolation
 
@@ -312,16 +339,46 @@ Two gates, the same structure as PKG-002:
 | DISCOVERY | Unreadable zip, missing or invalid descriptor, schema, field syntax, spi/capability/mappings incompatibility, reserved package, shadowing, forbidden manifest, duplicate id, dependency |
 | LOAD | Loader creation, entrypoint missing or not public / not a `NestWorldModule` / abstract / no public no-arg constructor, ABI member check, non-SPI reference, descriptor mismatch, jar changed, Event subclass, `LinkageError`, `ExceptionInInitializerError` |
 | ENABLED | `onEnable` threw. Existing behaviour: ledger revoked in reverse order |
-| RUNNING | Listener or command callback failure (attribution only; the state stays RUNNING) |
+| RUNNING | Listener or command callback threw (§10.4): attributed, module driven RUNNING → QUIESCING → FAILED at the next safe point |
 
 - The loader path catches `Exception`, `LinkageError`, and `ExceptionInInitializerError` per
   module.
 - `VirtualMachineError` (OOM, StackOverflow) is **never** caught: it propagates.
 - `enableOne` is widened to `Exception | LinkageError` (A10).
+- The boundary is **narrow and explicit**: descriptor parse, class loading, entrypoint creation,
+  `onEnable`, `onDisable`, and the callback wrappers of §10.4. Nothing else catches broadly on a
+  module's behalf.
 
-### 10.3 Strict mode
-`-Dnestworld.modules.strict=true`: any FAILED module (SKIPPED excluded) aborts server start with
-the failure list. Default `false` (decision D2).
+### 10.3 Critical modules (D2)
+- Default: a FAILED module does not stop the server; dependents become
+  `DEPENDENCY_UNAVAILABLE`; independent modules load.
+- A module with `"critical": true` that ends startup FAILED aborts server start. Core throws from
+  `startModules` with the full failure list (all modules, not only the critical one) after
+  quiescing the modules already RUNNING in reverse order.
+- Startup-only. A critical module failing at runtime is handled by §10.4 like any other module
+  (open point D8).
+- There is no global strict flag. Criticality is a property of a module in a deployment, declared
+  by its descriptor.
+
+### 10.4 Runtime callback failures (D3: never swallow)
+Applies to listener and command callbacks, and to any future capability callback unless that
+capability's own contract explicitly declares best-effort semantics. No v1 capability does.
+```
+module callback throws T (any thread)
+  → attribute: ModuleFailure(id, version, generation, phase=RUNNING, capability, thread, T)
+  → mark: module.failureRequested = true (CAS; the first failure wins attribution, later ones counted)
+  → fail-closed: from now on this module's wrappers do not call module code
+       (listeners return without invoking; commands answer "module <id> FAILED")
+  → rethrow T unchanged (Event / Brigadier / tick semantics exactly as for a non-module throw)
+server thread, next safe point (start of next server tick, I6):
+  → quiesce RUNNING required dependents (reverse enable order), then the module:
+       RUNNING → QUIESCING (stop accepting, ledger revoked in reverse, onDisable best effort) → FAILED
+```
+- Why not quiesce inline: the callback may be on a region thread or mid-event. Lifecycle runs on
+  the server thread only (I6), and after a partial callback Core cannot know the state is
+  consistent. "Where safe" therefore means the next server-thread safe point, and until then the
+  fail-closed wrapper keeps the module from running again.
+- `VirtualMachineError` is rethrown without attribution work.
 
 ## 11. Lifetimes, disposal and reachability
 
@@ -381,13 +438,27 @@ Why not close the loader per server:
    surface list. This is the same check as Gate A.
 
 ### 13.2 Built-ins in v1
-- `ExampleModule`, `FailingExampleModule`, and `FastTransitionModule` stay inside the Core jar in
-  v1 as a **built-in source** feeding the same S4/S8/S9 pipeline.
+- Until G7, `ExampleModule`, `FailingExampleModule`, and `FastTransitionModule` stay inside the
+  Core jar as a **built-in source** feeding the same S4/S8/S9 pipeline.
 - The only built-in difference is that S1–S3, S5 and S6 do not apply, because they are not jars.
-- Built-ins get no capability that jar modules lack, with one exception: `registerListener(Object)`
-  (§8.3), which is pending G0.
-- FastTransition's migration to an external jar is gate G7. It is the proof that the public
-  mechanism suffices.
+- Built-ins get no capability that jar modules lack, with one exception pending G0:
+  `registerListener(Object)` (§8.3).
+- **G7 removes FastTransition from Core**:
+  - the hard-coded `new FastTransitionModule()` in `NestworldRegionSystem.startModules` goes;
+  - so does the `net.nestworld.module.fasttransition` package and the
+    `-Dnestworld.fastTransition` switch.
+
+  FastTransition then exists only as `nestworld-modules/fast-transition.jar`, which proves that
+  the public mechanism suffices. `ExampleModule` and `FailingExampleModule` stay as Core test
+  built-ins.
+
+### 13.3 Target UX (owner, 2026-10-15)
+```
+1. install NestWorldCore          4. stop the server
+2. start the server               5. copy fast-transition.jar → nestworld-modules/
+3. Core creates nestworld-modules/ 6. start → descriptor → verify → classloader → discover → RUNNING
+```
+No Core rebuild, no Core code naming the module.
 
 ## 14. Gate plan
 
@@ -400,10 +471,10 @@ asserts a refusal. No gate starts before the previous one is VERIFIED.
 | **G1** scanner + descriptor (S1–S4) | Directory rules, JSON schema, dedupe, dependency graph | Invalid-jar matrix: each row → the exact FAILED reason, the server starts, other modules RUNNING | Same fixture with refusal disabled → must produce a wrong RUNNING |
 | **G2** loader + static validation (S3, S5, §6) | Reserved roots, shadowing, forbidden manifests, Event subclass | Jar bundling `net/nestworld/module/NestWorldModule.class` → refused; bundling `com/google/gson/Gson.class` → refused; relocated library → RUNNING | Shadowing check off → the bundled Gson copy loads (proves U3 detection works) |
 | **G3** ABI (§8.1, §8.2) | Gate V + Gate A + surface list | Module compiled against SPI 1.1 on a 1.0 runtime → refused (V); member removed with version unchanged → refused (A); `net.nestworld.region` reference → refused | Gate A off → the same jar fails later with `NoSuchMethodError` (shows what A prevents) |
-| **G4** lifecycle integration | §9, §10, §8.3, §8.4 | Topological enable / reverse disable logged; duplicate ids; cycle; required-dependency cascade; command collision refused; MODULE-LIFECYCLE-001 matrix re-run: dedicated `/reload` R1, integrated A→B→C, Create World → Cancel. All with external modules | Collision check off → `nestworld` hijack reproduced |
+| **G4** lifecycle integration + hardening (D7) | §9, §10, §8.3, §8.4. Mandatory fixes: **A5** duplicate id (`foo-v1.jar` + `foo-v2.jar` → both refused, no winner); **A6** reverse shutdown (enable A→B→C, disable C→B→A); **A10** `LinkageError` / loader failures attributed per module; **A11** command ownership | Each of A5/A6/A10/A11 fixed and logged; cycle; `DEPENDENCY_UNAVAILABLE` cascade; `critical=true` abort; §10.4 runtime failure (throwing listener on a region thread → rethrown, wrapper fail-closed, quiesce at next tick); MODULE-LIFECYCLE-001 matrix re-run: dedicated `/reload` R1, integrated A→B→C, Create World → Cancel. All with external modules | Per fix: ownership check off → `nestworld` hijack reproduced; dedupe off → arbitrary winner; forward disable order observed; `LinkageError` escapes `startModules`; swallow instead of rethrow → event caller sees no failure |
 | **G5** lifetime / reachability (§7, §11) | Jar cache, fingerprint, `dispose` | Instance and context WeakRefs cleared; loader count stable across 5 integrated lifetimes; changed jar → refused with restart message | Retain the instance in a static on purpose → the reachability check FAILS |
 | **G6** SPI artifact + external build | §8.5 | `tests/module-external/` example built by its own Gradle with **only** `compileOnly nestworld-module-spi`; dropped into a deployed real Core jar (version-asserting deploy) → RUNNING; zero Core rebuild | Example bundling the SPI → refused at S3 |
-| **G7** first-party proof | §13 | FastTransition built as an external jar (package `dev.nestworld.fasttransition`) passes G1–G6 and its own FAST-TRANSITION fixtures, with the built-in copy disabled | A deliberate `net.nestworld.region` call in a test build → refused by Gate A |
+| **G7** first-party reference module | §13 | FastTransition removed from Core (§13.2), built as `fast-transition.jar` (package `dev.nestworld.fasttransition`); the **same Core binary** (byte-identical jar, version-asserted) without the jar has no FastTransition; after a plain copy into `nestworld-modules/` and a restart it is RUNNING and passes its FAST-TRANSITION fixtures; passes G1–G6 checks | A deliberate `net.nestworld.region` call in a test build → refused by Gate A |
 
 Regression after G4 and after G7:
 - MODULE-1 tests;
@@ -413,14 +484,26 @@ Regression after G4 and after G7:
 
 Islands and production are not touched until the owner decides.
 
-## 15. Decisions requested from the owner
+## 15. Owner decisions (2026-10-15)
 
-| # | Decision | Recommendation |
+| # | Decision | Where |
 |---|---|---|
-| D1 | Descriptor: JSON (`META-INF/nestworld/module.json`, Gson) vs TOML (night-config, mods.toml-like) | JSON: strict parser already present, no TOML-specific ambiguity |
-| D2 | Default when a module FAILS: server continues (strict off) vs aborts | Continue by default, with `-Dnestworld.modules.strict=true` for operators who want fail-fast |
-| D3 | Exception escaping a module listener: attribute + rethrow (as built-ins today) vs attribute + swallow | Rethrow in v1, so event semantics stay unchanged. Swallowing changes cancelation semantics and needs its own review |
-| D4 | `-Dnestworld.modules.external` default `true` (missing directory = no-op) vs `false` | `true`: the cost with no directory is one `Files.isDirectory` |
-| D5 | Keep the SPI in `net.nestworld.module` with a generated surface list vs move it to `net.nestworld.module.api` now | Keep: no refactor in MODULE-2's scope. The surface list gives the same guarantee |
-| D6 | Dependencies grant no class visibility in v1 (ordering/availability only) | Accept. Inter-module APIs come later as a generic service capability |
-| D7 | Fix A11 (command merge) and A6 (disable order) inside G4, applying to built-ins too | Accept. Both are latent defects that external jars make reachable |
+| D1 | **JSON**, `META-INF/nestworld/module.json`. TOML adds nothing | §5 |
+| D2 | A FAILED module does not stop the server; dependents become `DEPENDENCY_UNAVAILABLE`; independent modules load. **`"critical": true`** (default `false`) aborts startup when that module fails. No global strict flag | §5, §10.3 |
+| D3 | Listener exceptions: **rethrow, never swallow.** Attribute to id/version/generation, mark failure, quiesce where safe, rethrow the original. Best-effort only as an explicit per-capability contract | §8.3, §10.4 |
+| D4 | External modules **enabled by default**. Placing a jar is the explicit install action. Disable list deferred | §3 |
+| D5 | Keep `net.nestworld.module`: `modapi` for ordinary mods, `module` for the privileged SPI. No package move (ABI churn without benefit) | §8.5 |
+| D6 | Dependencies without class visibility. Future inter-module calls go through formal `publishService` / `requireService` | §9 |
+| D7 | G4 fixes **A5, A6, A10 and A11** (the owner added A5 and A10). Commands use an ownership registry checked before `addChild`; a collision is `REJECTED: command name already owned`, never an overwrite | §8.4, §10, §14 |
+| Dir | Core creates `nestworld-modules/` (next to `mods/`). Scan one level only, with no `libs/` subdirectory | §3 |
+| Ref | FastTransition is the G7 reference module: the hard-coded construction is removed from Core | §13.2 |
+| E1 | If G0 confirms E1, the SPI moves to the typed listener API | §8.3 |
+
+Spec adjustments made while recording (for review):
+- `id` admits `-`, since the owner's examples use `fast-transition`.
+- `side` values are `server` (default) / `dedicated` / `integrated`. The owner's example uses
+  `server`, so `any` was dropped.
+
+Open:
+- **D8.** What does a `critical` module's **runtime** failure (§10.4) do: continue with the
+  module FAILED, or stop the server? Until decided: continue, with an ERROR line.
