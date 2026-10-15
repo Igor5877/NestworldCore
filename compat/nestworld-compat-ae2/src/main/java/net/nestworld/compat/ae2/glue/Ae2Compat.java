@@ -77,6 +77,11 @@ public final class Ae2Compat {
         public final LongAdder droppedStaged = new LongAdder();
         public final LongAdder stagingErrors = new LongAdder();
         public final LongAdder stagingRunUnderP = new LongAdder();
+        public final LongAdder p2pReads = new LongAdder();
+        public final LongAdder p2pWrites = new LongAdder();
+        public final LongAdder p2pDeferredCallbacks = new LongAdder();
+        public final LongAdder p2pAllocRebound = new LongAdder();
+        public final LongAdder p2pInputDisplaced = new LongAdder();
     }
 
     public static final Counters COUNTERS = new Counters();
