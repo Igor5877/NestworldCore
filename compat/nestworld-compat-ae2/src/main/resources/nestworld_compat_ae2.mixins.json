@@ -23,6 +23,7 @@
     "InterestManagerMixin",
     "LevelChunkMixin",
     "LevelMixin",
+    "RedstoneP2PProbeMixin",
     "ServerBlockEntityRepoMixin",
     "ServerGridRepoMixin",
     "StackWatcherMixin",

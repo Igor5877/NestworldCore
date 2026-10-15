@@ -15,6 +15,7 @@ import net.nestworld.compat.ae2.glue.Ae2CompatMixinPlugin;
 import net.nestworld.compat.ae2.glue.GridPhaseFixtures;
 import net.nestworld.compat.ae2.glue.IntegrationFixtures;
 import net.nestworld.compat.ae2.glue.LegacyFixtures;
+import net.nestworld.compat.ae2.glue.P2PFixtures;
 import net.nestworld.compat.ae2.glue.QueueFixtures;
 import net.nestworld.compat.ae2.glue.T2Fixtures;
 
@@ -32,6 +33,7 @@ public final class NestworldCompatAe2 {
                     QueueFixtures.onServerTickEnd(e.getServer().getTickCount());
                     IntegrationFixtures.onServerTickEnd(e.getServer().getTickCount());
                     GridPhaseFixtures.onServerTickEnd(e.getServer().getTickCount());
+                    P2PFixtures.onServerTickEnd(e.getServer().getTickCount());
                 }
             });
         }
@@ -143,7 +145,32 @@ public final class NestworldCompatAe2 {
                                             .executes(c -> say(c.getSource(), GridPhaseFixtures.stress(c.getSource().getLevel(),
                                                     net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"),
                                                     com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "seconds")))))));
-            root = root.then(fx).then(qx).then(ix).then(lx).then(gx);
+            var px = Commands.literal("p2p")
+                    .then(Commands.literal("status").executes(c -> say(c.getSource(), P2PFixtures.status())))
+                    .then(Commands.literal("rscut").then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .executes(c -> say(c.getSource(), P2PFixtures.rsCut(c.getSource().getLevel(), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"))))))
+                    .then(Commands.literal("rsreconnect").then(Commands.argument("gap", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .executes(c -> say(c.getSource(), P2PFixtures.rsReconnect(c.getSource().getLevel(), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "gap"))))))
+                    .then(Commands.literal("owner").then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .executes(c -> say(c.getSource(), P2PFixtures.owner(c.getSource().getLevel(), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"))))))
+                    .then(Commands.literal("setup").then(Commands.argument("kind", com.mojang.brigadier.arguments.StringArgumentType.word())
+                            .then(Commands.argument("in", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos()).then(Commands.argument("out", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                    .executes(c -> {
+                                        String r = P2PFixtures.setup(c.getSource().getLevel(), com.mojang.brigadier.arguments.StringArgumentType.getString(c, "kind"),
+                                                net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "in"), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "out"));
+                                        return say(c.getSource(), r == null ? "setup OK" : "setup FAILED: " + r);
+                                    })))))
+                    .then(Commands.literal("bind").then(Commands.argument("in", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos()).then(Commands.argument("out", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .executes(c -> say(c.getSource(), P2PFixtures.bind(c.getSource().getLevel(),
+                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "in"), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "out")))))))
+                    .then(Commands.literal("conserve").then(Commands.argument("label", com.mojang.brigadier.arguments.StringArgumentType.word()).then(Commands.argument("kind", com.mojang.brigadier.arguments.StringArgumentType.word())
+                            .then(Commands.argument("in", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos()).then(Commands.argument("out", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                    .then(Commands.argument("amount", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 1_000_000))
+                                            .executes(c -> say(c.getSource(), P2PFixtures.conserve(c.getSource().getLevel(),
+                                                    com.mojang.brigadier.arguments.StringArgumentType.getString(c, "label"), com.mojang.brigadier.arguments.StringArgumentType.getString(c, "kind"),
+                                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "in"), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "out"),
+                                                    com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "amount"))))))))));
+            root = root.then(fx).then(qx).then(ix).then(lx).then(gx).then(px);
         }
         d.register(root);
     }
