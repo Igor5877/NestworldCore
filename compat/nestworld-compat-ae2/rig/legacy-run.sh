@@ -23,5 +23,5 @@ unload || exit 1
 echo "== saved NBT after migration (expect legacyKeys=false)"; for x in 1001 1002 1003 1004; do $R "nwcompatae2 legacy savednbt $x $Y $Z" | sed -n 2p; done
 $R "forceload add 1000 1000" >/dev/null; sleep 4
 echo "== second reload (expect migrated counter unchanged)"; $R "nwcompatae2 legacy check 1001 $Y $Z" | sed -n 2p | cut -c1-260
-echo "== live-world NBT placement (expect liveSkipped+1, no world write)"; $R "setblock 1005 $Y $Z ae2:drive{forward:\"east\",up:\"up\"}" >/dev/null; sleep 3; $R "nwcompatae2 legacy check 1005 $Y $Z" | sed -n 2p | cut -c1-260
+echo "== live-world NBT placement (expect liveSkipped+1, no world write)"; $R "setblock 1005 $Y $Z air" >/dev/null; sleep 1; $R "setblock 1005 $Y $Z ae2:drive{forward:\"east\",up:\"up\"}" >/dev/null; sleep 3; $R "nwcompatae2 legacy check 1005 $Y $Z" | sed -n 2p | cut -c1-260
 echo "exceptions: $(grep -E 'Exception|ReportedException' server/console.log | grep -vc 'FailingExample\|deliberate')"

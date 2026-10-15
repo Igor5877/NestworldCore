@@ -147,6 +147,19 @@ public final class NestworldCompatAe2 {
                                                     com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "seconds")))))));
             var px = Commands.literal("p2p")
                     .then(Commands.literal("status").executes(c -> say(c.getSource(), P2PFixtures.status())))
+                    .then(Commands.literal("h1stress").then(Commands.argument("g1", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos()).then(Commands.argument("g2", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .then(Commands.argument("seconds", com.mojang.brigadier.arguments.IntegerArgumentType.integer(5, 3600))
+                                    .executes(c -> say(c.getSource(), P2PFixtures.h1Stress(c.getSource().getLevel(),
+                                            net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "g1"), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "g2"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "seconds"))))))))
+                    .then(Commands.literal("h1setup").then(Commands.argument("g1", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos()).then(Commands.argument("g2", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .executes(c -> {
+                                String r = P2PFixtures.h1Setup(c.getSource().getLevel(), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "g1"), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "g2"));
+                                return say(c.getSource(), r == null ? "h1setup OK" : "h1setup FAILED: " + r);
+                            }))))
+                    .then(Commands.literal("h1").then(Commands.argument("case", com.mojang.brigadier.arguments.StringArgumentType.word())
+                            .then(Commands.argument("g1", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos()).then(Commands.argument("g2", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                    .executes(c -> say(c.getSource(), P2PFixtures.h1(c.getSource().getLevel(), com.mojang.brigadier.arguments.StringArgumentType.getString(c, "case"),
+                                            net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "g1"), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "g2"))))))))
                     .then(Commands.literal("rscut").then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
                             .executes(c -> say(c.getSource(), P2PFixtures.rsCut(c.getSource().getLevel(), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"))))))
                     .then(Commands.literal("rsreconnect").then(Commands.argument("gap", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
