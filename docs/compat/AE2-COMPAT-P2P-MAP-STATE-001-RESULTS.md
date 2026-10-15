@@ -1,7 +1,8 @@
 # P2P-MAP-STATE-001 (AE2-COMPAT-P2P-001 H1) — implementation and evidence
 
-**Status: IMPLEMENTED; deterministic fixtures, negative controls, 120 s stress and regression PASS
-(2026-10-15). STOP for owner review.** Proposed status: CLOSED / VERIFIED, pending review.
+**Status: CLOSED / VERIFIED / FROZEN (owner, 2026-10-15).** Implemented. Deterministic fixtures,
+negative controls, real-call-site `allocateAndBind`, 120 s stress, JFR, regression and a P2P-9
+re-run (H1 does not mask H3) all PASS. Unpin stays **BLOCKED**.
 
 Other sub-gates are unchanged:
 
@@ -37,6 +38,27 @@ AE2's maps are not moved.
   - It ignores freq 0, AE2's "unbound".
 - The callbacks run outside the guard, and the evidence shows it: the jstack in §7 has
   `markForSave → getChunk` executing from `P2PState.write`'s post-release loop.
+
+### 1.1 Contract: post-release notifications (owner, 2026-10-15)
+- The callbacks run after the guard is released: `updateTunnel` → `onTunnelConfigChange` /
+  `onTunnelNetworkChange`, and the host's `markForSave` / `markForUpdate`.
+- They are a **notification of the current state, not a commit of the generation that produced
+  them.** Two writers may notify out of order. For example: A mutates (gen 10) and unlocks; B
+  mutates (gen 11), unlocks and notifies; then A notifies.
+- That is admissible **only because** these callbacks carry no captured freq / membership value
+  back into state. They make AE2 or the world **re-read** the current state:
+  - Capability P2P: `addCallable(sendBlockUpdate)`;
+  - ME: `wakeDevice`;
+  - Light / Redstone: they read `getInput()` / `power` at execution time;
+  - `markForSave` / `markForUpdate`: they serialize the current fields.
+- A callback that applied a captured older value would be a separate stale-notification race.
+- No such violation was observed in H1-1..4 or in the stress run.
+- Any future callback type added to this path must satisfy the same rule.
+- JFR interpretation stays as stated in §4: the 65 ms wait next to the 64.6 ms GC pause is a
+  correlation, not a lock-hold measurement, and **no performance guarantee is claimed**. The
+  evidence for H1 is limited to two observations:
+  - there is no sign of global serialization;
+  - region-thread topology writers waited at most 3 ms in this stress.
 
 ## 2. Files
 
