@@ -53,7 +53,12 @@ public final class P2PFixtures {
         return status;
     }
 
+    /** Main-thread producer of the H2 stress (null otherwise). */
+    private static volatile Runnable mainProducer;
+
     public static void onServerTickEnd(int tick) {
+        Runnable mp = mainProducer;
+        if (mp != null) mp.run();
         Runnable p = pending;
         if (p == null || tick < evaluateAt) return;
         pending = null;
@@ -80,11 +85,13 @@ public final class P2PFixtures {
         }
         level.setBlock(in.above(), AEBlocks.CREATIVE_ENERGY_CELL.block().defaultBlockState(), 3);
         appeng.api.parts.IPartItem<?> item = kind.equals("item") ? AEParts.ITEM_P2P_TUNNEL.asItem()
+                : kind.equals("fluid") ? AEParts.FLUID_P2P_TUNNEL.asItem()
                 : kind.equals("redstone") ? AEParts.REDSTONE_P2P_TUNNEL.asItem() : AEParts.FE_P2P_TUNNEL.asItem();
         if (PartHelper.setPart(level, in, Direction.DOWN, null, item) == null) return "input tunnel placement failed";
         if (PartHelper.setPart(level, out, Direction.UP, null, item) == null) return "output tunnel placement failed";
         Block target = kind.equals("item") ? BuiltInRegistries.BLOCK.get(new ResourceLocation("minecraft", "chest"))
                 : kind.equals("redstone") ? BuiltInRegistries.BLOCK.get(new ResourceLocation("minecraft", "redstone_lamp"))
+                : kind.equals("fluid") ? BuiltInRegistries.BLOCK.get(new ResourceLocation("mekanism", "basic_fluid_tank"))
                 : BuiltInRegistries.BLOCK.get(new ResourceLocation("mekanism", "basic_energy_cube"));
         if (target == null || target == net.minecraft.world.level.block.Blocks.AIR) return "target block missing for " + kind;
         level.setBlock(out.above(), target.defaultBlockState(), 3);
@@ -125,8 +132,37 @@ public final class P2PFixtures {
             for (int i = 0; i < h.getSlots(); i++) n += h.getStackInSlot(i).getCount();
             return n;
         }
+        if (kind.equals("fluid")) {
+            var h = be.getCapability(ForgeCapabilities.FLUID_HANDLER, Direction.DOWN).orElse(null);
+            if (h == null) return -2;
+            long n = 0;
+            for (int i = 0; i < h.getTanks(); i++) n += h.getFluidInTank(i).getAmount();
+            return n;
+        }
         IEnergyStorage e = be.getCapability(ForgeCapabilities.ENERGY, Direction.DOWN).orElse(null);
         return e == null ? -2 : e.getEnergyStored();
+    }
+
+    /** One synchronous transfer of {@code amount} into the input tunnel at {@code in} (side DOWN), on the
+     *  current thread; returns the accepted amount (negative = no capability). */
+    static long transfer(ServerLevel level, BlockPos in, String kind, int amount) {
+        return transfer(level, in, Direction.DOWN, kind, amount);
+    }
+
+    static long transfer(ServerLevel level, BlockPos in, Direction side, String kind, int amount) {
+        BlockEntity inBe = level.getBlockEntity(in);
+        if (inBe == null) return -3;
+        if (kind.equals("item")) {
+            IItemHandler h = inBe.getCapability(ForgeCapabilities.ITEM_HANDLER, side).orElse(null);
+            return h == null ? -2 : amount - h.insertItem(0, new ItemStack(Items.COBBLESTONE, amount), false).getCount();
+        }
+        if (kind.equals("fluid")) {
+            var h = inBe.getCapability(ForgeCapabilities.FLUID_HANDLER, side).orElse(null);
+            return h == null ? -2 : h.fill(new net.minecraftforge.fluids.FluidStack(net.minecraft.world.level.material.Fluids.WATER, amount),
+                    net.minecraftforge.fluids.capability.IFluidHandler.FluidAction.EXECUTE);
+        }
+        IEnergyStorage h = inBe.getCapability(ForgeCapabilities.ENERGY, side).orElse(null);
+        return h == null ? -2 : h.receiveEnergy(amount, false);
     }
 
     /** P2P-9 run; label = 9A | 9B | 9C (recorded only; the geometry decides the case). */
@@ -597,6 +633,338 @@ public final class P2PFixtures {
         } finally {
             P2PState.FORCED_CANDIDATE.remove();
         }
+    }
+
+    // ---------------------------------------------------------------- H2 (P2P-ACCESS-DEPTH-001)
+
+    /** Recursion loop at {@code base} (one grid, one region), tunnels on NORTH / SOUTH sides so the
+     *  cable centres stay connected through an east column:
+     *  P = base: I1 (input, freq A) on NORTH, O1 (output A) on SOUTH → faces R = base.south()
+     *  R = base.south(): I2 (input, freq B) on NORTH (faced by O1)
+     *  Q = base.north(): O2 (output B) on SOUTH → faces P, whose NORTH part is I1
+     *  cables at base.east(), base.south().east(), base.north().east(); creative cell above P.
+     *  I1 → O1 → I2 → O2 → I1 → O1 again: depth(O1) = 2 → AE2 returns the empty handler. */
+    public static String h2LoopSetup(ServerLevel level, BlockPos base) {
+        var cable = AEParts.GLASS_CABLE.item(AEColor.TRANSPARENT);
+        var fe = AEParts.FE_P2P_TUNNEL.asItem();
+        BlockPos p = base, r = base.south(), q = base.north();
+        for (BlockPos b : List.of(p, r, q, p.east(), r.east(), q.east()))
+            if (PartHelper.setPart(level, b, null, null, cable) == null) return "cable at " + b;
+        if (PartHelper.setPart(level, p, Direction.NORTH, null, fe) == null || PartHelper.setPart(level, p, Direction.SOUTH, null, fe) == null
+                || PartHelper.setPart(level, r, Direction.NORTH, null, fe) == null || PartHelper.setPart(level, q, Direction.SOUTH, null, fe) == null)
+            return "tunnel placement failed";
+        level.setBlock(p.above(), AEBlocks.CREATIVE_ENERGY_CELL.block().defaultBlockState(), 3);
+        return null;
+    }
+
+    private static P2PTunnelPart<?>[] loop(ServerLevel level, BlockPos base) {
+        return new P2PTunnelPart<?>[]{tunnel(level, base, Direction.NORTH), tunnel(level, base, Direction.SOUTH),
+                tunnel(level, base.south(), Direction.NORTH), tunnel(level, base.north(), Direction.SOUTH)};
+    }
+
+    public static String h2LoopBind(ServerLevel level, BlockPos base) {
+        P2PTunnelPart<?>[] l = loop(level, base);
+        P2PTunnelPart<?> i1 = l[0], o1 = l[1], i2 = l[2], o2 = l[3];
+        if (i1 == null || o1 == null || i2 == null || o2 == null) return "loop tunnels missing";
+        IGrid g = i1.getMainNode().getGrid();
+        if (g == null || o1.getMainNode().getGrid() != g || i2.getMainNode().getGrid() != g || o2.getMainNode().getGrid() != g)
+            return "loop tunnels are not on one grid";
+        try {
+            setOutput(i1, false); setOutput(i2, false); setOutput(o1, true); setOutput(o2, true);
+        } catch (ReflectiveOperationException e) {
+            return e.toString();
+        }
+        P2PService p2p = P2PService.get(g);
+        p2p.updateFreq(i1, (short) 601); p2p.updateFreq(o1, (short) 601);
+        p2p.updateFreq(i2, (short) 602); p2p.updateFreq(o2, (short) 602);
+        return "loop bound active=" + i1.isActive() + "," + o1.isActive() + "," + i2.isActive() + "," + o2.isActive();
+    }
+
+    private static int depth(P2PTunnelPart<?> t) {
+        return ((NwCapTunnel) t).nw$depth();
+    }
+
+    /** H2-1 (+H2-4): real recursion on the main thread. Expect: accepted 0, exactly the vanilla rejection
+     *  (O1 at depth 2), no StackOverflowError, every depth back to 0 with no residual entry. */
+    public static String h2Recursion(ServerLevel level, BlockPos base) {
+        P2PTunnelPart<?>[] l = loop(level, base);
+        P2PTunnelPart<?> i1 = l[0], o1 = l[1], i2 = l[2], o2 = l[3];
+        if (i1 == null || o1 == null || i2 == null || o2 == null) return "H2-1: INVALID (run h2loop)";
+        if (!(i1.isActive() && o1.isActive() && i2.isActive() && o2.isActive())) return "H2-1: INVALID (loop tunnels not all active)";
+        List<String> f = new ArrayList<>();
+        List<String> seen = new ArrayList<>();
+        P2PDepth.hookInGet = (tun, d) -> seen.add((tun == o1 ? "O1" : tun == o2 ? "O2" : tun == i1 ? "I1" : tun == i2 ? "I2" : "?") + "@" + d);
+        long rej0 = Ae2Compat.COUNTERS.p2pDepthRejected.sum();
+        long accepted;
+        String err = null;
+        try {
+            accepted = transfer(level, base, Direction.NORTH, "fe", 1000);
+        } catch (Throwable t) {
+            accepted = -9;
+            err = t.toString();
+        } finally {
+            P2PDepth.hookInGet = null;
+        }
+        long rejected = Ae2Compat.COUNTERS.p2pDepthRejected.sum() - rej0;
+        if (err != null) f.add("transfer threw " + err);
+        if (accepted != 0) f.add("loop accepted " + accepted + " (expected 0: recursion must end in the empty handler)");
+        if (rejected != 1) f.add("recursion rejections " + rejected + " (expected exactly 1: O1 at depth 2)");
+        if (!seen.equals(List.of("O1@1", "O2@1", "O1@2"))) f.add("guard sequence " + seen + " (expected [O1@1, O2@1, O1@2])");
+        for (var t : List.of(i1, o1, i2, o2)) {
+            if (depth(t) != 0) f.add("depth leak " + t + "=" + depth(t));
+            if (P2PDepth.PROTECT && ((NwCapTunnel) t).nw$hasEntry()) f.add("ThreadLocal entry left on " + t);
+        }
+        status = "H2-1 recursion [depth=" + (P2PDepth.PROTECT ? "THREAD" : "SHARED") + "]" + (f.isEmpty() ? ": PASS " : ": FAIL " + f + " ")
+                + "accepted=" + accepted + " rejected=" + rejected + " sequence=" + seen + " thread=" + Thread.currentThread().getName();
+        Ae2Compat.LOG.info("[nestworld-compat-ae2] p2p fixture {}", status);
+        return status;
+    }
+
+    /** H2-2 / H2-5: thread A (main, this command) is parked INSIDE a transfer through output O (depth 1);
+     *  thread B (RegionThread host near {@code in}) performs an independent transfer through the same O.
+     *  THREAD depth: B succeeds, A resumes and succeeds, both depths 0. SHARED int: B sees depth 2 → empty. */
+    public static String h2Concurrent(ServerLevel level, String kind, BlockPos in, BlockPos out, int amount) {
+        P2PTunnelPart<?> o = tunnel(level, out, Direction.UP);
+        UUID hostB = host(level, in);
+        if (o == null || hostB == null) return "H2-2 " + kind + ": INVALID (output tunnel / host missing)";
+        Thread main = Thread.currentThread();
+        var bDone = new java.util.concurrent.CountDownLatch(1);
+        long[] b = {Long.MIN_VALUE};
+        String[] bThread = {null}, bErr = {null};
+        int[] bDepthAfter = {-1};
+        boolean[] bEntry = {false}, parked = {false};
+        int[] aDepthSeen = {-1};
+        P2PDepth.falseRejectWatch = java.util.Set.of(o);
+        long fr0 = Ae2Compat.COUNTERS.p2pDepthFalseReject.sum();
+        P2PDepth.hookInGet = (tun, d) -> {
+            if (tun != o || Thread.currentThread() != main || parked[0]) return;
+            parked[0] = true;
+            aDepthSeen[0] = d;
+            RegionTasks.submit(hostB, () -> {
+                try {
+                    bThread[0] = Thread.currentThread().getName();
+                    b[0] = transfer(level, in, kind, amount);
+                    bDepthAfter[0] = depth(o);
+                    bEntry[0] = ((NwCapTunnel) o).nw$hasEntry();
+                } catch (Throwable t) {
+                    bErr[0] = t.toString();
+                } finally {
+                    bDone.countDown();
+                }
+            });
+            try {
+                bDone.await(5, java.util.concurrent.TimeUnit.SECONDS);   // A parked inside its transfer, depth(O, A) = 1
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        long a;
+        String aErr = null;
+        try {
+            a = transfer(level, in, kind, amount);
+        } catch (Throwable t) {
+            a = -9;
+            aErr = t.toString();
+        } finally {
+            P2PDepth.hookInGet = null;
+            P2PDepth.falseRejectWatch = null;
+        }
+        List<String> f = new ArrayList<>();
+        if (!parked[0]) f.add("A never reached the guard of O");
+        if (bDone.getCount() != 0) f.add("B did not run within 5 s");
+        if (aErr != null || bErr[0] != null) f.add("exception A=" + aErr + " B=" + bErr[0]);
+        if (b[0] <= 0) f.add("B rejected while A was inside the same tunnel (accepted " + b[0] + ")");
+        if (a <= 0) f.add("A failed after resuming (accepted " + a + ")");
+        if (depth(o) != 0 || bDepthAfter[0] != 0) f.add("depth not restored A=" + depth(o) + " B=" + bDepthAfter[0]);
+        if (P2PDepth.PROTECT && (((NwCapTunnel) o).nw$hasEntry() || bEntry[0])) f.add("ThreadLocal entry leaked");
+        long falseRejects = Ae2Compat.COUNTERS.p2pDepthFalseReject.sum() - fr0;
+        status = "H2-2 " + kind + " [depth=" + (P2PDepth.PROTECT ? "THREAD" : "SHARED") + "]" + (f.isEmpty() ? ": PASS " : ": FAIL " + f + " ")
+                + "A(main) depthSeen=" + aDepthSeen[0] + " accepted=" + a + " | B(" + bThread[0] + ") accepted=" + b[0]
+                + " | falseRejects+" + falseRejects;
+        Ae2Compat.LOG.info("[nestworld-compat-ae2] p2p fixture {}", status);
+        return status;
+    }
+
+    /** H2 stress: one tunnel per kind (fe z=1200, item z=1205, fluid z=1210; outputs at x=-70) shared by
+     *  4 plain producer threads, the owner RegionThread (real targets + the recursion loop every 20th step)
+     *  and main (every tick); producer 0 makes the handler throw on every 100th transfer. Asynchronous. */
+    public static String h2Stress(ServerLevel level, BlockPos loopBase, int seconds) {
+        if (status.endsWith(": running")) return "a fixture is running: " + status;
+        String[] kinds = {"fe", "item", "fluid"};
+        int[] amounts = {1000, 16, 1000};
+        BlockPos[] ins = {new BlockPos(-80, -60, 1200), new BlockPos(-80, -60, 1205), new BlockPos(-80, -60, 1210)};
+        P2PTunnelPart<?>[] outs = new P2PTunnelPart<?>[3];
+        for (int k = 0; k < 3; k++) outs[k] = tunnel(level, ins[k].offset(10, 0, 0), Direction.UP);
+        P2PTunnelPart<?>[] l = loop(level, loopBase);
+        UUID ownerHost = host(level, ins[0]), loopHost = host(level, loopBase);
+        for (var o : outs) if (o == null) return "H2 stress: INVALID (output tunnel missing)";
+        if (l[0] == null || ownerHost == null || loopHost == null) return "H2 stress: INVALID (loop / hosts missing)";
+        // Input handlers resolved on main: off-thread getBlockEntity is null, so plain producers call the
+        // tunnel's own input handler directly (the transfer then runs through each output's guard).
+        Object[] handlers = new Object[3];
+        handlers[0] = level.getBlockEntity(ins[0]).getCapability(ForgeCapabilities.ENERGY, Direction.DOWN).orElse(null);
+        handlers[1] = level.getBlockEntity(ins[1]).getCapability(ForgeCapabilities.ITEM_HANDLER, Direction.DOWN).orElse(null);
+        handlers[2] = level.getBlockEntity(ins[2]).getCapability(ForgeCapabilities.FLUID_HANDLER, Direction.DOWN).orElse(null);
+        for (Object h : handlers) if (h == null) return "H2 stress: INVALID (input handler missing)";
+        var c = Ae2Compat.COUNTERS;
+        long rej0 = c.p2pDepthRejected.sum(), fr0 = c.p2pDepthFalseReject.sum(), uf0 = c.p2pDepthUnderflow.sum();
+        java.util.Set<Object> watch = java.util.Set.of(outs[0], outs[1], outs[2]);
+        P2PDepth.falseRejectWatch = watch;
+        java.util.concurrent.atomic.LongAdder entries = new java.util.concurrent.atomic.LongAdder(), transfers = new java.util.concurrent.atomic.LongAdder(),
+                loops = new java.util.concurrent.atomic.LongAdder(), thrown = new java.util.concurrent.atomic.LongAdder(),
+                caught = new java.util.concurrent.atomic.LongAdder(), mainTransfers = new java.util.concurrent.atomic.LongAdder(),
+                regionTransfers = new java.util.concurrent.atomic.LongAdder();
+        List<String> unexpected = java.util.Collections.synchronizedList(new ArrayList<>());
+        List<String> leaks = java.util.Collections.synchronizedList(new ArrayList<>());
+        ThreadLocal<Boolean> throwNext = new ThreadLocal<>();
+        P2PDepth.hookInGet = (tun, d) -> {
+            entries.increment();
+            if (Boolean.TRUE.equals(throwNext.get()) && watch.contains(tun)) {
+                throwNext.remove();
+                thrown.increment();
+                throw new IllegalStateException("H2 stress deliberate handler failure");
+            }
+        };
+        long end = System.nanoTime() + seconds * 1_000_000_000L;
+        java.util.function.Consumer<String> leakCheck = who -> {
+            for (var o : outs) {
+                if (depth(o) != 0) leaks.add(who + " depth=" + depth(o));
+                if (P2PDepth.PROTECT && ((NwCapTunnel) o).nw$hasEntry()) leaks.add(who + " ThreadLocal entry");
+            }
+        };
+        List<Thread> threads = new ArrayList<>();
+        for (int t = 0; t < 4; t++) {
+            final int ti = t;
+            threads.add(fork("nw-h2s-producer-" + t, () -> {
+                long n = 0;
+                while (System.nanoTime() < end && unexpected.size() < 20) {
+                    int k = (int) (n % 3);
+                    if (ti == 0 && n % 100 == 99) throwNext.set(true);
+                    try {
+                        switch (k) {                                      // off-thread: guard exercised, target view empty
+                            case 0 -> ((IEnergyStorage) handlers[0]).receiveEnergy(amounts[0], false);
+                            case 1 -> ((IItemHandler) handlers[1]).insertItem(0, new ItemStack(Items.COBBLESTONE, amounts[1]), false);
+                            default -> ((net.minecraftforge.fluids.capability.IFluidHandler) handlers[2]).fill(
+                                    new net.minecraftforge.fluids.FluidStack(net.minecraft.world.level.material.Fluids.WATER, amounts[2]),
+                                    net.minecraftforge.fluids.capability.IFluidHandler.FluidAction.EXECUTE);
+                        }
+                        transfers.increment();
+                    } catch (IllegalStateException e) {
+                        if (e.getMessage() != null && e.getMessage().startsWith("H2 stress deliberate")) {
+                            caught.increment();
+                            if (depth(outs[k]) != 0) leaks.add("after throw depth=" + depth(outs[k]));
+                        } else unexpected.add(Thread.currentThread().getName() + ": " + e);
+                    } catch (Throwable e) {
+                        unexpected.add(Thread.currentThread().getName() + ": " + e);
+                    }
+                    n++;
+                }
+                throwNext.remove();
+                leakCheck.accept(Thread.currentThread().getName());
+            }));
+        }
+        Runnable[] regionStep = {null};
+        long[] rn = {0};
+        regionStep[0] = () -> {                                         // owner RegionThread: real targets + recursion loop
+            try {
+                for (int k = 0; k < 3; k++) {
+                    transfer(level, ins[k], kinds[k], amounts[k]);
+                    regionTransfers.increment();
+                }
+            } catch (Throwable e) {
+                unexpected.add("region: " + e);
+            }
+            if (System.nanoTime() < end) RegionTasks.submit(ownerHost, regionStep[0]);
+            else leakCheck.accept(Thread.currentThread().getName());
+        };
+        Runnable[] loopStep = {null};
+        loopStep[0] = () -> {
+            try {
+                long a = transfer(level, loopBase, Direction.NORTH, "fe", 1000);
+                if (a != 0) unexpected.add("recursion loop accepted " + a);
+                loops.increment();
+            } catch (Throwable e) {
+                unexpected.add("loop: " + e);
+            }
+            if (System.nanoTime() < end) RegionTasks.submit(loopHost, loopStep[0]);
+        };
+        RegionTasks.submit(ownerHost, regionStep[0]);
+        if (loopHost.equals(ownerHost)) return "H2 stress: INVALID (loop host == owner host)";
+        RegionTasks.submit(loopHost, loopStep[0]);
+        mainProducer = () -> {
+            if (System.nanoTime() >= end) {
+                mainProducer = null;
+                leakCheck.accept("Server thread");
+                return;
+            }
+            try {
+                for (int k = 0; k < 3; k++) {
+                    transfer(level, ins[k], kinds[k], amounts[k]);
+                    mainTransfers.increment();
+                }
+            } catch (Throwable e) {
+                unexpected.add("main: " + e);
+            }
+        };
+        status = "H2 stress: running";
+        fork("nw-h2s-coordinator", () -> {
+            long left = end - System.nanoTime();
+            if (left > 0) {
+                try {
+                    Thread.sleep(left / 1_000_000 + 2000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            boolean ok = join(threads.toArray(new Thread[0]));
+            P2PDepth.hookInGet = null;
+            P2PDepth.falseRejectWatch = null;
+            long rejected = c.p2pDepthRejected.sum() - rej0, falseRej = c.p2pDepthFalseReject.sum() - fr0, underflow = c.p2pDepthUnderflow.sum() - uf0;
+            List<String> f = new ArrayList<>(unexpected.subList(0, Math.min(5, unexpected.size())));
+            if (!ok) f.add("producers did not finish");
+            if (falseRej != 0) f.add("crossThreadFalseRejects=" + falseRej);
+            if (underflow != 0) f.add("depthUnderflow=" + underflow);
+            if (!leaks.isEmpty()) f.add("depthLeak " + leaks.subList(0, Math.min(3, leaks.size())));
+            if (thrown.sum() != caught.sum()) f.add("thrown " + thrown.sum() + " != caught " + caught.sum());
+            if (rejected != loops.sum()) f.add("realRecursionRejected " + rejected + " != loops " + loops.sum());
+            status = "H2 stress " + seconds + "s [depth=" + (P2PDepth.PROTECT ? "THREAD" : "SHARED") + "]" + (f.isEmpty() ? ": PASS " : ": FAIL " + f + " ")
+                    + "entries=" + entries.sum() + " transfers(plain)=" + transfers.sum() + " region=" + regionTransfers.sum()
+                    + " main=" + mainTransfers.sum() + " loops=" + loops.sum() + " realRecursionRejected=" + rejected
+                    + " crossThreadFalseRejects=" + falseRej + " depthUnderflow=" + underflow + " depthLeak=" + leaks.size()
+                    + " thrown=" + thrown.sum() + " caught=" + caught.sum() + " unexpected=" + unexpected.size();
+            Ae2Compat.LOG.info("[nestworld-compat-ae2] p2p fixture {}", status);
+        });
+        return status;
+    }
+
+    /** H2-3: the external handler throws (fixture hook inside get, depth 1); the guard's finally must
+     *  restore depth; the next transfer on the same thread through the same tunnel must work. */
+    public static String h2Throw(ServerLevel level, String kind, BlockPos in, BlockPos out, int amount) {
+        P2PTunnelPart<?> o = tunnel(level, out, Direction.UP);
+        if (o == null) return "H2-3: INVALID";
+        P2PDepth.hookInGet = (tun, d) -> {
+            if (tun == o) throw new IllegalStateException("H2-3 deliberate handler failure");
+        };
+        String thrown = null;
+        try {
+            transfer(level, in, kind, amount);
+        } catch (IllegalStateException e) {
+            thrown = e.getMessage();
+        } finally {
+            P2PDepth.hookInGet = null;
+        }
+        int after = depth(o);
+        boolean entry = ((NwCapTunnel) o).nw$hasEntry();
+        long next = transfer(level, in, kind, amount);
+        List<String> f = new ArrayList<>();
+        if (thrown == null) f.add("the handler failure did not propagate");
+        if (after != 0) f.add("depth after the exception = " + after);
+        if (P2PDepth.PROTECT && entry) f.add("ThreadLocal entry left after the exception");
+        if (next <= 0) f.add("next transfer on the same thread failed (accepted " + next + "): tunnel dead");
+        status = "H2-3 " + kind + " [depth=" + (P2PDepth.PROTECT ? "THREAD" : "SHARED") + "]" + (f.isEmpty() ? ": PASS " : ": FAIL " + f + " ")
+                + "thrown=" + thrown + " depthAfter=" + after + " nextAccepted=" + next;
+        Ae2Compat.LOG.info("[nestworld-compat-ae2] p2p fixture {}", status);
+        return status;
     }
 
     // ---------------------------------------------------------------- P2P-10 (Redstone P2P callback boundary)

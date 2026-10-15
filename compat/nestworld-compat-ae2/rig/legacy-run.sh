@@ -14,7 +14,9 @@ declare -A F=([1001]=east [1002]=south [1003]=west [1004]=down); declare -A U=([
 $R "forceload add 1000 1000" "fill 1000 $Y 1000 1010 -55 1003 air" "setblock 1000 $Y $Z ae2:controller" >/dev/null
 for x in 1001 1002 1003 1004; do $R "setblock $x $Y $Z ${B[$x]}" >/dev/null; done; sleep 3
 echo "== placed"; for x in 1001 1002 1003 1004; do $R "nwcompatae2 legacy check $x $Y $Z" | sed -n 2p | cut -c1-200; done
-unload() { $R "save-all flush" "forceload remove 1000 1000" >/dev/null; for i in $(seq 1 120); do $R "nwcompatae2 legacy loaded 1000 $Y $Z" | grep -q "loaded=false" && return 0; sleep 1; done; echo "chunk did not unload"; return 1; }
+# separate RCON calls + retried forceload remove: a combined "save-all flush" call intermittently loses the
+# connection before the second command, which left the chunk force-loaded (rig defect, 2026-10-15)
+unload() { $R "save-all flush" >/dev/null 2>&1; for i in $(seq 1 120); do $R "forceload remove 1000 1000" >/dev/null 2>&1; $R "nwcompatae2 legacy loaded 1000 $Y $Z" 2>/dev/null | grep -q "loaded=false" && return 0; sleep 1; done; echo "chunk did not unload"; return 1; }
 unload || exit 1
 for x in 1001 1002 1003 1004; do $R "nwcompatae2 legacy inject $x $Y $Z ${F[$x]} ${U[$x]}" | sed -n 2p; done
 $R "forceload add 1000 1000" >/dev/null; sleep 4

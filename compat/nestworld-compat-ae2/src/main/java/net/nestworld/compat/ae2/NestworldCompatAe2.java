@@ -147,6 +147,30 @@ public final class NestworldCompatAe2 {
                                                     com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "seconds")))))));
             var px = Commands.literal("p2p")
                     .then(Commands.literal("status").executes(c -> say(c.getSource(), P2PFixtures.status())))
+                    .then(Commands.literal("h2stress").then(Commands.argument("loop", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .then(Commands.argument("seconds", com.mojang.brigadier.arguments.IntegerArgumentType.integer(5, 3600))
+                                    .executes(c -> say(c.getSource(), P2PFixtures.h2Stress(c.getSource().getLevel(),
+                                            net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "loop"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "seconds")))))))
+                    .then(Commands.literal("h2loop").then(Commands.argument("base", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos()).executes(c -> {
+                        String r = P2PFixtures.h2LoopSetup(c.getSource().getLevel(), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "base"));
+                        return say(c.getSource(), r == null ? "h2loop OK" : "h2loop FAILED: " + r);
+                    })))
+                    .then(Commands.literal("h2loopbind").then(Commands.argument("base", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .executes(c -> say(c.getSource(), P2PFixtures.h2LoopBind(c.getSource().getLevel(), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "base"))))))
+                    .then(Commands.literal("h2recursion").then(Commands.argument("base", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .executes(c -> say(c.getSource(), P2PFixtures.h2Recursion(c.getSource().getLevel(), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "base"))))))
+                    .then(Commands.literal("h2concurrent").then(Commands.argument("kind", com.mojang.brigadier.arguments.StringArgumentType.word())
+                            .then(Commands.argument("in", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos()).then(Commands.argument("out", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                    .then(Commands.argument("amount", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 1_000_000))
+                                            .executes(c -> say(c.getSource(), P2PFixtures.h2Concurrent(c.getSource().getLevel(),
+                                                    com.mojang.brigadier.arguments.StringArgumentType.getString(c, "kind"), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "in"), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "out"),
+                                                    com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "amount")))))))))
+                    .then(Commands.literal("h2throw").then(Commands.argument("kind", com.mojang.brigadier.arguments.StringArgumentType.word())
+                            .then(Commands.argument("in", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos()).then(Commands.argument("out", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                    .then(Commands.argument("amount", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 1_000_000))
+                                            .executes(c -> say(c.getSource(), P2PFixtures.h2Throw(c.getSource().getLevel(),
+                                                    com.mojang.brigadier.arguments.StringArgumentType.getString(c, "kind"), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "in"), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "out"),
+                                                    com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "amount")))))))))
                     .then(Commands.literal("h1stress").then(Commands.argument("g1", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos()).then(Commands.argument("g2", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
                             .then(Commands.argument("seconds", com.mojang.brigadier.arguments.IntegerArgumentType.integer(5, 3600))
                                     .executes(c -> say(c.getSource(), P2PFixtures.h1Stress(c.getSource().getLevel(),
