@@ -1,6 +1,6 @@
 # MODULE-2 — External Module Loader: specification (2026-10-15)
 
-**Status: SPEC — owner decisions D1–D7 RECORDED (2026-10-15, §15). Loader NOT implemented; implementation starts at G0 only on the owner's go.**
+**Status: SPEC — owner decisions D1–D8 RECORDED (2026-10-15, §15). Loader NOT implemented; implementation starts at G0 only on the owner's go.**
 - Audit: `docs/contracts/MODULE-2-EXTERNAL-LOADER-AUDIT.md`. Its facts are cited here as A1… /
   L1… / E1.
 - Preserved unchanged: MODULE-LIFECYCLE-001 I1–I6, and the state chain
@@ -110,7 +110,7 @@ net.nestworld.                                 the whole NestWorld runtime: SPI,
 | Field | Rule (any violation → FAILED/DISCOVERY with the field named) |
 |---|---|
 | `schema` | Integer, exactly `1`. Unknown future schema → refused, never best-effort |
-| `id` | `[a-z][a-z0-9_-]{1,63}` (the owner's examples use `fast-transition`). A **separate namespace** from Forge mod ids |
+| `id` | Canonical form, regex `^[a-z0-9]+([._-][a-z0-9]+)*$`, 2–64 chars: lowercase ASCII letters, digits, and the separators `-` `_` `.`. No spaces, no uppercase, no leading/trailing separator, no two separators in a row. Compared **byte-exactly**, with no case folding and no normalisation, so there is no case-insensitive ambiguity. A non-canonical id is refused, never normalised. Examples: `example-module`, `fast-transition`. A **separate namespace** from Forge mod ids |
 | `version` | Maven version, parsed by `org.apache.maven.artifact.versioning.DefaultArtifactVersion` (`maven-artifact`, already an FML library in the parent); ranges by `VersionRange`. Stored as `ModuleVersion` |
 | `displayName` | Optional, ≤ 64 chars, defaults to `id` |
 | `entrypoint` | Binary class name; must not be in a reserved root (§4); the class must exist in the jar |
@@ -355,8 +355,8 @@ Two gates, the same structure as PKG-002:
 - A module with `"critical": true` that ends startup FAILED aborts server start. Core throws from
   `startModules` with the full failure list (all modules, not only the critical one) after
   quiescing the modules already RUNNING in reverse order.
-- Startup-only. A critical module failing at runtime is handled by §10.4 like any other module
-  (open point D8).
+- Startup failure of a critical module → the server never becomes operational. Runtime failure of
+  a critical module → the server does not remain operational (§10.5, D8).
 - There is no global strict flag. Criticality is a property of a module in a deployment, declared
   by its descriptor.
 
@@ -379,6 +379,33 @@ server thread, next safe point (start of next server tick, I6):
   consistent. "Where safe" therefore means the next server-thread safe point, and until then the
   fail-closed wrapper keeps the module from running again.
 - `VirtualMachineError` is rethrown without attribution work.
+- `critical=false`: the module ends FAILED, its dependents are disabled, the server continues,
+  and the failure stays visible as an ERROR line plus `/nestworld modules`. There is no automatic
+  restart or re-enable in v1.
+
+### 10.5 Runtime failure of a critical module (D8)
+```
+critical module callback fails
+  → attribute failure
+  → disable further callbacks from that module immediately (fail-closed wrapper)
+  → propagate the original exception unchanged
+  → schedule fatal-module handling on the owning server thread
+  → quiesce dependents in reverse dependency order
+  → quiesce the failed module (→ FAILED)
+  → request normal server shutdown
+```
+- Shutdown is the normal path: `MinecraftServer.halt(false)`, the same path as `/stop`, with
+  world save and ServerStopping/Stopped events.
+  - **Forbidden:** `System.exit`, `Runtime.halt`, and any force-kill API.
+  - Dedicated: the server process ends normally.
+  - Integrated: only the integrated server/world stops. The client JVM keeps running (no
+    `Minecraft.stop`).
+- The original exception has priority. If it terminates the server first (for example a crash on
+  the tick path), that outcome is accepted. The scheduled cleanup and shutdown are best effort
+  for the controlled case. They never replace, wrap or mask the original exception, and never
+  throw a second exception in its place.
+- The reason is recorded once: `critical module <id>@gen<N> FAILED at runtime → shutdown
+  requested`.
 
 ## 11. Lifetimes, disposal and reachability
 
@@ -504,6 +531,8 @@ Spec adjustments made while recording (for review):
 - `side` values are `server` (default) / `dedicated` / `integrated`. The owner's example uses
   `server`, so `any` was dropped.
 
-Open:
-- **D8.** What does a `critical` module's **runtime** failure (§10.4) do: continue with the
-  module FAILED, or stop the server? Until decided: continue, with an ERROR line.
+| D8 | A runtime failure of a `critical` module → attribute, fail-closed, rethrow the original, then on the server thread quiesce dependents in reverse order, quiesce the module, and request **normal** shutdown (no `System.exit` / `Runtime.halt`; integrated stops only the world). `critical=false` → server continues, persistent ERROR/status, no auto re-enable | §10.5 |
+
+Owner approval of the two adjustments (2026-10-15): canonical `id` format with `-` `_` `.`
+APPROVED; `side = server | dedicated | integrated` APPROVED (`any` not needed; MODULE-2 defines no
+client-side lifecycle).
