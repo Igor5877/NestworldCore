@@ -123,7 +123,7 @@ Who reaches the same part concurrently:
 
 This hazard exists **with AE2 pinned**, because the callers are the pipes' threads.
 
-### 3.3 H3: non-local capability forwarding across regions (CONFIRMED FROM CODE; runtime NOT reproduced)
+### 3.3 H3: non-local capability forwarding across regions (CONFIRMED by run, P2P-9, see `AE2-COMPAT-P2P-001-EVIDENCE.md`)
 
 Path: the caller on thread T calls `input.receiveEnergy` (or `insertItem` / `fill`). That reaches
 `target.getAdjacentCapability().get()`:
