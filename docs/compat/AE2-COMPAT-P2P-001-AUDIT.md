@@ -1,6 +1,6 @@
 # AE2-COMPAT-P2P-001 — audit (P2P state, transfer paths, external-callback boundaries)
 
-**Status: AUDIT — STOP for owner review (2026-10-15). No P2P code is written.**
+**Status: AUDIT ACCEPTED (owner, 2026-10-15). Decisions Q1–Q5 recorded in §9. No P2P code is written yet.**
 - Source: AE2 15.4.10, decompiled (`/root/mod-compat-audit/src/appliedenergistics2-forge-15.4.10`).
   Line numbers refer to that tree.
 - NestWorld Core code is cited from HEAD (`a34eff745`+).
@@ -316,3 +316,124 @@ topology / frequency churn), then a soak. Acceptance per the TZ §3 list, plus:
 Selective energy unpin (TZ §10) needs a **real enforcement boundary** for FE P2P. With H3 open,
 that boundary must also stop cross-region FE P2P transfers in the **pinned** configuration
 (§0, first bullet). A pin alone does not.
+
+## 9. Owner decisions (2026-10-15)
+
+### Normative finding
+> AE2 pinning controls where AE2-owned ticks execute. It does **not** establish ownership
+> correctness for synchronous capability calls entering AE2 from a RegionThread and exiting
+> through P2P into another region.
+
+So `FULL AE2 PIN` does **not** mean "P2P safe". This corrects the earlier mental model.
+
+The general pattern is **NONLOCAL_SYNCHRONOUS_FORWARDER**. Candidates: AE2 P2P, Flux Networks,
+Mekanism Entangloporter, and other teleport / proxy capabilities. In future, Core / GMEIL should be
+able to **detect** this class. It should not try to fix it automatically by generic callback
+routing.
+
+### Q1: H3 for RC = option E, enforced as A (fail-closed)
+```
+P2P capability operation
+  → resolve the actual target position / level
+  → does the current thread own the target?
+      YES → normal synchronous operation
+      NO  → fail closed, with no target mutation:
+              energy  0 accepted / extracted
+              item    unchanged stack / empty result
+              fluid   0 / empty
+```
+- **Cross-dimension is non-local**, unless a separate ownership contract exists.
+- **B (buffering)** is a possible future design, but not a quick fix. It is a separate gate
+  (persistence, backpressure, ordering, extraction semantics, crash recovery, conservation).
+- **C (generic Core "execute arbitrary callback on owner") is REJECTED.** It is an escape hatch of
+  the kind the Mod API deliberately avoids. Blocking on region B also creates an A→B→A deadlock
+  surface.
+- **Narrow Core contract required:** a read-only ownership query, `isCurrentThreadOwner(level, pos)`
+  or equivalent.
+  - Here correctness outweighs "the compat addon knows nothing about Core". A formal narrow
+    ownership contract is better than heuristics based on `RegionThread`, ghost BEs or thread
+    names.
+  - If even this API is not added, the only provably safe v1 is: **P2P capability forwarding
+    always refuses under NestWorld region execution**, because locality cannot be established
+    reliably.
+- The shape of that query, and how the addon reaches it without a compile dependency on Core, is
+  a design item for review before implementation.
+
+### Q2: P2P-9 before any H3 fix (APPROVED), in three discriminating configurations
+
+| Id | Configuration | Expected |
+|---|---|---|
+| P2P-9A SAME-OWNER | the source and the output target are in one ownership domain | conservation PASS |
+| P2P-9B REMOTE-GHOST | the target is in another region's ghost zone | current code reproduces it: the source reports a transfer, but the target's **persistent** state does not gain the same amount |
+| P2P-9C REMOTE-LIVE | the target is deep in another region | a cross-owner mutation is observed |
+
+- Invariant: `source decrease == persistent destination increase + explicitly accounted transport
+  buffer`. There is no buffer today, so `source decrease == destination increase`.
+- Item / fluid variants are wanted as well, as long as the fixture does not grow
+  disproportionately.
+- The fixture must **distinguish** detached-snapshot loss (9B) from live foreign-owner mutation
+  (9C). They are two different H3 failure modes.
+
+### Q3: H1 and H2 are closed independently of H3 (APPROVED)
+- Target statuses:
+  - `P2P-MAP-STATE` CLOSED / VERIFIED;
+  - `P2P-ACCESS-DEPTH` CLOSED / VERIFIED;
+  - **AE2-COMPAT-P2P-001 stays OPEN, blocked by H3**.
+- H1:
+  - per-grid `P2PState` (lock, generation, immutable snapshots);
+  - `getOutputs()` never returns a live view;
+  - `newFrequency()`'s own semantics are **not** changed. A new operation
+    `allocateAndBind(input)` (or an equivalent transaction boundary around the real call sites)
+    does: LOCK → choose an unused frequency → verify it is still free → register the input →
+    `generation++` → UNLOCK;
+  - `inputs.put` must never silently displace another input as the result of a race.
+- H2: `ThreadLocal` recursion depth, because recursion is a property of the dynamic call stack, not
+  of the tunnel object:
+  ```
+  increment → try { transfer } finally { decrement; if zero → remove() }
+  ```
+  A negative fixture with two simultaneous transfers on **one** tunnel object is mandatory.
+
+### Q4: Redstone callback under P(G): nested-P fail-closed is NOT sufficient
+- `P(G)` is a structural exclusion primitive. It must not become a lock under which arbitrary
+  neighbour-block code runs.
+- **P2P-10 APPROVED first.** It records:
+  - the thread;
+  - whether `P(G)` is held;
+  - the target's owner;
+  - whether the neighbour callback re-enters AE2;
+  - whether it requests topology;
+  - whether it touches another region.
+- If it confirms that a foreign neighbour callback runs under `P(G)`:
+  - **GRID-PHASE stays CLOSED for its proven invariant**;
+  - a new narrow finding **REDSTONE-P2P-CALLBACK-001** opens;
+  - GRID-PHASE is not unfrozen as a whole.
+- The narrow fix: under `P(G)`, determine the notification work and record a stable intent →
+  release `P(G)` → execute the notification only in a valid owner context. If the target is in
+  another region, this is H3 class again, and the notification cannot simply run on the current
+  thread.
+
+### Q5: unknown `P2PTunnelPart` subclass (APPROVED, with an addition)
+```
+unknown subclass of P2PTunnelPart
+  → COMPAT_MANIFEST_UNKNOWN_P2P
+  → manifestEligible=false → no unpin eligibility
+  → AND P2P forwarding eligibility = false → its forwarding path fails closed
+```
+- DEGRADED (global AE2 serialization) does **not** make H3 safe, because it does not change the
+  target BE's owner.
+- "DEGRADED + keep pin" is **not** a mitigation for H3.
+
+### Approved order
+1. Record Q1–Q5 (this section).
+2. P2P-9: reproduce H3 without a fix.
+3. P2P-10: measure the Redstone callback boundary.
+4. STOP: record the evidence.
+5. Implement H1.
+6. Deterministic H1 negative control.
+7. Implement H2.
+8. Deterministic H2 concurrent-transfer negative control.
+9. Stress H1 / H2.
+10. H3 stays OPEN, with the enforced cross-owner refusal design.
+
+Do not write `AE2-COMPAT-P2P-001 CLOSED` after H1 / H2 until a real cross-owner boundary exists.
