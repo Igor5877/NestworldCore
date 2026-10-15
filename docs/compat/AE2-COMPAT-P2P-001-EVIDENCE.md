@@ -120,6 +120,27 @@ Answers to the owner's P2P-10 questions:
   delivered while `P(G)` is held**? The stack shows the mechanism is the generic deferred
   delivery, not something Redstone-specific.
 
+## 3.4 Owner classification (2026-10-15)
+- **CALLBACK-UNDER-P-001: OPEN, CONFIRMED MECHANISM.** Every deferred callback of a topology
+  operation is delivered with P(G) held (`docs/compat/AE2-COMPAT-CALLBACK-UNDER-P-001.md`).
+  - **REDSTONE-P2P-CALLBACK-001: CONFIRMED MANIFESTATION.**
+  - GRID-PHASE-001 is **not** reopened. Its invariant holds.
+- **H3 NONLOCAL_SYNCHRONOUS_FORWARDER: CONFIRMED / REPRODUCED.** FULL AE2 PIN does not protect
+  against it; this is now evidence, not assumption.
+- **Normative conservation invariant.** For a synchronous forwarding operation without a persistent
+  transport buffer: accepted / extracted at the source **==** persistently committed at the
+  destination. The ghost case violates it directly.
+- **Sub-gate statuses (kept separate):**
+
+  | Sub-gate | Status |
+  |---|---|
+  | P2P-MAP-STATE-001 (H1) | OPEN, implementation next |
+  | P2P-ACCESS-DEPTH-001 (H2) | OPEN |
+  | P2P-FORWARDING-001 (H3) | CONFIRMED / OPEN |
+  | AE2-COMPAT-P2P-001 | OPEN |
+
+  **No unpin after H1.**
+
 ## 4. What this changes
 
 - **H3 is CONFIRMED** in all three forms. The pinned baseline is affected too: the transfer runs on
