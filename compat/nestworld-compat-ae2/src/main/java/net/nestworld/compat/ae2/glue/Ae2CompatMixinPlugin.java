@@ -46,8 +46,15 @@ public final class Ae2CompatMixinPlugin implements IMixinConfigPlugin {
         }
     }
 
+    /** Fixture / probe-only mixins: not applied at all unless -Dnestworld.compatAe2.fixtures=true, so a
+     *  production run carries no coupling to their target classes (release hygiene, owner 2026-10-15). */
+    private static final java.util.Set<String> FIXTURE_ONLY = java.util.Set.of(
+            "net.nestworld.compat.ae2.mixin.ArmorStandMixin",
+            "net.nestworld.compat.ae2.mixin.RedstoneP2PProbeMixin");
+
     @Override
     public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
+        if (FIXTURE_ONLY.contains(mixinClassName)) return active && Boolean.getBoolean("nestworld.compatAe2.fixtures");
         return active;
     }
 
