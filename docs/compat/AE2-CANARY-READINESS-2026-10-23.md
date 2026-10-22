@@ -9,14 +9,15 @@ It is **not** ready for a fleet rollout, unpin, or a claim of cross-region P2P s
 | Artifact | Identity |
 |---|---|
 | Addon | `nestworld-compat-ae2-0.1.0-all.jar`, built from branch `claude/nestworld-hybrid-arch-invq4h` at **`6d6c7591d`**. SHA-256 `71a5d781e3308cf926123db43ba940fb51c5131ddf1e90184b6c6777beb233be` |
-| Core | `forge-1.20.1-47.4.307-canary-core-306-ownership-installer.jar`. SHA-256 `246716c021a54e92358afc1767c80414ab2b498d490a7d3a8504075888db0243` |
+| Core | `forge-1.20.1-47.4.307-canary-core-306-ownership-installer.jar`, **clean rebuild** (owner, 2026-10-23): manifest `Git-Commit: 1b179775`, `Git-Branch: canary/core-306-ownership`, **`Git-Dirty: false`**. SHA-256 **`d0dbffafed320798e5b45e70298c35c1f6c8b09e6a63e2acc6044c429b2f27fc`** |
 | Core source | **Core 306 (`7803c678`) + exactly one commit**: `NestworldOwnership` (canary branch `canary/core-306-ownership`, `1b1797756` = cherry-pick of `72d92a4c7`) |
 | Why not HEAD Core | HEAD contains the FastTransition work, which also changes the login handshake loop for everyone. The canary keeps a single Core delta |
-| Staged copies | `/root/canary-artifacts/ae2-canary-2026-10-23/` (both jars plus `SHA256SUMS`) |
+| Staged copies | `/root/canary-artifacts/ae2-canary-2026-10-23/`: both jars, `canary-baseline.sh`, `SHA256SUMS`. The earlier dirty build (`246716c0…`) was moved to `superseded/`; **do not deploy it** |
+| Clean-binary smoke | rig: clean install (version dir removed first, manifest verified `Git-Dirty: false`), then P2P-9: 9A conserved, 9B / 9C REFUSED, gate PASS, `mode=CONTRACT`, kernel NORMAL |
+| Branches pushed | `claude/nestworld-hybrid-arch-invq4h` @ `76804ea34`+; `canary/core-306-ownership` @ `1b1797756` |
 
-**Provenance note.** The Core installer manifest says `Git-Dirty: true`. That is only an untracked
-`compat/` directory present in the work tree during the build; the Core sources equal
-`1b1797756`. A clean rebuild before deployment is possible on request.
+**Provenance:** source commit `1b1797756` == the binary's manifest (`Git-Dirty: false`) == the
+recorded SHA-256 `d0dbffaf…2f27fc`.
 
 ## Mods / versions (audited matrix only)
 - **Audited:** AE2 15.4.10 (manifest sha256-pinned), GuideME, Pipez, Mekanism, as on the rig.
@@ -43,8 +44,12 @@ It is **not** ready for a fleet rollout, unpin, or a claim of cross-region P2P s
    unchanged. Region boundaries move with split / merge, so which P2P links are affected can
    change over time.
 2. **Main-thread callers are refused too.** A forward made on main, i.e. from a pipe ticking in
-   the border band or a pinned machine, into a region-owned target is refused. This is open
-   decision Q1; it may reduce working P2P links more than case 1 alone.
+   the border band or a pinned machine, into a region-owned target is refused.
+   - **Q1 decided (owner, 2026-10-23): keep strict.** Main is not the owner of a free-running
+     region's positions, so the forward is refused. There is no "main is trusted everywhere".
+   - A later separate gate may define MAIN_OWNED / BORDER_OWNED / REGION_OWNED.
+   - **`p2pForwardRejectedMainCaller > 0` on the canary is not a failure.** It records functional
+     degradation.
 3. **Redstone / Light P2P** across regions still perform their synchronous world updates
    (CALLBACK-UNDER-P-001 / REDSTONE-P2P-CALLBACK-001 open). Not addressed by this canary.
 4. **If the addon's startup gate FAILS** (an AE2 jar different from the audited one), **no**
@@ -69,6 +74,24 @@ Other mod races seen in production (Draconic `deSpawnedMobs`, Mekanism `NetworkA
 unrelated to the addon (`docs/ops/OPS-TRIAGE-2026-10-23-tick-skips-crashes-dumps.md`).
 
 ## Canary checklist
+
+**Baseline before the first start** (read-only; fill in RCON to include live status):
+```
+./canary-baseline.sh <server dir> baseline-pre-start       # before any change (old Core / mods)
+# ... deploy ...
+RCON_PORT=<p> RCON_PASS=<pw> ./canary-baseline.sh <server dir> t0-after-start
+RCON_PORT=<p> RCON_PASS=<pw> ./canary-baseline.sh <server dir> t30min
+RCON_PORT=<p> RCON_PASS=<pw> ./canary-baseline.sh <server dir> t2h
+```
+Records:
+- Core universal-jar SHA, commit and dirty flag, and whether the `NestworldOwnership` contract is
+  present; the active Core from `run.sh`;
+- addon and every mod jar SHA, with AE2 / MegaCells / ExtendedAE / Mekanism / SolarFlux / Pipez
+  called out;
+- JVM args (freeRunning flag; warns if the fixtures flag is present);
+- pin files (`nestworld-pins`, `-be-pins`, `-pinned-mods`, `-be-cascade-safe`);
+- with RCON: `nwcompatae2 stats`, `nestworld status` (regions), `nestworld pins`, forceloads;
+- log signal counts and recent crash reports.
 
 **Deploy** (owner-run; empty server; world backup first):
 ```
@@ -110,5 +133,9 @@ Logs and crash reports: grep for `appeng`, `nestworld-compat-ae2`, `ConcurrentMo
 - no watchdog hang attributable to AE2 or the addon;
 - TPS comparable to the pre-canary baseline.
 
-Non-AE2 mod races (Draconic, Mekanism, PlayerSync) are classified separately and are not counted as
-addon failures.
+Non-AE2 mod races (Draconic `deSpawnedMobs`, Mekanism `NetworkAcceptorCache`, PlayerSync) are
+separate incident classes. They are not counted as addon failures unless there is evidence of a
+causal link.
+
+**Order (owner):** deploy ONE instance → backup → baseline → 30 min → if clean, 2 h → STOP and
+review the evidence.

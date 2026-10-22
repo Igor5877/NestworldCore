@@ -1,7 +1,8 @@
 # P2P-FORWARDING-FAIL-CLOSED-001 (H3 safety gate) — implementation and evidence
 
-**Status: IMPLEMENTED; P2P-9 PASS, negative control discriminates, focused regression PASS,
-production-mode verification PASS (2026-10-23).** Proposed status: CLOSED / VERIFIED.
+**Status: CLOSED / VERIFIED (owner, 2026-10-23)** as an H3 *safety boundary*. P2P-9 PASS, the
+negative control discriminates, focused regression PASS, production-mode verification PASS.
+True cross-region forwarding stays OPEN.
 
 | Item | Status |
 |---|---|
@@ -100,9 +101,13 @@ Same jar, without `-Dnestworld.compatAe2.fixtures`, with `-Dmixin.debug.export=t
   enforcement for unknown P2P subclasses is **not implemented yet**.
 
 ## 6. Open decisions
-- **Q1, main-thread callers.** Should a forward on main into a region-owned target stay refused
+- **Q1, main-thread callers: DECIDED (owner, 2026-10-23), keep strict for the canary.** No
+  automatic main trust. A later gate may define MAIN_OWNED / BORDER_OWNED / REGION_OWNED.
+  Original question: should a forward on main into a region-owned target stay refused
   (current, strict ownership)? Or does the owner want main treated as owner of border-band positions?
   That would need Core to expose border-band membership through the same read-only contract.
-- **Q2, provenance.** The canary Core installer was built with `Git-Dirty: true`. The reason is an
+- **Q2, provenance: RESOLVED.** Clean rebuild from `1b1797756`: `Git-Dirty: false`, SHA-256
+  `d0dbffaf…2f27fc` (readiness doc). History: the first canary Core installer was built with
+  `Git-Dirty: true`. The reason is an
   untracked `compat/` directory in the work tree. The Core sources are exactly the canary branch
   commit `1b1797756`. A clean rebuild is possible before any production use if required.
