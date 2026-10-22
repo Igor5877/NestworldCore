@@ -1,7 +1,8 @@
 # P2P-ACCESS-DEPTH-001 (AE2-COMPAT-P2P-001 H2) — implementation and evidence
 
-**Status: IMPLEMENTED; H2-1..H2-5, negative control, 120 s stress (JFR) and focused regression PASS
-(2026-10-15). STOP for owner review before H3.** Proposed: CLOSED / VERIFIED.
+**Status: CLOSED / VERIFIED / FROZEN (owner, 2026-10-15).** H2-1..H2-5, negative control, 120 s
+stress (JFR) and focused regression PASS. Since P2P-FORWARDING-FAIL-CLOSED-001, H2-1 / H2-3 run on
+the owner thread (see that gate's §3).
 
 Sub-gate statuses:
 
