@@ -172,7 +172,7 @@ public final class P2PFixtures {
         UUID hostA = host(level, in), hostB = host(level, target);
         if (hostA == null || hostB == null) return "need armor stand hosts near in and near target";
         String[] tA = {null}, tB = {null}, view = {null}, err = {null};
-        long[] e0 = {Long.MIN_VALUE}, e1 = {Long.MIN_VALUE}, accepted = {Long.MIN_VALUE};
+        long[] e0 = {Long.MIN_VALUE}, e1 = {Long.MIN_VALUE}, accepted = {Long.MIN_VALUE}, rej0 = {0}, rejected = {0};
         int[] liveId = {0};
         boolean[] done = {false};
         Runnable step3 = () -> {
@@ -182,9 +182,7 @@ public final class P2PFixtures {
         Runnable step2 = () -> {
             try {
                 tA[0] = Thread.currentThread().getName();
-                BlockEntity seen = level.getBlockEntity(target);                  // the routing AE2's CapabilityGuard.get uses
-                view[0] = seen == null ? "NULL" : (System.identityHashCode(seen) == liveId[0] ? "LIVE" : "DETACHED")
-                        + "(" + seen.getClass().getSimpleName() + "@" + Integer.toHexString(System.identityHashCode(seen)) + ")";
+                rej0[0] = Ae2Compat.COUNTERS.p2pForwardForeignRejected.sum();
                 BlockEntity inBe = level.getBlockEntity(in);
                 if (kind.equals("item")) {
                     IItemHandler h = inBe.getCapability(ForgeCapabilities.ITEM_HANDLER, Direction.DOWN).orElse(null);
@@ -198,6 +196,12 @@ public final class P2PFixtures {
                 err[0] = t.toString();
                 Ae2Compat.LOG.warn("[nestworld-compat-ae2] p2p fixture {} transfer threw on {}", label, Thread.currentThread().getName(), t);
             }
+            rejected[0] = Ae2Compat.COUNTERS.p2pForwardForeignRejected.sum() - rej0[0];
+            // Fixture probe, AFTER the transfer (cannot influence it): what thread A's routing would return
+            // for the target. Not an AE2 access: with the guard on, AE2 never performs this lookup.
+            BlockEntity seen = level.getBlockEntity(target);
+            view[0] = seen == null ? "NULL" : (System.identityHashCode(seen) == liveId[0] ? "LIVE" : "DETACHED")
+                    + "(" + seen.getClass().getSimpleName() + "@" + Integer.toHexString(System.identityHashCode(seen)) + ")";
             RegionTasks.submit(hostB, step3);
         };
         Runnable step1 = () -> {
@@ -222,11 +226,14 @@ public final class P2PFixtures {
                 long delta = e1[0] - e0[0];
                 boolean live = view[0].startsWith("LIVE");
                 boolean crossOwner = live && !tA[0].equals(tB[0]) && delta > 0;
+                boolean refused = accepted[0] == 0 && delta == 0 && rejected[0] > 0;
                 if (accepted[0] != delta) f.add("conservation: source decrease " + accepted[0] + " != destination increase " + delta);
                 if (crossOwner) f.add("cross-owner mutation: target owned by " + tB[0] + " mutated on " + tA[0]);
-                detail = "accepted=" + accepted[0] + " delta=" + delta + " e0=" + e0[0] + " e1=" + e1[0] + " view=" + view[0] + " threadA=" + tA[0] + " threadB=" + tB[0];
-                status = "P2P-9 " + label + " " + kind + (f.isEmpty() ? ": CONSERVED/LOCAL " : ": VIOLATION " + f + " ") + detail
-                        + (accepted[0] == 0 ? " (WARNING: nothing transferred)" : "");
+                detail = "accepted=" + accepted[0] + " delta=" + delta + " e0=" + e0[0] + " e1=" + e1[0]
+                        + " forwardRejected+" + rejected[0] + " fixtureProbeView=" + view[0] + " threadA=" + tA[0] + " threadB=" + tB[0];
+                status = "P2P-9 " + label + " " + kind + (!f.isEmpty() ? ": VIOLATION " + f + " "
+                        : refused ? ": REFUSED/FAIL-CLOSED (no loss, no mutation) " : ": CONSERVED/LOCAL ") + detail
+                        + (accepted[0] == 0 && !refused ? " (WARNING: nothing transferred)" : "");
             }
             Ae2Compat.LOG.info("[nestworld-compat-ae2] p2p fixture {}", status);
         };
@@ -680,6 +687,35 @@ public final class P2PFixtures {
         return "loop bound active=" + i1.isActive() + "," + o1.isActive() + "," + i2.isActive() + "," + o2.isActive();
     }
 
+    /** Runs {@code body} on the RegionThread ticking {@code host} and waits (main is blocked, the region
+     *  is free-running). Needed since P2P-FORWARDING-FAIL-CLOSED: only the owner may forward. */
+    private static <T> T onOwner(UUID host, java.util.function.Supplier<T> body) {
+        Object[] out = {null};
+        Throwable[] err = {null};
+        var done = new java.util.concurrent.CountDownLatch(1);
+        RegionTasks.submit(host, () -> {
+            try {
+                out[0] = body.get();
+            } catch (Throwable t) {
+                err[0] = t;
+            } finally {
+                done.countDown();
+            }
+        });
+        try {
+            if (!done.await(5, java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("owner thread did not run within 5 s");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
+        if (err[0] instanceof RuntimeException re) throw re;
+        if (err[0] instanceof Error e) throw e;
+        if (err[0] != null) throw new IllegalStateException(err[0]);
+        @SuppressWarnings("unchecked")
+        T r = (T) out[0];
+        return r;
+    }
+
     private static int depth(P2PTunnelPart<?> t) {
         return ((NwCapTunnel) t).nw$depth();
     }
@@ -693,12 +729,21 @@ public final class P2PFixtures {
         if (!(i1.isActive() && o1.isActive() && i2.isActive() && o2.isActive())) return "H2-1: INVALID (loop tunnels not all active)";
         List<String> f = new ArrayList<>();
         List<String> seen = new ArrayList<>();
+        UUID owner = host(level, base);
+        if (owner == null) return "H2-1: INVALID (need an armor stand host near the loop)";
+        String[] ranOn = {null};
         P2PDepth.hookInGet = (tun, d) -> seen.add((tun == o1 ? "O1" : tun == o2 ? "O2" : tun == i1 ? "I1" : tun == i2 ? "I2" : "?") + "@" + d);
         long rej0 = Ae2Compat.COUNTERS.p2pDepthRejected.sum();
         long accepted;
         String err = null;
         try {
-            accepted = transfer(level, base, Direction.NORTH, "fe", 1000);
+            accepted = onOwner(owner, () -> {                   // owner thread: forwarding is allowed (fail-closed gate)
+                ranOn[0] = Thread.currentThread().getName();
+                long a = transfer(level, base, Direction.NORTH, "fe", 1000);
+                for (var t : List.of(l[0], l[1], l[2], l[3]))
+                    if (depth(t) != 0 || (P2PDepth.PROTECT && ((NwCapTunnel) t).nw$hasEntry())) seen.add("LEAK:" + t);
+                return a;
+            });
         } catch (Throwable t) {
             accepted = -9;
             err = t.toString();
@@ -710,12 +755,9 @@ public final class P2PFixtures {
         if (accepted != 0) f.add("loop accepted " + accepted + " (expected 0: recursion must end in the empty handler)");
         if (rejected != 1) f.add("recursion rejections " + rejected + " (expected exactly 1: O1 at depth 2)");
         if (!seen.equals(List.of("O1@1", "O2@1", "O1@2"))) f.add("guard sequence " + seen + " (expected [O1@1, O2@1, O1@2])");
-        for (var t : List.of(i1, o1, i2, o2)) {
-            if (depth(t) != 0) f.add("depth leak " + t + "=" + depth(t));
-            if (P2PDepth.PROTECT && ((NwCapTunnel) t).nw$hasEntry()) f.add("ThreadLocal entry left on " + t);
-        }
+        for (String x : seen) if (x.startsWith("LEAK:")) f.add("depth leak on the owner thread " + x);
         status = "H2-1 recursion [depth=" + (P2PDepth.PROTECT ? "THREAD" : "SHARED") + "]" + (f.isEmpty() ? ": PASS " : ": FAIL " + f + " ")
-                + "accepted=" + accepted + " rejected=" + rejected + " sequence=" + seen + " thread=" + Thread.currentThread().getName();
+                + "accepted=" + accepted + " rejected=" + rejected + " sequence=" + seen + " thread=" + ranOn[0];
         Ae2Compat.LOG.info("[nestworld-compat-ae2] p2p fixture {}", status);
         return status;
     }
@@ -774,12 +816,15 @@ public final class P2PFixtures {
         if (bDone.getCount() != 0) f.add("B did not run within 5 s");
         if (aErr != null || bErr[0] != null) f.add("exception A=" + aErr + " B=" + bErr[0]);
         if (b[0] <= 0) f.add("B rejected while A was inside the same tunnel (accepted " + b[0] + ")");
-        if (a <= 0) f.add("A failed after resuming (accepted " + a + ")");
+        boolean mainRefusedByGate = P2POwnership.PROTECT && P2POwnership.MODE == P2POwnership.Mode.CONTRACT;
+        if (mainRefusedByGate ? a != 0 : a <= 0)
+            f.add("A after resuming: accepted " + a + (mainRefusedByGate ? " (expected 0: main is not the owner, fail-closed)" : ""));
         if (depth(o) != 0 || bDepthAfter[0] != 0) f.add("depth not restored A=" + depth(o) + " B=" + bDepthAfter[0]);
         if (P2PDepth.PROTECT && (((NwCapTunnel) o).nw$hasEntry() || bEntry[0])) f.add("ThreadLocal entry leaked");
         long falseRejects = Ae2Compat.COUNTERS.p2pDepthFalseReject.sum() - fr0;
         status = "H2-2 " + kind + " [depth=" + (P2PDepth.PROTECT ? "THREAD" : "SHARED") + "]" + (f.isEmpty() ? ": PASS " : ": FAIL " + f + " ")
-                + "A(main) depthSeen=" + aDepthSeen[0] + " accepted=" + a + " | B(" + bThread[0] + ") accepted=" + b[0]
+                + "A(main) depthSeen=" + aDepthSeen[0] + " accepted=" + a + (mainRefusedByGate ? " [fail-closed: non-owner]" : "")
+                + " | B(" + bThread[0] + ") accepted=" + b[0]
                 + " | falseRejects+" + falseRejects;
         Ae2Compat.LOG.info("[nestworld-compat-ae2] p2p fixture {}", status);
         return status;
@@ -941,28 +986,35 @@ public final class P2PFixtures {
      *  restore depth; the next transfer on the same thread through the same tunnel must work. */
     public static String h2Throw(ServerLevel level, String kind, BlockPos in, BlockPos out, int amount) {
         P2PTunnelPart<?> o = tunnel(level, out, Direction.UP);
-        if (o == null) return "H2-3: INVALID";
-        P2PDepth.hookInGet = (tun, d) -> {
-            if (tun == o) throw new IllegalStateException("H2-3 deliberate handler failure");
-        };
-        String thrown = null;
-        try {
-            transfer(level, in, kind, amount);
-        } catch (IllegalStateException e) {
-            thrown = e.getMessage();
-        } finally {
-            P2PDepth.hookInGet = null;
-        }
-        int after = depth(o);
-        boolean entry = ((NwCapTunnel) o).nw$hasEntry();
-        long next = transfer(level, in, kind, amount);
+        UUID owner = host(level, in);
+        if (o == null || owner == null) return "H2-3: INVALID";
+        Object[] r = onOwner(owner, () -> {                     // all on the owner thread (fail-closed gate)
+            String thrownIn = null;
+            P2PDepth.hookInGet = (tun, d) -> {
+                if (tun == o) throw new IllegalStateException("H2-3 deliberate handler failure");
+            };
+            try {
+                transfer(level, in, kind, amount);
+            } catch (IllegalStateException e) {
+                thrownIn = e.getMessage();
+            } finally {
+                P2PDepth.hookInGet = null;
+            }
+            int d = depth(o);
+            boolean e = ((NwCapTunnel) o).nw$hasEntry();
+            return new Object[]{thrownIn, d, e, transfer(level, in, kind, amount), Thread.currentThread().getName()};
+        });
+        String thrown = (String) r[0];
+        int after = (Integer) r[1];
+        boolean entry = (Boolean) r[2];
+        long next = (Long) r[3];
         List<String> f = new ArrayList<>();
         if (thrown == null) f.add("the handler failure did not propagate");
         if (after != 0) f.add("depth after the exception = " + after);
         if (P2PDepth.PROTECT && entry) f.add("ThreadLocal entry left after the exception");
         if (next <= 0) f.add("next transfer on the same thread failed (accepted " + next + "): tunnel dead");
         status = "H2-3 " + kind + " [depth=" + (P2PDepth.PROTECT ? "THREAD" : "SHARED") + "]" + (f.isEmpty() ? ": PASS " : ": FAIL " + f + " ")
-                + "thrown=" + thrown + " depthAfter=" + after + " nextAccepted=" + next;
+                + "thrown=" + thrown + " depthAfter=" + after + " nextAccepted=" + next + " thread=" + r[4];
         Ae2Compat.LOG.info("[nestworld-compat-ae2] p2p fixture {}", status);
         return status;
     }
