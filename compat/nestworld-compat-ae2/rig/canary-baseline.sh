@@ -46,17 +46,24 @@ def rd(s):
         if not c: raise ConnectionError('closed')
         d += c
     return struct.unpack('<i', d[:4])[0], d[8:-2].decode('utf-8', 'replace')
-s = socket.create_connection(('127.0.0.1', port), timeout=60); s.send(pkt(1, 3, pw)); rd(s)
+# one connection per command: a long multi-packet reply can make the server drop the connection
 for c in ['nwcompatae2 stats', 'nestworld status', 'nestworld pins', 'forceload query']:
+    s = None
     try:
+        s = socket.create_connection(('127.0.0.1', port), timeout=60); s.send(pkt(1, 3, pw)); rd(s)
         s.send(pkt(2, 2, c)); s.send(pkt(3, 0, '')); out = []
         while True:
-            rid, body = rd(s)
+            try:
+                rid, body = rd(s)
+            except ConnectionError:
+                out.append('\n[connection closed by server after partial reply]'); break
             if rid == 3: break
             out.append(body)
         print('> ' + c); print(''.join(out))
     except Exception as e:
-        print('> ' + c + ' FAILED: ' + str(e)); break
+        print('> ' + c + ' FAILED: ' + str(e))
+    finally:
+        if s: s.close()
 PY
 fi
 echo "== latest log signals"
