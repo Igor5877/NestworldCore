@@ -4,8 +4,8 @@ package net.nestworld.module;
  *  the same module across generations -- see {@link ModuleGeneration} for what DOES change. */
 public record ModuleId(String value) {
     public ModuleId {
-        if (value == null || value.isBlank()) {
-            throw new IllegalArgumentException("ModuleId must not be blank");
+        if (value == null || !value.matches("^[a-z0-9]+(?:[._-][a-z0-9]+)*$") || value.length() < 2 || value.length() > 64) {
+            throw new IllegalArgumentException("ModuleId must be 2..64 canonical lowercase characters");
         }
     }
 }

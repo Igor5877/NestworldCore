@@ -2,6 +2,10 @@ package net.nestworld.module;
 
 import com.mojang.brigadier.Command;
 import net.minecraft.commands.CommandSourceStack;
+import net.minecraftforge.eventbus.api.Event;
+import net.minecraftforge.eventbus.api.EventPriority;
+
+import java.util.function.Consumer;
 
 /**
  * `docs/MODULE0_AUDIT.md` §D: the Core-controlled boundary a module uses to acquire resources
@@ -18,8 +22,8 @@ import net.minecraft.commands.CommandSourceStack;
  *   for anything this interface already covers -- doing so escapes ledger tracking entirely.
  *
  * Does:
- *   - registerListener(Object) -- MinecraftForge.EVENT_BUS registration, real teardown via
- *     .unregister() on revoke
+ *   - registerListener(type, priority, receiveCancelled, handler) -- classloader-safe Forge
+ *     event registration, real teardown via .unregister() on revoke
  *   - registerCommand(String, Command<CommandSourceStack>) -- a top-level Brigadier literal,
  *     added as a sibling to NestWorld's own command tree, never touching it
  *   - identity() -- this module's ModuleIdentity, for the module's own logging/attribution use
@@ -75,9 +79,15 @@ public interface ModuleContext {
      * call at startup/reload, not per connection. Throws after quiesce or serialization failure. */
     SyncDataSnapshot snapshotSyncData();
 
-    /** Registers {@code listener} with the Forge event bus. Returns null if this module is no
-     *  longer accepting registrations (QUIESCING or later). */
-    ResourceHandle registerListener(Object listener);
+    /** Registers a typed listener through EventBus' lambda path. This is the only supported
+     * listener form for external modules because annotation wrappers are generated only for
+     * GAME-layer classes. Returns null after quiesce. */
+    <E extends Event> ResourceHandle registerListener(Class<E> type, EventPriority priority,
+                                                       boolean receiveCancelled, Consumer<E> handler);
+
+    default <E extends Event> ResourceHandle registerListener(Class<E> type, Consumer<E> handler) {
+        return registerListener(type, EventPriority.NORMAL, false, handler);
+    }
 
     /** Registers a top-level Brigadier command literal {@code name -> executor}, as a sibling of
      *  NestWorld's own command tree (never modifies it). Returns null if this module is no

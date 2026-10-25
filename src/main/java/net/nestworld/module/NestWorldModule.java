@@ -1,9 +1,9 @@
 package net.nestworld.module;
 
 /**
- * MODULE-1: the interface a privileged NestWorld module implements. Discovered by being handed
- * to {@link ModuleRegistry#discover} before server start (startup-only discovery -- no jar
- * scanning, no filesystem watcher, no reload command exist in MODULE-1's scope).
+ * The interface a privileged NestWorld module implements. Built-ins are handed to
+ * {@link ModuleRegistry#discover}; external implementations are discovered at server start from
+ * {@code nestworld-modules/*.jar}. Discovery remains startup-only with no filesystem watcher.
  *
  * <pre>
  * Responsibility:

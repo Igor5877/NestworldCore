@@ -31,6 +31,7 @@
 /projects/**/out/
 /projects/**/run/
 /projects/**/*.launch
+/modules/**/build/
 /repo/
 src/generated/resources/.cache/
 src/generated_test/resources/.cache/

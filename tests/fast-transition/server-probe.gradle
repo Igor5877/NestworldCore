@@ -19,8 +19,13 @@ gradle.projectsEvaluated {
         archiveFileName = 'fasttransitionprobe.jar'
         destinationDirectory = p.layout.buildDirectory.dir('fast-transition-probe')
     }
+    def invalidJar = p.tasks.register('jarInvalidExternalModuleProbe', Jar) {
+        from new File(testRoot, 'invalid-module')
+        archiveFileName = 'invalid-probe.jar'
+        destinationDirectory = p.layout.buildDirectory.dir('fast-transition-probe')
+    }
     def prepare = p.tasks.register('prepareFastTransitionProbe') {
-        dependsOn jar
+        dependsOn jar, invalidJar, gradle.rootProject.project(':fast-transition-module').tasks.named('jar')
         doLast {
             def marker = new File(work, '.fast-transition-probe')
             if (work.exists() && work.list().length > 0 && !marker.exists())
@@ -28,6 +33,17 @@ gradle.projectsEvaluated {
             work.mkdirs()
             marker.text = 'Disposable Fast Transition server fixture\n'
             new File(work, 'mods').mkdirs()
+            def moduleDir = new File(work, 'nestworld-modules')
+            moduleDir.mkdirs()
+            copy {
+                from gradle.rootProject.project(':fast-transition-module').tasks.named('jar').get().archiveFile
+                into moduleDir
+                rename { 'fast-transition.jar' }
+            }
+            copy {
+                from invalidJar.get().archiveFile
+                into moduleDir
+            }
             new File(work, 'eula.txt').text = 'eula=true\n'
             new File(work, 'server.properties').text = '''server-ip=127.0.0.1
 server-port=25872
@@ -63,7 +79,6 @@ max-tick-time=120000
             def api = rc.mods.maybeCreate('nestworld_modapi')
             api.source(gradle.rootProject.project(':modapi').sourceSets.main)
         }
-        systemProperty 'nestworld.fastTransition', 'true'
         systemProperty 'nestworld.fastTransition.probe', 'true'
         jvmArgs '-Xmx2G'
         args 'nogui'

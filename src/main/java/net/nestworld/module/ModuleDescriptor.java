@@ -1,9 +1,8 @@
 package net.nestworld.module;
 
-/** MODULE-1: static metadata known before a module is ever loaded -- the {@code DISCOVERED}
- *  state's payload (`docs/MODULE0_AUDIT.md` §C). Startup-only discovery for MODULE-1: no jar
- *  scanning, no classpath discovery mechanism exists yet -- a {@link NestWorldModule} is
- *  discovered by being handed to {@link ModuleRegistry#discover} before server start. */
+/** Static metadata carried by the {@code DISCOVERED} state. For external jars the loader reads
+ * the equivalent data from {@code META-INF/nestworld/module.json} before loading the entrypoint,
+ * then cross-checks this runtime descriptor. */
 public record ModuleDescriptor(ModuleId id, ModuleVersion version, String displayName) {
     public ModuleDescriptor {
         if (displayName == null || displayName.isBlank()) {

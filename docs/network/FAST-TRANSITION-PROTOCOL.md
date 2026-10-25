@@ -25,16 +25,19 @@ Hence Stage 0 is NOT "download server data in the launcher". It is:
 1. After a successful join the client mod persists the INPUTS (per-registry `Snapshot` NBT, recipe
    packet bytes), never live state: `RegCache` HIT means "GameData in THIS process already holds this
    snapshot", and `RecipeCache` holds live `Recipe` objects. A fingerprint on disk would be a false HIT.
-2. On the next launch, when resource reload finishes and the client is at the main menu, the client mod
-   REPLAYS the persisted inputs (inject snapshot, build recipes) and sets the in-memory fingerprint.
-   Connect then HITs. A changed server -> fingerprint differs -> normal MISS path (safe).
+2. Whenever the title screen is shown with no injected registry state (first menu after launch and
+   again after a full disconnect), the client mod REPLAYS the persisted inputs and sets the in-memory
+   fingerprint. Connect then HITs. A changed server -> fingerprint differs -> normal MISS path (safe).
+   The current client implementation replays registry snapshots; recipe replay remains separate work.
 3. The launcher only seeds those files for a brand-new client (first ever launch) and may pass the
    lobby manifest id via `systemEnv`. It never carries Mojang/session tokens to V.
 4. `PRE_READY` (client reached the menu) lets V start `PREPARE` for the lobby/island chunks late
    (leases live <= 1200 ticks).
 
-Expected: removes ~5.4 s of 17.6 s on repeat launches. JEI (5.2 s) is a separate decision (lazy start
-trades a login freeze for a freeze at first inventory open). Not a promise: verify with FT-OBS-1.
+Current measurement: registry prewarm moved the connect path from 4.4-4.7 s to 1.7 s in one loaded-machine
+run, while replay itself took 4.9 s at the menu. This proves work moved off the connection path; it does
+not yet prove an end-to-end launch-to-play gain. Recipe-cache work (~2.4 s in the earlier run) and JEI
+(5.2 s) remain separate decisions. Verify total launch-to-play and every transition with FT-OBS-1.
 
 ## 2. Transports
 

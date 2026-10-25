@@ -6,10 +6,13 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.eventbus.api.Event;
+import net.minecraftforge.eventbus.api.EventPriority;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /**
  * Real implementation of {@link ModuleContext}. Package-private -- modules only ever see the
@@ -63,23 +66,34 @@ final class ModuleContextImpl implements ModuleContext {
     private final ModuleIdentity identity;
     private final ResourceLedger ledger;
     /** Binds a fresh declaration into the server's CURRENT dispatcher (I4); supplied by the registry. */
-    private final java.util.function.Consumer<CommandDeclaration> currentDispatcherBinder;
+    private final java.util.function.Predicate<CommandDeclaration> currentDispatcherBinder;
+    private final java.util.function.Consumer<CommandDeclaration> commandReleaser;
     private final java.util.List<CommandDeclaration> declarations = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final AtomicBoolean accepting = new AtomicBoolean(true);
+    private final AtomicBoolean callbacksLive = new AtomicBoolean(true);
     private final net.minecraft.server.MinecraftServer server;
+    private final java.util.Set<String> capabilities;
+    private final java.util.function.BiConsumer<String, Throwable> callbackFailure;
     private LoginBudget loginBudget;
     private ModuleChunkPreparations preparations;
 
     ModuleContextImpl(net.minecraft.server.MinecraftServer server, ModuleIdentity identity, ResourceLedger ledger,
-                      java.util.function.Consumer<CommandDeclaration> currentDispatcherBinder) {
+                      java.util.Set<String> capabilities,
+                      java.util.function.Predicate<CommandDeclaration> currentDispatcherBinder,
+                      java.util.function.Consumer<CommandDeclaration> commandReleaser,
+                      java.util.function.BiConsumer<String, Throwable> callbackFailure) {
         this.server = server;
         this.identity = identity;
         this.ledger = ledger;
+        this.capabilities = java.util.Set.copyOf(capabilities);
         this.currentDispatcherBinder = currentDispatcherBinder;
+        this.commandReleaser = commandReleaser;
+        this.callbackFailure = callbackFailure;
     }
 
     void stopAccepting() {
         accepting.set(false);
+        callbacksLive.set(false);
     }
 
     /** Declarations that must be bound into each new dispatcher generation while RUNNING. */
@@ -105,7 +119,7 @@ final class ModuleContextImpl implements ModuleContext {
     @Override
     public ResourceHandle registerLoginBudget(LoginBudget budget) {
         requireServerThread();
-        if (!accepting.get()) return null;
+        if (!accepting.get() || !capabilities.contains("loginBudget")) return null;
         java.util.Objects.requireNonNull(budget);
         if (loginBudget != null) throw new IllegalStateException("module already registered a login budget");
         loginBudget = budget;
@@ -124,7 +138,7 @@ final class ModuleContextImpl implements ModuleContext {
     @Override
     public ChunkPreparation prepareChunks(ChunkPreparationRequest request) {
         requireServerThread();
-        if (!accepting.get()) return null;
+        if (!accepting.get() || !capabilities.contains("chunkPreparation")) return null;
         if (preparations == null) {
             preparations = new ModuleChunkPreparations(server, identity);
             ledger.record(preparations);
@@ -136,17 +150,35 @@ final class ModuleContextImpl implements ModuleContext {
     public SyncDataSnapshot snapshotSyncData() {
         requireServerThread();
         if (!accepting.get()) throw new IllegalStateException("module context revoked");
+        if (!capabilities.contains("syncData")) throw new IllegalStateException("syncData capability not declared");
         return ModuleSyncData.capture(server);
     }
 
     @Override
-    public ResourceHandle registerListener(Object listener) {
+    public <E extends Event> ResourceHandle registerListener(Class<E> type, EventPriority priority,
+                                                              boolean receiveCancelled, Consumer<E> handler) {
         requireServerThread();
-        if (!accepting.get()) {
+        if (!accepting.get() || !capabilities.contains("listeners")) {
             LOGGER.info("NestWorld module {}: listener registration REJECTED (no longer accepting)", identity);
             return null;
         }
-        MinecraftForge.EVENT_BUS.register(listener);
+        java.util.Objects.requireNonNull(type);
+        java.util.Objects.requireNonNull(priority);
+        java.util.Objects.requireNonNull(handler);
+        AtomicBoolean live = new AtomicBoolean(true);
+        Consumer<E> wrapper = event -> {
+            if (!live.get() || !callbacksLive.get()) return;
+            try {
+                handler.accept(event);
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
+            } catch (Throwable failure) {
+                callbacksLive.set(false);
+                callbackFailure.accept("listener:" + type.getName(), failure);
+                sneakyThrow(failure);
+            }
+        };
+        MinecraftForge.EVENT_BUS.addListener(priority, receiveCancelled, type, wrapper);
         ResourceHandle handle = new ResourceHandle() {
             private final AtomicBoolean revoked = new AtomicBoolean(false);
 
@@ -158,7 +190,8 @@ final class ModuleContextImpl implements ModuleContext {
             @Override
             public void revoke() {
                 if (revoked.compareAndSet(false, true)) {
-                    MinecraftForge.EVENT_BUS.unregister(listener);
+                    live.set(false);
+                    MinecraftForge.EVENT_BUS.unregister(wrapper);
                 }
             }
         };
@@ -169,13 +202,33 @@ final class ModuleContextImpl implements ModuleContext {
     @Override
     public ResourceHandle registerCommand(String name, Command<CommandSourceStack> executor) {
         requireServerThread();
-        if (!accepting.get()) {
+        if (!accepting.get() || !capabilities.contains("commands")) {
             LOGGER.info("NestWorld module {}: command '{}' registration REJECTED (no longer accepting)", identity, name);
             return null;
         }
-        CommandDeclaration declaration = new CommandDeclaration(name, executor);
+        Command<CommandSourceStack> guarded = command -> {
+            if (!callbacksLive.get()) {
+                command.getSource().sendFailure(net.minecraft.network.chat.Component.literal(
+                        "module " + identity.id().value() + " FAILED"));
+                return 0;
+            }
+            try {
+                return executor.run(command);
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
+            } catch (Throwable failure) {
+                callbacksLive.set(false);
+                callbackFailure.accept("command:" + name, failure);
+                return sneakyThrow(failure);
+            }
+        };
+        CommandDeclaration declaration = new CommandDeclaration(name, guarded);
+        if (!currentDispatcherBinder.test(declaration)) {
+            declaration.live.set(false);
+            LOGGER.warn("NestWorld module {}: command '{}' registration REJECTED (name already owned)", identity, name);
+            return null;
+        }
         declarations.add(declaration);
-        currentDispatcherBinder.accept(declaration);
         ResourceHandle handle = new ResourceHandle() {
             private final AtomicBoolean revoked = new AtomicBoolean(false);
 
@@ -188,10 +241,16 @@ final class ModuleContextImpl implements ModuleContext {
             public void revoke() {
                 if (revoked.compareAndSet(false, true)) {
                     declaration.live.set(false); // soft revoke: every binding of this declaration stops executing
+                    commandReleaser.accept(declaration);
                 }
             }
         };
         ledger.record(handle);
         return handle;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable, R> R sneakyThrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 }

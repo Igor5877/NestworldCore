@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "id": "fast-transition",
+  "version": "1.0.0",
+  "displayName": "Fast Transition",
+  "entrypoint": "dev.nestworld.fasttransition.FastTransitionModule",
+  "spi": "1.0",
+  "capabilities": {
+    "commands": 1,
+    "listeners": 1,
+    "loginBudget": 1,
+    "chunkPreparation": 1,
+    "syncData": 1
+  },
+  "side": "server",
+  "critical": false,
+  "mappings": "mcp",
+  "dependencies": []
+}

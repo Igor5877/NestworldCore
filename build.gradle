@@ -2308,6 +2308,117 @@ project(':modapi') {
     }
 }
 
+// MODULE-2: compile-time-only public SPI for jars loaded from nestworld-modules/.
+// The same classes remain in Core at runtime; module jars must never bundle this artifact.
+project(':module-spi') {
+    apply plugin: 'java-library'
+    apply plugin: 'maven-publish'
+
+    group = 'net.nestworld'
+    version = '1.0.0-SNAPSHOT'
+
+    sourceSets.main.java {
+        srcDir "$rootDir/src/main/java"
+        include 'net/nestworld/module/NestWorldModule.java'
+        include 'net/nestworld/module/ModuleContext.java'
+        include 'net/nestworld/module/ModuleDescriptor.java'
+        include 'net/nestworld/module/ModuleId.java'
+        include 'net/nestworld/module/ModuleVersion.java'
+        include 'net/nestworld/module/ModuleIdentity.java'
+        include 'net/nestworld/module/ModuleGeneration.java'
+        include 'net/nestworld/module/ModuleExecutionContext.java'
+        include 'net/nestworld/module/ModuleLifecycleState.java'
+        include 'net/nestworld/module/ModuleFailure.java'
+        include 'net/nestworld/module/ResourceHandle.java'
+        include 'net/nestworld/module/LoginBudget.java'
+        include 'net/nestworld/module/ChunkPreparation.java'
+        include 'net/nestworld/module/ChunkPreparationRequest.java'
+        include 'net/nestworld/module/ContentGeneration.java'
+        include 'net/nestworld/module/SyncDataSnapshot.java'
+        include 'net/nestworld/module/ModuleSpi.java'
+    }
+
+    dependencies {
+        compileOnly project(':clean')
+        compileOnly "net.minecraftforge:eventbus:${EVENTBUS_VERSION}"
+        compileOnly 'com.mojang:brigadier:1.0.18'
+    }
+
+    java { withSourcesJar() }
+
+    publishing {
+        publications {
+            moduleSpi(MavenPublication) {
+                from components.java
+                artifactId = 'nestworld-module-spi'
+            }
+        }
+    }
+}
+
+// First external reference module. It is never merged into Core; the distributable jar is
+// produced by :forge:fastTransitionModuleJar after SRG reobfuscation.
+project(':fast-transition-module') {
+    apply plugin: 'java-library'
+    group = 'dev.nestworld'
+    version = '1.0.0'
+
+    dependencies {
+        compileOnly project(':module-spi')
+        compileOnly project(':forge')
+        compileOnly 'com.mojang:brigadier:1.0.18'
+        compileOnly 'com.google.code.gson:gson:2.10.1'
+        compileOnly 'org.slf4j:slf4j-api:2.0.9'
+    }
+
+    tasks.named('jar', Jar) {
+        archiveFileName = 'fast-transition-mcp.jar'
+    }
+}
+
+project(':forge') {
+    // MODULE-2/G7: production Fast Transition module, remapped to the server's SRG namespace.
+    // Its development jar remains MCP-named for ForgeGradle runs and isolated probes.
+    def reobfFastTransitionModule = tasks.register('reobfFastTransitionModule', net.minecraftforge.gradle.patcher.tasks.ReobfuscateJar) {
+        def base = tasks.named('reobfJar')
+        dependsOn ':fast-transition-module:jar', tasks.named('jar')
+        tool.set(base.flatMap { it.tool })
+        args.set(base.flatMap { it.args })
+        srg.set(base.flatMap { it.srg })
+        libraries.from(base.map { it.libraries }, tasks.named('jar').flatMap { it.archiveFile })
+        input.set(project(':fast-transition-module').tasks.named('jar').flatMap { it.archiveFile })
+        output.set(layout.buildDirectory.file('fastTransitionModule/reobf.jar'))
+    }
+    def fastTransitionSrgDescriptor = tasks.register('fastTransitionSrgDescriptor') {
+        def source = project(':fast-transition-module').file('src/main/resources/META-INF/nestworld/module.json')
+        def output = layout.buildDirectory.file('fastTransitionModule/descriptor/META-INF/nestworld/module.json')
+        inputs.file(source)
+        outputs.file(output)
+        doLast {
+            def json = new groovy.json.JsonSlurper().parse(source)
+            json.mappings = 'srg'
+            output.get().asFile.parentFile.mkdirs()
+            output.get().asFile.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json)) + '\n'
+        }
+    }
+    tasks.register('fastTransitionModuleJar', Jar) {
+        dependsOn reobfFastTransitionModule, fastTransitionSrgDescriptor
+        archiveFileName = 'fast-transition-1.0.0.jar'
+        destinationDirectory = layout.buildDirectory.dir('fastTransitionModule')
+        from(zipTree(reobfFastTransitionModule.flatMap { it.output })) {
+            exclude 'META-INF/nestworld/module.json'
+        }
+        from(fastTransitionSrgDescriptor.map { layout.buildDirectory.dir('fastTransitionModule/descriptor') })
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    }
+    tasks.register('fastTransitionModuleDevJar', Copy) {
+        dependsOn ':fast-transition-module:jar'
+        from(project(':fast-transition-module').tasks.named('jar').flatMap { it.archiveFile })
+        into(layout.buildDirectory.dir('fastTransitionModule/dev'))
+        rename { 'fast-transition-1.0.0-dev.jar' }
+    }
+}
+
 //evaluationDependsOnChildren()
 task setup() {  //These must be strings so that we can do lazy resolution. Else we need evaluationDependsOnChildren above
     if (!System.env.TEAMCITY_VERSION)

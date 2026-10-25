@@ -1,6 +1,7 @@
 package net.nestworld.module;
 
 import net.minecraft.network.chat.Component;
+import net.minecraftforge.event.TickEvent;
 
 /**
  * MODULE-1: the failure-injection test module. Registers A (listener) then B (command), then
@@ -16,7 +17,7 @@ public final class FailingExampleModule implements NestWorldModule {
 
     @Override
     public void onEnable(ModuleContext context) throws Exception {
-        context.registerListener(new Object() {
+        context.registerListener(TickEvent.ServerTickEvent.class, event -> {
             // deliberately empty -- exists only to be a real, revocable listener registration
         });
         context.registerCommand("failmodcmd", ctx -> {

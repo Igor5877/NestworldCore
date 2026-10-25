@@ -297,9 +297,7 @@ public class NestworldRegionSystem {
         net.nestworld.module.ModuleRegistry modules = net.nestworld.module.ModuleRegistry.create(server);
         modules.discover(new net.nestworld.module.ExampleModule());
         modules.discover(new net.nestworld.module.FailingExampleModule());
-        if (Boolean.getBoolean("nestworld.fastTransition")) {
-            modules.discover(new net.nestworld.module.fasttransition.FastTransitionModule());
-        }
+        net.nestworld.module.ExternalModuleLoader.discover(server, modules);
         modules.enableAll();
     }
 
@@ -312,6 +310,11 @@ public class NestworldRegionSystem {
     // source touched.
     @SubscribeEvent
     public static void onServerTick(TickEvent.ServerTickEvent event) {
+        if (event.phase == TickEvent.Phase.START) {
+            net.nestworld.module.ModuleRegistry modules = net.nestworld.module.ModuleRegistry.forServer(event.getServer());
+            if (modules != null) modules.processRequestedFailures();
+            return;
+        }
         if (event.phase != TickEvent.Phase.END) return;
         if (INSTANCE == null || INSTANCE.server == null) return;
         long[] tickTimes = INSTANCE.server.tickTimes;

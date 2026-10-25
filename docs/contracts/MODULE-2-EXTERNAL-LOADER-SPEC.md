@@ -1,6 +1,8 @@
 # MODULE-2 — External Module Loader: specification (2026-10-15)
 
-**Status: SPEC — owner decisions D1–D8 RECORDED (2026-10-15, §15). Loader NOT implemented; implementation starts at G0 only on the owner's go.**
+**Status: IMPLEMENTED BASELINE (2026-10-15). External directory/JAR loading and the G7 Fast
+Transition reference module are operational; the complete negative-control matrix in §14 remains
+the release gate before production deployment.**
 - Audit: `docs/contracts/MODULE-2-EXTERNAL-LOADER-AUDIT.md`. Its facts are cited here as A1… /
   L1… / E1.
 - Preserved unchanged: MODULE-LIFECYCLE-001 I1–I6, and the state chain
@@ -268,8 +270,8 @@ Two gates, the same structure as PKG-002:
   revocation, attribution wrapper, D3 exception semantics) is a **separate approval step before
   G1**.
 - Undeclared capability use is rejected the same way (null + counter), never by throwing.
-- Built-ins (`ExampleModule`, `FastTransitionModule`) migrate to the typed form when the typed
-  SPI is implemented. This is a precondition of G1, not something G7 can defer.
+- The Core test built-ins use the typed form. `FastTransitionModule` uses it from its external
+  module project. This is a precondition of G1, not something G7 can defer.
 - A module jar calling `MinecraftForge.EVENT_BUS.register(obj)` directly hits the same silent
   loss. The module author guide documents this. It can't be prevented (trusted code, §12).
 
@@ -480,19 +482,12 @@ Why not close the loader per server:
    surface list. This is the same check as Gate A.
 
 ### 13.2 Built-ins in v1
-- Until G7, `ExampleModule`, `FailingExampleModule`, and `FastTransitionModule` stay inside the
-  Core jar as a **built-in source** feeding the same S4/S8/S9 pipeline.
-- The only built-in difference is that S1–S3, S5 and S6 do not apply, because they are not jars.
-- Built-ins get no capability that jar modules lack, with one exception pending G0:
-  `registerListener(Object)` (§8.3).
-- **G7 removes FastTransition from Core**:
-  - the hard-coded `new FastTransitionModule()` in `NestworldRegionSystem.startModules` goes;
-  - so does the `net.nestworld.module.fasttransition` package and the
-    `-Dnestworld.fastTransition` switch.
-
-  FastTransition then exists only as `nestworld-modules/fast-transition.jar`, which proves that
-  the public mechanism suffices. `ExampleModule` and `FailingExampleModule` stay as Core test
-  built-ins.
+- `ExampleModule` and `FailingExampleModule` remain Core test built-ins and use the same typed
+  listener and capability paths as external modules.
+- FastTransition has been removed from Core. Its entrypoint is
+  `dev.nestworld.fasttransition.FastTransitionModule` in a separate Gradle subproject and exists at
+  runtime only when its JAR is installed under `nestworld-modules/`.
+- The hard-coded constructor and `-Dnestworld.fastTransition` switch no longer exist.
 
 ### 13.3 Target UX (owner, 2026-10-15)
 ```

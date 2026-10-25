@@ -64,6 +64,9 @@ public final class ModuleRegistry {
     private final MinecraftServer server;
     private final Map<ModuleId, ModuleRuntime> modules = new LinkedHashMap<>();
     private final List<ModuleFailure> failures = new ArrayList<>();
+    private final List<String> externalFailures = new ArrayList<>();
+    private final List<ModuleRuntime> enableOrder = new ArrayList<>();
+    private final Map<String, ModuleIdentity> commandOwners = new LinkedHashMap<>();
     private long discoveries, enables, dispatcherBindings;
     private volatile boolean disposed;
 
@@ -125,12 +128,27 @@ public final class ModuleRegistry {
 
     /** DISCOVERED. Exactly once per module per server lifetime. */
     public synchronized void discover(NestWorldModule module) {
+        discover(module, java.util.Set.of(), false, module.getClass().getClassLoader());
+    }
+
+    synchronized void discoverExternal(NestWorldModule module, java.util.Set<ModuleId> requiredDependencies,
+                                       boolean critical, ClassLoader loader, java.util.Set<String> capabilities) {
+        discover(module, requiredDependencies, critical, loader, capabilities);
+    }
+
+    private void discover(NestWorldModule module, java.util.Set<ModuleId> requiredDependencies,
+                          boolean critical, ClassLoader loader) {
+        discover(module, requiredDependencies, critical, loader, ModuleSpi.capabilityNames());
+    }
+
+    private void discover(NestWorldModule module, java.util.Set<ModuleId> requiredDependencies,
+                          boolean critical, ClassLoader loader, java.util.Set<String> capabilities) {
         requireServerThread("discover");
         ModuleDescriptor descriptor = module.descriptor();
         if (modules.containsKey(descriptor.id())) {
             throw new IllegalStateException("ModuleId already discovered in this server lifetime: " + descriptor.id().value());
         }
-        modules.put(descriptor.id(), new ModuleRuntime(module, descriptor));
+        modules.put(descriptor.id(), new ModuleRuntime(module, descriptor, requiredDependencies, critical, loader, capabilities));
         discoveries++;
         LOGGER.info("NestWorld module DISCOVERED: {}", descriptor.id().value());
     }
@@ -139,7 +157,22 @@ public final class ModuleRegistry {
     public synchronized void enableAll() {
         requireServerThread("enableAll");
         for (ModuleRuntime rt : modules.values()) {
-            if (rt.state == ModuleLifecycleState.DISCOVERED) enableOne(rt);
+            if (rt.state != ModuleLifecycleState.DISCOVERED) continue;
+            ModuleId unavailable = rt.requiredDependencies.stream()
+                    .filter(id -> modules.get(id) == null || modules.get(id).state != ModuleLifecycleState.RUNNING)
+                    .findFirst().orElse(null);
+            if (unavailable != null) {
+                rt.state = ModuleLifecycleState.FAILED;
+                recordFailure(rt, ModuleLifecycleState.DISCOVERED, "DEPENDENCY_UNAVAILABLE " + unavailable.value(), null);
+                continue;
+            }
+            enableOne(rt);
+        }
+        boolean criticalFailed = modules.values().stream().anyMatch(rt -> rt.critical && rt.state == ModuleLifecycleState.FAILED);
+        if (criticalFailed) {
+            String details = failures.stream().map(ModuleFailure::describe).collect(java.util.stream.Collectors.joining("; "));
+            quiesceAll();
+            throw new IllegalStateException("critical NestWorld module failed: " + details);
         }
     }
 
@@ -149,22 +182,29 @@ public final class ModuleRegistry {
         rt.identity = new ModuleIdentity(rt.descriptor.id(), rt.descriptor.version(), new ModuleGeneration(gen));
         rt.ledger = new ResourceLedger(rt.descriptor.id());
         // I4: a declaration made during enable is bound into the server's ACTIVE dispatcher at once.
-        rt.context = new ModuleContextImpl(server, rt.identity, rt.ledger,
-                declaration -> declaration.bindInto(server.getCommands().getDispatcher()));
+        rt.context = new ModuleContextImpl(server, rt.identity, rt.ledger, rt.capabilities,
+                declaration -> claimAndBindCommand(rt.identity, declaration),
+                declaration -> releaseCommand(rt.identity, declaration),
+                (capability, failure) -> requestRuntimeFailure(rt, capability, failure));
 
         rt.state = ModuleLifecycleState.ENABLED;
         enables++;
+        ClassLoader previous = Thread.currentThread().getContextClassLoader();
         try {
+            Thread.currentThread().setContextClassLoader(rt.moduleClassLoader);
             rt.module.onEnable(rt.context);
             rt.state = ModuleLifecycleState.RUNNING;
+            enableOrder.add(rt);
             LOGGER.info("NestWorld module RUNNING: {} (registered {} resource(s))", rt.identity, rt.ledger.size());
-        } catch (Exception e) {
+        } catch (Exception | LinkageError e) {
             LOGGER.error("NestWorld module {} FAILED during onEnable -- revoking {} already-registered "
                     + "resource(s) in reverse order", rt.identity, rt.ledger.size(), e);
             rt.context.stopAccepting();
             rt.ledger.revokeAll();
             rt.state = ModuleLifecycleState.FAILED;
             recordFailure(rt, ModuleLifecycleState.ENABLED, "onEnable", e);
+        } finally {
+            Thread.currentThread().setContextClassLoader(previous);
         }
     }
 
@@ -179,8 +219,12 @@ public final class ModuleRegistry {
         for (ModuleRuntime rt : modules.values()) {
             if (rt.state != ModuleLifecycleState.RUNNING) continue;
             for (ModuleContextImpl.CommandDeclaration d : rt.context.liveDeclarations()) {
-                d.bindInto(dispatcher);
-                bound++;
+                if (rt.identity.equals(commandOwners.get(d.name)) && dispatcher.getRoot().getChild(d.name) == null) {
+                    d.bindInto(dispatcher);
+                    bound++;
+                } else if (dispatcher.getRoot().getChild(d.name) != null) {
+                    LOGGER.error("NestWorld module {}: command '{}' rebind skipped; dispatcher already owns it", rt.identity, d.name);
+                }
             }
         }
         dispatcherBindings++;
@@ -204,8 +248,10 @@ public final class ModuleRegistry {
     /** Drives every RUNNING module through QUIESCING -> DISABLED (or FAILED). */
     public synchronized void quiesceAll() {
         requireServerThread("quiesceAll");
-        for (ModuleId id : List.copyOf(modules.keySet())) {
-            quiesce(id);
+        var reverse = new ArrayList<>(enableOrder);
+        Collections.reverse(reverse);
+        for (ModuleRuntime rt : reverse) {
+            quiesce(rt.descriptor.id());
         }
     }
 
@@ -219,16 +265,20 @@ public final class ModuleRegistry {
         }
         rt.state = ModuleLifecycleState.QUIESCING;
         rt.context.stopAccepting(); // new registrations REJECTED from this instant
+        ClassLoader previous = Thread.currentThread().getContextClassLoader();
         try {
+            Thread.currentThread().setContextClassLoader(rt.moduleClassLoader);
             rt.ledger.revokeAll();
             rt.module.onDisable();
             rt.state = ModuleLifecycleState.DISABLED;
             LOGGER.info("NestWorld module DISABLED: {} (ledger empty={})", rt.identity, rt.ledger.isEmpty());
-        } catch (Exception e) {
+        } catch (Exception | LinkageError e) {
             LOGGER.error("NestWorld module {} FAILED during QUIESCING/onDisable -- NOT reporting "
                     + "successful shutdown", rt.identity, e);
             rt.state = ModuleLifecycleState.FAILED;
             recordFailure(rt, ModuleLifecycleState.QUIESCING, "onDisable", e);
+        } finally {
+            Thread.currentThread().setContextClassLoader(previous);
         }
     }
 
@@ -253,7 +303,64 @@ public final class ModuleRegistry {
         for (ModuleFailure f : failures) {
             out.add("FAILURE: " + f.describe());
         }
+        for (String f : externalFailures) out.add("EXTERNAL FAILURE: " + f);
         return out;
+    }
+
+    synchronized boolean contains(ModuleId id) { return modules.containsKey(id); }
+
+    synchronized ModuleVersion versionOf(ModuleId id) {
+        ModuleRuntime rt = modules.get(id);
+        return rt == null ? null : rt.descriptor.version();
+    }
+
+    synchronized void recordExternalFailure(String failure) {
+        externalFailures.add(failure);
+        LOGGER.error("NestWorld external module: {}", failure);
+    }
+
+    private boolean claimAndBindCommand(ModuleIdentity owner, ModuleContextImpl.CommandDeclaration declaration) {
+        ModuleIdentity existing = commandOwners.get(declaration.name);
+        if (existing != null && !existing.equals(owner)) return false;
+        var dispatcher = server.getCommands().getDispatcher();
+        if (dispatcher.getRoot().getChild(declaration.name) != null) return false;
+        commandOwners.put(declaration.name, owner);
+        declaration.bindInto(dispatcher);
+        return true;
+    }
+
+    private void releaseCommand(ModuleIdentity owner, ModuleContextImpl.CommandDeclaration declaration) {
+        commandOwners.computeIfPresent(declaration.name, (name, current) -> current.equals(owner) ? null : current);
+    }
+
+    private void requestRuntimeFailure(ModuleRuntime rt, String capability, Throwable failure) {
+        if (rt.failureRequested.compareAndSet(false, true)) {
+            rt.runtimeFailureCapability = capability;
+            rt.runtimeFailure = failure;
+            LOGGER.error("NestWorld module {} requested runtime failure at {} on {}", rt.identity, capability,
+                    Thread.currentThread().getName(), failure);
+        }
+    }
+
+    /** Server-tick safe point for failures reported by callbacks on any thread. */
+    public synchronized void processRequestedFailures() {
+        requireServerThread("processRequestedFailures");
+        for (ModuleRuntime failed : List.copyOf(enableOrder)) {
+            if (!failed.failureRequested.get() || failed.state != ModuleLifecycleState.RUNNING) continue;
+            var reverse = new ArrayList<>(enableOrder);
+            Collections.reverse(reverse);
+            for (ModuleRuntime dependent : reverse) {
+                if (dependent.state == ModuleLifecycleState.RUNNING
+                        && dependent.requiredDependencies.contains(failed.descriptor.id())) quiesce(dependent.descriptor.id());
+            }
+            quiesce(failed.descriptor.id());
+            failed.state = ModuleLifecycleState.FAILED;
+            recordFailure(failed, ModuleLifecycleState.RUNNING, failed.runtimeFailureCapability, failed.runtimeFailure);
+            if (failed.critical) {
+                LOGGER.error("critical module {} FAILED at runtime; normal server shutdown requested", failed.identity);
+                server.halt(false);
+            }
+        }
     }
 
     public synchronized long discoveries() { return discoveries; }

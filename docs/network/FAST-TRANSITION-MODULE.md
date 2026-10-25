@@ -1,8 +1,14 @@
-# Fast Transition Module — first server integration
+# Fast Transition Module — external server module
 
-The built-in `fast-transition` module uses the existing `net.nestworld.module` SPI.
-Enable on a test backend with `-Dnestworld.fastTransition=true`. Default: disabled.
-Discovery is startup-only; this is not a JAR-folder loader or hot reload mechanism.
+`fast-transition` is a separate JAR using the versioned `net.nestworld.module` SPI. Core creates
+`nestworld-modules/` beside `mods/` at first server start and scans its direct `*.jar` children.
+Install `fast-transition-1.0.0.jar` there and restart. Removing the JAR and restarting disables it;
+there is no hot load/unload. External scanning is enabled by default and can be disabled for one
+server lifetime with `-Dnestworld.modules.external=false`.
+
+Build the production SRG artifact with `./gradlew :forge:fastTransitionModuleJar`. Output:
+`projects/forge/build/fastTransitionModule/fast-transition-1.0.0.jar`. The MCP development JAR
+from `:fast-transition-module:jar` is only for ForgeGradle dev runs.
 
 ## Implemented behavior
 
@@ -72,6 +78,7 @@ suppression is introduced. FULL Forge login remains the fallback and the only su
 
 `bash tests/fast-transition/check.sh` checks content-key framing/invalidation and pacing limits.
 `:forge:compileJava` checks the real patched Forge sources, including source/patch integrity.
-Runtime acceptance should cover preparation READY/cancel/expiry, overlapping leases, quiesce,
-global `/reload` (unchanged recipes stable; changed recipe body changes generation), and a
-real CRP connection including packet/ACK order. Compilation alone does not prove these behaviors.
+The isolated dedicated-server probe loads the module from a real `nestworld-modules/` JAR and passes
+20 checks for discovery, invalid-JAR isolation, command ownership, READY, cancel, expiry, overlapping
+leases, idempotency and quiesce. Still required on the deployment path: global `/reload` (unchanged
+recipes stable; changed recipe body changes generation) and a real CRP connection including packet/ACK order.

@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "id": "invalid-probe",
+  "version": "1.0.0",
+  "displayName": "Invalid Probe",
+  "entrypoint": "invalid.DoesNotMatter",
+  "spi": "1.0",
+  "capabilities": {},
+  "side": "server",
+  "critical": false,
+  "mappings": "mcp",
+  "dependencies": [],
+  "unknownField": true
+}

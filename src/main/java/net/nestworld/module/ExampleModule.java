@@ -2,7 +2,6 @@ package net.nestworld.module;
 
 import net.minecraft.network.chat.Component;
 import net.minecraftforge.event.TickEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -31,7 +30,9 @@ public final class ExampleModule implements NestWorldModule {
     public void onEnable(ModuleContext context) {
         // A: listener -- a real Forge event-bus registration, ticks a counter so live
         // verification can observe it INCREMENTING while RUNNING and STOPPING after revoke.
-        context.registerListener(new TickListener());
+        context.registerListener(TickEvent.ServerTickEvent.class, event -> {
+            if (event.phase == TickEvent.Phase.END) tickCount.incrementAndGet();
+        });
 
         // B, C: two top-level commands, siblings of NestWorld's own tree, never touching it.
         context.registerCommand("exmodping", ctx -> {
@@ -48,14 +49,5 @@ public final class ExampleModule implements NestWorldModule {
     public void onDisable() {
         // Nothing beyond ModuleContext-owned resources for this deliberately boring module --
         // the ledger already revoked A/B/C before this runs. Nothing module-owned to clean up.
-    }
-
-    final class TickListener {
-        @SubscribeEvent
-        public void onServerTick(TickEvent.ServerTickEvent event) {
-            if (event.phase == TickEvent.Phase.END) {
-                tickCount.incrementAndGet();
-            }
-        }
     }
 }

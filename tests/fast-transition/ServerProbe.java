@@ -44,7 +44,7 @@ public final class ServerProbe {
         private ModuleContext context;
         private ChunkPreparation first, second, expires;
         private int ticks, checks;
-        private boolean cancelled;
+        private boolean preliminaryChecksDone, cancelled;
         Probe(MinecraftServer server, ModuleRegistry registry) { this.server = server; this.registry = registry; }
         @Override public ModuleDescriptor descriptor() {
             return new ModuleDescriptor(new ModuleId("ft-probe"), new ModuleVersion("1"), "Scratch test");
@@ -52,9 +52,13 @@ public final class ServerProbe {
         @Override public void onEnable(ModuleContext context) {
             this.context = context;
             try {
-                check(registry.loginBudget().packets() == 32, "built-in module registered its budget");
+                check(registry.loginBudget().packets() == 32, "external module registered its budget");
+                check(registry.statusLines().stream().anyMatch(line -> line.contains("invalid-probe.jar")
+                        && line.contains("unknown field")), "invalid external jar refused without stopping server");
                 context.registerLoginBudget(new LoginBudget(2, 128));
-                context.registerListener(this);
+                context.registerListener(TickEvent.ServerTickEvent.class, this::tick);
+                check(context.registerCommand("nestworld", command -> 1) == null,
+                        "module cannot replace an existing command root");
                 SyncDataSnapshot original = context.snapshotSyncData();
                 var recipes = new ArrayList<Recipe<?>>(server.getRecipeManager().getRecipes());
                 try {
@@ -93,14 +97,17 @@ public final class ServerProbe {
         private ChunkPreparationRequest request(int ticks) {
             return new ChunkPreparationRequest(UUID.randomUUID(), new ResourceLocation("minecraft:overworld"), 32, 32, 0, ticks);
         }
-        @SubscribeEvent public void tick(TickEvent.ServerTickEvent event) {
+        public void tick(TickEvent.ServerTickEvent event) {
             if (event.getServer() != server || event.phase != TickEvent.Phase.END) return;
             try {
                 ticks++;
                 if (ticks > 580) throw new AssertionError("preparation did not become READY in 580 ticks");
                 if (ticks < 4 || first == null) return;
-                check(expires.state() == ChunkPreparation.State.EXPIRED, "short lease expired");
-                check(registry.loginBudget().equals(new LoginBudget(2, 128)), "multiple module policies intersect");
+                if (!preliminaryChecksDone) {
+                    check(expires.state() == ChunkPreparation.State.EXPIRED, "short lease expired");
+                    check(registry.loginBudget().equals(new LoginBudget(2, 128)), "multiple module policies intersect");
+                    preliminaryChecksDone = true;
+                }
                 if (!cancelled) {
                     if (first.state() != ChunkPreparation.State.READY || second.state() != ChunkPreparation.State.READY) return;
                     check(first.ready().toCompletableFuture().isDone(), "ready completion delivered");

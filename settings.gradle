@@ -33,11 +33,15 @@ include ':mcp'
 include ':fmlonly'
 include ':forge'
 include ':modapi'
+include ':module-spi'
+include ':fast-transition-module'
 
 project(":mcp").projectDir = file("projects/mcp")
 project(":fmlonly").projectDir = file("projects/fmlonly")
 project(":forge").projectDir = file("projects/forge")
 project(":modapi").projectDir = file("projects/modapi")
+project(":module-spi").projectDir = file("projects/module-spi")
+project(":fast-transition-module").projectDir = file("modules/fast-transition")
 
 if (!System.env.TEAMCITY_VERSION) {
     include ':clean'
