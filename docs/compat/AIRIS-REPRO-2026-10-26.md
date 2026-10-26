@@ -1,5 +1,30 @@
 # Airis repro on isolated copies — 2026-10-26
 
+## Status (owner wording, 2026-10-26)
+
+```
+MEKANISM-REGISTRY-RACE-001
+Root cause:               CONFIRMED
+Live reproduction:        CONFIRMED
+A234 negative control:    CONFIRMED
+B307 negative control:    CONFIRMED
+M-A deterministic harness: VERIFIED
+M-A live stress:          VERIFIED for tested producer paths
+Player-driven paths:      NOT EXERCISED
+Production addon:         NOT YET IMPLEMENTED (nestworld-compat-mekanism)
+Overall:                  OPEN / ROOT CAUSE CONFIRMED / FIX STRONGLY VERIFIED
+
+AE2 TickManager queue race (A234):  CONFIRMED
+B307 + AE2 addon, same symptom:     NOT OBSERVED (contended path exercised)
+causal prevention by the addon:     CORRELATED, not PROVEN
+```
+
+Owner decisions: M-A algorithm APPROVED; delivery = separate Mekanism addon with a dedicated `@Unique`
+lock and an exact compatibility gate; `mod_compound_races.js` in Core production: NO (868be3340 stays an
+oracle/reference); main-only collections (R2/R4): NOT patched, observe only; GMEIL docs fixed
+(`docs/MOD_COMPATIBILITY_FIXES.md`). AE2 and Mekanism are independent gates (B307 with the AE2 addon
+still crashed on Mekanism).
+
 Source: owner-uploaded Airis backup `skyblock-team-island-of-airisminhistory-64aa241d-25-2026-10-25T21-52-31.tar.gz`.
 Workspace `/root/airis-2026-10-25/` (copies only; no live server touched).
 
@@ -48,7 +73,7 @@ Detector influence: the detector touches only `EnergyService` inject/extract/req
 not `TickManagerService`; a 30-min A234 run *without* the detector had 0 failures. Timing perturbation by the
 detector cannot be excluded (HYPOTHESIS, low).
 
-## 2. Mekanism transmitter network registry — REPRODUCED live; M-A implemented as offline oracle (STOP: vehicle decision, section 4)
+## 2. Mekanism transmitter network registry — REPRODUCED live; M-A verified as offline oracle; delivery = addon
 
 Live signature (3× on Airis, incl. the 14.10 crash): fastutil iterator NPE in
 `NetworkAcceptorCache.commit` on Server thread.
@@ -255,7 +280,7 @@ Confidence: M-A closes the reproduced race on the copy — STRONGLY INDICATED (l
 (negative 4/4, positive 4/4). Not PROVEN for production: different vehicle needed (section 4), and player-driven
 paths (wrench/configurator, cable placement by players) are not exercised.
 
-## 4. STOP — vehicle decision needed (GMEIL rule) + a documentation discrepancy
+## 4. Vehicle decision (resolved 2026-10-26: addon) + documentation discrepancy (fixed)
 
 - `docs/MOD_COMPATIBILITY_FIXES.md` / `docs/gmeil/ARCHITECTURE.md` (11ea64345, 2026-09-22): "the user's GMEIL
   requirement forbids changing mod code or behavior even through runtime bytecode transformation";

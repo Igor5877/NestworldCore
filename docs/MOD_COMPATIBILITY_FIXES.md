@@ -1,11 +1,36 @@
 # Mod compatibility fixes
 
-These are **offline legacy research oracles**, not active production fixes. The user's GMEIL
-requirement forbids changing mod code or behavior even through runtime bytecode transformation,
-so the three NestWorld mod transformers are absent from production `META-INF/coremods.json`.
-Their tests remain useful to reproduce known single-thread assumptions and to validate a future
-GMEIL execution-only replacement. Until that replacement passes the workloads, an unpatched
-modpack is **not** established as safe for concurrent region execution.
+## Contract (owner decision 2026-10-26; replaces the 2026-09-22 wording)
+
+**GMEIL default:** observation and attribution never mutate third-party mod bytecode.
+
+**Exception:** an explicitly reviewed, version-pinned compatibility fix MAY transform third-party mod
+bytecode when all of these hold: the root cause is reproduced; a deterministic negative control exists;
+the transformation has an exact structural preflight (a mismatch leaves the class untouched and is reported
+as `COMPATIBILITY FIX NOT APPLIED` / DEGRADED); a regression exists; the fix is documented and frozen.
+
+**Delivery for new mod-specific fixes: compat addon > Core coremod.** Core keeps generic ownership,
+threading and diagnostics and does not encode the internals of a specific mod version. Mod-specific fixes
+ship as separate jars (`nestworld-compat-ae2`, `nestworld-compat-mekanism`) with their own exact
+eligibility gate.
+
+### What production Core actually registers (`src/main/resources/META-INF/coremods.json`)
+
+| coremod | production | status |
+|---|---|---|
+| `static_collection_race_transformer.js` | **registered** (since d405f5187, 2026-09-29) | legacy exception, frozen |
+| `tomsstorage_terminal_atomic_publish.js` | **registered** (since d405f5187) | legacy exception, frozen |
+| `mod_compound_races.js` | **not registered** | offline research oracle / reference implementation |
+
+The 2026-09-22 text ("the three NestWorld mod transformers are absent from production
+`coremods.json`") became false with d405f5187; the two registered transformers are kept as legacy
+exceptions rather than removed, and no new mod-specific transformer is added to Core.
+
+`mod_compound_races.js` (including the MEKANISM-REGISTRY-RACE-001 M-A in 868be3340) stays an oracle:
+its value is the real-bytecode negative control and the proof of the algorithm. Production delivery of
+M-A is the `nestworld-compat-mekanism` addon (`docs/compat/AIRIS-REPRO-2026-10-26.md`). Until a fix
+passes in its delivery form, an unpatched modpack is **not** established as safe for concurrent region
+execution.
 
 The old Mixin error handler that skipped a failing Fabric lifecycle injection and fired its
 event from NestWorld code was also removed. The underlying `ChunkMap` lambda ordinal is restored

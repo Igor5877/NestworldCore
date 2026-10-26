@@ -34,9 +34,11 @@ preserving the callback's synchronous, phase, ordering, and ownership contract.
 3. Prove one unknown callback executes under `MAIN_COMPAT` with its original observable semantics.
 4. Add request/reply and scheduler-aware waiting to the existing mailbox, then token-based
    `SERIAL_COMPAT` and positive region certification.
-5. NestWorld mod bytecode transformers are disabled in production by the user's explicit
-   constraint. Their scripts and tests are offline research oracles only. Do not claim that the
-   resulting unpatched modpack is concurrency-safe until the same workloads pass under GMEIL.
+5. GMEIL default: observation/attribution never mutates mod bytecode. Reviewed, version-pinned fixes
+   are an explicit exception (contract in `docs/MOD_COMPATIBILITY_FIXES.md`, 2026-10-26); new ones ship
+   as compat addons, not Core coremods. Production Core registers two legacy exceptions
+   (static-collection, Tom's Storage); `mod_compound_races.js` is an offline oracle. Do not claim the
+   remaining unpatched modpack is concurrency-safe until the same workloads pass under GMEIL.
 6. Do not suppress or replace mod Mixins at load time. Fix structural conflicts in Core source
    and verify the original mod callback remains responsible for its own behavior.
 7. The old `ModCallbackRouter` next-tick isolation flag is disabled until a main bridge can
