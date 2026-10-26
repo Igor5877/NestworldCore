@@ -3,24 +3,39 @@
 ## Status (owner wording, 2026-10-26)
 
 ```
-MEKANISM-REGISTRY-RACE-001
+MEKANISM-REGISTRY-RACE-001            (owner decision 2026-10-26)
 Root cause:               CONFIRMED
-Live reproduction:        CONFIRMED
-A234 negative control:    CONFIRMED
-B307 negative control:    CONFIRMED
-M-A deterministic harness: VERIFIED
-M-A live stress:          VERIFIED for tested producer paths
-Player-driven paths:      EXERCISED (cable place/break by a real bot; wrench/configurator NOT exercised)
-Production addon:         IMPLEMENTED (compat/nestworld-compat-mekanism 0.1.0, section 2.8)
-Delivery-form regression: VERIFIED (addon OFF crash in 30 s; ON 60 min + bot+churn, 0 crash, exact accounting)
-Overall:                  READY FOR OWNER CLOSURE REVIEW (not self-closed)
+Negative control:         VERIFIED (unit 4/4; live A234, B307; addon OFF crash in 30 s)
+Production delivery form: VERIFIED (nestworld-compat-mekanism 0.1.0, ccc888714)
+M-A correctness:          VERIFIED
+Loss/duplication:         0 observed after drain
+Lock contention:          no JavaMonitorEnter >= 10 ms observed
+Supported target:         Mekanism 10.4.16, exact jar SHA, exact target-class SHA,
+                          no foreign Mixins on the target classes
+STATUS:                   CLOSED / VERIFIED / FROZEN
+M-A:                      FROZEN for the exact supported Mekanism fingerprint (changes need a new gate)
+868be3340 (Core oracle):  research/reference, never production
 
 AE2 TickManager queue race (A234):  CONFIRMED
 B307 + AE2 addon, same symptom:     NOT OBSERVED (contended path exercised)
 causal prevention by the addon:     CORRELATED, not PROVEN
 ```
 
-Owner decisions: M-A algorithm APPROVED; delivery = separate Mekanism addon with a dedicated `@Unique`
+**Closure scope (normative).** The gate covers the reproduced `NetworkAcceptorCache` /
+`TransmitterNetworkRegistry` multi-producer race for the exact supported Mekanism build. Closure does not
+assert global thread-safety of all Mekanism subsystems under free-running regions.
+
+Follow-ups (not blockers of this gate):
+- `MEK-GATE-PERF-001` — OPEN: the eligibility gate adds ~5.6 s to startup (scans every mod class for
+  foreign Mixins).
+- Tick spikes 228 / 624 ms in two 10 s windows — separate performance investigation (JFR showed no long wait
+  on Mekanism locks).
+- `BOT-KEEPALIVE` — test-harness follow-up: the bot's client-side keepAliveError after ~300 cycles occurs with
+  and without the addon; server healthy.
+- Wrench / configurator paths, `cachedAcceptors`, other Mekanism subsystems — DISCOVERY ONLY until evidence
+  appears.
+
+Owner decisions (2026-10-26): M-A algorithm APPROVED; delivery = separate Mekanism addon with a dedicated `@Unique`
 lock and an exact compatibility gate; `mod_compound_races.js` in Core production: NO (868be3340 stays an
 oracle/reference); main-only collections (R2/R4): NOT patched, observe only; GMEIL docs fixed
 (`docs/MOD_COMPATIBILITY_FIXES.md`). AE2 and Mekanism are independent gates (B307 with the AE2 addon
