@@ -500,6 +500,304 @@ function patchFluxDeletion(c, deletion, add, remove) {
     sync(valid);
 }
 
+// ---- MEKANISM-REGISTRY-RACE-001 (Mekanism 10.4.16.80) ----
+// Region threads mark acceptor changes (neighbour change / capability invalidation) while the main thread
+// commits them. Each pending generation is published under the owning object's monitor; the consumer takes
+// ownership of the whole generation in one short critical section and processes it with no monitor held.
+// No code path holds two of these monitors at once, and no world/capability/network call runs under one.
+var MEK_CACHE = 'mekanism/common/lib/transmitter/acceptor/NetworkAcceptorCache';
+var MEK_REGISTRY = 'mekanism/common/lib/transmitter/TransmitterNetworkRegistry';
+var MEK_TRANSMITTER = 'mekanism/common/content/network/transmitter/Transmitter';
+var MEK_NETWORK = 'mekanism/common/lib/transmitter/DynamicNetwork';
+var SUPPORT = 'net/nestworld/compat/NestworldCoremodSupport';
+var SET = 'Ljava/util/Set;';
+
+// Real (non label/line/frame) instructions of a method.
+function realInsns(m) {
+    var out = [], nodes = m.instructions.toArray();
+    for (var i = 0; i < nodes.length; i++) if (nodes[i].getOpcode() >= 0) out.push(nodes[i]);
+    return out;
+}
+
+function isField(n, op, owner, name) {
+    return n != null && n.getOpcode() == op && n.owner == owner && n.name == name;
+}
+
+function isCall(n, op, owner, name, desc) {
+    return n != null && n.getOpcode() == op && n.owner == owner && n.name == name && (desc == null || n.desc == desc);
+}
+
+function expectOps(insns, from, ops, what) {
+    for (var i = 0; i < ops.length; i++) {
+        if (from + i >= insns.length || insns[from + i].getOpcode() != ops[i])
+            throw new Error('Unexpected bytecode in ' + what + ' at ' + (from + i));
+    }
+}
+
+// Remove real instructions and frames in [first, last]; labels stay so debug ranges remain valid.
+function removeRange(m, first, last) {
+    var n = first;
+    while (n != null) {
+        var next = n.getNext(), stop = n === last;
+        if (n.getType() != 8 /* LABEL */) m.instructions.remove(n);
+        if (stop) break;
+        n = next;
+    }
+}
+
+// After removals two frames can become adjacent; the later one must be F_SAME and is dropped.
+function collapseAdjacentFrames(m) {
+    var nodes = m.instructions.toArray(), last = null;
+    for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        if (n.getType() == 14 /* FRAME */) {
+            if (last != null) {
+                // Nashorn maps n.type to getType(); identify F_SAME by content (no locals, no stack).
+                var same = (n.local == null || n.local.isEmpty()) && (n.stack == null || n.stack.isEmpty());
+                if (!same) throw new Error('Cannot collapse non-SAME frame in ' + m.name);
+                m.instructions.remove(n);
+                continue;
+            }
+            last = n;
+        } else if (n.getOpcode() >= 0) {
+            last = null;
+        }
+    }
+}
+
+// Debug-only local-variable ranges that no longer cover any real instruction are dropped.
+function pruneEmptyLocals(m) {
+    if (m.localVariables == null) return;
+    for (var i = m.localVariables.size() - 1; i >= 0; i--) {
+        var lv = m.localVariables.get(i), n = lv.start, live = false;
+        while (n != null && n !== lv.end) {
+            if (n.getOpcode() >= 0) { live = true; break; }
+            n = n.getNext();
+        }
+        if (!live) m.localVariables.remove(i);
+    }
+}
+
+function countFieldUses(c, owner, name, except) {
+    var count = 0;
+    for (var i = 0; i < c.methods.size(); i++) {
+        var m = c.methods.get(i);
+        if (except.indexOf(String(m.name)) >= 0) continue;
+        var insns = realInsns(m);
+        for (var j = 0; j < insns.length; j++)
+            if ((insns[j].getOpcode() == O.GETFIELD || insns[j].getOpcode() == O.PUTFIELD)
+                    && insns[j].owner == owner && insns[j].name == name) count++;
+    }
+    return count;
+}
+
+function addTakeMethod(c, owner, field, desc, replacement, detached) {
+    // synchronized: m = field; r = replacement(m); field = r; return detached(m, r)
+    var take = new MethodNode(O.ACC_PRIVATE | O.ACC_SYNCHRONIZED | O.ACC_SYNTHETIC,
+            'nestworld$take' + field, '()' + desc, null, null);
+    take.visitVarInsn(O.ALOAD, 0);
+    take.visitFieldInsn(O.GETFIELD, owner, field, desc);
+    take.visitInsn(O.DUP);
+    take.visitVarInsn(O.ASTORE, 1);
+    take.visitMethodInsn(O.INVOKESTATIC, SUPPORT, replacement, '(' + desc + ')' + desc, false);
+    take.visitVarInsn(O.ASTORE, 2);
+    take.visitVarInsn(O.ALOAD, 0);
+    take.visitVarInsn(O.ALOAD, 2);
+    take.visitFieldInsn(O.PUTFIELD, owner, field, desc);
+    take.visitVarInsn(O.ALOAD, 1);
+    take.visitVarInsn(O.ALOAD, 2);
+    take.visitMethodInsn(O.INVOKESTATIC, SUPPORT, detached, '(' + desc + desc + ')' + desc, false);
+    take.visitInsn(O.ARETURN);
+    take.visitMaxs(3, 3);
+    c.methods.add(take);
+    return take;
+}
+
+function patchMekCache(c) {
+    var field = requireField(c, 'changedAcceptors', MAP, false);
+    var T = 'L' + MEK_TRANSMITTER + ';', D = 'Lnet/minecraft/core/Direction;';
+    var changed = requireMethod(c, 'acceptorChanged', '(' + T + D + ')V', false);
+    var commit = requireMethod(c, 'commit', '()V', false);
+    var adopt = requireMethod(c, 'adoptAcceptors', '(L' + MEK_CACHE + ';)V', false);
+    var deregister = requireMethod(c, 'deregister', '()V', false);
+    if (countFieldUses(c, MEK_CACHE, 'changedAcceptors', ['<init>', 'acceptorChanged', 'commit', 'adoptAcceptors', 'deregister']) != 0)
+        throw new Error('Unexpected changedAcceptors accessor');
+
+    // acceptorChanged: [aload0 getfield aload1 indy computeIfAbsent checkcast aload2 Set.add pop] then
+    // [aload1 getTransmitterNetwork registerChangedNetwork return]. The mutation moves into a synchronized
+    // helper; registerChangedNetwork runs after the cache monitor is released.
+    var a = realInsns(changed);
+    expectOps(a, 0, [O.ALOAD, O.GETFIELD, O.ALOAD, O.INVOKEDYNAMIC, O.INVOKEINTERFACE, O.CHECKCAST, O.ALOAD,
+        O.INVOKEINTERFACE, O.POP, O.ALOAD, O.INVOKEVIRTUAL, O.INVOKESTATIC, O.RETURN], 'acceptorChanged');
+    if (!isField(a[1], O.GETFIELD, MEK_CACHE, 'changedAcceptors') || !isCall(a[4], O.INVOKEINTERFACE, 'java/util/Map', 'computeIfAbsent', null)
+            || !isCall(a[7], O.INVOKEINTERFACE, 'java/util/Set', 'add', '(Ljava/lang/Object;)Z')
+            || !isCall(a[11], O.INVOKESTATIC, MEK_REGISTRY, 'registerChangedNetwork', null))
+        throw new Error('Unexpected acceptorChanged shape');
+    // The original mutation instructions (incl. the lambda's invokedynamic) are MOVED, not cloned.
+    var mark = new MethodNode(O.ACC_PRIVATE | O.ACC_SYNCHRONIZED | O.ACC_SYNTHETIC,
+            'nestworld$markChanged', '(' + T + D + ')V', null, null);
+    var call = new InsnList();
+    call.add(new VarInsnNode(O.ALOAD, 0));
+    call.add(new VarInsnNode(O.ALOAD, 1));
+    call.add(new VarInsnNode(O.ALOAD, 2));
+    call.add(new MethodInsnNode(O.INVOKEVIRTUAL, MEK_CACHE, 'nestworld$markChanged', '(' + T + D + ')V', false));
+    changed.instructions.insertBefore(a[0], call);
+    for (var mi = 0; mi <= 8; mi++) {
+        changed.instructions.remove(a[mi]);
+        mark.instructions.add(a[mi]);
+        if (mi == 7) mark.instructions.add(new MethodInsnNode(O.INVOKESTATIC, SUPPORT, 'mekProduced', '(Z)Z', false));
+    }
+    mark.instructions.add(new InsnNode(O.RETURN));
+    mark.maxStack = 3;
+    mark.maxLocals = 3;
+    c.methods.add(mark);
+
+    addTakeMethod(c, MEK_CACHE, 'changedAcceptors', MAP, 'mekReplacementMap', 'mekDetachedMap');
+    var TAKE = 'nestworld$takechangedAcceptors';
+
+    // commit: drop the isEmpty guard, iterate the detached generation, drop the trailing clear().
+    var k = realInsns(commit);
+    expectOps(k, 0, [O.ALOAD, O.GETFIELD, O.INVOKEINTERFACE, O.IFNE, O.ALOAD, O.GETFIELD, O.INVOKEINTERFACE], 'commit');
+    var n = k.length;
+    expectOps(k, n - 4, [O.ALOAD, O.GETFIELD, O.INVOKEINTERFACE, O.RETURN], 'commit tail');
+    if (!isCall(k[2], O.INVOKEINTERFACE, 'java/util/Map', 'isEmpty', '()Z') || !isCall(k[n - 2], O.INVOKEINTERFACE, 'java/util/Map', 'clear', '()V')
+            || !isField(k[5], O.GETFIELD, MEK_CACHE, 'changedAcceptors') || !isField(k[n - 3], O.GETFIELD, MEK_CACHE, 'changedAcceptors'))
+        throw new Error('Unexpected commit shape');
+    var take = new InsnList();
+    take.add(new MethodInsnNode(O.INVOKEVIRTUAL, MEK_CACHE, TAKE, '()' + MAP, false));
+    take.add(new MethodInsnNode(O.INVOKESTATIC, SUPPORT, 'mekPublished', '(' + MAP + ')' + MAP, false));
+    commit.instructions.insert(k[5], take);
+    commit.instructions.remove(k[5]);
+    removeRange(commit, k[n - 4], k[n - 2]);
+    removeRange(commit, k[0], k[3]);
+    collapseAdjacentFrames(commit);
+    pruneEmptyLocals(commit);
+
+    // adoptAcceptors: the second loop merged other.changedAcceptors into ours without any lock. Detach the
+    // other cache's generation under ITS monitor, then merge under OUR monitor (never both at once).
+    var p = realInsns(adopt), second = -1;
+    for (var i = 0; i < p.length; i++) {
+        if (p[i].getOpcode() == O.ALOAD && p[i].var == 1 && isField(p[i + 1], O.GETFIELD, MEK_CACHE, 'changedAcceptors')) {
+            if (second >= 0) throw new Error('Ambiguous adoptAcceptors merge');
+            second = i;
+        }
+    }
+    if (second < 0 || p[p.length - 1].getOpcode() != O.RETURN) throw new Error('Unexpected adoptAcceptors shape');
+    var merge = new MethodNode(O.ACC_PRIVATE | O.ACC_SYNCHRONIZED | O.ACC_SYNTHETIC,
+            'nestworld$mergeChanged', '(' + MAP + ')V', null, null);
+    merge.visitVarInsn(O.ALOAD, 0);
+    merge.visitFieldInsn(O.GETFIELD, MEK_CACHE, 'changedAcceptors', MAP);
+    merge.visitVarInsn(O.ALOAD, 1);
+    merge.visitMethodInsn(O.INVOKESTATIC, SUPPORT, 'mekMergeAcceptorChanges', '(' + MAP + MAP + ')V', false);
+    merge.visitInsn(O.RETURN);
+    merge.visitMaxs(2, 2);
+    c.methods.add(merge);
+    var adoptTail = new InsnList();
+    adoptTail.add(new VarInsnNode(O.ALOAD, 0));
+    adoptTail.add(new VarInsnNode(O.ALOAD, 1));
+    adoptTail.add(new MethodInsnNode(O.INVOKEVIRTUAL, MEK_CACHE, TAKE, '()' + MAP, false));
+    adoptTail.add(new MethodInsnNode(O.INVOKEVIRTUAL, MEK_CACHE, 'nestworld$mergeChanged', '(' + MAP + ')V', false));
+    adoptTail.add(new InsnNode(O.RETURN));
+    adopt.instructions.insertBefore(p[second], adoptTail);
+    removeRange(adopt, p[second], p[p.length - 1]);
+    pruneEmptyLocals(adopt);
+
+    // deregister: changedAcceptors.clear() → take (and count) the pending generation under the monitor.
+    var d = realInsns(deregister), cleared = 0;
+    for (var j = 0; j + 2 < d.length; j++) {
+        if (d[j].getOpcode() == O.ALOAD && isField(d[j + 1], O.GETFIELD, MEK_CACHE, 'changedAcceptors')
+                && isCall(d[j + 2], O.INVOKEINTERFACE, 'java/util/Map', 'clear', '()V')) {
+            deregister.instructions.set(d[j + 1], new MethodInsnNode(O.INVOKEVIRTUAL, MEK_CACHE, TAKE, '()' + MAP, false));
+            deregister.instructions.set(d[j + 2], new MethodInsnNode(O.INVOKESTATIC, SUPPORT, 'mekDropped', '(' + MAP + ')V', false));
+            cleared++;
+        }
+    }
+    if (cleared != 1) throw new Error('Expected one deregister clear, got ' + cleared);
+
+    field.access = field.access & ~O.ACC_FINAL;
+    if (countFieldUses(c, MEK_CACHE, 'changedAcceptors', ['<init>', 'nestworld$markChanged', TAKE, 'nestworld$mergeChanged']) != 0)
+        throw new Error('changedAcceptors still accessed outside its monitor');
+}
+
+function patchMekRegistry(c) {
+    requireField(c, 'networksToChange', SET, false);
+    var N = 'L' + MEK_NETWORK + ';';
+    var register = requireMethod(c, 'registerChangedNetwork', '(' + N + ')V', true);
+    var commitChanges = requireMethod(c, 'commitChanges', '()V', false);
+    var assignOrphans = requireMethod(c, 'assignOrphans', '()V', false);
+    var removeNetwork = requireMethod(c, 'removeNetwork', '(' + N + ')V', false);
+    var reset = requireMethod(c, 'reset', '()V', true);
+    if (countFieldUses(c, MEK_REGISTRY, 'networksToChange',
+            ['<init>', 'registerChangedNetwork', 'commitChanges', 'assignOrphans', 'removeNetwork', 'reset']) != 0)
+        throw new Error('Unexpected networksToChange accessor');
+
+    var add = new MethodNode(O.ACC_PRIVATE | O.ACC_SYNCHRONIZED | O.ACC_SYNTHETIC,
+            'nestworld$addChangedNetwork', '(Ljava/lang/Object;)Z', null, null);
+    add.visitVarInsn(O.ALOAD, 0);
+    add.visitFieldInsn(O.GETFIELD, MEK_REGISTRY, 'networksToChange', SET);
+    add.visitVarInsn(O.ALOAD, 1);
+    add.visitMethodInsn(O.INVOKEINTERFACE, 'java/util/Set', 'add', '(Ljava/lang/Object;)Z', true);
+    add.visitInsn(O.IRETURN);
+    add.visitMaxs(2, 2);
+    c.methods.add(add);
+
+    // [registry] getfield networksToChange <network> Set.add  →  [registry] <network> addChangedNetwork
+    function rerouteAdd(m, expected) {
+        var insns = realInsns(m), done = 0;
+        for (var i = 0; i < insns.length; i++) {
+            if (!isField(insns[i], O.GETFIELD, MEK_REGISTRY, 'networksToChange')) continue;
+            var j = i + 1;
+            while (j < insns.length && !isCall(insns[j], O.INVOKEINTERFACE, 'java/util/Set', 'add', '(Ljava/lang/Object;)Z')) {
+                if (insns[j].getOpcode() == O.GETFIELD && insns[j].name == 'networksToChange') throw new Error('Nested networksToChange in ' + m.name);
+                j++;
+            }
+            if (j >= insns.length) throw new Error('networksToChange read without add in ' + m.name);
+            m.instructions.set(insns[j], new MethodInsnNode(O.INVOKEVIRTUAL, MEK_REGISTRY, 'nestworld$addChangedNetwork', '(Ljava/lang/Object;)Z', false));
+            m.instructions.remove(insns[i]);
+            done++;
+        }
+        if (done != expected) throw new Error('Expected ' + expected + ' networksToChange add(s) in ' + m.name + ', got ' + done);
+    }
+    rerouteAdd(register, 1);
+    rerouteAdd(assignOrphans, 1);
+
+    addTakeMethod(c, MEK_REGISTRY, 'networksToChange', SET, 'mekReplacementSet', 'mekDetachedSet');
+    var TAKE = 'nestworld$takenetworksToChange';
+
+    // commitChanges: [aload0 getfield isEmpty ifne] [aload0 getfield astore1 aload0 new dup init putfield]
+    //   → [aload0 take astore1]; the loop then iterates the detached generation outside the monitor.
+    var k = realInsns(commitChanges);
+    expectOps(k, 0, [O.ALOAD, O.GETFIELD, O.INVOKEINTERFACE, O.IFNE, O.ALOAD, O.GETFIELD, O.ASTORE,
+        O.ALOAD, O.NEW, O.DUP, O.INVOKESPECIAL, O.PUTFIELD], 'commitChanges');
+    if (!isField(k[1], O.GETFIELD, MEK_REGISTRY, 'networksToChange') || !isField(k[5], O.GETFIELD, MEK_REGISTRY, 'networksToChange')
+            || !isField(k[11], O.PUTFIELD, MEK_REGISTRY, 'networksToChange') || k[6].var != 1)
+        throw new Error('Unexpected commitChanges shape');
+    commitChanges.instructions.insertBefore(k[6],
+            new MethodInsnNode(O.INVOKEVIRTUAL, MEK_REGISTRY, TAKE, '()' + SET, false));
+    commitChanges.instructions.remove(k[5]);
+    removeRange(commitChanges, k[7], k[11]);
+    removeRange(commitChanges, k[0], k[3]);
+    collapseAdjacentFrames(commitChanges);
+    pruneEmptyLocals(commitChanges);
+
+    // removeNetwork mutates networks + networksToChange as one pair: the whole (two-call) body is the
+    // critical section. reset() clears networksToChange through the take path.
+    sync(removeNetwork);
+    var r = realInsns(reset), resets = 0;
+    for (var i2 = 0; i2 + 1 < r.length; i2++) {
+        if (isField(r[i2], O.GETFIELD, MEK_REGISTRY, 'networksToChange')
+                && isCall(r[i2 + 1], O.INVOKEINTERFACE, 'java/util/Set', 'clear', '()V')) {
+            reset.instructions.set(r[i2], new MethodInsnNode(O.INVOKEVIRTUAL, MEK_REGISTRY, TAKE, '()' + SET, false));
+            reset.instructions.set(r[i2 + 1], new InsnNode(O.POP));
+            resets++;
+        }
+    }
+    if (resets != 1) throw new Error('Expected one networksToChange reset, got ' + resets);
+    if (countFieldUses(c, MEK_REGISTRY, 'networksToChange',
+            ['<init>', 'nestworld$addChangedNetwork', TAKE, 'removeNetwork']) != 0)
+        throw new Error('networksToChange still accessed outside its monitor');
+}
+
 function transformCompound(c, emitLog) {
     noHelperCollision(c);
 
@@ -509,6 +807,8 @@ function transformCompound(c, emitLog) {
     else if (c.name == CRYSTAL_TILE) patchCrystalTile(c);
     else if (c.name == FLUX) patchFluxBase(c);
     else if (c.name == SERVER_FLUX) patchFluxServer(c);
+    else if (c.name == MEK_CACHE) patchMekCache(c);
+    else if (c.name == MEK_REGISTRY) patchMekRegistry(c);
     else throw new Error('Unknown target ' + c.name);
 
     if (emitLog) {
@@ -521,7 +821,7 @@ function transformCompound(c, emitLog) {
 
 function initializeCoreMod() {
     return { 'nestworld_mod_compound_races': {
-        'target': { 'type': 'CLASS', 'names': function () { return [PATHS, RECIPES, BATCH, CRYSTAL_TILE, FLUX, SERVER_FLUX]; } },
+        'target': { 'type': 'CLASS', 'names': function () { return [PATHS, RECIPES, BATCH, CRYSTAL_TILE, FLUX, SERVER_FLUX, MEK_CACHE, MEK_REGISTRY]; } },
         'transformer': function (input) {
             try {
                 // Exhaust validation and mutation paths on a detached structural view.

@@ -115,7 +115,9 @@ public final class CoremodRegression {
             {"mod_compound_races.js", "FluxNetworks-1.20.1-7.2.1.15.jar", "sonar/fluxnetworks/common/connection/FluxNetwork"},
             {"mod_compound_races.js", "FluxNetworks-1.20.1-7.2.1.15.jar", "sonar/fluxnetworks/common/connection/ServerFluxNetwork"},
             {"mod_compound_races.js", "Draconic-Evolution-1.20.1-3.1.2.621-universal.jar", "com/brandon3055/draconicevolution/network/CrystalUpdateBatcher"},
-            {"mod_compound_races.js", "Draconic-Evolution-1.20.1-3.1.2.621-universal.jar", "com/brandon3055/draconicevolution/blocks/energynet/tileentity/TileCrystalBase"}
+            {"mod_compound_races.js", "Draconic-Evolution-1.20.1-3.1.2.621-universal.jar", "com/brandon3055/draconicevolution/blocks/energynet/tileentity/TileCrystalBase"},
+            {"mod_compound_races.js", "Mekanism-1.20.1-10.4.16.80.jar", "mekanism/common/lib/transmitter/acceptor/NetworkAcceptorCache"},
+            {"mod_compound_races.js", "Mekanism-1.20.1-10.4.16.80.jar", "mekanism/common/lib/transmitter/TransmitterNetworkRegistry"}
         };
         for (String[] test : cases) {
             ScriptObjectMirror fn = transformer(root, test[0]);
@@ -155,7 +157,9 @@ public final class CoremodRegression {
                 String name = test[2].endsWith("RecipeHelper") ? "getFromCache"
                         : test[2].endsWith("PathfinderCache") ? "reset"
                         : test[2].endsWith("TileCrystalBase") ? "onLoad"
-                        : test[2].endsWith("FluxNetwork") ? "onDelete" : "tickEnd";
+                        : test[2].endsWith("FluxNetwork") ? "onDelete"
+                        : test[2].endsWith("NetworkAcceptorCache") ? "commit"
+                        : test[2].endsWith("TransmitterNetworkRegistry") ? "commitChanges" : "tickEnd";
                 method(broken, name).name = "changedMethod";
             }
             unchangedFailure(fn, broken, test[2]);
@@ -172,6 +176,7 @@ public final class CoremodRegression {
             System.out.println("PASS real jar: " + test[2]);
         }
         ConcurrencyRegression.run(root, mods);
+        MekanismAcceptorCacheRegression.run(root, mods);
         System.out.println("PASS: " + assertions + " regression assertions; all transformed methods pass ASM BasicVerifier");
     }
 }
