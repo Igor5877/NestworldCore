@@ -1,0 +1,44 @@
+// nestworld-compat-mekanism: an ordinary Forge mod (docs/compat/AIRIS-REPRO-2026-10-26.md, MEKANISM-REGISTRY-RACE-001).
+// Not part of NestWorld Core: Core keeps generic ownership/threading/diagnostics, Mekanism-version internals live here.
+//
+// Mekanism is a compile-only dependency staged by hand (not redistributed from this repository):
+//   cp Mekanism-1.20.1-10.4.16.80.jar compat/nestworld-compat-mekanism/libs/
+// sha256 3b0d191fa4a45e662f9725991d76a30192f30186abb2ba694b873b5f7b9358d2 (checked by verifyMekanismJar).
+plugins {
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+    id 'org.spongepowered.mixin' version '0.7.38'
+}
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+version = '0.1.0'
+group = 'net.nestworld.compat'
+
+def mekJar = file('libs/Mekanism-1.20.1-10.4.16.80.jar')
+def mekSha256 = '3b0d191fa4a45e662f9725991d76a30192f30186abb2ba694b873b5f7b9358d2'
+
+minecraft { mappings channel: 'official', version: '1.20.1' }
+mixin {
+    add sourceSets.main, 'nestworld_compat_mekanism.refmap.json'
+    config 'nestworld_compat_mekanism.mixins.json'
+}
+repositories {
+    mavenCentral()
+    flatDir { dirs 'libs' }
+}
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.4.20'
+    compileOnly fg.deobf('blank:Mekanism-1.20.1:10.4.16.80')
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+}
+tasks.register('verifyMekanismJar') {
+    doLast {
+        if (!mekJar.exists()) throw new GradleException("missing ${mekJar} (see build.gradle header)")
+        def sha = java.security.MessageDigest.getInstance('SHA-256').digest(mekJar.bytes).encodeHex().toString()
+        if (sha != mekSha256) throw new GradleException("Mekanism jar sha256 ${sha} != ${mekSha256}")
+    }
+}
+tasks.named('compileJava') { dependsOn 'verifyMekanismJar' }
+tasks.named('jar', Jar).configure {
+    archiveBaseName = 'nestworld-compat-mekanism'
+    manifest.attributes('MixinConfigs': 'nestworld_compat_mekanism.mixins.json')
+    finalizedBy 'reobfJar'
+}

@@ -10,9 +10,10 @@ A234 negative control:    CONFIRMED
 B307 negative control:    CONFIRMED
 M-A deterministic harness: VERIFIED
 M-A live stress:          VERIFIED for tested producer paths
-Player-driven paths:      NOT EXERCISED
-Production addon:         NOT YET IMPLEMENTED (nestworld-compat-mekanism)
-Overall:                  OPEN / ROOT CAUSE CONFIRMED / FIX STRONGLY VERIFIED
+Player-driven paths:      EXERCISED (cable place/break by a real bot; wrench/configurator NOT exercised)
+Production addon:         IMPLEMENTED (compat/nestworld-compat-mekanism 0.1.0, section 2.8)
+Delivery-form regression: VERIFIED (addon OFF crash in 30 s; ON 60 min + bot+churn, 0 crash, exact accounting)
+Overall:                  READY FOR OWNER CLOSURE REVIEW (not self-closed)
 
 AE2 TickManager queue race (A234):  CONFIRMED
 B307 + AE2 addon, same symptom:     NOT OBSERVED (contended path exercised)
@@ -279,6 +280,52 @@ Confidence: M-A closes the reproduced race on the copy — STRONGLY INDICATED (l
 2 negatives on 2 Core versions, 1 positive for 30 min at a harsher rate) + CONFIRMED in the unit fixture
 (negative 4/4, positive 4/4). Not PROVEN for production: different vehicle needed (section 4), and player-driven
 paths (wrench/configurator, cable placement by players) are not exercised.
+
+### 2.7 Player-driven path (real bot, B307 = no Mekanism addon, detector on) — exercised
+
+Bot `/root/airis-2026-10-25/bot/cablebot.js` (mineflayer, raw `block_place`/`block_dig` packets, creative,
+op, FTB Chunks `bypass_protection`; copy-only deviations: online-mode=false, whitelist off,
+ProxyCompatibleForge disabled, `-Dnestworld.bypassForgeHandshake=true`, isolated netns) placed and broke a
+`mekanism:basic_universal_cable` on top of the cable line ~333 times.
+
+Detector delta: TRACK +668, UNTRACK +333, INVALIDATE +333, ORPHAN thousands, NETWORK_ADD/REMOVE +333,
+DEREGISTER +333 — **all on the main thread (offMain=0)**; no new off-main writer and no crash. In this Core the
+player place/break path reaches the Mekanism registry on main, so R2/R4 stay "observe only" now with
+player-path evidence too. (The bot ended with a client-side keepAliveError; server healthy.)
+
+### 2.8 Production delivery: `nestworld-compat-mekanism` (Mixin addon) — delivery-form regression
+
+Addon `compat/nestworld-compat-mekanism` 0.1.0 (jar sha256 `91b5632c3c660b6b4664c017edc0a37e0634eef9f8b4e2603f5c060446de54e8`):
+- M-A ported literally from the oracle as `@Overwrite`s (`acceptorChanged`, `commit`, `adoptAcceptors`,
+  `deregister`, `registerChangedNetwork`, `commitChanges`, `removeNetwork`, `reset`) plus one `@Redirect`
+  (`assignOrphans` Set.add). Lock = `@Unique private final Object nestworld$lock` per cache / registry
+  (owner decision), never Mekanism's own monitor; no world/capability/callback under it; never two locks held.
+- Exact compatibility gate in the mixin plugin (`MekGate`): Mekanism `10.4.16` + jar sha256 `3b0d191f…58d2`;
+  class-file sha256 of `NetworkAcceptorCache` (`9b119c3b…168d`) and `TransmitterNetworkRegistry`
+  (`c932a16a…5d85`); no foreign `@Mixin` on either target. Mismatch → `INELIGIBLE`, no mixin applies, ERROR
+  "DEGRADED: MEKANISM-REGISTRY-RACE-001 NOT mitigated". Kill switch `-Dnestworld.compatMekanism.disable=true`;
+  accounting `-Dnestworld.compatMekanism.audit=true`; `/nwcompatmek stats|problems`.
+- Remaining semantic difference vs Mekanism (same as the oracle, tested there): `adoptAcceptors` *takes* the
+  adopted cache's pending generation instead of copying it, so it is committed once (by the adopter).
+
+Copy D307MEK = 307 canary Core (unmodified, no oracle) + AE2 addon + this addon + churn mod:
+
+| run | result |
+|---|---|
+| gate negative (detector mixins present) | `INELIGIBLE`, 2 problems: both detector mixins reported as foreign Mixins on the targets |
+| addon OFF (`disable=true`, same jar), churn period 1 | **crash in 30 s**: `NetworkAcceptorCache.commit` NPE (`Map$Entry.getValue()` null — torn entry, same race) |
+| addon ON, churn period 1, 60 min | **0 crash, 0 Mekanism error lines**, 577 584 toggles, 127 125 generations; drained `produced = published = 483 827`, `dropped = 0` |
+| addon ON, churn + bot cable place/break (~300 cycles) | 0 crash; drained `produced 20 271 = published 18 019 + dropped 2 252` (deregister on break), `mergedDuplicate 0` |
+
+Tick under workload (10 s windows): median 5.2–7.6 ms, p95 9.9–22 ms, max mostly 18–106 ms (two windows
+228 / 624 ms, not attributed). JFR 120 s mid-run: no `JavaMonitorEnter` ≥ 10 ms on any Mekanism-related
+monitor; GC pauses up to 87 ms.
+
+Follow-ups (not blocking, owner to prioritise): gate scan costs ~5.6 s of startup (walks every mod class for
+foreign mixins — can be narrowed to classes referencing the targets via jar-level prefilter);
+`cachedAcceptors` remains uncovered (no off-main evidence); the bot's client-side `keepAliveError` after ~300
+cycles happens with and without the addon (HYPOTHESIS: client parse desync, server healthy); wrench /
+configurator paths not exercised.
 
 ## 4. Vehicle decision (resolved 2026-10-26: addon) + documentation discrepancy (fixed)
 

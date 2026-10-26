@@ -1,0 +1,10 @@
+{
+  "required": true,
+  "minVersion": "0.8.5",
+  "package": "net.nestworld.compat.mekanism.mixin",
+  "plugin": "net.nestworld.compat.mekanism.glue.MekCompatMixinPlugin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "nestworld_compat_mekanism.refmap.json",
+  "mixins": ["NetworkAcceptorCacheMixin", "TransmitterNetworkRegistryMixin"],
+  "injectors": { "defaultRequire": 1 }
+}

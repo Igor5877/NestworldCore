@@ -1,0 +1,14 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="All rights reserved"
+[[mods]]
+modId="nestworld_compat_mekanism"
+version="0.1.0"
+displayName="NestWorld compatibility: Mekanism"
+description="MEKANISM-REGISTRY-RACE-001: region-thread-safe publication of Mekanism transmitter acceptor changes. Exact-version gated."
+[[dependencies.nestworld_compat_mekanism]]
+    modId="mekanism"
+    mandatory=true
+    versionRange="[10.4.16]"
+    ordering="AFTER"
+    side="BOTH"
