@@ -1,0 +1,30 @@
+// TEST-ONLY fixtures for MEK-GATE-PERF-001 (gate equivalence). Never deploy. One jar per variant:
+//   -Pvariant=unrelated  @Mixin(DynamicNetwork.class)                       -> gate must stay ACTIVE
+//   -Pvariant=dotted     @Mixin(targets="mekanism.common...NetworkAcceptorCache") -> foreign (string form)
+//   -Pvariant=literal    @Mixin(NetworkAcceptorCache.class)                  -> foreign (class literal)
+plugins {
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+    id 'org.spongepowered.mixin' version '0.7.38'
+}
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+def variant = project.findProperty('variant') ?: 'unrelated'
+version = '0.1.0-' + variant
+group = 'net.nestworld.tools'
+minecraft { mappings channel: 'official', version: '1.20.1' }
+repositories { mavenCentral(); flatDir { dirs 'libs' } }
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.4.20'
+    compileOnly fg.deobf('blank:Mekanism-1.20.1:10.4.16.80')
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+}
+def mixinClass = [unrelated: 'UnrelatedMekMixin', dotted: 'DottedTargetMixin', literal: 'LiteralTargetMixin'][variant]
+tasks.named('processResources') {
+    inputs.property 'variant', variant
+    filesMatching('nwmekgatefix.mixins.json') { expand(mixinClass: mixinClass) }
+}
+tasks.named('jar', Jar).configure {
+    archiveBaseName = 'nestworld-mekgate-fixture'
+    // exactly one mixin class per variant jar
+    (['UnrelatedMekMixin', 'DottedTargetMixin', 'LiteralTargetMixin'] - [mixinClass]).each { n -> exclude "**/mixin/${n}.class" }
+    manifest.attributes('MixinConfigs': 'nwmekgatefix.mixins.json')
+}

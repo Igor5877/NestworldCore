@@ -342,6 +342,91 @@ foreign mixins — can be narrowed to classes referencing the targets via jar-le
 cycles happens with and without the addon (HYPOTHESIS: client parse desync, server healthy); wrench /
 configurator paths not exercised.
 
+## 5. MEK-GATE-PERF-001 — narrow the Mekanism compatibility gate
+
+Status: **IMPLEMENTED / VERIFIED except decision equivalence C7** (stricter than legacy, see 5.3) — closure
+awaits the owner's decision on C7; not self-closed.
+`MEKANISM-REGISTRY-RACE-001` stays CLOSED / VERIFIED / FROZEN; M-A unchanged (`git diff` of
+`compat/nestworld-compat-mekanism/.../mixin` is empty). Addon version 0.1.1, jar sha256
+`8f0cdf0079bb9a34aba1bb48dbb69e24309f11ece7bcb5f25c91a47fcc44f1f0`.
+
+### 5.1 New gate (`MekGateV2`, impl `mixin-config-v2`), same ACTIVE contract
+
+- A `resolveMod`: exactly one loaded mod file provides modid `mekanism` (FML loading mod list); 0 or >1 → INELIGIBLE.
+- B `jarSha`: full SHA-256 of that jar (streamed, 64 KiB buffer) + version 10.4.16 — unchanged rule.
+- C `classSha`: only the two target entries are read and fingerprinted — unchanged rule.
+- D foreign Mixins, from the Mixin runtime instead of every class of every mod:
+  - `mixinConfigs`: every config registered with the Mixin runtime (`Mixins.getConfigs()`, JSON already parsed at
+    registration, so available in our plugin's `onLoad`) is mapped by its `mixinPackage` to the mod jar(s) holding
+    classes in that package **or any subpackage** (package index built once: package + ancestors → jars).
+  - `mixinTargets`: per jar, only classes under those packages are read, through FML's already-open SecureJar view,
+    each class once (nested prefixes deduplicated). Byte prefilter on the target *simple* names
+    (`NetworkAcceptorCache`, `TransmitterNetworkRegistry`) — every form that can name a target (descriptor, slashed
+    or dotted string) contains them — then `@Mixin(value=Type…, targets="…")` is resolved exactly, both string forms.
+  - A config whose package holds no class in any mod jar can apply nothing (all mixins, plugin-supplied too, must be
+    classes under the package) → counted as `emptyConfigs` (14 on Airis: cobweb, melody, powerpots, bclib…).
+- Runtime cross-check (new, fail-closed): `IMixinConfigPlugin.acceptTargets(otherTargets)` receives the targets of
+  every other prepared config; if one is a protected class while the gate said ACTIVE, startup is refused
+  (`IllegalStateException`, mode `CONFLICT`) instead of running an unverified M-A.
+- Diagnostics: `/nwcompatmek status` → `state reason mekanism jarSha classSha foreignMixins configs emptyConfigs
+  mixinClassesRead gateTime phases impl`. Normal log: `[NW-MEK] Gate ACTIVE in N ms`; phases at DEBUG.
+  Diagnostic flags (copies only): `gateCompare=true` (also runs the legacy gate, records decision/time),
+  `gateImpl=legacy` (decides with the 0.1.0 gate), `gateDump=<file>` (every class read).
+- No cache (not needed: < 250 ms without it). No new threads; reads via FML's open file systems; all streams closed.
+
+### 5.2 Performance (cold JVM starts, Airis copy, 196 mods, no concurrent load)
+
+| gate | starts (ms) | min | median | max |
+|---|---|---|---|---|
+| legacy 0.1.0 (walk every class) | 5521, 5693, 5795, 6063, 6435 | 5521 | **5795** | 6435 |
+| final 0.1.1 `8f0cdf00` | 151, 190, 204, 218, 237 | 151 | **204** | 237 |
+
+Speedup **28.4×** (median), startup saved **≈ 5.6 s**. Typical phases: resolveMod 0, jarSha 55–130, classSha 2–6,
+mixinConfigs 11–14, mixinTargets 76–125 ms (1055 classes read instead of every class of every mod).
+Intermediate builds (evidence kept): subpackage-unaware v2 → false INELIGIBLE (fixed); index + ZipFile → 268 ms;
++ byte prefilter → 288 ms (I/O-bound, no gain); SecureJar + dedup → 179 ms. The 1085 vs 1055 class count difference
+between builds was proven to be double reads of nested prefixes in jar-in-jar modules (offline zip comparison: all
+880 top-level classes identical, 30 nested double counts), not a blind spot.
+
+### 5.3 Decision equivalence (same JVM, `gateCompare=true`)
+
+| case | legacy | new | equal |
+|---|---|---|---|
+| C1 exact supported environment | ACTIVE | ACTIVE | yes |
+| C2 `disable=true` | DISABLED | DISABLED | yes (gate not run) |
+| C3 Mekanism jar +1 entry | INELIGIBLE | INELIGIBLE (jar SHA) | yes |
+| C4 target class modified (SourceFile attr) | INELIGIBLE | INELIGIBLE (jar + class SHA) | yes |
+| C5 detector mixins (foreign) | INELIGIBLE | INELIGIBLE, foreign=2 | yes |
+| C6 unrelated mixin on `DynamicNetwork` | ACTIVE | ACTIVE | yes |
+| C7 `@Mixin(targets="mekanism.common...NetworkAcceptorCache")` | **ACTIVE** | **INELIGIBLE** | **no** |
+| C8 `@Mixin(TransmitterNetworkRegistry.class)` | INELIGIBLE | INELIGIBLE | yes |
+| C9 legacy decides + C7 fixture | — | startup refused by `acceptTargets` | — |
+
+**C7 = STOP per the TZ, investigated:** the legacy prefilter searched only the slashed full name, so a Mixin naming
+the target as a dotted string was invisible and the legacy gate said ACTIVE. C9 proves that Mixin really targets
+`NetworkAcceptorCache` (the runtime cross-check sees it and refuses startup). The legacy ACTIVE was therefore unsound;
+the new gate is stricter in exactly this case. Restoring 100 % equivalence would require re-introducing the blind
+spot. Owner decision needed: accept the stricter decision. (The shipped 0.1.0 has the blind spot; on the real Airis
+pack the new gate finds 0 foreign mixins, so it is not triggered there.)
+
+### 5.4 Short live M-A regression with the final jar (D307MEK, churn period 1, 12 min)
+
+`state=ACTIVE` in 168 ms; 116 792 toggles; drained `produced = published = 100 398`, `dropped = 0`,
+`mergedDuplicate = 0`; 0 crash reports, 0 Mekanism error lines; tick p95 11–15 ms, 1 m max 78 ms; process open file
+descriptors 619 before and after (no leaked handles).
+
+### 5.5 DoD
+
+- [x] exact Mekanism accepted (C1) · [x] wrong jar rejected (C3) · [x] wrong target class rejected (C4)
+- [x] foreign target Mixin rejected (C5, C8, and C7 string form) · [x] unrelated Mixin accepted (C6)
+- [x] M-A unchanged · [x] short live churn clean · [x] accounting invariant clean
+- [x] median gate < 500 ms (204) · [x] target < 250 ms met · [x] diagnostics · [x] documentation · [x] evidence
+- [ ] old/new decision equivalence 100 % — 8/8 comparable cases equal except **C7** (legacy unsound) → owner
+- [x] separate commit
+
+Evidence: `/root/airis-2026-10-25/evidence-mek-gate-perf/` (baseline, per-build timings, cases, read dump,
+fixtures in `/root/airis-2026-10-25/fixtures/` with SHA256SUMS).
+
 ## 4. Vehicle decision (resolved 2026-10-26: addon) + documentation discrepancy (fixed)
 
 - `docs/MOD_COMPATIBILITY_FIXES.md` / `docs/gmeil/ARCHITECTURE.md` (11ea64345, 2026-09-22): "the user's GMEIL

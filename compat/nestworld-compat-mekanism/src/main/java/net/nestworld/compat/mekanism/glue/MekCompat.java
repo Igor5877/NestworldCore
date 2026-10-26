@@ -25,6 +25,9 @@ public final class MekCompat {
     static volatile String mode = "NOT_EVALUATED";
     static volatile List<String> problems = List.of();
     static volatile long gateMillis;
+    static volatile MekGateV2.Result gate;
+    /** -Dnestworld.compatMekanism.gateCompare=true only: legacy gate decision/time for the equivalence check */
+    static volatile String compare = "off";
 
     private MekCompat() {
     }
@@ -33,6 +36,17 @@ public final class MekCompat {
         return "mode=" + mode + " problems=" + problems.size() + " audit=" + AUDIT + " produced=" + PRODUCED.sum()
                 + " published=" + PUBLISHED.sum() + " dropped=" + DROPPED.sum() + " mergedDuplicate=" + MERGED_DUPLICATE.sum()
                 + " generations=" + GENERATIONS.sum() + " gateMs=" + gateMillis;
+    }
+
+    public static String status() {
+        MekGateV2.Result g = gate;
+        String reason = problems.isEmpty() ? "-" : problems.get(0).split(" ", 2)[0];
+        if (g == null) return "state=" + mode + " reason=" + reason + " impl=" + MekGate.IMPL;
+        return "state=" + mode + " reason=" + reason + " mekanism=" + g.mekanismVersion()
+                + " jarSha=" + (g.jarShaMatch() ? "PASS" : "FAIL") + " classSha=" + (g.classShaMatch() ? "PASS" : "FAIL")
+                + " foreignMixins=" + g.foreignMixins() + " configs=" + g.configs() + " emptyConfigs=" + g.emptyConfigs()
+                + " mixinClassesRead=" + g.mixinClassesRead()
+                + " gateTime=" + g.totalMs() + "ms phases=" + g.timingsMs() + " impl=" + MekGate.IMPL + " compare=" + compare;
     }
 
     public static List<String> problems() {

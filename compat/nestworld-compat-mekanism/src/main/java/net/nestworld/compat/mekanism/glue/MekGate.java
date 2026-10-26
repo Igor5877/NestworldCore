@@ -44,10 +44,14 @@ public final class MekGate {
         }
     }
 
+    /** Gate implementation version, shown by /nwcompatmek status. */
+    public static final String IMPL = "mixin-config-v2";
+
     private MekGate() {
     }
 
-    public static Result evaluate() {
+    /** The original (pre MEK-GATE-PERF-001) gate: walks every class of every mod. Kept for the equivalence check. */
+    public static Result evaluateLegacy() {
         long t0 = System.nanoTime();
         List<String> problems = new ArrayList<>();
         ModFileInfo mek = FMLLoader.getLoadingModList().getModFileById(MOD_ID);

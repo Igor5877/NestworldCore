@@ -1,0 +1,13 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="test-only"
+[[mods]]
+modId="nestworld_mekgatefix"
+version="0.1.0"
+displayName="NestWorld MEK-GATE fixture (TEST ONLY)"
+[[dependencies.nestworld_mekgatefix]]
+    modId="mekanism"
+    mandatory=true
+    versionRange="[10.4.16]"
+    ordering="AFTER"
+    side="SERVER"
