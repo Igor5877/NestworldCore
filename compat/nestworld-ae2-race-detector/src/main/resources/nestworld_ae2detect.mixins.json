@@ -1,0 +1,19 @@
+{
+  "required": true,
+  "minVersion": "0.8.5",
+  "package": "net.nestworld.ae2detect.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "nestworld_ae2detect.refmap.json",
+  "mixins": [
+    "EnergyServiceDetectMixin",
+    "EnergyServiceAccessor",
+    "MekRegistryDetectMixin",
+    "MekAcceptorCacheDetectMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "mixinextras": {
+    "minVersion": "0.4.1"
+  }
+}

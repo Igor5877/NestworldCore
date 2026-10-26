@@ -1,0 +1,9 @@
+plugins { id 'net.minecraftforge.gradle' version '[6.0,6.2)' }
+// TEST-ONLY workload for MEKANISM-REGISTRY-RACE-001 on copies of real islands. Never deploy to live servers.
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+version = '0.1.0'
+group = 'net.nestworld.tools'
+minecraft { mappings channel: 'official', version: '1.20.1' }
+repositories { mavenCentral() }
+dependencies { minecraft 'net.minecraftforge:forge:1.20.1-47.4.20' }
+tasks.named('jar', Jar).configure { archiveBaseName = 'nestworld-mek-churn'; finalizedBy 'reobfJar' }

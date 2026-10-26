@@ -1,0 +1,19 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="test-only"
+[[mods]]
+modId="nestworld_ae2detect"
+version="0.1.0"
+displayName="NestWorld AE2 race detector (observation only, test copies)"
+[[dependencies.nestworld_ae2detect]]
+    modId="ae2"
+    mandatory=true
+    versionRange="[15.4.10]"
+    ordering="AFTER"
+    side="SERVER"
+[[dependencies.nestworld_ae2detect]]
+    modId="mekanism"
+    mandatory=true
+    versionRange="[10.4.16,10.4.17)"
+    ordering="AFTER"
+    side="SERVER"

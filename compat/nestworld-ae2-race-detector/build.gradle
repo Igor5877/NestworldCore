@@ -1,0 +1,29 @@
+plugins {
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+    id 'org.spongepowered.mixin' version '0.7.38'
+}
+// Observation-only race detector for AE2 EnergyService (test copies only; changes no AE2 behaviour).
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+version = '0.1.0'
+group = 'net.nestworld.tools'
+minecraft { mappings channel: 'official', version: '1.20.1' }
+jarJar.enable()
+mixin {
+    add sourceSets.main, 'nestworld_ae2detect.refmap.json'
+    config 'nestworld_ae2detect.mixins.json'
+}
+repositories { mavenCentral(); flatDir { dirs 'libs' } }
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.4.20'
+    compileOnly fg.deobf('blank:appliedenergistics2-forge:15.4.10')
+    compileOnly fg.deobf('blank:Mekanism-1.20.1:10.4.16.80')
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+    compileOnly(annotationProcessor('io.github.llamalad7:mixinextras-common:0.4.1'))
+    implementation(jarJar('io.github.llamalad7:mixinextras-forge:0.4.1')) { jarJar.ranged(it, '[0.4.1,)') }
+}
+tasks.named('jar', Jar).configure {
+    archiveBaseName = 'nestworld-ae2-race-detector'
+    manifest.attributes('MixinConfigs': 'nestworld_ae2detect.mixins.json')
+    finalizedBy 'reobfJar'
+}
+tasks.named('jarJar').configure { archiveBaseName = 'nestworld-ae2-race-detector' }

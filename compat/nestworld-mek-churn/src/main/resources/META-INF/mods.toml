@@ -1,0 +1,13 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="test-only"
+[[mods]]
+modId="nestworld_mekchurn"
+version="0.1.0"
+displayName="NestWorld Mekanism churn driver (TEST ONLY, copies of islands)"
+[[dependencies.nestworld_mekchurn]]
+    modId="mekanism"
+    mandatory=true
+    versionRange="[10.4.16,10.4.17)"
+    ordering="AFTER"
+    side="SERVER"
