@@ -344,8 +344,14 @@ configurator paths not exercised.
 
 ## 5. MEK-GATE-PERF-001 — narrow the Mekanism compatibility gate
 
-Status: **IMPLEMENTED / VERIFIED except decision equivalence C7** (stricter than legacy, see 5.3) — closure
-awaits the owner's decision on C7; not self-closed.
+```
+MEK-GATE-PERF-001                     (owner decision 2026-10-27)
+STATUS:                     CLOSED / VERIFIED
+correctness delta:          STRICTER THAN 0.1.0
+known legacy defect fixed:  dot-form @Mixin targets false-negative
+0.1.1:                      APPROVED FOR CANARY / PRODUCTION REPLACEMENT OF 0.1.0
+runtime acceptTargets:      KEPT as second-line fail-closed guard (not removable as "redundant")
+```
 `MEKANISM-REGISTRY-RACE-001` stays CLOSED / VERIFIED / FROZEN; M-A unchanged (`git diff` of
 `compat/nestworld-compat-mekanism/.../mixin` is empty). Addon version 0.1.1, jar sha256
 `8f0cdf0079bb9a34aba1bb48dbb69e24309f11ece7bcb5f25c91a47fcc44f1f0`.
@@ -402,12 +408,20 @@ between builds was proven to be double reads of nested prefixes in jar-in-jar mo
 | C8 `@Mixin(TransmitterNetworkRegistry.class)` | INELIGIBLE | INELIGIBLE | yes |
 | C9 legacy decides + C7 fixture | — | startup refused by `acceptTargets` | — |
 
-**C7 = STOP per the TZ, investigated:** the legacy prefilter searched only the slashed full name, so a Mixin naming
+**C7 — INTENTIONAL STRICTER DECISION (owner-approved 2026-10-27):** old = ACTIVE, new = INELIGIBLE;
+classification: legacy false-negative corrected; proof: C9 — the runtime `acceptTargets` cross-check independently
+detects the foreign targeting of the protected class. Matrix: 8/9 semantic equivalence, 1/9 correctness improvement,
+0 unjustified differences.
+
+Investigation: the legacy prefilter searched only the slashed full name, so a Mixin naming
 the target as a dotted string was invisible and the legacy gate said ACTIVE. C9 proves that Mixin really targets
 `NetworkAcceptorCache` (the runtime cross-check sees it and refuses startup). The legacy ACTIVE was therefore unsound;
 the new gate is stricter in exactly this case. Restoring 100 % equivalence would require re-introducing the blind
-spot. Owner decision needed: accept the stricter decision. (The shipped 0.1.0 has the blind spot; on the real Airis
-pack the new gate finds 0 foreign mixins, so it is not triggered there.)
+spot. (The shipped 0.1.0 has the blind spot; on the real Airis pack the new gate finds 0 foreign mixins, so it is
+not triggered there.)
+
+**Equivalence rule (replaces "oldDecision == newDecision 100 %"):** for every fixture, `newDecision == oldDecision`,
+OR the difference is a demonstrated correction of an unsafe legacy decision with an independent oracle/runtime proof.
 
 ### 5.4 Short live M-A regression with the final jar (D307MEK, churn period 1, 12 min)
 
@@ -421,7 +435,7 @@ descriptors 619 before and after (no leaked handles).
 - [x] foreign target Mixin rejected (C5, C8, and C7 string form) · [x] unrelated Mixin accepted (C6)
 - [x] M-A unchanged · [x] short live churn clean · [x] accounting invariant clean
 - [x] median gate < 500 ms (204) · [x] target < 250 ms met · [x] diagnostics · [x] documentation · [x] evidence
-- [ ] old/new decision equivalence 100 % — 8/8 comparable cases equal except **C7** (legacy unsound) → owner
+- [x] decision equivalence per the amended rule: C1–C6, C8 equal; C7 = approved correction (proof C9)
 - [x] separate commit
 
 Evidence: `/root/airis-2026-10-25/evidence-mek-gate-perf/` (baseline, per-build timings, cases, read dump,
