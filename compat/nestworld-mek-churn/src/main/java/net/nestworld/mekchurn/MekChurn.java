@@ -37,11 +37,22 @@ public final class MekChurn {
     static final DeferredRegister<Block> BLOCKS = DeferredRegister.create(ForgeRegistries.BLOCKS, "nestworld_mekchurn");
     static final DeferredRegister<BlockEntityType<?>> BES = DeferredRegister.create(Registries.BLOCK_ENTITY_TYPE, "nestworld_mekchurn");
     static final RegistryObject<Block> DRIVER = BLOCKS.register("driver", Driver::new);
+    /** item driver: every period, insert 1 cobblestone into each neighbour's item handler and extract it again */
+    static final RegistryObject<Block> ITEM_DRIVER = BLOCKS.register("itemdriver", ItemDriver::new);
     @SuppressWarnings("ConstantConditions")
     static final RegistryObject<BlockEntityType<DriverBE>> DRIVER_BE = BES.register("driver",
             () -> BlockEntityType.Builder.of(DriverBE::new, DRIVER.get()).build(null));
+    @SuppressWarnings("ConstantConditions")
+    static final RegistryObject<BlockEntityType<ItemDriverBE>> ITEM_DRIVER_BE = BES.register("itemdriver",
+            () -> BlockEntityType.Builder.of(ItemDriverBE::new, ITEM_DRIVER.get()).build(null));
+    static final LongAdder itemOps = new LongAdder();
+    static final LongAdder itemInserted = new LongAdder();
 
     static volatile int period = 1;
+    /** item driver: insert/extract cycles per neighbour per driver tick (amplifies the same real path) */
+    static volatile int burst = 1;
+    /** block toggled above each driver (default: Mekanism energy cube; e.g. minecraft:redstone_block for AE2 IO buses) */
+    static volatile String targetBlock = "mekanism:basic_energy_cube";
     static volatile boolean paused;
     static final LongAdder toggles = new LongAdder();
     static final LongAdder toggleErrors = new LongAdder();
@@ -57,6 +68,19 @@ public final class MekChurn {
                         .then(net.minecraft.commands.Commands.literal("status").executes(c -> say(c.getSource(), status())))
                         .then(net.minecraft.commands.Commands.literal("pause").executes(c -> { paused = true; return say(c.getSource(), "paused"); }))
                         .then(net.minecraft.commands.Commands.literal("resume").executes(c -> { paused = false; return say(c.getSource(), "resumed"); }))
+                        .then(net.minecraft.commands.Commands.literal("burst")
+                                .then(net.minecraft.commands.Commands.argument("n",
+                                        com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 100000))
+                                        .executes(c -> {
+                                            burst = com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "n");
+                                            return say(c.getSource(), "burst=" + burst);
+                                        })))
+                        .then(net.minecraft.commands.Commands.literal("block")
+                                .then(net.minecraft.commands.Commands.argument("id", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                        .executes(c -> {
+                                            targetBlock = com.mojang.brigadier.arguments.StringArgumentType.getString(c, "id").trim();
+                                            return say(c.getSource(), "block=" + targetBlock);
+                                        })))
                         .then(net.minecraft.commands.Commands.literal("period")
                                 .then(net.minecraft.commands.Commands.argument("ticks",
                                         com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 1200))
@@ -72,8 +96,8 @@ public final class MekChurn {
     }
 
     static String status() {
-        StringBuilder b = new StringBuilder("churn paused=").append(paused).append(" period=").append(period)
-                .append(" toggles=").append(toggles.sum()).append(" errors=").append(toggleErrors.sum())
+        StringBuilder b = new StringBuilder("churn paused=").append(paused).append(" period=").append(period).append(" block=").append(targetBlock)
+                .append(" burst=").append(burst).append(" toggles=").append(toggles.sum()).append(" itemOps=").append(itemOps.sum()).append(" itemInserted=").append(itemInserted.sum()).append(" errors=").append(toggleErrors.sum())
                 .append(" firstError=").append(firstError);
         THREADS.forEach((k, v) -> b.append("\n ").append(k).append(" = ").append(v.sum()));
         try {
@@ -102,13 +126,55 @@ public final class MekChurn {
         }
     }
 
+    static final class ItemDriver extends BaseEntityBlock {
+        ItemDriver() { super(BlockBehaviour.Properties.of().strength(1f)); }
+        @Override public BlockEntity newBlockEntity(BlockPos pos, BlockState state) { return new ItemDriverBE(pos, state); }
+        @Override public RenderShape getRenderShape(BlockState state) { return RenderShape.MODEL; }
+        @Override
+        public <T extends BlockEntity> BlockEntityTicker<T> getTicker(Level level, BlockState state, BlockEntityType<T> type) {
+            return level.isClientSide ? null : createTickerHelper(type, ITEM_DRIVER_BE.get(), ItemDriverBE::tick);
+        }
+    }
+
+    static final class ItemDriverBE extends BlockEntity {
+        long ticks;
+        ItemDriverBE(BlockPos pos, BlockState state) { super(ITEM_DRIVER_BE.get(), pos, state); }
+
+        static void tick(Level level, BlockPos pos, BlockState state, ItemDriverBE be) {
+            if (paused || ++be.ticks % period != 0) return;
+            try {
+                for (net.minecraft.core.Direction d : net.minecraft.core.Direction.values()) {
+                    BlockEntity n = level.getBlockEntity(pos.relative(d));
+                    if (n == null) continue;
+                    n.getCapability(net.minecraftforge.common.capabilities.ForgeCapabilities.ITEM_HANDLER, d.getOpposite()).ifPresent(h -> {
+                        for (int k = 0; k < burst; k++)
+                        for (int slot = 0; slot < h.getSlots(); slot++) {
+                            net.minecraft.world.item.ItemStack rest = h.insertItem(slot,
+                                    new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.COBBLESTONE), false);
+                            if (rest.isEmpty()) {
+                                itemInserted.increment();
+                                h.extractItem(slot, 1, false);
+                                break;
+                            }
+                        }
+                    });
+                    itemOps.increment();
+                }
+                THREADS.computeIfAbsent("item " + Thread.currentThread().getName().replaceAll("[0-9]+", "#"), k -> new LongAdder()).increment();
+            } catch (Throwable t) {
+                toggleErrors.increment();
+                if ("-".equals(firstError)) firstError = t + "@" + Thread.currentThread().getName();
+            }
+        }
+    }
+
     static final class DriverBE extends BlockEntity {
         long ticks;
         DriverBE(BlockPos pos, BlockState state) { super(DRIVER_BE.get(), pos, state); }
 
         static void tick(Level level, BlockPos pos, BlockState state, DriverBE be) {
             if (paused || ++be.ticks % period != 0) return;
-            Block cube = ForgeRegistries.BLOCKS.getValue(new ResourceLocation("mekanism", "basic_energy_cube"));
+            Block cube = ForgeRegistries.BLOCKS.getValue(new ResourceLocation(targetBlock));
             if (cube == null || cube == Blocks.AIR) return;
             BlockPos target = pos.above();
             try {

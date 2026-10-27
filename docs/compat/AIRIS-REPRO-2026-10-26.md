@@ -16,9 +16,7 @@ STATUS:                   CLOSED / VERIFIED / FROZEN
 M-A:                      FROZEN for the exact supported Mekanism fingerprint (changes need a new gate)
 868be3340 (Core oracle):  research/reference, never production
 
-AE2 TickManager queue race (A234):  CONFIRMED
-B307 + AE2 addon, same symptom:     NOT OBSERVED (contended path exercised)
-causal prevention by the addon:     CORRELATED, not PROVEN
+AE2-TICKMANAGER-RACE-001 (section 6):  root cause CONFIRMED; addon prevention VERIFIED (deterministic A/B)
 ```
 
 **Closure scope (normative).** The gate covers the reproduced `NetworkAcceptorCache` /
@@ -341,6 +339,72 @@ foreign mixins — can be narrowed to classes referencing the targets via jar-le
 `cachedAcceptors` remains uncovered (no off-main evidence); the bot's client-side `keepAliveError` after ~300
 cycles happens with and without the addon (HYPOTHESIS: client parse desync, server healthy); wrench /
 configurator paths not exercised.
+
+## 6. AE2-TICKMANAGER-RACE-001 — causal A/B (addon OFF vs ON)
+
+```
+AE2-TICKMANAGER-RACE-001
+was:            OPEN / CORRELATED (A234 one crash, B307 none)
+root cause:     CONFIRMED — region-thread producers mutate a grid's TickManagerService PriorityQueue
+                while the server thread runs tickQueue (peek/poll/add) of the same service
+negative ctl:   VERIFIED — addon OFF crashes (15 s / 405 s to first failure, full crash shutdown)
+positive ctl:   VERIFIED — addon ON, same workload: 0 failures, 0 queue mutations during main's queue ops,
+                quiescent invariant clean
+STATUS:         READY FOR OWNER CLOSURE REVIEW (proposed: CORRELATED -> VERIFIED)
+fix layer:      AE2 compat addon (shared AE2 queue assumes serialization); NOT wrong-owner execution
+```
+
+### 6.1 Detection (observation-only detector, `/nwae2tick [threads|stacks|verify]`)
+
+Copy F307AE2OFF (Core 307, AE2 addon removed, detector on), idle: `WAKE` 981 and `ALERT` 303 calls from
+`NestWorld-Region-0` within minutes, 26 of them while the Server thread was inside `tickQueue` of the same
+service. Producer paths (first stacks):
+- `IOBusPart.onNeighborChanged → updateRedstoneState → TickManagerService.wakeDevice`, triggered by a
+  Titanium/Industrial Foregoing machine's comparator update (`ActiveTile.serverTick → setChanged →
+  Level.updateNeighbourForOutputSignal → CableBusBlock.onNeighborChange`) on the region thread;
+- `GenericStackInv.setStack → InterfaceLogic.onStorageChanged → updatePlan → alertDevice →
+  updateQueuePosition → removeFromQueue/addToQueue` (ME Interface storage change) on the region thread.
+The P2P path seen at A234's shutdown (`MEP2PTunnelPart.onTunnelNetworkChange → wakeDevice`) is one more producer
+of the same entry points; the dominant real producers on Airis are IO buses and interfaces.
+Writers run on the region thread that owns the BE (correct owner); the consumer is the grid service ticked on
+main → a shared-queue serialization assumption, not a routing defect.
+
+### 6.2 Deterministic driver (test-only `nestworld_mekchurn:itemdriver`)
+
+5 item drivers next to two ME Interfaces (−6,104,114) and (−39,115,150) (region #0). Each driver tick, on the
+region thread, inserts and extracts 1 cobblestone through the neighbour's Forge `ITEM_HANDLER` → the real AE2 path
+above. `burst` repeats the cycle N times per tick (rate amplification of the same path). Without burst (1×/tick)
+the overlap is real but rare (no failure in 15 min); `burst 200` makes it deterministic. The redstone-toggle
+variant was rejected: IO buses stay awake, `wakeDevice` is then a no-op for the queue.
+Detector precision: an overlap counts as `duringForeignQueueOps` only if the server thread is inside `tickQueue`
+**and not inside the device callback** (`unsafeTickingRequest`), i.e. in PriorityQueue operations.
+
+### 6.3 A/B results (same workload, burst 200, 15 min, Core 307 on both)
+
+| | OFF (F307AE2OFF) | ON (G307AE2ON, addon NORMAL) |
+|---|---|---|
+| run 1 | first failure **15 s**; 7 tick-skips: 3× `TickTracker.getNextTick … "t"/"tt" is null` (the A234 live signature), 4× AE2's own `IllegalStateException` at `tickQueue:112` (poll ≠ peek) | 0 failures |
+| run 2 | first failure **405 s**; 6 tick-skips incl. `ArrayIndexOutOfBoundsException -1` (PriorityQueue); "6 tick failures within 60s → full crash shutdown"; **chunk saves failed** ([1,5], [0,7], [−1,7], [−2,7]) | 0 failures |
+| off-main queue mutations (add / remove) | 7.27 M / 14.5 M | 10.1 M / 20.1 M |
+| **mutations during main's queue ops** (ADD / REMOVE / UPDATE) | **354 / 739 / 395** | **0 / 0 / 0** (both runs) |
+| entry into `alertDevice` during main's queue ops | 507 | 401–790 → held on the grid lock (`contended` 49 847–118 017) |
+| main `tickQueue` calls in 15 min | 951 (server degrading) | 18 108–18 289 |
+| quiescent invariant (`verify`) | pre-churn clean; post: server dead | pre and post: `nulls=0 duplicates=0 lostAwake=0 staleQueued=0` |
+| addon counters | — | `unauditedPaths=0 callbackExceptions=0 mainAffinityViolation=0 stagingErrors=0`; `pWaitNs` 44–59 ms total; `t2ForeignAlert` 7 612–11 697 (legal alerts during the T2 suspension) |
+
+Requirements check: exact producer threads (NestWorld-Region-0) ✓; exact overlapping methods (alertDevice →
+updateQueuePosition/addToQueue/removeFromQueue vs tickQueue peek/poll/add) ✓; negative control ✓; positive
+control ✓; same workload ✓; no queue corruption (ON) ✓; no lost wakeups / no duplicated ticks (quiescent invariant,
+ON) ✓; no deadlock (ON ticked 18k times, total lock wait < 60 ms) ✓.
+
+Not covered: the P2P `onTunnelNetworkChange` producer was not driven by its own fixture (it enters the same
+guarded `wakeDevice`); OFF post-run invariant could not be taken (server dead — itself the result). The single
+AE2-unrelated error line on ON is MODULE-1's deliberate `FailingExampleModule` failure (present on OFF too).
+Live island (owner, 2026-10-26 20:29): addon `contended=2 058`, all zero-required counters 0 — the same
+serialization happening in production.
+
+Evidence: `/root/airis-2026-10-25/evidence-ae2-tick/` (`ab-burst200.txt`, `ab-burst200-verify.txt`), crash reports
+in `F307AE2OFF/crash-reports/`.
 
 ## 5. MEK-GATE-PERF-001 — narrow the Mekanism compatibility gate
 

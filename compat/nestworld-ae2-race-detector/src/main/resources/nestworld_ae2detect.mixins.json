@@ -8,7 +8,8 @@
     "EnergyServiceDetectMixin",
     "EnergyServiceAccessor",
     "MekRegistryDetectMixin",
-    "MekAcceptorCacheDetectMixin"
+    "MekAcceptorCacheDetectMixin",
+    "TickManagerDetectMixin"
   ],
   "injectors": {
     "defaultRequire": 1
