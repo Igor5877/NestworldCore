@@ -43,6 +43,11 @@ public final class Detect {
                     return 1;
                 })));
         MinecraftForge.EVENT_BUS.addListener((RegisterCommandsEvent e) -> e.getDispatcher().register(
+                net.minecraft.commands.Commands.literal("nwae2static").requires(s -> s.hasPermission(2))
+                        .executes(c -> say(c.getSource(), StaticDetect.summary()))
+                        .then(net.minecraft.commands.Commands.literal("threads").executes(c -> say(c.getSource(), StaticDetect.threads())))
+                        .then(net.minecraft.commands.Commands.literal("stacks").executes(c -> say(c.getSource(), StaticDetect.stacks())))));
+        MinecraftForge.EVENT_BUS.addListener((RegisterCommandsEvent e) -> e.getDispatcher().register(
                 net.minecraft.commands.Commands.literal("nwae2tick").requires(s -> s.hasPermission(2))
                         .executes(c -> say(c.getSource(), TickDetect.summary()))
                         .then(net.minecraft.commands.Commands.literal("threads").executes(c -> say(c.getSource(), TickDetect.threads())))

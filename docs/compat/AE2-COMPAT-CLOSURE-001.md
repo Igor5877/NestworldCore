@@ -1,7 +1,13 @@
 # AE2-COMPAT-CLOSURE-001 — Applied Energistics 2: from KNOWN RISK to SUPPORTED / VERIFIED
 
-Owner TZ received 2026-10-28 (sections 0–60 complete; the message was cut inside section 61 "closure matrix" —
-the rest of 61 and anything after it is still to be received).
+Owner TZ received 2026-10-28, sections 0–69 complete. Normative rules from §61–69 used throughout:
+- status scale (§63): DISCOVERED → CONFIRMED → CORRELATED → IMPLEMENTED → VERIFIED → FROZEN; forbidden without
+  evidence: DISCOVERED→VERIFIED, CORRELATED→CLOSED, IMPLEMENTED→FROZEN;
+- final closure matrix (§61) may contain no UNKNOWN / CORRELATED / STRONGLY INDICATED;
+- N/A only for features absent/disabled in the production pack and declared unsupported (§62);
+- two levels (§67): AE2 ENGINEERING VERIFIED (copies) and AE2 PRODUCTION VERIFIED (canary 24 h one island,
+  48–72 h several, exact stack, no test drivers or timing-changing detectors, §66); SUPPORTED needs both;
+- commit discipline (§64): detector/fixture → fix → evidence → docs; Core only for generic mechanisms (§65).
 
 Status: **OPEN** — phase P0 (provenance + static-state audit) in progress.
 
@@ -48,16 +54,51 @@ remaining runtime candidate traced to its writers in the tag source. Type alone 
 | `AEItemKey$InternedTag.INTERNED` (WeakHashMap) | get/put inside `synchronized (AEItemKey.class)` | **THREAD_SAFE** | — | none |
 | `EncodedPatternItem.SIMPLE_CACHE` | only after `getClientLevel()` | **CLIENT_ONLY** | — | none |
 | `Grid.nextSerial` (int ++) | debug `toString` / crash report only | **benign race** (debug label) | grids created under T0; addon orders locks by its own atomic `DomainLock` serial | none |
-| `Grid.ITERATION_BUFFER` (one ArrayList for **all** grids) | `notifyAllNodes`: throws ISE if non-empty, then addAll / iterate / clear | **NEEDS_EVIDENCE → likely NEEDS_FIX** | `EnergyService.publicPowerState → notifyAllNodes(POWER)` is only deferred to the end of the grid section **on the same thread** (`KERNEL.defer`), so it can run on a region thread; `PathingService.postBootingStatusChange → notifyAllNodes(GRID_BOOT)` runs from `onServerEndTick` (main). Two grids on two threads share the buffer. | detector + fixture (two grids, power flips on a region thread vs boot on main) |
-| `MBCalculator.modificationInProgress` (static WeakReference) | set/cleared around multiblock (re)formation of `QuantumCluster`, `CraftingCPUCluster`, `SpatialPylonCluster`; throws ISE "A modification is already in-progress" if another cluster holds it | **NEEDS_EVIDENCE → likely NEEDS_FIX** | none found | detector + fixture (two clusters re-forming in two regions) |
-| `FakePlayer.FAKE_PLAYERS` (WeakHashMap, unsynchronized) | `Platform.getFakePlayer` → planes / placement | **NEEDS_EVIDENCE** | none found | find thread of callers (planes tick on owner region) |
-| `TransformLogic.fluidCache / explosionCache / anyFluidCache` | `ItemEntityMixin` (item entity tick → region threads); IdentityHashMap `computeIfAbsent`, lazy init | **NEEDS_EVIDENCE → likely NEEDS_FIX** | none found | detector + fixture (item entities in fluid in two regions after a reload) |
+| `Grid.ITERATION_BUFFER` (one ArrayList for **all** grids) | `notifyAllNodes`: throws ISE if non-empty, then addAll / iterate / clear | **MAIN_ONLY** (source + runtime) | both callers run only from server-tick handlers: `EnergyService.onServerEndTick → publicPowerState` (lines 263/265, the only call sites) and `PathingService.onServerEndTick → postBootingStatusChange`; detector: 32 calls, 0 off-main, 0 concurrent. (First-pass suspicion withdrawn: `KERNEL.defer` keeps the thread, but the caller is already main.) | keep the addon main-affinity assertion |
+| `MBCalculator.modificationInProgress` (static WeakReference) | set/cleared in `calculateMultiblock` and the clusters' `destroy()`; a second thread seeing a foreign flag silently skips its own recalculation, or both set it → ISE "A modification is already in-progress" | **DISCOVERED** (two-thread entry observed, overlap not yet) | none | detector (G, 5 min, period 10): 4509 entries — 1800 on `NestWorld-Region-0`, 2709 on Server thread (chunk 2 has no running region, its BEs tick on main) — 0 concurrent, 0 ISE; a tighter driver is blocked by AE2-BE-READY-001 |
+| `FakePlayer.FAKE_PLAYERS` (WeakHashMap, unsynchronized) | `Platform.getFakePlayer` → planes / placement | **DISCOVERED** (no runtime call on Airis copies: 0 calls) | none | fixture with formation/annihilation planes in two regions |
+| `TransformLogic.fluidCache / explosionCache / anyFluidCache` | `ItemEntityMixin` (item entity tick → region threads); IdentityHashMap `computeIfAbsent`, lazy init; caches cleared on recipe reload | **DISCOVERED** | none | detector: 40 607 calls, all `NestWorld-Region-0` via `ItemEntity.tick → canTransformInAnyFluid`; 0 concurrent (single active region). Needs a two-region item-entity fixture + `/reload` (writes happen only on (re)fill) |
 | `GridEventBus.EVENTS` (HashMap) | `postEvent → getSubscriptions → computeIfAbsent` at runtime (first post of an unseen event class inserts) | **NEEDS_FIX (protected)** | Core legacy `static_collection_race_transformer` swaps it to a concurrent map (registered in production `coremods.json`) — AE2-specific protection living in Core, against the addon > Core rule | decide: keep as legacy exception or move into the addon |
 | `QuantumBridgeBlockEntity.singularitySeed` (int ++) | QNB frequency = `time*100 + seed++ % 100` | low risk (collision needs same ms and lost increment) | — | document |
 | `TickManagerService.MONITORING_ENABLED`, `AELog.*Enabled`, `PhaseSorting.ENABLE_CYCLE_WARNING` | config/debug flags | IMMUTABLE_AFTER_BOOT (by use) | — | confirm writers |
 | registries: `GridServices.registry`, `Upgrades.*`, `StorageCells.*`, `PatternDetailsHelper.DECODERS`, `P2PTunnelAttunement.*`, `BlockEntityMoveStrategies.*`, `GridLinkables.registry`, `Settings.SETTINGS`, `AEBaseBlockEntity.REPRESENTATIVE_ITEMS`, `HotkeyActions.REGISTRY`, `EventFactoryImpl.ARRAY_BACKED_EVENTS` | written during mod init | IMMUTABLE_AFTER_BOOT (to confirm: no runtime writer) | — | writer scan |
 | `VoxelShapeCache.CACHE`, `CompassService` cache | Guava `LoadingCache` | THREAD_SAFE | — | none |
 | `CraftingService.CRAFTING_POOL` | crafting calculation executor (AE2's own async design) | by design — audit in AE2-CRAFTING-001 | — | P5 |
+
+## P1 findings
+
+### AE2-BE-READY-001 — CONFIRMED (new, addon ON)
+
+Workload (copy G307AE2ON, AE2 addon NORMAL): a test driver on a region thread places and, one tick later, removes
+`ae2:1k_crafting_storage` next to a crafting unit, in region #0 and region #1. Within 60 s: 6 tick-skips, then the
+Core gave up catch-and-continue → full crash shutdown. Every report:
+
+```
+ClassCastException: AirBlock cannot be cast to AbstractCraftingUnitBlock
+  CraftingBlockEntity.getUnitBlock(92) ← getItemFromBlockEntity ← onReady(106)
+  ← ServerBlockEntityRepo$FirstTickInfo.callInit (addon nw$callInit wrapper) ← TickHandler.readyBlockEntities(408)
+  ← onServerLevelTickEnd ← Server thread
+```
+
+Mechanism (source, tag b4b08d99 + addon): AE2 readies newly placed AE2 block entities on the **server thread**
+(`TickHandler.readyBlockEntities`). The addon's `FirstTickInfoMixin` serialises `callInit` with removal through the
+per-BE lifecycle lock and revalidates inside it (removed? same BE at pos? same block?). But vanilla
+`LevelChunk.setBlockState(air)` on the owner region thread **first writes the new state into the section, then**
+calls `removeBlockEntity → setRemoved` (where the addon takes the lock). So main passes the revalidation, the owner
+thread flips the state, and `onReady` reads air. More generally, `onReady` (e.g. `calculateMultiblock`, neighbour
+scans) reads world state of a region-owned chunk on main while its owner mutates it — an ownership violation by
+AE2's design, not a narrow window only.
+
+Fix options (owner decision — touches the Core boundary, §65):
+- **R1 owner-thread readiness (preferred):** run `callInit` for a BE on the thread that owns its chunk. Needs a
+  *generic* Core primitive "run on the owner of (level, pos) at the next owner tick" (allowed under §65: generic
+  handoff primitive; no AE2 knowledge in Core). The addon then defers `FirstTickInfo.callInit` for region-owned
+  BEs to their owner; main-owned BEs keep the current path.
+- **R2 addon-only, narrower:** take the lifecycle lock *before* the block-state write when an AE2 BE is replaced
+  (mixin at the head of `LevelChunk.setBlockState`), so state write + removal are atomic w.r.t. `callInit`. Closes
+  this crash shape but not the general main-reads-owner-chunk problem (neighbour scans in `onReady`).
+- not acceptable: holding the region chunk lock from main during `callInit` (§4: no waiting for another region
+  under a world/chunk lock).
 
 ## Phase plan (proposal, ordered by evidence value)
 

@@ -9,7 +9,12 @@
     "EnergyServiceAccessor",
     "MekRegistryDetectMixin",
     "MekAcceptorCacheDetectMixin",
-    "TickManagerDetectMixin"
+    "TickManagerDetectMixin",
+    "GridNotifyDetectMixin",
+    "ClusterDestroyDetectMixin",
+    "TransformLogicDetectMixin",
+    "FakePlayerDetectMixin",
+    "MBCalculatorDetectMixin"
   ],
   "injectors": {
     "defaultRequire": 1
