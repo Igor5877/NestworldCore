@@ -601,3 +601,60 @@ updates. Pin scope is not extended before the formal contract exists.
 Energy, BE-READY, topology churn, storage/interface workload, P-T1). Pin removal only on pin OFF + addon → 0 known
 invariant violations and 0 historical race reproductions. Target production state: AE2 addon + AE2-specific pin =
 0 — a goal, not a current decision. The 2026-10-06 auto-pin reason ≈ TickManager race is not sufficient.
+
+#### Scope 2 clean A/B matrix (2026-10-28)
+
+Rig: H401BEDOM (pristine Airis copy, Core 47.4.401, detector 430fd1331, churn driver period 1, 240 s). Every run
+starts from a **fresh copy of the pristine world** (pins, layout; no leftover drivers). Storage at (-20,115,130) and
+(200,115,200), drivers at x+1 → REGION#0 / REGION#1. Test-only config "ae2 unpinned": `ae2` removed from
+pinned-mods **and** its carried auto-pin count (`mod:ae2=2` is in the pristine counts file and re-pins `ae2` at every
+boot), `-Dnestworld.autoPin=false` (no mid-run re-pin). Production config: pristine pins, autoPin on. Pins unchanged
+in every run. Addon 0.2.0 = `1140d6a36` + `2659098dd` (jar sha256 `0eb2da64…5a31`). Evidence:
+`/root/airis-2026-10-25/evidence-be-ready/<run>/`; superseded/invalid runs with reasons in `invalid/`.
+
+```
+run                     config      addon   alive   crash  readiness (calls / onMain / offDomain)   S1   S2           S3
+neg-prodpins-addon010   prod pins   0.1.0   242 s   5      4739 / 4739 / 11 (solarflux)              4    2 (1 fI,1 nI) 0
+neg-unpinned-addon010   ae2 unpin   0.1.0   DIED~150s 6    2345 / 2345 / 2242   (at t+106 s)         6    0            0
+pos-unpinned-addon020   ae2 unpin   0.2.0   242 s   0      489 / 103 / 0  (386 on region threads)    0    0            0
+pos-prodpins-addon020   prod pins   0.2.0   241 s   6      4544 / 4533 / 0  (11 solarflux deferred)  4    2 (2 fI)     0
+fI = foreignInit (main inside readiness), nI = noInit (no readiness running anywhere)
+```
+
+Addon accounting pos-unpinned: readyInDomain 103 + readyDeferred 4972 (readyRanInDomain 4971, one in flight at the
+snapshot) → 4585 `initCancelled` at revalidation (host already removed by the driver — the AirBlock-CCE situation,
+now cancelled instead of crashing) + 489 executed `onReady` (= detector 489). readyStale / Dropped / EnqueueFailed /
+InitFailed / RequeuedNotTicking = 0. pos-prodpins: 4542 in domain (MAIN, pinned), 11 deferred → 11 ran in domain.
+
+Crash classes outside readiness-domain: `MBCalculator` "modification already in-progress" ISE — neg-prodpins and
+pos-prodpins (one each, readying (201,115,200)); `ConcurrentModificationException` in `PathingService.
+calculateAdHocChannels → CraftingBlockEntity.getMultiblockNodes` ("Ticking grid on end of server tick", main) —
+pos-prodpins. `nwae2static` MB_MODIFICATION concurrent entries: 25 / 2 / 23 (neg-prodpins / pos-unpinned /
+pos-prodpins).
+
+Statuses:
+
+```
+R1-a Scope 2 (domain-generic readiness)            VERIFIED (engineering, copy) for unpinned / integrated hosts
+  readiness off-domain execution                   VERIFIED FIXED   (2242 → 0 unpinned; 11 → 0 solarflux under pins)
+  readiness-origin S1/S2/S3 (unpinned)             6/0/0 → 0/0/0
+production pinned configuration                    PARTIALLY EFFECTIVE (integrated hosts only; AE2 itself already MAIN)
+AE2-BE-READY-001 (production, ae2 pinned)          STILL OPEN — S1 4, S2 2 with 0.2.0: REGION callback / region-thread
+                                                   placement vs pinned AE2 lifecycle on MAIN (AE2-PIN-LEAK-001)
+S2 attribution                                     readiness-in-wrong-domain: 0 after 0.2.0; remaining S2 = main
+                                                   readiness ↔ foreign region callback (fI); nI case = access after
+                                                   destroy (HYPOTHESIS — detector does not yet record host state)
+
+AE2-MB-MODIFICATION-001 (MBCalculator.modificationInProgress, global static)
+  global static state                              CONFIRMED
+  concurrent entry                                 CONFIRMED (nwae2static MB_MODIFICATION concurrent 2–25 per run)
+  runtime failure                                  CONFIRMED (ISE crash reports)
+  production relevance with AE2 pin                CONFIRMED (ISE in both prod-pins runs, via the pin leak)
+  relevance to AE2-PINS-001                        BLOCKER FOR PIN REMOVAL
+
+PathingService CME (getMultiblockNodes, main)      CORRELATED with region-thread MBCalculator via the pin leak; same
+                                                   crash class as the 2026-10-06 ae2 auto-pin reason
+
+AE2-PINS-001 verdict                               AE2 pin removal NOT APPROVED (TICKMANAGER: possibly covered;
+                                                   readiness: scope 2; MBCalculator static: NEW CONFIRMED blocker)
+```
