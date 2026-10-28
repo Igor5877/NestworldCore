@@ -658,3 +658,48 @@ PathingService CME (getMultiblockNodes, main)      CORRELATED with region-thread
 AE2-PINS-001 verdict                               AE2 pin removal NOT APPROVED (TICKMANAGER: possibly covered;
                                                    readiness: scope 2; MBCalculator static: NEW CONFIRMED blocker)
 ```
+
+#### Owner decisions 2026-10-28 (8) — scope 2 VERIFIED; lifecycle regression; scope 2 CLOSED
+
+Pushed: `2980ea112`, `1140d6a36`, `2659098dd`, `7c9fe6682`. Remaining production cause narrowed: readiness
+scheduling itself is **not** it; remaining = MAIN pinned AE2 lifecycle ↕ concurrent entry from a REGION block
+callback (pin-domain incompleteness / callback ingress). AE2-MB-MODIFICATION-001 statuses as in the matrix
+section (all CONFIRMED, blocks pin removal). PathingService CME stays **CORRELATED** — root cause NOT CONFIRMED
+until a detector shows the causal overlap.
+
+Lifecycle regression (QUEUE-LIFE fixtures) — H401BEDOM, fresh pristine world, **production pins**, Core 401,
+addon 0.2.0, `-Dnestworld.compatAe2.fixtures=true` (test-only), inscriber targets at (-20,120,130) and
+(-17,120,133) (inscriber domain MAIN — pinned; position grid/air domain REGION#0, region-thread remover via an
+armor-stand host). Evidence `/root/airis-2026-10-25/evidence-be-ready/life-prodpins-addon020/`:
+
+```
+LIFE DURING: PASS  remover=NestWorld-Region-0 blocked=true  readyInvoked=1 ghost=false
+LIFE BEFORE: PASS  remover=NestWorld-Region-0 blocked=false cancelled=init-cancelled:removed readyInvoked=0 ghost=false
+no stale execution          readyStale=0
+no double init              DURING readyInvoked=1
+no init-after-remove        BEFORE readyInvoked=0, cancelled by revalidation
+no lost lifecycle transition initCancelled +1 exactly; readyInDomain +2 (the two hosts)
+generation accounting       readyDeferred 11 = readyRanInDomain 11; coalesced/stale/dropped/enqueueFailed/
+                            initFailed/requeuedNotTicking = 0
+detector                    ready offDomain=0; S1/S2/S3 = 0; lifeOrderViolation=0; crashNew=0
+```
+
+```
+R1-a SCOPE 2 — AE2 readiness in the BE execution domain        CLOSED / VERIFIED
+  readiness routing                 VERIFIED
+  execution-domain correctness      VERIFIED
+  identity revalidation             VERIFIED
+  removed-host cancellation         VERIFIED
+  accounting                        VERIFIED
+  lifecycle regression (prod pins)  VERIFIED (life_during, life_before PASS)
+  unpinned / integrated hosts       ENGINEERING VERIFIED
+  explicit limitation               does NOT close production pinned AE2 callback races
+
+Scope 1 — Core BE execution domain   VERIFIED (ENGINEERING)
+Production AE2-BE-READY-001          OPEN — remaining cause PIN/CALLBACK DOMAIN LEAK (AE2-PIN-LEAK-001)
+AE2-MB-MODIFICATION-001              CONFIRMED (blocks AE2 pin removal)
+PathingService CME                   CORRELATED
+AE2 pin removal                      NOT APPROVED
+Next                                 CORE-PIN-DOMAIN-COMPLETENESS-001 (contract audit first) and R1-a scope 3
+                                     (topology commit / callback routing)
+```
