@@ -138,6 +138,27 @@ Design options for the owner (R1 stays the frame; the question is the topology p
   larger Core change, not designed yet).
 - not acceptable: R1 for everything, letting border nodes connect to ghost copies.
 
+Owner decision 2026-10-28 (2): **R1-a APPROVED**; whole-onReady R1 REJECTED after the audit; R2 REJECTED as final;
+R1-b REJECTED for now (multi-owner safe point = distributed barrier in the scheduler). Core addition: generic
+owner-mailbox primitive only, no AE2 knowledge in Core. New gate **AE2-CROSS-REGION-TOPOLOGY-001** (below).
+
+### AE2-CROSS-REGION-TOPOLOGY-001 — OPEN (pre-implementation audit)
+
+Contract (owner):
+- the protocol carries identity, never foreign live objects: dimension, BlockPos, Direction, lifecycle
+  generation, expected endpoint kind; only the owner resolves its live BE / node;
+- a connection A↔B exists only for two confirmed current generations; a stale handshake (generation moved, e.g.
+  B removed and replaced at the same pos — ABA) must not create a connection;
+- T0 is not a giant transaction: before code, audit what `GridConnection` creation / grid merge triggers
+  (listeners, events, repath, node callbacks) and prove which part may run under T0;
+- scope: initial onReady, neighbour reconnect, connection removal, node destruction, grid split/merge, chunk
+  load/unload, region split/merge — every foreign-neighbour path uses the same ownership-safe model;
+- acceptance: BE-READY (foreignOwnerWorldRead during local init 0, CCE 0, doubleInit/staleInit/initAfterRemove 0);
+  topology (same/cross-region connect, disconnect, reconnect PASS; ghostEndpointUsed 0, staleGenerationAccepted 0,
+  phantom/duplicate/lost connection 0; reference == NestWorld topology after drain; region split/merge, chunk
+  unload/reload, simultaneous A↔B, A-B-C PASS; deadlock/livelock 0), plus the boundary fixture
+  `cable A | REGION BOUNDARY | cable B` place/remove/replace/split/merge with the validator after every drain.
+
 ## Phase plan (proposal, ordered by evidence value)
 
 - **P0** provenance ✓, static audit (finish writers scan; detector counters for the four NEEDS_EVIDENCE fields).
