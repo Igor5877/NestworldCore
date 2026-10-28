@@ -130,7 +130,13 @@ public final class MailboxAudit {
 
     /** AE2-BE-READY-001 R1-a: a {@link RegionMessage.Type#BE_DOMAIN_TASK} leg whose destination was
      *  retired left mailbox transport and was handed back to {@link BlockEntityExecutionDomain}
-     *  (which accounts for it from there on). Closes the in-flight entry; neither applied nor terminal. */
+     *  (which accounts for it from there on). Closes the in-flight entry; neither applied nor terminal.
+     *
+     *  <p>LEG outcome only, never a TASK outcome: it ends one mailbox leg (mailbox leg invariant
+     *  {@code posted = applied + handedOff + terminal + inFlight}); the logical task continues and is
+     *  closed only by execution or an explicit drop in {@link BlockEntityExecutionDomain}'s own
+     *  invariant, where handedOff does not appear. A clean mailbox balance therefore says nothing about
+     *  task loss after a handoff -- that is what the task invariant is for. */
     static void recordHandedOff(long auditId, RegionMessage.Type type) {
         if (!ENABLED) return;
         if (inFlight.remove(auditId) == null) {

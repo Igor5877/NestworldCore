@@ -65,7 +65,12 @@ public final class BlockEntityExecutionDomain {
         }
     }
 
-    // ---- accounting: accepted = executedRegion + executedMain + terminal + pending ----
+    // ---- TASK accounting (logical task, independent of mailbox legs) ----
+    // created (accepted) = executed (executedRegion + executedMain) + terminalDropped (terminal) + outstanding
+    // (pending()); after quiescence outstanding == 0. A task ends only by executing exactly once or by an explicit
+    // terminal drop. Mailbox handedOff / applied close LEGS (MailboxAudit) and never appear here: a leg handed off
+    // and then lost in re-routing keeps outstanding > 0 at quiescence, however clean the mailbox balance is.
+    // rerouted counts moves, not outcomes.
     public static final AtomicLong accepted = new AtomicLong();
     public static final AtomicLong executedRegion = new AtomicLong();
     public static final AtomicLong executedMain = new AtomicLong();

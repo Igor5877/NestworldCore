@@ -466,3 +466,49 @@ Status: R1-a scope 1 **IMPLEMENTED / VERIFIED (engineering, copy)**. AE2-BE-READ
 closure needs scope 2 (onReady in the BE execution domain) with negative/positive fixtures for all three symptoms.
 Next: scope 2 in the AE2 addon (readiness via the primitive, lifecycle states, generation validation), then scope 3
 (`ensureConnection` under T0, callback delivery in the host's current BE execution domain, destroy on the same path).
+
+#### Owner decisions 2026-10-28 (6) — scope 1 accepted; leg vs task accounting
+
+Pushed: `041d1fa16`, `c0400dd87`, `f040ed31c`, `651ba6891`. Approved: Core primitive design, `handedOff` mailbox
+outcome, C11 balance including `handedOff` — **with the explicit leg-vs-task distinction below**.
+
+Two separate invariants (normative):
+
+```
+MAILBOX LEG INVARIANT (MailboxAudit, per audit id = per leg)
+  postedLegs = applied + handedOff + terminalLegOutcomes + inFlight      (quiescence: inFlight = 0, unaccounted = 0)
+  each posted leg has exactly one outcome: APPLIED | HANDED_OFF | existing terminal (TARGET_NOT_FOUND, ...)
+
+BE DOMAIN TASK INVARIANT (BlockEntityExecutionDomain, per logical task)
+  createdTasks = executedTasks + terminalDroppedTasks + outstandingTasks (quiescence: outstandingTasks = 0)
+  a task ends ONLY by: executed exactly once | explicit terminal drop (REDELIVERY_LIMIT_DROPPED, LEVEL_GONE)
+  handedOff does NOT appear here; rerouted counts moves, not outcomes
+```
+
+`HANDED_OFF ≠ task terminal.` A logical task is a chain of legs (`leg#1 HANDED_OFF → leg#2 HANDED_OFF → leg#3
+APPLIED + executed`). A clean mailbox `balance=0 unaccounted=0` alone cannot exclude "old leg handedOff → re-route
+lost"; the task invariant does (`outstanding > 0` at quiescence). The fixtures assert both per scenario
+(`beDomainAccounting`: `pending` back to baseline; `C11`). Recorded also at `MailboxAudit.recordHandedOff` and in the
+`BlockEntityExecutionDomain` accounting comment.
+
+Also confirmed by owner: MAIN is not modelled as a fake region (audit/topology stay truthful); unmanaged level →
+`server.tell(TickTask)`, never inline (the caller thread is not a hidden fourth domain); one canonical policy for
+`runBlockEntityPhase` and the primitive, pins/pinmod included.
+
+```
+R1-a / Scope 1 — BLOCK ENTITY EXECUTION DOMAIN
+Implementation           IMPLEMENTED
+Deterministic fixture    VERIFIED        Split retarget   VERIFIED     Merge retarget   VERIFIED
+Pin retarget             VERIFIED        MAIN routing     VERIFIED     Unmanaged level  VERIFIED
+Redelivery limit         VERIFIED        Failure isol.    VERIFIED     Never-inline     VERIFIED
+Mailbox regression       69/69 PASS
+BE-domain fixture        37 PASS / 0 FAIL / 1 explicit SKIP (outside: unreachable, covered by unmanaged)
+Mailbox accounting       balance=0 unaccounted=0 misrouted=0 duplicates=0
+Status                   ENGINEERING VERIFIED
+```
+
+Next: **AE2 R1-a scope 2 only** (scope 3 not touched in parallel). Commit chain: detector/fixture AE2-BE-READY →
+addon lifecycle state/generation → route `onReady` through `enqueueForBlockEntityDomain` → evidence → docs closure.
+Acceptance, each symptom separately: AirBlock `ClassCastException` → 0; "The node has already been initialized" →
+0; duplicate `GridConnection` from the onReady race → 0 via scope 2, **or** explicitly left to scope 3 if it still
+reproduces through interior ↔ MAIN-band topology activity (not to be closed silently under scope 2).
