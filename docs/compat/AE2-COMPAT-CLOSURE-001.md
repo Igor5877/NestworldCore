@@ -172,3 +172,83 @@ Contract (owner):
 - **P6** lock audit table, wait graph, callback-under-lock and reentrancy gates (TZ §40–43).
 - **P7** P2P-FUNC-001: design options A/B/C for owner decision **before any implementation** (TZ §23).
 - **P8** pins inventory and one-by-one removal (TZ §44–46); gate vNext (§57–58); performance (§55–56).
+
+#### Audit A — what a foreign neighbour looks like from a region thread (tag b4b08d99 + Core)
+
+`InWorldGridNode.findInWorldConnections` (called from `GridNode.updateState`, i.e. `create/markReady`, colour
+change, `CablePart/CableBusContainer.updateConnections` on neighbour change) resolves each exposed side with
+`GridHelper.getExposedNode(level, neighbourPos, side)` → `level.getBlockEntity`. On a RegionThread a foreign
+position within ghost depth returns `BoundaryManager.ChunkSnapshot.getBlockEntity` = `BlockEntity.loadStatic(NBT)`:
+a fresh detached AE2 BE whose `ManagedGridNode` was never created → `getGridNode(side) == null`. Therefore today,
+from a region thread: a cross-border neighbour is **invisible** (no new connection), and an existing cross-border
+connection is **not destroyed** (`adjacentNode == null → continue`; `cleanupConnections` only drops sides that are
+no longer exposed). Cross-border connections are created only by `onReady` on main (raw live read = the race).
+Status of the owner's hypothesis: STRONGLY INDICATED by source; runtime confirmation = boundary fixture (P-T1).
+
+#### Audit B — what `GridConnection.create` does, and what may run under T0
+
+`GridConnection.create(a, b, dir)` (addon: `GridPhaseGate.topology` + `KERNEL.guardedStrict(Specs.topology)` = T0 +
+both grids' domain locks):
+1. `new GridConnection(a, b, dir)` — grid-domain object;
+2. `mergeGrids(a, b)` → `Grid.create(a)` or `setGrid` on one node, or `GridPropagator` → `setGrid` on **every node of
+   the losing grid**; each `setGrid` = `oldGrid.saveNodeData + remove` → `newGrid.add` → every service's
+   `removeNode/addNode` (storage, energy, pathing, ticking, crafting, P2P, statistics, spatial) — grid-domain state;
+   then `callListener(onGridChanged)` and `notifyStatusChange` (**deferred by the addon to the end of the section,
+   same thread**);
+3. `pathing.repath()` — sets flags only (work happens on the next server-tick end, main);
+4. `sideA/sideB.addConnection(c)` → `callListener(onInWorldConnectionChanged)` on **both** sides — **not deferred**,
+   runs under T0.
+
+Listener callbacks are host (BE/part) code: `saveChanges` → `setChanged`, `markForUpdate` → `sendBlockUpdated`,
+part state/model updates — world mutations of the host's chunk. So (1)–(3) are grid-domain and may run under T0 on
+any thread (existing, verified T0/domain protocol); (4) and the deferred (2) listeners touch the hosts' world
+state and must run on each host's owner, outside T0.
+
+New finding **AE2-NODE-LISTENER-OWNER-001 — DISCOVERED:** node listener callbacks run on whichever thread mutates
+the topology (A's region for B's host; main for every host today), i.e. cross-owner world mutation. Exists today
+independently of R1-a (every grid merge/split). Impact to be measured (Core already hardened
+`ChunkHolder.blockChanged`; `setChanged` is a flag write). Folded into this gate because R1-a's commit step must
+not create more of it.
+
+#### Design R1-a (for owner review — no code yet)
+
+Core (generic, no AE2 knowledge):
+- **OwnerDispatch** (internal, `net.nestworld.region`, not Mod API): `enqueueForOwner(ServerLevel, BlockPos, Runnable
+  op, Consumer<Terminal> onTerminal)`; non-blocking; new mailbox type `OWNER_TASK(REGION_THREAD)` drained in
+  `RegionThread.runOneTick` with the other mailbox types (under the region write lock = the owner's safe point);
+  at drain the owner is re-checked (`grid.getRegionFor(pos) == this region`), otherwise the task becomes an orphan
+  and is re-resolved by position (`MailboxRetargeting`, bounded by `MAILBOX_MAX_REDELIVERIES`); a position owned by
+  no region runs on main at the dimension's main safe point; terminal kinds (`REDELIVERY_LIMIT_DROPPED`, level
+  unloaded) call `onTerminal` on main — never silent. Accounting via `MailboxAudit` (accepted = applied + terminal).
+
+Addon (all AE2 knowledge):
+- **lifecycle generation** per AE2 BE (`NwAeBlockEntity`): bumped on load/placement and on removal; state NEW →
+  READY_PENDING → OWNER_ENQUEUED → INITIALIZING → READY, removal → CANCELLED; `onReady` ≤ 1 per generation.
+- **local init on the owner:** `FirstTickInfo.callInit` on main: owner == main → current path; else
+  `enqueueForOwner(pos, ownerInit(gen))`; `ownerInit` re-resolves the live BE at pos, checks generation/state/block,
+  then runs AE2's `onReady` on the owner thread.
+- **neighbour resolution:** wrap `GridHelper.getExposedNode` inside `findInWorldConnections`: neighbour owned by
+  the current thread → AE2's path; foreign owner → return `null` to AE2 and post a handshake instead (no ghost read).
+- **endpoint registry** (grid-domain, guarded by T0): `(dim, pos, side, generation) → GridNode`, written only by the
+  endpoint's owner when its node is live, removed on removal/generation bump.
+- **handshake:** A's owner posts `Offer(dimA, posA, sideA, genA, posB)` to owner(posB). B's owner resolves its live
+  BE, checks the reciprocal side, colour compatibility and its own generation, publishes its endpoint, then commits:
+  under T0, re-read both registry entries — both present with the offered generations → `GridConnection.create`
+  (grid-domain part only); otherwise STALE (counted, nothing created). Duplicate offers from both sides are
+  harmless: commit is idempotent (`hasConnection` check under T0).
+- **listener owner-dispatch:** `onInWorldConnectionChanged`, `onGridChanged`, `notifyStatusChange` collected during
+  the T0 section and, after it, delivered per host through `enqueueForOwner(host pos)` (own host, same owner → run
+  inline after the section).
+- **removal / reconnect / split:** node destroy runs on its owner (setRemoved); `GridConnection.destroy` is
+  grid-domain under T0; the other side's listener goes through owner-dispatch. Reconnect on neighbour change uses
+  the same `getExposedNode` wrapper → same handshake.
+
+Fixtures planned (before closure): P-T1 boundary fixture `cable A | BOUNDARY | cable B` (place/remove/replace/split/
+merge, validator after each drain; first run on the current addon = runtime confirmation of Audit A), ABA
+(B removed + replaced during a handshake), simultaneous A↔B, A-B-C chain, region split/merge, chunk unload/reload,
+BE-READY negative control (existing driver) and positive control.
+
+Open questions for review: (Q1) listener owner-dispatch changes the timing of AE2 listener callbacks from
+"synchronous inside the topology change" to "next owner safe point" — acceptable, or must some listener stay
+synchronous? (Q2) endpoint registry as grid-domain state under T0 — acceptable placement? (Q3) main-owned
+positions (no region) keep AE2's direct path?
