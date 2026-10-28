@@ -14,7 +14,10 @@
     "ClusterDestroyDetectMixin",
     "TransformLogicDetectMixin",
     "FakePlayerDetectMixin",
-    "MBCalculatorDetectMixin"
+    "MBCalculatorDetectMixin",
+    "BePhaseDetectMixin",
+    "RegionEntityPhaseDetectMixin",
+    "Ae2ReadyPhaseDetectMixin"
   ],
   "injectors": {
     "defaultRequire": 1

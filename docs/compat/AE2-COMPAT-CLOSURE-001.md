@@ -340,3 +340,47 @@ AE2-BE-READY-001 / R1-a
 P-T1:                                  REQUIRED NEXT — timeline of region BE work / region entity mutation /
                                        main band BE phase / AE2 readyBlockEntities with overlap counters
 ```
+
+#### P-T1 result — execution windows DO overlap (decision input)
+
+Copy G307AE2ON, 5 min: region-interior crafting driver (−21,114,130, period 10 → AE2 readiness on main), region item
+drivers and item entities, band machines on main. Observation-only timeline (`/nwphase`): a window = Core
+`tickBlockEntityList` on main (MAIN_BAND_BE) / on a region thread (REGION_BE), `RegionThread.tickEntities`
+(REGION_ENTITY), AE2 `TickHandler.readyBlockEntities` (AE2_READY); overlap = a window starts while another kind is
+active on another thread.
+
+| pair | overlap events / 5 min | windows |
+|---|---|---|
+| MAIN_BAND_BE ~ REGION_BE | **13** | 6 154 / 30 765 |
+| MAIN_BAND_BE ~ REGION_ENTITY | **47** | 6 154 / 6 153 |
+| REGION_BE ~ AE2_READY | **20 990** | 30 765 / 24 616 |
+| REGION_ENTITY ~ AE2_READY | **154** | 6 153 / 24 616 |
+
+Conclusions:
+1. With free-running regions the main border-band BE phase is **not** exclusive with region execution (rare but
+   real overlap). The compact hypothesis "Core already serialises band ↔ region" is refuted; interior(region) ↔
+   band(main) adjacent pairs can mutate concurrently.
+2. AE2 readiness on main overlaps region BE work almost continuously.
+
+Additional failures caught by the driver on `NestWorld-Region-0` (same root: AE2 `onReady` on main concurrent with
+the BE's owner):
+- `IllegalStateException: The node has already been initialized` — region neighbour update → `MBCalculator.
+  calculateMultiblock → CraftingCPUCluster.updateStatus → CraftingBlockEntity.updateSubType →
+  AENetworkBlockEntity.onGridConnectableSidesChanged → ManagedGridNode.setExposedOnSides → getInitData` took the
+  "not yet created" branch while main had created the node in `onReady` (stack:
+  `evidence-ae2-topology/duplicate-connection-stack.txt`);
+- `IllegalStateException: Connection between node [...] already exists` — two threads passed
+  `findInWorldConnections`' "no connection yet" check (outside T0) and both called `GridConnection.create`; the
+  second fails inside T0 (TOCTOU between discovery and commit). Stack not captured in the first run (driver stored
+  only the message); recorded as CONFIRMED-by-message, stack capture pending.
+
+Implication for R1-a scope:
+- moving AE2 readiness (`onReady`) into the **BE execution domain** removes the dominant main↔owner class
+  (CCE, already-initialized, duplicate create from onReady) for interior BEs: readiness and neighbour updates then
+  run on the same thread;
+- adjacent **interior(region) ↔ band(main)** pairs still have two executing threads → topology commit must be safe
+  across owners: at minimum discovery-check and create must be atomic w.r.t. both endpoints (idempotent commit under
+  T0: "already connected" = keep existing, as AE2's own discovery does), and listener callbacks go to the host's
+  execution domain;
+- ghost copies (Audit A) only matter for cascade-safe AE2 types or band 0 — the handshake stays the design for that
+  case and for interior↔band if the idempotent commit proves insufficient.

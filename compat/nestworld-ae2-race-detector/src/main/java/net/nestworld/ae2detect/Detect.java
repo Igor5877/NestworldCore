@@ -43,6 +43,9 @@ public final class Detect {
                     return 1;
                 })));
         MinecraftForge.EVENT_BUS.addListener((RegisterCommandsEvent e) -> e.getDispatcher().register(
+                net.minecraft.commands.Commands.literal("nwphase").requires(s -> s.hasPermission(2))
+                        .executes(c -> say(c.getSource(), PhaseDetect.summary()))));
+        MinecraftForge.EVENT_BUS.addListener((RegisterCommandsEvent e) -> e.getDispatcher().register(
                 net.minecraft.commands.Commands.literal("nwae2static").requires(s -> s.hasPermission(2))
                         .executes(c -> say(c.getSource(), StaticDetect.summary()))
                         .then(net.minecraft.commands.Commands.literal("threads").executes(c -> say(c.getSource(), StaticDetect.threads())))

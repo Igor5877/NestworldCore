@@ -161,6 +161,18 @@ public final class MekChurn {
         return host.getMethod("getGridNode", net.minecraft.core.Direction.class).invoke(be, side);
     }
 
+    /** first error with its stack (test diagnostics) */
+    static String stack(Throwable t) {
+        StringBuilder b = new StringBuilder(String.valueOf(t)).append('@').append(Thread.currentThread().getName());
+        StackTraceElement[] st = t.getStackTrace();
+        for (int i = 0; i < Math.min(28, st.length); i++) {
+            String f = st[i].toString();
+            if (f.contains("mixinextras$bridge") || f.contains("wrapMethod$")) continue;
+            b.append("\n    at ").append(f);
+        }
+        return b.toString();
+    }
+
     static String id(Object o) {
         return o == null ? "null" : o.getClass().getSimpleName() + "@" + Integer.toHexString(System.identityHashCode(o));
     }
@@ -258,7 +270,7 @@ public final class MekChurn {
                 THREADS.computeIfAbsent("item " + Thread.currentThread().getName().replaceAll("[0-9]+", "#"), k -> new LongAdder()).increment();
             } catch (Throwable t) {
                 toggleErrors.increment();
-                if ("-".equals(firstError)) firstError = t + "@" + Thread.currentThread().getName();
+                if ("-".equals(firstError)) firstError = stack(t);
             }
         }
     }
@@ -281,7 +293,7 @@ public final class MekChurn {
                 THREADS.computeIfAbsent(Thread.currentThread().getName().replaceAll("[0-9]+", "#"), k -> new LongAdder()).increment();
             } catch (Throwable t) {
                 toggleErrors.increment();
-                if ("-".equals(firstError)) firstError = t + "@" + Thread.currentThread().getName();
+                if ("-".equals(firstError)) firstError = stack(t);
             }
         }
 
