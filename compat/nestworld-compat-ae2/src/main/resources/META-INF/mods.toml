@@ -4,7 +4,7 @@ license="All rights reserved"
 
 [[mods]]
 modId="nestworld_compat_ae2"
-version="0.2.0"
+version="0.3.0"
 displayName="NestWorld compat: AE2 energy domain"
 displayTest="IGNORE_SERVER_VERSION"
 description='''Region-parallel concurrency domain for AE2 15.4.10 energy and tick state on NestWorld. Fail-closed: inactive unless the audited mod set is present.'''

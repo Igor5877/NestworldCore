@@ -202,8 +202,27 @@ public final class BeDomainReady {
         try {
             return (boolean) IS_CURRENT_THREAD_IN.invokeExact(level, pos, type);
         } catch (Throwable t) {
+            COUNTERS.domainLookupFailed.increment();      // visible, not silent (fail-open to AE2's own behaviour)
             return true;                                  // cannot resolve: keep AE2's own behaviour (inline)
         }
+    }
+
+    // ---- shared with TopologyCallbacks (R1-a scope 3) ----
+
+    static boolean primitive() {
+        return MODE == Mode.PRIMITIVE;
+    }
+
+    static boolean currentThreadIn(ServerLevel level, BlockPos pos, String type) {
+        return inDomain(level, pos, type);
+    }
+
+    static void enqueueTo(ServerLevel level, BlockPos pos, String type, Runnable op, Consumer<Object> onTerminal) throws Throwable {
+        ENQUEUE.invokeExact(level, pos, type, op, onTerminal);
+    }
+
+    static String typeOf(BlockEntity be) {
+        return typeId(be);
     }
 
     /** Thread-safe BE-ticking check from the domain thread: the chunk's own full status (no DistanceManager read). */
