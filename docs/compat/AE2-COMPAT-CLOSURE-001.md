@@ -319,3 +319,24 @@ answers by grid region only and does not reflect the band. Consequences:
    there `getBlockEntity` from the region thread is a raw live read of a main-executed BE (same grid region), so
    the hazard is concurrency with main, not a ghost copy. Whether main mutates band chunks while the region runs
    (free-running) decides if that pair is racy → next fixture (P-T1: interior/band pair).
+
+#### Owner decisions 2026-10-28 (4)
+
+```
+AE2-BOUNDARY-GHOST-001                      CONFIRMED
+  scope: a foreign-region getBlockEntity from a region thread may return a detached snapshot without an AE2
+  ManagedGridNode. NOT: "adjacent AE2 nodes normally see ghost neighbours" (refuted for the default band).
+AE2-BE-READY-001 / R1-a
+  generic Core primitive:              APPROVED — name/semantic: BLOCK ENTITY EXECUTION DOMAIN
+                                       (enqueueForBlockEntityDomain(level, pos, op, onTerminal);
+                                        resolveBlockEntityExecutionDomain(level, pos, type)), not region ownership
+  source of truth:                     the SAME resolver runBlockEntityPhase uses (no duplicated band arithmetic):
+                                       interior → REGION, band → MAIN, outside region → MAIN, cascade-safe in band → REGION
+  re-resolution before execution:      REQUIRED (D0 at enqueue, D1 before run; D0 != D1 → bounded reroute)
+  AE2 lifecycle generation validation: REQUIRED (routing and lifecycle validation are separate layers)
+  NestworldOwnership:                  unchanged ("which logical region owns pos?"); never used for BE execution
+  callbacks:                           delivered to the current BE execution domain (band cable → Server thread)
+  full cross-owner topology handshake: DESIGN RETAINED, IMPLEMENTATION BLOCKED ON P-T1
+P-T1:                                  REQUIRED NEXT — timeline of region BE work / region entity mutation /
+                                       main band BE phase / AE2 readyBlockEntities with overlap counters
+```
