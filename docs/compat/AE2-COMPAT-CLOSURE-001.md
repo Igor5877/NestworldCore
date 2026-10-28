@@ -21,7 +21,7 @@ Status: **OPEN** — phase P0 (provenance + static-state audit) in progress.
 | P2P safety H1/H2/H3, cross-owner fail-closed | CLOSED / VERIFIED (prior) | P2P-001 |
 | P2P cross-owner **function** (P2P-FUNC-001) | OPEN — owner design gate (TZ §23) | — |
 | static state (AE2-AUDIT-STATIC-001) | IN PROGRESS (first pass below) | this doc |
-| grid lifecycle / topology invariant | OPEN | — |
+| grid lifecycle / topology invariant | OPEN — R1-a scope 1 (Core primitive) VERIFIED on copy; scopes 2–3 pending | c0400dd87, f040ed31c |
 | event bus | OPEN (one existing Core-side protection, see static table) | — |
 | pathing, storage, crafting, spatial, statistics, overlay, QNB | OPEN | — |
 | pins (AE2-PINS-001) | OPEN | — |
@@ -412,3 +412,57 @@ callback delivery                         REQUIRED: record under T0, deliver aft
   `EXISTING`; conflicting/inconsistent connection → invariant failure (never masked); else create exactly once →
   `CREATED`. A duplicate-connection `IllegalStateException` is never converted to success. Minimal lifecycle
   validation now: a node destroyed/replaced between discovery and T0 is not accepted.
+
+#### R1-a scope 1 — Core primitive implemented (2026-10-28)
+
+Commits (§64): `c0400dd87` feat(core) resolver + primitive · `f040ed31c` test(core) fixtures · this docs/evidence
+commit. Generic Core mechanism, no AE2 knowledge (§65).
+
+- **Canonical resolver:** `blockEntityTypePolicy(pins, typeId)` + `blockEntityRegionFor(policy, cx, cz)` in
+  `NestworldDimensionRegion`; `runBlockEntityPhase` buckets with exactly this pair (behavior unchanged), and
+  `BlockEntityExecutionDomain.resolveBlockEntityExecutionDomain(level, pos, type)` composes the same pair. Policy
+  covered: pinned → MAIN (incl. mod-namespace pins), cascade-safe → grid region (band included), interior → REGION,
+  band → MAIN, no region → MAIN, unmanaged level → MAIN. The only other BE-phase exception — a region bucket dropped
+  for one tick on backlog — skips, it does not move work: the domain stays that region.
+- **`enqueueForBlockEntityDomain(level, pos, type, op, onTerminal)`:** non-blocking, never inline. REGION: a
+  `BE_DOMAIN_TASK` mailbox leg drained in `RegionThread.runOneTick` under the region write lock (same lock and
+  thread as that region's BE work rounds; split/merge excluded). MAIN: per-dimension queue drained by `tick()` after
+  both retargeting passes. Unmanaged level: server `TickTask`. Re-resolved before execution in every domain; bounded
+  reroute (`Task.redeliveries` across all legs, cap `MAILBOX_MAX_REDELIVERIES`) → `REDELIVERY_LIMIT_DROPPED` on the
+  server thread, op not run; `LEVEL_GONE` for main-queued tasks at dimension shutdown; op exceptions contained.
+- **Mailbox transport:** a leg whose destination retired is closed with the new explicit audit outcome `handedOff`
+  and re-resolved by the domain (no new `MailboxLifecycle.Terminal`). C11 balance now
+  `accepted − applied − terminal − handedOff − inFlight`.
+
+Evidence — isolated copy `H401BEDOM` (pristine Airis copy + Core `47.4.401` built from the tree committed as
+`f040ed31c`, installer sha256 `318a2ddf…a0eb6`, AE2 addon 0.1.0; netns, taskset 0-2, `-Dnestworld.mailboxAudit=true`,
+free-running on, band 2). Log: `/root/airis-2026-10-25/evidence-be-domain/fixtures-401-20261028-1022.log`.
+
+```
+/nestworld testmutate bedomain all   run 1: pass=37 fail=0 skip=1   run 2 (after mailbox suite churn): pass=37 fail=0 skip=1
+  interior          op on NestWorld-Region-0, domainAtRun=REGION#0
+  band              grid owner r0, op on Server thread (MAIN)
+  pinned            MAIN; untyped probe in the same chunk stays REGION#0
+  cascade           band position, op on NestWorld-Region-0
+  unmanaged         Nether → Server thread via server task, runsInsideEnqueue=0
+  never-inline      runsInsideEnqueue=0, then once on MAIN
+  pin-change        REGION#0 → pinned → MAIN, rerouted+1 (consumer-side reroute, no retirement)
+  split             r0 → [r2,r3], now REGION#2, op on NestWorld-Region-2, rerouted+1, C11 handedOff=1
+  merge             MAIN → merged r6, op on NestWorld-Region-6, rerouted+1
+  limit             REDELIVERY_LIMIT_DROPPED on main, runs=0
+  failure           throwing op contained (opFailures+1), next task runs
+  outside           SKIP — the grid tiles the managed dimension; no-region MAIN reachable only via unmanaged level
+  every scenario    beDomain pending back to 0; C11 unaccounted=0 balance=0 duplicates=0 misrouted=0
+/nestworld testmutate mailbox all    (CORE-MAILBOX-MERGE-001 regression) pass=69 fail=0 skip=0
+```
+
+Fixture notes (honest scope): the first split attempts on a freshly started copy were skipped by the documented
+split/merge lock guard (region 0 busy during startup tick spikes); the fixture now retries such passes and requires
+every abandoned attempt's probe to have run exactly once. Split/merge use deterministic midpoint cuts — the
+entity-median cut on the restored layout put the merge probe on the merged region's own edge (band), which proved
+nothing.
+
+Status: R1-a scope 1 **IMPLEMENTED / VERIFIED (engineering, copy)**. AE2-BE-READY-001 stays CONFIRMED (not closed):
+closure needs scope 2 (onReady in the BE execution domain) with negative/positive fixtures for all three symptoms.
+Next: scope 2 in the AE2 addon (readiness via the primitive, lifecycle states, generation validation), then scope 3
+(`ensureConnection` under T0, callback delivery in the host's current BE execution domain, destroy on the same path).
