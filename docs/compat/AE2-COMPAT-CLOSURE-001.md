@@ -100,6 +100,44 @@ Fix options (owner decision — touches the Core boundary, §65):
 - not acceptable: holding the region chunk lock from main during `callInit` (§4: no waiting for another region
   under a world/chunk lock).
 
+Owner decision 2026-10-28: **R1 APPROVED** (internal/privileged Core owner-dispatch primitive, not public Mod API;
+non-blocking; executes only at the owner's safe point; re-resolves the owner after split/merge with bounded
+reroute; Core knows nothing about AE2 and does not promise the BE still exists; addon re-resolves and revalidates
+identity/generation and keeps a lifecycle state NEW → READY_PENDING → OWNER_ENQUEUED → INITIALIZING → READY,
+removal → CANCELLED; ≤ 1 onReady per lifecycle generation). **R2 REJECTED** as final. Pre-fix evidence pushed
+(99a2df54b, 3909f4ff1, 84024fc7e).
+
+#### STOP before implementing R1 — cross-region neighbour discovery (pre-implementation audit)
+
+`onReady` mixes two parts with different owners:
+1. **BE-local**: own block state, orientation, multiblock membership (`CraftingBlockEntity.onReady` →
+   `getUnitBlock`, `AEBaseBlockEntity.onReady` orientation write). Owner = the BE's region. This is where the
+   confirmed CCE happens.
+2. **Topology**: `AENetworkBlockEntity.onReady → getMainNode().create(level, pos)` → in-world connection discovery
+   reads **neighbour** block entities (`level.getBlockEntity(neighbourPos)`), which may lie in another region.
+
+Core fact (`Level.getBlockEntity` patch → `RegionChunkView.getBlockEntity`): on a RegionThread, a foreign position
+within ghost depth of the border returns a **ghost snapshot (detached copy)** of the BE
+(`BoundaryManager.getGhostChunk(...).getBlockEntity`); deeper foreign positions use a bounded `tryReadLock` and, on
+timeout, an unsynchronised read. On the Server thread the read is raw and live (the confirmed race).
+
+Consequence: running the whole `onReady` on the owner thread (R1 as stated) makes a node at a region border discover
+its foreign neighbour through a detached copy → no connection, or a connection to a copy's node → AE2 grids
+silently split at region borders (functional regression; same defect class H3 found for P2P). Today cross-border
+connections form only because `onReady` runs on main with live (unprotected) reads.
+
+Design options for the owner (R1 stays the frame; the question is the topology part):
+- **R1-a split:** BE-local part on the owner thread (R1 primitive); node creation / connection discovery as a
+  separate topology step that never reads foreign live state from the wrong thread: neighbours in the same region
+  are connected on the owner; a neighbour in another region is connected by a two-sided handshake (each side
+  publishes its node to its own owner; the connection is created under the addon's T0 when both sides have
+  confirmed live, same-generation endpoints) — generic Core primitive unchanged, AE2 knowledge stays in the addon.
+- **R1-b border-aware:** whole `onReady` on the owner when all six neighbours are owned by the same region (the
+  common case, no border); for border BEs keep a main-thread topology step executed only at a Core safe point where
+  both owning regions are not mutating those chunks (needs a generic Core "multi-owner safe point" primitive —
+  larger Core change, not designed yet).
+- not acceptable: R1 for everything, letting border nodes connect to ghost copies.
+
 ## Phase plan (proposal, ordered by evidence value)
 
 - **P0** provenance ✓, static audit (finish writers scan; detector counters for the four NEEDS_EVIDENCE fields).
