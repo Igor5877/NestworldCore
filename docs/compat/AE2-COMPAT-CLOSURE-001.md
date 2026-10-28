@@ -289,3 +289,33 @@ CREATE / DESTROY / SPLIT:           all in gate scope
   `notifyNeighbors`, `sendBlockUpdated`, arbitrary mod callbacks.
 - `GridConnection.destroy` (repath, `removeConnection` on both sides → `onInWorldConnectionChanged`, `validateGrid`
   → split) uses the same protocol as create.
+
+#### Boundary fixture P-T0 (observation only) — Audit A CONFIRMED; Audit C opened
+
+Copy G307AE2ON (addon NORMAL). A = `ae2:interface` (31,120,100) [chunk 1, grid region #0], B = `ae2:energy_acceptor`
+(32,120,100) [chunk 2, grid region #1 — no running thread]. Test-only read-only probe block (`nestworld_mekchurn:probe`)
+resolves `IInWorldGridNodeHost.getGridNode(WEST)` of B each tick on the thread that ticks the probe; `probemain`
+does the same on the Server thread and checks A↔B.
+
+| lookup of B | thread | BE | node |
+|---|---|---|---|
+| main command | Server thread | `EnergyAcceptorBlockEntity@4399a301` (live) | `InWorldGridNode@4311e45e`; A↔B connected = **true** (created by main `onReady`) |
+| probe at (−8,105,114) [region #0 interior] | `NestWorld-Region-0` | a **different identity every tick** (`@41d6887a`, `@3136d9ee`, …) — ghost `loadStatic` copies | **null** in 402/402 lookups |
+
+→ Audit A (region-thread view of a foreign-region BE = detached copy without a node) **CONFIRMED** at runtime.
+
+Side observation that changes the owner model (**Audit C — BE execution owner**): the probe placed first at
+(30,120,100) [chunk 1] and the earlier drivers at x=17/18 [chunk 1] ticked on the **Server thread**, although
+chunk 1 belongs to grid region #0. Core routes BE ticks by `NestworldRegionSystem.runBlockEntityPhase`: interior of
+a region (> `BORDER_BAND_CHUNKS` = 2 chunks from its edge) → region thread; border band or no region → main (regions
+parked then); `cascadeSafeBeIds` types → region thread even in the band. `NestworldOwnership.isCurrentThreadOwner`
+answers by grid region only and does not reflect the band. Consequences:
+1. the R1-a Core primitive must resolve the **BE execution domain** (the same routing as the BE phase: interior →
+   region, band/outside → main, cascade-safe → region), not the grid region — otherwise a band BE would be
+   initialised on a region thread while it ticks on main;
+2. adjacent AE2 endpoints across a **grid-region** border are both in border bands → both MAIN under the default
+   band (no ghost reads for adjacent pairs); ghost reads require a cascade-safe AE2 type or band 0;
+3. the realistic cross-owner adjacent pair is **interior (region thread) ↔ band (main) inside one grid region**;
+   there `getBlockEntity` from the region thread is a raw live read of a main-executed BE (same grid region), so
+   the hazard is concurrency with main, not a ghost copy. Whether main mutates band chunks while the region runs
+   (free-running) decides if that pair is racy → next fixture (P-T1: interior/band pair).

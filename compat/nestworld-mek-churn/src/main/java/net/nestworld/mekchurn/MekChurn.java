@@ -39,12 +39,23 @@ public final class MekChurn {
     static final RegistryObject<Block> DRIVER = BLOCKS.register("driver", Driver::new);
     /** item driver: every period, insert 1 cobblestone into each neighbour's item handler and extract it again */
     static final RegistryObject<Block> ITEM_DRIVER = BLOCKS.register("itemdriver", ItemDriver::new);
+    /** read-only probe (AE2-CROSS-REGION-TOPOLOGY-001 boundary fixture): each tick, on the thread that ticks it,
+     *  resolves the AE2 grid node exposed by the block entity at the configured target/side. Never mutates. */
+    static final RegistryObject<Block> PROBE = BLOCKS.register("probe", Probe::new);
     @SuppressWarnings("ConstantConditions")
     static final RegistryObject<BlockEntityType<DriverBE>> DRIVER_BE = BES.register("driver",
             () -> BlockEntityType.Builder.of(DriverBE::new, DRIVER.get()).build(null));
     @SuppressWarnings("ConstantConditions")
     static final RegistryObject<BlockEntityType<ItemDriverBE>> ITEM_DRIVER_BE = BES.register("itemdriver",
             () -> BlockEntityType.Builder.of(ItemDriverBE::new, ITEM_DRIVER.get()).build(null));
+    @SuppressWarnings("ConstantConditions")
+    static final RegistryObject<BlockEntityType<ProbeBE>> PROBE_BE = BES.register("probe",
+            () -> BlockEntityType.Builder.of(ProbeBE::new, PROBE.get()).build(null));
+    static volatile BlockPos probeTarget;
+    static volatile net.minecraft.core.Direction probeSide = net.minecraft.core.Direction.WEST;
+    static final LongAdder probeLookups = new LongAdder(), probeBeNull = new LongAdder(), probeNodeNull = new LongAdder(),
+            probeNodeLive = new LongAdder();
+    static volatile String probeLast = "-";
     static final LongAdder itemOps = new LongAdder();
     static final LongAdder itemInserted = new LongAdder();
 
@@ -68,6 +79,23 @@ public final class MekChurn {
                         .then(net.minecraft.commands.Commands.literal("status").executes(c -> say(c.getSource(), status())))
                         .then(net.minecraft.commands.Commands.literal("pause").executes(c -> { paused = true; return say(c.getSource(), "paused"); }))
                         .then(net.minecraft.commands.Commands.literal("resume").executes(c -> { paused = false; return say(c.getSource(), "resumed"); }))
+                        .then(net.minecraft.commands.Commands.literal("probetarget")
+                                .then(net.minecraft.commands.Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                        .then(net.minecraft.commands.Commands.argument("side", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                                .executes(c -> {
+                                                    probeTarget = net.minecraft.commands.arguments.coordinates.BlockPosArgument.getLoadedBlockPos(c, "pos");
+                                                    probeSide = net.minecraft.core.Direction.byName(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "side"));
+                                                    return say(c.getSource(), "probe target=" + probeTarget + " side=" + probeSide);
+                                                }))))
+                        .then(net.minecraft.commands.Commands.literal("probe").executes(c -> say(c.getSource(),
+                                "region-probe lookups=" + probeLookups.sum() + " beNull=" + probeBeNull.sum() + " nodeNull=" + probeNodeNull.sum()
+                                        + " nodeLive=" + probeNodeLive.sum() + " last=" + probeLast)))
+                        .then(net.minecraft.commands.Commands.literal("probemain")
+                                .then(net.minecraft.commands.Commands.argument("a", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                        .then(net.minecraft.commands.Commands.argument("aside", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                                .executes(c -> say(c.getSource(), probeMain(c.getSource().getLevel(),
+                                                        net.minecraft.commands.arguments.coordinates.BlockPosArgument.getLoadedBlockPos(c, "a"),
+                                                        net.minecraft.core.Direction.byName(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "aside"))))))))
                         .then(net.minecraft.commands.Commands.literal("burst")
                                 .then(net.minecraft.commands.Commands.argument("n",
                                         com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 100000))
@@ -123,6 +151,73 @@ public final class MekChurn {
         @Override
         public <T extends BlockEntity> BlockEntityTicker<T> getTicker(Level level, BlockState state, BlockEntityType<T> type) {
             return level.isClientSide ? null : createTickerHelper(type, DRIVER_BE.get(), DriverBE::tick);
+        }
+    }
+
+    /** AE2 IInWorldGridNodeHost.getGridNode(side) via reflection (no compile dependency on AE2). */
+    static Object ae2Node(BlockEntity be, net.minecraft.core.Direction side) throws ReflectiveOperationException {
+        Class<?> host = Class.forName("appeng.api.networking.IInWorldGridNodeHost");
+        if (be == null || !host.isInstance(be)) return null;
+        return host.getMethod("getGridNode", net.minecraft.core.Direction.class).invoke(be, side);
+    }
+
+    static String id(Object o) {
+        return o == null ? "null" : o.getClass().getSimpleName() + "@" + Integer.toHexString(System.identityHashCode(o));
+    }
+
+    /** main-thread view: live BE/node at the probe target, and whether node A (at a, side aside) is connected to it */
+    @SuppressWarnings("unchecked")
+    static String probeMain(net.minecraft.server.level.ServerLevel level, BlockPos a, net.minecraft.core.Direction aside) {
+        try {
+            BlockPos b = probeTarget;
+            if (b == null) return "probetarget not set";
+            BlockEntity beB = level.getBlockEntity(b), beA = level.getBlockEntity(a);
+            Object nodeB = ae2Node(beB, probeSide), nodeA = ae2Node(beA, aside);
+            boolean connected = false;
+            if (nodeA != null) {
+                Class<?> conn = Class.forName("appeng.api.networking.IGridConnection");
+                Class<?> nodeItf = Class.forName("appeng.api.networking.IGridNode");
+                for (Object c : (java.util.List<Object>) nodeItf.getMethod("getConnections").invoke(nodeA)) {
+                    Object other = conn.getMethod("getOtherSide", nodeItf).invoke(c, nodeA);
+                    if (other == nodeB && nodeB != null) connected = true;
+                }
+            }
+            return "main thread=" + Thread.currentThread().getName() + " B.be=" + id(beB) + " B.node=" + id(nodeB)
+                    + " A.be=" + id(beA) + " A.node=" + id(nodeA) + " A<->B connected=" + connected;
+        } catch (Throwable t) {
+            return "probemain failed: " + t;
+        }
+    }
+
+    static final class Probe extends BaseEntityBlock {
+        Probe() { super(BlockBehaviour.Properties.of().strength(1f)); }
+        @Override public BlockEntity newBlockEntity(BlockPos pos, BlockState state) { return new ProbeBE(pos, state); }
+        @Override public RenderShape getRenderShape(BlockState state) { return RenderShape.MODEL; }
+        @Override
+        public <T extends BlockEntity> BlockEntityTicker<T> getTicker(Level level, BlockState state, BlockEntityType<T> type) {
+            return level.isClientSide ? null : createTickerHelper(type, PROBE_BE.get(), ProbeBE::tick);
+        }
+    }
+
+    static final class ProbeBE extends BlockEntity {
+        ProbeBE(BlockPos pos, BlockState state) { super(PROBE_BE.get(), pos, state); }
+
+        static void tick(Level level, BlockPos pos, BlockState state, ProbeBE be) {
+            BlockPos t = probeTarget;
+            if (paused || t == null) return;
+            try {
+                BlockEntity target = level.getBlockEntity(t);
+                Object node = ae2Node(target, probeSide);
+                probeLookups.increment();
+                if (target == null) probeBeNull.increment();
+                else if (node == null) probeNodeNull.increment();
+                else probeNodeLive.increment();
+                probeLast = "thread=" + Thread.currentThread().getName() + " be=" + id(target)
+                        + " removed=" + (target != null && target.isRemoved()) + " node=" + id(node);
+            } catch (Throwable e) {
+                toggleErrors.increment();
+                if ("-".equals(firstError)) firstError = e + "@" + Thread.currentThread().getName();
+            }
         }
     }
 
