@@ -62,6 +62,16 @@ public final class Ae2Compat {
         public final LongAdder setChangedSelfSuppressed = new LongAdder();
         public final LongAdder setChangedUnexpectedClaim = new LongAdder();
         public final LongAdder initCancelled = new LongAdder();
+        // AE2-BE-READY-001 R1-a scope 2 (BeDomainReady)
+        public final LongAdder readyInDomain = new LongAdder();
+        public final LongAdder readyDeferred = new LongAdder();
+        public final LongAdder readyRanInDomain = new LongAdder();
+        public final LongAdder readyCoalesced = new LongAdder();
+        public final LongAdder readyStale = new LongAdder();
+        public final LongAdder readyRequeuedNotTicking = new LongAdder();
+        public final LongAdder readyDropped = new LongAdder();
+        public final LongAdder readyEnqueueFailed = new LongAdder();
+        public final LongAdder readyInitFailed = new LongAdder();
         public final LongAdder lifeOrderViolation = new LongAdder();
         public final LongAdder pTryFailures = new LongAdder();
         public final LongAdder pRetryCount = new LongAdder();
