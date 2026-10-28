@@ -252,3 +252,40 @@ Open questions for review: (Q1) listener owner-dispatch changes the timing of AE
 "synchronous inside the topology change" to "next owner safe point" — acceptable, or must some listener stay
 synchronous? (Q2) endpoint registry as grid-domain state under T0 — acceptable placement? (Q3) main-owned
 positions (no region) keep AE2's direct path?
+
+#### Owner decisions 2026-10-28 (3) — R1-a design review
+
+```
+AE2-CROSS-REGION-TOPOLOGY-001
+boundary ghost lookup:              STRONGLY INDICATED → targeted live fixture REQUIRED (before R1-a code)
+cross-owner GridNode listener exec: CONFIRMED BY SOURCE; runtime damage DISCOVERED (AE2-NODE-LISTENER-OWNER-001)
+callback model:                     DEFER TO HOST OWNER — APPROVED; callbacks synchronous under T0 — REJECTED
+endpoint registry:                  APPROVED — scope = per-server AE2 compatibility topology domain, protection = T0
+same-owner topology:                direct path allowed
+cross-owner topology:               handshake required
+MAIN:                               an owner domain; direct path only when BOTH endpoints are MAIN-owned
+CREATE / DESTROY / SPLIT:           all in gate scope
+```
+
+- **Q1 callbacks:** no host callback that can reach world / BE / capability runs under T0 (Interface
+  `onGridChanged → InterfaceLogic.gridChanged → notifyNeighbors`, cable `onInWorldConnectionChanged →
+  markForUpdate`). Model: T0 mutates AE2 topology/domain state and records `TopologyCallbackIntent {nodeIdentity,
+  lifecycleGeneration, topologyEpoch, sequence, type}`; after unlock each intent is delivered at the host owner's
+  safe point after revalidating the host generation. Causal order per node within one topology transaction is
+  preserved (`onGridChanged` → power-state → `onInWorldConnectionChanged`). If AE2 cannot be called without
+  synchronous listeners, the addon intercepts/defers listener **delivery**; it does not abandon T0.
+- **Q2 registry:** not grid state (before commit there is no single grid owner). Server-scoped topology domain
+  under T0: endpoint registry, pending handshakes, topology epochs. Key `(dimension, BlockPos, Direction,
+  lifecycleGeneration)`; `EndpointRecord {position identity, generation, live GridNode published by its owner,
+  publication epoch, LIVE/REMOVED}` — never a ghost BE or a foreign capability. Commit under T0: both records
+  current, directions reciprocal, both nodes live, connection absent → mutate → record intents → unlock.
+  Cleared on BE/node removal, chunk unload, level/server shutdown, generation replacement. Invariant: no
+  `EndpointRecord` outlives its lifecycle generation.
+- **Q3 main:** the Core primitive treats MAIN as an owner. Topology rule: `owner(source) == owner(target)` → local
+  direct path (MAIN–MAIN or Region A–Region A); otherwise (MAIN↔Region, Region↔Region) → handshake.
+- **Allowed under T0:** AE2 topology state (Grid/GridNode/GridConnection structure), service add/remove/staging
+  already in the T0 contract, endpoint registry, generation/epoch accounting, callback-intent recording.
+  **Forbidden under T0:** host listener execution, world reads/writes, foreign `getBlockEntity`, capability access,
+  `notifyNeighbors`, `sendBlockUpdated`, arbitrary mod callbacks.
+- `GridConnection.destroy` (repath, `removeConnection` on both sides → `onInWorldConnectionChanged`, `validateGrid`
+  → split) uses the same protocol as create.
