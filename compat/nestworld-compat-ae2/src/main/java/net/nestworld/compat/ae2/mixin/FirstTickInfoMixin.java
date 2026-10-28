@@ -5,9 +5,11 @@ import static net.nestworld.compat.ae2.glue.Ae2Compat.KERNEL;
 
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import java.util.function.Consumer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.nestworld.compat.ae2.glue.BeDomainReady;
 import net.nestworld.compat.ae2.glue.LifeHooks;
 import net.nestworld.compat.ae2.glue.NwAeBlockEntity;
 import org.spongepowered.asm.mixin.Mixin;
@@ -17,6 +19,10 @@ import org.spongepowered.asm.mixin.Shadow;
  * QUEUE-001.1 §4.3: first-tick initialization of an AE2 block entity runs under its lifecycle lock and
  * revalidates INSIDE it (never check-then-lock). Removal takes the same lock (LevelChunkMixin), so
  * onReady/create and setRemoved/destroy are mutually exclusive per block entity.
+ *
+ * <p>AE2-BE-READY-001 R1-a scope 2: the whole body runs in the host's block-entity execution domain
+ * ({@link BeDomainReady}); revalidation happens there, at execution time. Hosts that are not AE2 base block
+ * entities (e.g. SolarFlux panels) have no lifecycle lock and are revalidated by identity only.
  */
 @Mixin(targets = "appeng.hooks.ticking.ServerBlockEntityRepo$FirstTickInfo", remap = false)
 public abstract class FirstTickInfoMixin {
@@ -24,10 +30,24 @@ public abstract class FirstTickInfoMixin {
     @Shadow
     public abstract BlockEntity blockEntity();
 
+    @Shadow
+    public abstract Consumer<?> initFunction();
+
     @WrapMethod(method = "callInit")
+    @SuppressWarnings({"unchecked", "rawtypes"})
     private void nw$callInit(Operation<Void> op) {
         BlockEntity be = blockEntity();
+        Consumer init = initFunction();
+        BeDomainReady.ready(be, () -> nw$init(be, op), () -> appeng.api.networking.GridHelper.onFirstTick(be, init));
+    }
+
+    private static void nw$init(BlockEntity be, Operation<Void> op) {
         if (!(be instanceof NwAeBlockEntity life)) {
+            String reason = nw$invalidIdentity(be);
+            if (reason != null) {
+                COUNTERS.initCancelled.increment();
+                return;
+            }
             op.call();
             return;
         }
@@ -54,13 +74,20 @@ public abstract class FirstTickInfoMixin {
     }
 
     private static String nw$invalid(BlockEntity be, NwAeBlockEntity life) {
-        if (life.nw$removed() || be.isRemoved()) return "removed";
+        if (life.nw$removed()) return "removed";
+        String reason = nw$invalidIdentity(be);
+        if (reason != null) return reason;
+        if (be.getLevel().getBlockState(be.getBlockPos()).getBlock() != be.getBlockState().getBlock()) return "block changed";
+        return null;
+    }
+
+    private static String nw$invalidIdentity(BlockEntity be) {
+        if (be.isRemoved()) return "removed";
         Level level = be.getLevel();
         if (level == null) return "no level";
         BlockPos pos = be.getBlockPos();
         if (!level.isLoaded(pos)) return "chunk not loaded";
         if (level.getBlockEntity(pos) != be) return "not the block entity at its position";
-        if (level.getBlockState(pos).getBlock() != be.getBlockState().getBlock()) return "block changed";
         return null;
     }
 }
