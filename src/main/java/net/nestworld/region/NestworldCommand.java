@@ -228,6 +228,33 @@ public final class NestworldCommand {
         return 1;
     }
 
+    /** AE2-BE-READY-001 R1-a scope 1: {@link BlockEntityDomainTests}, same background-controller
+     *  discipline as {@link #buildMailboxLifecycleTestNode()}. */
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> buildBeDomainTestNode() {
+        return Commands.literal("bedomain")
+                .then(Commands.argument("scenario", com.mojang.brigadier.arguments.StringArgumentType.word())
+                        .executes(ctx -> testBeDomain(ctx.getSource(),
+                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "scenario"))));
+    }
+
+    private static int testBeDomain(CommandSourceStack src, String scenario) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        if (!BlockEntityDomainTests.SCENARIOS.contains(scenario)) {
+            src.sendFailure(Component.literal("Unknown scenario: " + scenario + " (expected " + String.join("|", BlockEntityDomainTests.SCENARIOS) + ")"));
+            return 0;
+        }
+        NestworldRegionSystem sys = NestworldRegionSystem.get();
+        Thread t = new Thread(() -> BlockEntityDomainTests.run(sys, scenario), "BE-DOMAIN-det-controller-" + scenario);
+        t.setDaemon(true);
+        t.start();
+        src.sendSuccess(() -> Component.literal("bedomain scenario " + scenario
+                + " started on background thread; tail server log for '[BE-DOMAIN-DET]' lines"), false);
+        return 1;
+    }
+
     /** API-1B.7: deterministic barrier-driven fixtures for setSlot (see
      *  {@link Api1B6DeterministicTests}), same extracted-builder-method discipline as
      *  {@link #buildSetVelocityTestNode()}/{@link #buildDeterministicTestNode()}. */
@@ -772,7 +799,8 @@ public final class NestworldCommand {
                         .then(buildSetVelocityTestNode())
                         .then(buildDeterministicTestNode())
                         .then(buildInventoryDeterministicTestNode())
-                        .then(buildMailboxLifecycleTestNode()))
+                        .then(buildMailboxLifecycleTestNode())
+                        .then(buildBeDomainTestNode()))
                 .then(buildModuleTestNode()));
 
         // /spark — in-game access to the spark standalone agent (see SparkBridge).
