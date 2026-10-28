@@ -34,6 +34,7 @@ public final class NestworldCompatAe2 {
                     IntegrationFixtures.onServerTickEnd(e.getServer().getTickCount());
                     GridPhaseFixtures.onServerTickEnd(e.getServer().getTickCount());
                     P2PFixtures.onServerTickEnd(e.getServer().getTickCount());
+                    net.nestworld.compat.ae2.glue.TopologyFixtures.onServerTickEnd(e.getServer().getTickCount());
                 }
             });
         }
@@ -114,6 +115,11 @@ public final class NestworldCompatAe2 {
                                                     net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"),
                                                     com.mojang.brigadier.arguments.StringArgumentType.getString(c, "forward"),
                                                     com.mojang.brigadier.arguments.StringArgumentType.getString(c, "up"))))))));
+            var tx = Commands.literal("topology")
+                    .then(Commands.literal("status").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.TopologyFixtures.status())))
+                    .then(Commands.literal("ensure").then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.TopologyFixtures.ensure(c.getSource().getLevel(),
+                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getLoadedBlockPos(c, "pos"))))));
             var gx = Commands.literal("gridphase")
                     .then(Commands.literal("status").executes(c -> say(c.getSource(), GridPhaseFixtures.status())))
                     .then(Commands.literal("staging")
@@ -207,7 +213,7 @@ public final class NestworldCompatAe2 {
                                                     com.mojang.brigadier.arguments.StringArgumentType.getString(c, "label"), com.mojang.brigadier.arguments.StringArgumentType.getString(c, "kind"),
                                                     net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "in"), net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "out"),
                                                     com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "amount"))))))))));
-            root = root.then(fx).then(qx).then(ix).then(lx).then(gx).then(px);
+            root = root.then(fx).then(qx).then(ix).then(lx).then(gx).then(px).then(tx);
         }
         d.register(root);
     }
