@@ -223,7 +223,13 @@ public record RegionMessage<T>(
          *  and unmodified, on the correct owner thread -- any mod overriding {@code interact()}/
          *  {@code interactAt()} is automatically covered with zero NestworldCore-side awareness of
          *  its specific mutation shape. */
-        PLAYER_ENTITY_INTERACT(Consumer.REGION_THREAD);
+        PLAYER_ENTITY_INTERACT(Consumer.REGION_THREAD),
+
+        /** AE2-BE-READY-001 R1-a scope 1: one {@link BlockEntityExecutionDomain.Task} leg addressed to
+         *  the region that is the block-entity execution domain of the task's position. The region
+         *  consumer re-resolves the domain before running it (bounded reroute otherwise); a retired
+         *  destination hands the task back to {@link BlockEntityExecutionDomain} for re-resolution. */
+        BE_DOMAIN_TASK(Consumer.REGION_THREAD);
 
         /**
          * CORE-PARKED-REGION-001: who consumes an accepted message of this type. REGION_THREAD means

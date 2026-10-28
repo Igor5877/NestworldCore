@@ -118,6 +118,12 @@ final class MailboxRetargeting {
                 UseOnContext ctx = new UseOnContext(player, u.hand(), u.hit());
                 deliverOrTerminal(msg, regionAt(grid, PlayerUseItemOnBlockDispatcher.resolveOwnerPos(ctx.getItemInHand(), ctx)));
             }
+            // The BE execution domain, not grid ownership, decides where the task goes next: close
+            // this leg and let the domain re-resolve it (MAIN or a region; bounded by the task).
+            case BE_DOMAIN_TASK -> {
+                MailboxAudit.recordHandedOff(msg.auditId(), msg.messageType());
+                BlockEntityExecutionDomain.reroute((BlockEntityExecutionDomain.Task) msg.payload());
+            }
             // Never a mailbox message (deferred-wire queue, main thread) -- defensive only.
             case WIRE_UPDATE -> terminal(msg, MailboxLifecycle.Terminal.TARGET_NOT_FOUND);
         }

@@ -44,6 +44,7 @@ public final class MailboxAudit {
     private static final AtomicLong orphanedTotal = new AtomicLong();
     private static final AtomicLong redirectedTotal = new AtomicLong();
     private static final AtomicLong terminalTotal = new AtomicLong();
+    private static final AtomicLong handedOffTotal = new AtomicLong();
     private static final Map<MailboxLifecycle.Terminal, AtomicLong> terminalByKind = new ConcurrentHashMap<>();
     static {
         for (MailboxLifecycle.Terminal t : MailboxLifecycle.Terminal.values()) terminalByKind.put(t, new AtomicLong());
@@ -127,6 +128,20 @@ public final class MailboxAudit {
         terminalByKind.get(kind).incrementAndGet();
     }
 
+    /** AE2-BE-READY-001 R1-a: a {@link RegionMessage.Type#BE_DOMAIN_TASK} leg whose destination was
+     *  retired left mailbox transport and was handed back to {@link BlockEntityExecutionDomain}
+     *  (which accounts for it from there on). Closes the in-flight entry; neither applied nor terminal. */
+    static void recordHandedOff(long auditId, RegionMessage.Type type) {
+        if (!ENABLED) return;
+        if (inFlight.remove(auditId) == null) {
+            duplicateTotal.incrementAndGet();
+            LOGGER.warn("Mailbox audit: message {} (type={}) handed off but already closed -- duplicate outcome",
+                    auditId, type);
+            return;
+        }
+        handedOffTotal.incrementAndGet();
+    }
+
     /**
      * C11 quiescence report. {@code reachable} = every audit id currently present in live
      * transport (live regions' mailboxes and pending queues, plus orphan queues). Then
@@ -153,9 +168,11 @@ public final class MailboxAudit {
             if (k.getValue().get() != 0) kinds.append(' ').append(k.getKey()).append('=').append(k.getValue().get());
         }
         long accepted = sentTotal.get(), applied = appliedTotal.get(), terminal = terminalTotal.get(), live = inFlight.size();
+        long handedOff = handedOffTotal.get();
         return "ACCOUNTING accepted=" + accepted + " applied=" + applied + " explicitTerminal=" + terminal
+                + " handedOff=" + handedOff
                 + " stillInFlight=" + live + " reachableInTransport=" + (live - unaccounted)
-                + " unaccounted=" + unaccounted + " balance=" + (accepted - applied - terminal - live)
+                + " unaccounted=" + unaccounted + " balance=" + (accepted - applied - terminal - handedOff - live)
                 + " duplicates=" + duplicateTotal.get() + " misrouted=" + misroutedTotal.get()
                 + " orphaned=" + orphanedTotal.get() + " redirected=" + redirectedTotal.get()
                 + " terminals{" + (kinds.length() == 0 ? "" : kinds.substring(1)) + "}"
@@ -211,6 +228,7 @@ public final class MailboxAudit {
         orphanedTotal.set(0);
         redirectedTotal.set(0);
         terminalTotal.set(0);
+        handedOffTotal.set(0);
         terminalByKind.values().forEach(a -> a.set(0));
         inFlight.clear();
     }

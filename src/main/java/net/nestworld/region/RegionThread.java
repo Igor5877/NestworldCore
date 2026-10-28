@@ -579,6 +579,7 @@ public class RegionThread extends Thread {
                     applyPendingPlayerUseItemOnBlock();
                     applyPendingPlayerUseControl();
                     applyPendingPlayerEntityInteractions();
+                    applyPendingBlockEntityDomainTasks();
                     region.nestworldFlushOutboundPending(NestworldTuning.MAILBOX_BACKPRESSURE_FLUSH_BUDGET);
                     long e0 = System.nanoTime();
                     tickEntities();
@@ -977,6 +978,17 @@ public class RegionThread extends Thread {
                     region == nestworldResolvePlayerOwnRegion(interact.playerId()));
             EntityInteractionDispatcher.applyQueued(interact, region, level);
             MailboxAudit.recordApplied(msg.auditId(), region, RegionMessage.Type.PLAYER_ENTITY_INTERACT);
+        }
+    }
+
+    /** AE2-BE-READY-001 R1-a scope 1: runs block-entity execution-domain tasks addressed to this
+     *  region. The leg is consumed here either way (recordApplied); {@link
+     *  BlockEntityExecutionDomain#runOnRegion} re-resolves the domain and runs the task only if it
+     *  is still this region, otherwise re-routes it (bounded). */
+    private void applyPendingBlockEntityDomainTasks() {
+        for (RegionMessage<?> msg : region.nestworldDrainMailbox(RegionMessage.Type.BE_DOMAIN_TASK)) {
+            MailboxAudit.recordApplied(msg.auditId(), region, RegionMessage.Type.BE_DOMAIN_TASK);
+            BlockEntityExecutionDomain.runOnRegion((BlockEntityExecutionDomain.Task) msg.payload(), region);
         }
     }
 

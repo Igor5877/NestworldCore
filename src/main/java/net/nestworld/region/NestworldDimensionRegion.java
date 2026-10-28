@@ -274,6 +274,61 @@ public final class NestworldDimensionRegion {
         return null;
     }
 
+    // -----------------------------------------------------------------------
+    // Block-entity execution domain (AE2-BE-READY-001 R1-a scope 1). The ONE place that decides
+    // which thread ticks a block entity: runBlockEntityPhase buckets with it, and
+    // BlockEntityExecutionDomain resolves/re-resolves enqueued work with it, so the two cannot
+    // drift. Not grid ownership: a border-band block entity belongs to grid region R but executes
+    // on main.
+    // -----------------------------------------------------------------------
+
+    static final int BE_POLICY_NORMAL = 0, BE_POLICY_PINNED = 1, BE_POLICY_CASCADE_SAFE = 2;
+
+    /** Type-level exception for a block-entity type id ({@code TickingBlockEntity.getType()} form);
+     *  {@code null} means no type exception applies. */
+    static int blockEntityTypePolicy(NestworldPins pins, String typeId) {
+        if (typeId == null) return BE_POLICY_NORMAL;
+        if (!pins.isBeEmpty() && pins.isBePinned(typeId)) return BE_POLICY_PINNED;
+        if (!pins.isCascadeSafeBeEmpty() && pins.isCascadeSafeBe(typeId)) return BE_POLICY_CASCADE_SAFE;
+        return BE_POLICY_NORMAL;
+    }
+
+    /** The region whose thread executes block-entity work of {@code policy} at chunk (cx,cz), or
+     *  null for the main thread: pinned → main; cascade-safe → its grid region (band included);
+     *  otherwise the region whose interior contains the chunk; border band / no region → main. */
+    WorldRegion blockEntityRegionFor(int policy, int cx, int cz) {
+        return policy == BE_POLICY_PINNED ? null
+                : policy == BE_POLICY_CASCADE_SAFE ? grid.getRegionForChunk(cx, cz)
+                : interiorRegionFor(cx, cz);
+    }
+
+    /** Canonical BE execution-domain resolution for chunk (cx,cz) and block-entity type
+     *  {@code typeId}: the region whose thread runs it, or null for main. Safe from any thread. */
+    public WorldRegion resolveBlockEntityRegion(int cx, int cz, String typeId) {
+        return blockEntityRegionFor(blockEntityTypePolicy(NestworldRegionSystem.get().getPins(), typeId), cx, cz);
+    }
+
+    /** MAIN-domain block-entity tasks of this dimension, drained on the main thread by {@link #tick}. */
+    private final Queue<BlockEntityExecutionDomain.Task> mainBlockEntityTasks = new ConcurrentLinkedQueue<>();
+
+    void enqueueMainBlockEntityTask(BlockEntityExecutionDomain.Task task) {
+        mainBlockEntityTasks.add(task);
+    }
+
+    int mainBlockEntityTaskCount() {
+        return mainBlockEntityTasks.size();
+    }
+
+    /** Runs (or re-routes) the MAIN-domain tasks queued before this call; tasks re-routed back to
+     *  main during the pass wait for the next pass. Main thread only. */
+    private void drainMainBlockEntityTasks() {
+        for (int n = mainBlockEntityTasks.size(); n > 0; n--) {
+            BlockEntityExecutionDomain.Task task = mainBlockEntityTasks.poll();
+            if (task == null) break;
+            BlockEntityExecutionDomain.runOnMain(task);
+        }
+    }
+
     void routeScheduledTick(BlockPos pos, Runnable run,
                              Map<WorldRegion, List<Runnable>> buckets, List<Runnable> mainBucket) {
         routeScheduledTick(pos, run, ScheduledTickHandoffMetrics.Tagged.OTHER, buckets, mainBucket);
@@ -489,17 +544,13 @@ public final class NestworldDimensionRegion {
             BlockPos pos = ticker.getPos();
             if (BE_TRACE_POS != null && BE_TRACE_POS.equals(pos)) traced = true;
             int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
-            String typeId = ticker.getType();
-            boolean pinned = !pins.isBeEmpty() && pins.isBePinned(typeId);
-            boolean cascadeSafe = !pinned && !pins.isCascadeSafeBeEmpty() && pins.isCascadeSafeBe(typeId);
-            if (pinned || cascadeSafe) {
+            int policy = blockEntityTypePolicy(pins, ticker.getType());
+            if (policy != BE_POLICY_NORMAL) {
                 blockTickHeat.record(cx, cz);
             } else {
                 blockTickHeat.recordVetoable(cx, cz);
             }
-            WorldRegion region = pinned ? null
-                    : cascadeSafe ? grid.getRegionForChunk(cx, cz)
-                    : interiorRegionFor(cx, cz);
+            WorldRegion region = blockEntityRegionFor(policy, cx, cz);
             if (region == null) {
                 mainBes.add(ticker);
             } else {
@@ -931,6 +982,7 @@ public final class NestworldDimensionRegion {
         // pass (split/merge at the end of the previous tick, or any off-tick split) BEFORE any
         // consumer phase of this tick, so a redelivered message is drained this same tick.
         MailboxRetargeting.redeliver(this);
+        drainMainBlockEntityTasks();
         runAutosplitTest();
         runRandomTickTest();
         pool.nestworldResetTickAccumulators();
@@ -1063,6 +1115,8 @@ public final class NestworldDimensionRegion {
         // 6b. CORE-MAILBOX-MERGE-001: messages orphaned by THIS tick's retirements are
         // re-addressed to their successor owners immediately (drained next tick).
         MailboxRetargeting.redeliver(this);
+        // 6c. BE execution-domain tasks re-routed to main by this tick's retirements.
+        drainMainBlockEntityTasks();
         long t6 = System.nanoTime();
 
         // 7. Optional border visualisation for players
@@ -1131,6 +1185,9 @@ public final class NestworldDimensionRegion {
     /** Called once, at server shutdown: persist this dimension's layout and stop its threads. */
     void shutdown() {
         saveLayout();
+        for (BlockEntityExecutionDomain.Task task; (task = mainBlockEntityTasks.poll()) != null; ) {
+            BlockEntityExecutionDomain.terminal(task, BlockEntityExecutionDomain.Terminal.LEVEL_GONE);
+        }
         for (RegionThread t : pool.getThreads()) {
             t.shutdown();
         }
