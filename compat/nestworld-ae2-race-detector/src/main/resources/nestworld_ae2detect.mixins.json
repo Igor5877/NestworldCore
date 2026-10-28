@@ -20,7 +20,8 @@
     "Ae2ReadyPhaseDetectMixin",
     "FirstTickReadyDetectMixin",
     "ManagedGridNodeInitDetectMixin",
-    "GridConnectionCreateDetectMixin"
+    "GridConnectionCreateDetectMixin",
+    "GridNodeListenerDetectMixin"
   ],
   "injectors": {
     "defaultRequire": 1

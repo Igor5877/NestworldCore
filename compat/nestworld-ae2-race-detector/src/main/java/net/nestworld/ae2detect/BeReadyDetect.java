@@ -113,6 +113,54 @@ public final class BeReadyDetect {
         }
     }
 
+    // ---- AE2-NODE-LISTENER-OWNER-001 / scope 3: where node listeners actually execute ----
+    /** Addon 0.3.0+ marks routed topology-intent delivery (TopologyCallbacks.DELIVERING, by name; absent = n/a). */
+    private static final ThreadLocal<boolean[]> ADDON_DELIVERING = lookupDelivering();
+
+    @SuppressWarnings("unchecked")
+    private static ThreadLocal<boolean[]> lookupDelivering() {
+        try {
+            return (ThreadLocal<boolean[]>) Class.forName("net.nestworld.compat.ae2.glue.TopologyCallbacks")
+                    .getField("DELIVERING").get(null);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    public static final LongAdder listenerRouted = new LongAdder(), listenerRoutedOffDomain = new LongAdder(),
+            listenerUnroutedOffDomain = new LongAdder();
+    public static final LongAdder listenerCalls = new LongAdder(), listenerNoHost = new LongAdder(),
+            listenerOffDomain = new LongAdder(), listenerRemovedHost = new LongAdder(), listenerDuringReady = new LongAdder();
+    static final Map<String, LongAdder> LISTENER_THREADS = new ConcurrentHashMap<>();
+    static volatile String firstListenerOffDomain = "-";
+
+    /** The world host of a node owner: the owner itself if it is a block entity, else an AE2 part's block entity. */
+    static BlockEntity hostOf(Object owner) {
+        if (owner instanceof BlockEntity be) return be;
+        if (owner instanceof appeng.parts.AEBasePart part) return part.getBlockEntity();
+        return null;
+    }
+
+    public static void listener(Object owner) {
+        listenerCalls.increment();
+        LISTENER_THREADS.computeIfAbsent(threadClass(Thread.currentThread()), k -> new LongAdder()).increment();
+        if (IN_FLIGHT.get() > 0) listenerDuringReady.increment();
+        BlockEntity host = hostOf(owner);
+        if (host == null) { listenerNoHost.increment(); return; }
+        if (host.isRemoved()) listenerRemovedHost.increment();
+        boolean routed = ADDON_DELIVERING != null && ADDON_DELIVERING.get()[0];
+        if (routed) listenerRouted.increment();
+        Boolean in = inDomain(host);
+        if (in != null && !in) {
+            listenerOffDomain.increment();
+            (routed ? listenerRoutedOffDomain : listenerUnroutedOffDomain).increment();
+            if ("-".equals(firstListenerOffDomain)) {
+                firstListenerOffDomain = BlockEntityType.getKey(host.getType()) + "@" + host.getBlockPos().toShortString()
+                        + " on " + Thread.currentThread().getName();
+            }
+        }
+    }
+
     public static boolean isS2(Throwable t) {
         return t instanceof IllegalStateException && t.getMessage() != null
                 && t.getMessage().startsWith("The node has already been initialized");
@@ -182,6 +230,12 @@ public final class BeReadyDetect {
                 .append(readyOffDomain.sum()).append(" domainUnknown=").append(readyDomainUnknown.sum())
                 .append(" failedOther=").append(readyFailedOther.sum()).append(" threads=").append(sums(READY_THREADS))
                 .append(" firstOffDomain=").append(firstOffDomain);
+        sb.append("\nlisteners calls=").append(listenerCalls.sum()).append(" offDomain=").append(listenerOffDomain.sum())
+                .append(" noHost=").append(listenerNoHost.sum()).append(" removedHost=").append(listenerRemovedHost.sum())
+                .append(" duringReady=").append(listenerDuringReady.sum()).append(" routed=").append(listenerRouted.sum())
+                .append(" routedOffDomain=").append(listenerRoutedOffDomain.sum()).append(" unroutedOffDomain=")
+                .append(listenerUnroutedOffDomain.sum()).append(ADDON_DELIVERING == null ? " (addon<0.3: routed n/a)" : "").append(" threads=").append(sums(LISTENER_THREADS))
+                .append(" firstOffDomain=").append(firstListenerOffDomain);
         for (Symptom s : Symptom.values()) {
             Attributed a = SYMPTOMS.get(s);
             sb.append("\n").append(s).append(" total=").append(a.total.sum()).append(" ownInit=").append(a.ownInit.sum())
