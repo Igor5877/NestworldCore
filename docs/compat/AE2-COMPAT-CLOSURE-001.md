@@ -512,3 +512,45 @@ addon lifecycle state/generation → route `onReady` through `enqueueForBlockEnt
 Acceptance, each symptom separately: AirBlock `ClassCastException` → 0; "The node has already been initialized" →
 0; duplicate `GridConnection` from the onReady race → 0 via scope 2, **or** explicitly left to scope 3 if it still
 reproduces through interior ↔ MAIN-band topology activity (not to be closed silently under scope 2).
+
+#### Scope 2 STOP (2026-10-28) — AE2 is pinned in the production configuration
+
+Detector `430fd1331` (`/nwbeready`). Facts:
+
+- **AE2 is mod-pinned on the real island.** `world/data/nestworld-pinned-mods.txt` = `ae2, edexpandere, exdeorum,
+  mekanism` in the pristine Airis copy and in G307AE2ON (file unchanged since 2026-10-14; auto-pin of 2026-10-06,
+  `TickHandler.onServerTickEnd`, pre-addon). With the canonical policy (pins included, owner requirement) **every
+  AE2 block entity's execution domain is MAIN**. CONFIRMED (file + resolver on H: all `ae2:crafting_storage`
+  positions → MAIN).
+- **The BE-READY repro on G ran under that pin.** Readiness was already on its BE execution domain (MAIN). The
+  race is MAIN (pinned AE2 domain) vs the **region thread that owns the chunk** (driver placement/removal).
+  Routing `onReady` through `enqueueForBlockEntityDomain` is a no-op for this configuration. CONFIRMED.
+- **Pin leak:** a pin covers ticking only. AE2 block callbacks still run on region threads (`neighborChanged →
+  MBCalculator → updateSubType → setExposedOnSides`, S2 stack below). CONFIRMED.
+
+Negative baseline, production pins (H401BEDOM, Core 401, addon 0.1.0, detector 430fd1331; storage at
+(-20,115,130) and (200,115,200): storage domain MAIN (pinned), driver domain REGION#0 / REGION#1; period 1, 242 s;
+evidence `/root/airis-2026-10-25/evidence-be-ready/neg-prodpins-addon010/`):
+
+```
+ready calls=4426 onMain=4426 offMain=0 offDomain=3 (solarflux:solar_panel, not pinned, readied on main)
+S1 CCE                    5   ownInit 5        Server thread   (onReady reads AIR placed by the region thread)
+S2 already initialized    2   foreignInit 2    NestWorld-Region-#  (region-thread neighborChanged while main readies)
+S3 duplicate connection   0   (in 242 s; seen on G in P-T1)
+alive=1 crashNew=4 (tick-skipped) toggles=9701
+```
+
+Invalid runs (quarantined in `evidence-be-ready/invalid/`, not evidence): first detector build broke
+`ManagedGridNode` loading (8 crash reports, 10 spurious BE auto-pins on H — pin files restored from the pristine
+copy); one run picked positions with the storage type for the driver (all MAIN, no race).
+
+**Decision needed (owner)** — scope 2 as approved assumes unpinned AE2:
+
+- **(A) Supported config = `ae2` unpinned** (AE2-PINS-001): the addon is the region-safety layer; scope 2 applies
+  as designed. Requires a separate pin-policy closure with its own evidence (the 2026-10-06 pin reason is the
+  tick-end grid crash class that TICKMANAGER now covers — HYPOTHESIS until shown).
+- **(B) Supported config = `ae2` pinned:** scope 2 does not address BE-READY; the fix becomes a **generic Core pin
+  completeness** gap (a pinned type's block callbacks / BE create-remove triggered by region-thread writes run off
+  its domain) — new Core work, design first.
+- **(C) both:** scope 2 implemented domain-generically (correct for either config) + a pin-leak item tracked
+  separately; BE-READY closure scoped per config.
