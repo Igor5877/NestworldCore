@@ -384,3 +384,31 @@ Implication for R1-a scope:
   execution domain;
 - ghost copies (Audit A) only matter for cascade-safe AE2 types or band 0 — the handshake stays the design for that
   case and for interior↔band if the idempotent commit proves insufficient.
+
+#### Owner decisions 2026-10-28 (5) — after P-T1
+
+```
+AE2-BE-READY-001                          CONFIRMED (3 symptoms: AirBlock CCE, "node has already been initialized",
+                                          onReady ↔ owner topology race) — not closed until negative/positive
+                                          fixtures exist for all three
+AE2-TOPOLOGY-TOCTOU-001                   CONFIRMED
+main-band ↔ region BE overlap             CONFIRMED
+readyBlockEntities ↔ region BE overlap    CONFIRMED / HIGH FREQUENCY (20 990 / 5 min)
+Core implicit serialization hypothesis    REJECTED BY P-T1
+R1-a scope 1 (canonical resolver + primitive)   APPROVED
+R1-a scope 2 (onReady in the BE execution domain) APPROVED
+R1-a scope 3 (cross-owner commit)               APPROVED with atomic ensureConnection semantics under T0
+full generation handshake                 DEFERRED, not rejected (ghost endpoint, cascade-safe across an owner
+                                          boundary, band 0, future routing, async publication, ABA)
+callback delivery                         REQUIRED: record under T0, deliver after unlock in the host's CURRENT BE
+                                          execution domain, re-resolved before delivery
+```
+
+- **Canonical resolver:** `resolveBlockEntityExecutionDomain(...)` is the single source of truth and
+  `runBlockEntityPhase` itself uses it (interior → REGION, band → MAIN, outside → MAIN, cascade-safe → REGION,
+  pinned → MAIN / pinned domain, and any other existing BE-phase exception). `enqueueForBlockEntityDomain`
+  re-resolves before execution with bounded reroute.
+- **`ensureConnection(A, B, direction)` under T0:** revalidate A live, B live, A ≠ B; exact existing A↔B →
+  `EXISTING`; conflicting/inconsistent connection → invariant failure (never masked); else create exactly once →
+  `CREATED`. A duplicate-connection `IllegalStateException` is never converted to success. Minimal lifecycle
+  validation now: a node destroyed/replaced between discovery and T0 is not accepted.
