@@ -57,6 +57,16 @@ public final class Detect {
                         .then(net.minecraft.commands.Commands.literal("stacks").executes(c -> say(c.getSource(), TickDetect.stacks())))
                         .then(net.minecraft.commands.Commands.literal("verify").executes(c -> say(c.getSource(), TickDetect.verify())))));
         MinecraftForge.EVENT_BUS.addListener((RegisterCommandsEvent e) -> e.getDispatcher().register(
+                net.minecraft.commands.Commands.literal("nwbeready").requires(s -> s.hasPermission(2))
+                        .executes(c -> say(c.getSource(), BeReadyDetect.summary()))
+                        .then(net.minecraft.commands.Commands.literal("stacks").executes(c -> say(c.getSource(), BeReadyDetect.stacks())))
+                        .then(net.minecraft.commands.Commands.literal("domain")
+                                .then(net.minecraft.commands.Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                        .then(net.minecraft.commands.Commands.argument("type", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                                .executes(c -> say(c.getSource(), BeReadyDetect.domainAt(c.getSource().getLevel(),
+                                                        net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"),
+                                                        com.mojang.brigadier.arguments.StringArgumentType.getString(c, "type")))))))));
+        MinecraftForge.EVENT_BUS.addListener((RegisterCommandsEvent e) -> e.getDispatcher().register(
                 net.minecraft.commands.Commands.literal("nwmekdetect").requires(s -> s.hasPermission(2))
                         .executes(c -> say(c.getSource(), MekDetect.summary()))
                         .then(net.minecraft.commands.Commands.literal("threads").executes(c -> say(c.getSource(), MekDetect.threads())))
