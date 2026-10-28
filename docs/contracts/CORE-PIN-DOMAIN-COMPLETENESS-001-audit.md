@@ -1,6 +1,6 @@
 # CORE-PIN-DOMAIN-COMPLETENESS-001 — audit (no code)
 
-Status: **AUDIT COMPLETE — contract decision required (owner)**. Opened by owner decisions 2026-10-28 (7) after
+Status: **AUDIT COMPLETE — contract DECIDED 2026-10-28 (§7)**. Opened by owner decisions 2026-10-28 (7) after
 AE2-PIN-LEAK-001 (AE2-COMPAT-CLOSURE-001). Question: what does a pin (entity type / BE type / mod namespace)
 guarantee, and which world-execution entry points of a pinned mod still run on region threads?
 
@@ -99,3 +99,31 @@ remainder is closed by Core (C/D) or by the addon (A).
 1. Normative pin contract: A, C, D, or other.
 2. Whether the overclaiming texts are corrected now (independent of 1).
 3. Whether scope 3 may proceed on the current resolver semantics (pinned host ⇒ MAIN) while 1 is decided.
+
+## 7. Owner decision 2026-10-28 — refined D
+
+```
+CORE-PIN-DOMAIN-COMPLETENESS-001
+Current pin contract                     CONFIRMED TICK-ONLY
+pin <type>                               TICK PIN — its BE/entity ticking does not execute region-parallel
+pinmod <mod>                             MOD-WIDE TICK PIN — same guarantee for all types attributed to the mod
+                                         NOT guaranteed: neighbour callbacks, capabilities, scheduled/random
+                                         ticks, block events, Forge callbacks, arbitrary synchronous calls
+Arbitrary callback serialization         NOT GUARANTEED
+Docs claiming full correctness/parity    INCORRECT — fixed (separate docs commit)
+Existing AE2 callback leak               NOT a violation of the implemented historical pin contract;
+                                         tick-only pin is insufficient for full AE2 compatibility
+Future stronger mechanism                PINZONE <mod> — spatial MAIN execution zone (new mode; existing pinmod
+                                         semantics NOT changed retroactively)
+PINZONE                                  SEPARATE CORE DESIGN GATE: CORE-PINZONE-001 (zone construction/removal,
+                                         halo/reach, adjacent blocks, capability reach, redstone propagation,
+                                         split/merge, zone lifecycle/movement, performance)
+R1-a scope 3                             APPROVED TO START NOW — routes its own AE2 topology callbacks explicitly
+                                         through the resolver (pinned host ⇒ MAIN); does not rely on pin
+AE2-PIN-LEAK-001                         OPEN
+AE2-MB-MODIFICATION-001                  CONFIRMED
+AE2 pin removal                          NOT APPROVED
+```
+
+Not changed in this pass (runtime text, accurate for ticking): the auto-pin log line and the headers written into
+`nestworld-pins.txt` / `nestworld-be-pins.txt` say "(vanilla parity)" about the tick itself.

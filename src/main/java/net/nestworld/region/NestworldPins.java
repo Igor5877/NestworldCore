@@ -23,14 +23,18 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Registry of entity types pinned to main-thread ticking.
+ * Registry of entity / block-entity types (and mod namespaces) pinned to main-thread ticking.
  *
- * <p>Pinning is the compatibility escape hatch (final-goal item 5): an entity
- * whose mod is not thread-safe can be forced to tick on the main thread exactly
- * as vanilla would, trading that type's parallelism for 100% correctness. A
- * pinned type is never assigned to any region (see
- * {@link BoundaryEntityTransfer}); the main thread ticks it alongside players
- * (see {@link NestworldRegionSystem#tickPinnedEntitiesOnMain}).
+ * <p>Pinning is a TICK-EXECUTION compatibility mechanism (final-goal item 5): it prevents the
+ * selected block-entity / entity ticks from running in region-parallel execution — they tick on
+ * the main thread as vanilla would, at the cost of that type's parallelism. A pinned entity type
+ * is never assigned to any region (see {@link BoundaryEntityTransfer}); the main thread ticks it
+ * alongside players (see {@link NestworldRegionSystem#tickPinnedEntitiesOnMain}).
+ *
+ * <p>It does NOT by itself serialize arbitrary callbacks, capability invocations, block updates
+ * (neighbour/shape/place/remove callbacks), scheduled or random ticks, block events, Forge events,
+ * or any other synchronous execution originating outside the pinned tick path — those still run
+ * on whichever thread reaches them (CORE-PIN-DOMAIN-COMPLETENESS-001, contract decided 2026-10-28).
  *
  * <p>The hot check {@link #isPinned(EntityType)} is an identity-set lookup; the
  * persisted form is the type's registry id, one per line in
@@ -72,8 +76,9 @@ public final class NestworldPins {
     private final Set<String> cascadeSafeBeIds = ConcurrentHashMap.newKeySet();
     private Path cascadeSafeBeFile;
 
-    /** Pinned mod namespaces: every entity AND block-entity from these mods is
-     *  pinned to main. The escape hatch for a whole mod that isn't thread-safe. */
+    /** Pinned mod namespaces: tick pinning applied to every entity AND block-entity type
+     *  attributed to these mods. Not a guarantee that all code belonging to the mod executes on
+     *  the server thread (see the class javadoc). */
     private final Set<String> pinnedMods = ConcurrentHashMap.newKeySet();
     private Path modFile;
     private Path errorCountsFile;

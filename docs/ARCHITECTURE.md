@@ -133,9 +133,12 @@ region can't blow the whole tick. Layout is persisted across restarts.
 - **Unknown mod callbacks are not proven parallel-safe.** The GMEIL policy layer described in
   [docs/gmeil/ARCHITECTURE.md](gmeil/ARCHITECTURE.md) starts with conservative observation.
   Full safe execution still requires the main bridge and entrypoint coverage.
-- **`NestworldPins`** is the escape hatch: a genuinely-incompatible mod's entities/block-entities can
-  be pinned to main-thread ticking (vanilla behaviour, just not parallelised) via
-  `/nestworld pin`/`pinmod` or `nestworld-pinned-mods.txt` — isolate, don't block.
+- **`NestworldPins`** is a tick-execution compatibility mechanism: selected entity/block-entity types
+  (`/nestworld pin`) or every type attributed to a mod (`/nestworld pinmod`, `nestworld-pinned-mods.txt`)
+  tick on the main thread instead of region-parallel. It does **not** by itself serialize callbacks,
+  capability invocations, block updates, scheduled/random ticks, block events, Forge events or other
+  synchronous execution originating outside the pinned tick path; `pinmod` is not a guarantee that all of
+  a mod's code runs on the server thread. Contract: `docs/contracts/CORE-PIN-DOMAIN-COMPLETENESS-001-audit.md`.
 
 ## Performance optimizations (the tuning flags)
 
