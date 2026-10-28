@@ -72,6 +72,22 @@ public final class Ae2Compat {
         public final LongAdder readyDropped = new LongAdder();
         public final LongAdder readyEnqueueFailed = new LongAdder();
         public final LongAdder readyInitFailed = new LongAdder();
+        public final LongAdder domainLookupFailed = new LongAdder();
+        // R1-a scope 3: ensureConnection under T0 (in-world connections)
+        public final LongAdder topoCreated = new LongAdder();
+        public final LongAdder topoExisting = new LongAdder();
+        public final LongAdder topoRejectedStale = new LongAdder();
+        public final LongAdder topoInvariantFailure = new LongAdder();
+        // R1-a scope 3: node-listener callback intents (recorded in a section, delivered after unlock)
+        public final LongAdder cbRecorded = new LongAdder();
+        public final LongAdder cbNoHost = new LongAdder();
+        public final LongAdder cbInDomain = new LongAdder();
+        public final LongAdder cbDeferred = new LongAdder();
+        public final LongAdder cbRanInDomain = new LongAdder();
+        public final LongAdder cbStale = new LongAdder();
+        public final LongAdder cbDropped = new LongAdder();
+        public final LongAdder cbEnqueueFailed = new LongAdder();
+        public final LongAdder cbFailed = new LongAdder();
         public final LongAdder lifeOrderViolation = new LongAdder();
         public final LongAdder pTryFailures = new LongAdder();
         public final LongAdder pRetryCount = new LongAdder();

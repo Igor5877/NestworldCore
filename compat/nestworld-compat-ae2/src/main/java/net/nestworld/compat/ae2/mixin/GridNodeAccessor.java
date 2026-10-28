@@ -9,4 +9,8 @@ import org.spongepowered.asm.mixin.gen.Accessor;
 public interface GridNodeAccessor {
     @Accessor("myGrid")
     Grid nw$myGrid();
+
+    /** false after destroy() (and before markReady()). */
+    @Accessor("ready")
+    boolean nw$ready();
 }
