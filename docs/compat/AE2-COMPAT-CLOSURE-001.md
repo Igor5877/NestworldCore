@@ -554,3 +554,50 @@ copy); one run picked positions with the storage type for the driver (all MAIN, 
   its domain) — new Core work, design first.
 - **(C) both:** scope 2 implemented domain-generically (correct for either config) + a pin-leak item tracked
   separately; BE-READY closure scoped per config.
+
+#### Owner decisions 2026-10-28 (7) — option C
+
+```
+R1-a Scope 2                     APPROVED — domain-generic (no "if AE2 pinned"; canonical Core policy only)
+Production AE2 pin               KEEP FOR NOW
+AE2 pin removal                  BLOCKED ON AE2-PINS-001
+Pin completeness                 NEW CORE GATE REQUIRED (CORE-PIN-DOMAIN-COMPLETENESS-001)
+Pinned production BE-READY       NOT CLOSED BY SCOPE 2 ALONE
+Unpinned / integrated readiness  SCOPE 2 IS THE CORRECT FIX
+Pushed                           63888f47c, 430fd1331, 545e09fb4
+```
+
+Two distinct problems (separated by the detector):
+1. **readiness outside its BE execution domain** (unpinned AE2, integrated hosts — e.g. `solarflux:solar_panel`
+   offDomain=3 under production pins) → scope 2;
+2. **correct pinned readiness domain (MAIN) + a foreign callback entering the same AE2 lifecycle concurrently**
+   (region-thread `neighborChanged → MBCalculator`, S2) → not a readiness-domain problem.
+
+Scope 2 flow (every host alike — unpinned AE2 → REGION or MAIN, pinned AE2 → MAIN, SolarFlux / other AE2 hosts →
+their actual domain): `FirstTickInfo.callInit → resolve current BE → enqueueForBlockEntityDomain → re-resolve →
+validate lifecycle/generation → call init exactly once`.
+
+Status split after scope 2 (no false CLOSED): `R1-a scope 2 primitive semantics: VERIFIED`, `AE2 readiness
+off-domain execution: VERIFIED FIXED`, **`AE2-BE-READY-001 (production pinned AE2): STILL OPEN`** — remaining path
+REGION callback → pinned AE2 state on MAIN.
+
+```
+AE2-PIN-LEAK-001
+  Observed                                  CONFIRMED
+  Pinned AE2 BE tick                        MAIN
+  AE2 block callback execution              REGION possible
+  Safety consequence                        CONFIRMED (S2 occurs through this path)
+  Violates the current documented pin contract?   TO AUDIT
+```
+
+**CORE-PIN-DOMAIN-COMPLETENESS-001** (Core gate, no code before the contract): first establish what a pin means —
+"all execution of this mod is MAIN-only" (then tick→MAIN + neighborChanged→REGION is a Core contract violation) vs
+the historical "BE/entity tick of this mod is not region-parallel" (then it is a limited contract that proved
+insufficient for AE2). Only after that, audit entry paths: `Block.onPlace`, `onRemove`, `neighborChanged`,
+`updateShape`, BE lifecycle, capability callbacks, scheduled ticks, events, entity interaction, redstone/comparator
+updates. Pin scope is not extended before the formal contract exists.
+
+**AE2-PINS-001** (pin-policy gate): pin ON + addon vs pin OFF + addon over the existing fixtures (TickManager,
+Energy, BE-READY, topology churn, storage/interface workload, P-T1). Pin removal only on pin OFF + addon → 0 known
+invariant violations and 0 historical race reproductions. Target production state: AE2 addon + AE2-specific pin =
+0 — a goal, not a current decision. The 2026-10-06 auto-pin reason ≈ TickManager race is not sufficient.
