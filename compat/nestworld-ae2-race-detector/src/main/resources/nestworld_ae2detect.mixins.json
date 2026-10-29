@@ -21,7 +21,8 @@
     "FirstTickReadyDetectMixin",
     "ManagedGridNodeInitDetectMixin",
     "GridConnectionCreateDetectMixin",
-    "GridNodeListenerDetectMixin"
+    "GridNodeListenerDetectMixin",
+    "TickFailureAttributionMixin"
   ],
   "injectors": {
     "defaultRequire": 1

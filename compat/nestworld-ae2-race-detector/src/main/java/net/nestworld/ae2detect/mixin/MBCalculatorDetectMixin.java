@@ -15,6 +15,11 @@ public abstract class MBCalculatorDetectMixin {
     @WrapMethod(method = "calculateMultiblock")
     private void nwd$calc(ServerLevel level, BlockPos loc, Operation<Void> op) {
         StaticDetect.enter(Site.MB_MODIFICATION);
-        try { op.call(level, loc); } finally { StaticDetect.exit(Site.MB_MODIFICATION); }
+        String host = "mb@" + loc.toShortString();
+        net.nestworld.ae2detect.FailureAttribution.enter(net.nestworld.ae2detect.FailureAttribution.Kind.MB, host);
+        try { op.call(level, loc); } finally {
+            StaticDetect.exit(Site.MB_MODIFICATION);
+            net.nestworld.ae2detect.FailureAttribution.exit(net.nestworld.ae2detect.FailureAttribution.Kind.MB, host);
+        }
     }
 }

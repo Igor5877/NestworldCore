@@ -18,6 +18,11 @@ public abstract class GridNodeListenerDetectMixin {
     private void nwd$listener(GridNode.ListenerCallback<Object> cb, IGridNodeListener<Object> listener, Object owner,
                               IGridNode node, Operation<Void> op) {
         BeReadyDetect.listener(owner);
-        op.call(cb, listener, owner, node);
+        boolean routed = BeReadyDetect.listenerEnter(owner);
+        try {
+            op.call(cb, listener, owner, node);
+        } finally {
+            BeReadyDetect.listenerExit(owner, routed);
+        }
     }
 }

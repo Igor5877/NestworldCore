@@ -81,6 +81,7 @@ public final class BeReadyDetect {
 
     /** Around the real {@code onReady} call. */
     public static void beforeReady(Object be) {
+        FailureAttribution.enter(FailureAttribution.Kind.READY, hostKey(be));
         DEPTH.get()[0]++;
         IN_FLIGHT.incrementAndGet();
         if (be instanceof BlockEntity b) IN_FLIGHT_BES.add(b);
@@ -102,7 +103,15 @@ public final class BeReadyDetect {
         }
     }
 
+    static String hostKey(Object be) {
+        return be instanceof BlockEntity b ? BlockEntityType.getKey(b.getType()) + "@" + b.getBlockPos().toShortString() : "-";
+    }
+
     public static void afterReady(Object be, Throwable failure) {
+        if (failure != null) {
+            try { FailureAttribution.readyFailed(be, failure); } catch (Throwable ignored) { }
+        }
+        FailureAttribution.exit(FailureAttribution.Kind.READY, hostKey(be));
         if (be instanceof BlockEntity b) IN_FLIGHT_BES.remove(b);
         IN_FLIGHT.decrementAndGet();
         DEPTH.get()[0]--;
@@ -159,6 +168,18 @@ public final class BeReadyDetect {
         if (owner instanceof BlockEntity be) return be;
         if (owner instanceof appeng.parts.AEBasePart part) return part.getBlockEntity();
         return null;
+    }
+
+    /** Listener delivery activity (enter/exit around the real invocation). */
+    public static boolean listenerEnter(Object owner) {
+        boolean routed = ADDON_DELIVERING != null && ADDON_DELIVERING.get()[0];
+        BlockEntity host = hostOf(owner);
+        FailureAttribution.enter(routed ? FailureAttribution.Kind.LISTENER_ROUTED : FailureAttribution.Kind.LISTENER_UNROUTED, hostKey(host));
+        return routed;
+    }
+
+    public static void listenerExit(Object owner, boolean routed) {
+        FailureAttribution.exit(routed ? FailureAttribution.Kind.LISTENER_ROUTED : FailureAttribution.Kind.LISTENER_UNROUTED, hostKey(hostOf(owner)));
     }
 
     public static void listener(Object owner) {
