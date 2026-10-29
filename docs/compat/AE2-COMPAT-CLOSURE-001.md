@@ -841,3 +841,42 @@ next                               causal tick-failure attribution (candidates: 
                                    decide scope-3 regression YES / NO / UNKNOWN → then AE2-NODE-LISTENER-ENDTICK-001 audit
 pushed                             686a5d7c2 .. f6e65e3f7
 ```
+
+#### Tick-failure attribution — 0.2.0 vs 0.3.0 under production pins (2026-10-29)
+
+Detector `046fdcd17` (`/nwbeready failures`, `[AE2-FAIL-ATTR]` records: exception, crash title, top AE2 frames, failing
+readiness host with domain/pin state, and at the THROW the other threads' activity — readiness, MBCalculator,
+topology commit, routed/unrouted listener delivery — with last-end ages). H401BEDOM, production pins, churn period 1,
+90 s × 3 per version, alternating, fresh world each; evidence `evidence-be-ready/attr-prodpins-0{2,3}0-{1,2,3}/`.
+
+```
+                                           0.2.0 (17 records)            0.3.0 (18 records)
+deaths (breaker)                           1/3                            3/3        (all A/B runs so far: 2/8 vs 7/8)
+exception classes                          15 CCE (S1), 2 MB ISE          16 CCE (S1), 2 MB ISE
+failing host                               crafting_storage@(-19,115,130) 15,  same host 18
+                                           @(201,115,200) 2
+crash path                                 readiness on main (pinned AE2 → MAIN) in every record, both versions
+region thread inside GridConnection        4/17                           8/18
+  destroy/create at the throw
+routed listener for the SAME host <=50 ms  n/a (nothing routed)           2/18
+failure inside a listener delivery         0                              0
+MBCalculator active on another thread      0                              0
+```
+
+Candidate classification (owner list A–E):
+
+```
+A  pin leak (region-thread placement/removal ↔ pinned readiness on MAIN)   ALL S1 records, both versions
+B  AE2-MB-MODIFICATION-001                                                  the ISE records, both versions
+C  PathingService CME                                                       not seen in these runs
+D  scope-3 listener delivery timing as the trigger                          NOT SUPPORTED — no same-host pattern (2/18),
+                                                                            no failure inside delivery
+E  none of the above                                                        0
+```
+
+Verdict proposal: **scope-3 regression as a new failure mechanism: NO** (no new class, host or path; D not supported).
+**0.3.0 surfaces the existing pin-leak S1 faster: CORRELATED** (deaths 7/8 vs 2/8; region topology commit active at
+the throw 8/18 vs 4/17). Mechanism **HYPOTHESIS**: 0.2.0 ran T0 listeners under T0 on the region thread, so the
+region held T0 longer and main's readiness (whose node creation needs T0) was accidentally serialized behind the
+removal; 0.3.0 releases T0 sooner, removing that accidental serialization — i.e. it exposes A, it does not create a
+new defect. Not measured yet: T0 hold time / readiness blocking (kernel has `contended` only).
