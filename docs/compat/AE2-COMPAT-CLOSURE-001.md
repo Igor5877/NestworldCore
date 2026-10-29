@@ -898,3 +898,39 @@ Addon 0.3.0                          engineering VERIFIED; production NOT APPROV
 pushed                               8ca8d6943, 046fdcd17, 17a5e7b8e
 next                                 AE2-NODE-LISTENER-ENDTICK-001 source audit → docs/compat/AE2-NODE-LISTENER-ENDTICK-001-audit.md
 ```
+
+#### Owner decisions 2026-10-29 (13) and AE2-NODE-LISTENER-ENDTICK-001 evidence
+
+Decisions (13): scope = only the three audited end-of-tick sources (GRID_BOOT, POWER, CHANNEL); `onOwnerChanged`,
+`onSaveChanges` and other callbacks OUT OF SCOPE (no automatic routing of every listener); generic transport
+(`HostDomainCallbackDelivery`), narrow audited callers; coalescing DEFERRED (exact FIFO; a later
+AE2-LISTENER-COALESCE-001 performance gate may prove equivalence); lifecycle revalidation REQUIRED; fixture with
+POWER and GRID_BOOT/CHANNEL, stale case and negative control APPROVED; `0e24f8f50` pushed.
+
+Commits: transport refactor, ENDTICK routing (addon 0.4.0), fixture (this batch). Fixture `nwcompatae2 topology
+endtick` on H401BEDOM (fresh pristine world, TEST CONFIG ae2 unpinned + autoPin off, fixtures flag, Core 401, addon
+0.4.0 sha256 `2359688e…e4ce`); A = interface (64,120,2000) REGION#1, B = interface (63,120,2000) MAIN, C = creative
+energy cell (62,120,2000) MAIN. Evidence `evidence-be-ready/endtick-run{2,3}/` (run1 invalid: setup placed blocks
+in not-yet-loaded chunks → `invalid/`).
+
+```
+run2, run3 (identical)   ENDTICK: PASS (21 steps)
+POWER OFF/ON ×2          per host emitted == delivered (exact, FIFO); off-domain deliveries 0; final powered=true
+pathing reboot           GRID_BOOT emitted and delivered per host; CHANNEL/GRID_BOOT FIFO = emission; channel met;
+                         not booting at the end
+stale                    A's state callback CANCELLED_STALE; deliveries to removed A = 0;
+                         emitted = delivered + stale
+negative control         routing OFF → A's listener observed on Server thread (the 6 unroutedOffDomain events)
+accounting (st*)         emitted 3111 = inDomain 1202 + deferred 1909; deferred 1909 = ranInDomain 1902 + stale 7;
+                         dropped 0, failed 0, enqueueFailed 0, noHost 0
+island-wide listeners    routed 5149 / 5160, routedOffDomain 0, unroutedOffDomain 6 (= negative-control phase only)
+ITERATION_BUFFER recursion errors 0; crashNew 0; S1/S2/S3 0
+```
+
+```
+AE2-NODE-LISTENER-ENDTICK-001        IMPLEMENTED / VERIFIED (engineering, copy) for GRID_BOOT / POWER / CHANNEL
+known off-domain AE2 node-listener paths (topology T0 + end-of-tick state)   → 0 outside the negative control
+production (ae2 pinned)              AE2 hosts' domain is MAIN → end-tick delivery inline (unchanged); affects
+                                     unpinned AE2-integrated hosts in regions only
+addon 0.4.0 production               NOT APPROVED (blockers unchanged: AE2-PIN-LEAK-001, AE2-MB-MODIFICATION-001)
+```
