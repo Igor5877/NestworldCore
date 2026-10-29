@@ -807,9 +807,14 @@ unrouted off-domain listeners (not scope 3): Grid.notifyAllNodes 1164, finalizeC
       — all AE2 end-of-tick paths on main → AE2-NODE-LISTENER-ENDTICK-001
 ```
 
+run3 (merge step added, jar sha256 `4ab7e74f…97bb5`): 10 cycles, 61 steps, PASS — split `#1 -> #2 + #3` (A → #3),
+post-split cycle, merge `#3 + #2 -> #4` (A → #4, asserted), post-merge cycle, unload/reload, cleanup; topoInvariant 0,
+routedOffDomain 0, crashNew 0. Correction: runs 1–2 covered split only; merge is covered from run3.
+
 ```
-R1-a Scope 3 required fixtures      interior ↔ border band  PASS (×30 cycles over two runs)
+R1-a Scope 3 required fixtures      interior ↔ border band  PASS (×40 cycles over three runs)
                                     split (domain change)   PASS
+                                    merge (domain change)   PASS (run3)
                                     chunk unload / reload   PASS
                                     ensureConnection        PASS (deterministic, earlier)
 live-churn S3 reproduction          still NOT REPRODUCED (pre- and post-fix)
