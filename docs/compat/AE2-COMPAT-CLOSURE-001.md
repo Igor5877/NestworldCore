@@ -880,3 +880,21 @@ the throw 8/18 vs 4/17). Mechanism **HYPOTHESIS**: 0.2.0 ran T0 listeners under 
 region held T0 longer and main's readiness (whose node creation needs T0) was accidentally serialized behind the
 removal; 0.3.0 releases T0 sooner, removing that accidental serialization — i.e. it exposes A, it does not create a
 new defect. Not measured yet: T0 hold time / readiness blocking (kernel has `contended` only).
+
+#### Owner decisions 2026-10-29 (12)
+
+```
+T0 serialization hypothesis          stays HYPOTHESIS — not measured now (not a closure blocker)
+Scope 3 regression                   NOT CONFIRMED
+New failure mechanism in 0.3.0       NOT OBSERVED
+Increased failure frequency          CORRELATED
+Proposed explanation                 reduced accidental T0 serialization — HYPOTHESIS
+Production blocker                   AE2-PIN-LEAK-001 + AE2-MB-MODIFICATION-001 (decision holds even if the T0
+                                     hypothesis is wrong: confirmed concurrent ingress into pinned AE2)
+R1-a Scope 3                         CLOSED / VERIFIED (engineering, copy)
+  production promotion               BLOCKED BY EXTERNAL KNOWN COMPATIBILITY ISSUES
+Addon 0.3.0                          engineering VERIFIED; production NOT APPROVED (known AE2 pin-domain
+                                     incompleteness + confirmed MB static race); scope-3-caused regression NOT CONFIRMED
+pushed                               8ca8d6943, 046fdcd17, 17a5e7b8e
+next                                 AE2-NODE-LISTENER-ENDTICK-001 source audit → docs/compat/AE2-NODE-LISTENER-ENDTICK-001-audit.md
+```
