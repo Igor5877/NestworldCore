@@ -787,3 +787,31 @@ pushed                               be2044fdd .. d742b9700 (push ≠ production
 transaction under T0. Candidate contract: host domain resolution → deferred delivery. Before implementation verify:
 same-tick delivery requirement; coalescing of identical state notifications; ordering POWER / CHANNEL / GRID_BOOT;
 lifecycle generation; host removed before delivery; callback re-entering AE2; pathing completion before callback.
+
+#### R1-a scope 3 — lifecycle fixtures (2026-10-29)
+
+`nwcompatae2 topology lifecycle` (H401BEDOM, fresh pristine world, TEST CONFIG ae2 unpinned + autoPin off, fixtures
+flag, Core 401, addon 0.3.0 + fixture commit — jar sha256 `ae84f12e…7e4a`). A = (64,120,2000) → REGION#1 (r1's first
+interior chunk column), B = (63,120,2000) → MAIN (r1's border band). Evidence
+`evidence-be-ready/topo-lifecycle-run{1,2}/`.
+
+```
+run1  10 cycles  55 steps  PASS   topoInvariant 0  topoStale 0  cbDeferred 194 / ranInDomain 193 / stale 1 / dropped 0 / failed 0
+run2  20 cycles  95 steps  PASS   topoInvariant 0  topoStale 0  cbDeferred 234 / ranInDomain 233 / stale 1 / dropped 0 / failed 0
+both  routed listeners routedOffDomain 0; S1/S2/S3 0; crashNew 0; mixin errors 0
+split Region 1 (2..1875000 x, all z) split on Z at chunk 4/5 → A (chunk z 125) moved to the child; domain change
+      asserted by the fixture; post-split interior↔band cycle valid
+unload A's chunk unloaded (asserted); after reload A and B reconnected exactly once
+cbStale 1 = a callback whose host was removed before delivery, cancelled by revalidation (correct)
+unrouted off-domain listeners (not scope 3): Grid.notifyAllNodes 1164, finalizeChannels 265/260, ChannelFinalizer 260
+      — all AE2 end-of-tick paths on main → AE2-NODE-LISTENER-ENDTICK-001
+```
+
+```
+R1-a Scope 3 required fixtures      interior ↔ border band  PASS (×30 cycles over two runs)
+                                    split (domain change)   PASS
+                                    chunk unload / reload   PASS
+                                    ensureConnection        PASS (deterministic, earlier)
+live-churn S3 reproduction          still NOT REPRODUCED (pre- and post-fix)
+0.3.0 production promotion          NOT APPROVED (survival signal CORRELATED; attribution pending)
+```
