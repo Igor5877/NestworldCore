@@ -761,3 +761,29 @@ prod-pins survival worse with 0.3.0                                   CORRELATED
 scope 3 fixtures still missing                                        interior↔band pair, region split/merge, chunk unload
 AE2-BE-READY-001 (production, pinned)                                 OPEN (unchanged)
 ```
+
+#### Owner decisions 2026-10-29 (10)
+
+```
+R1-a Scope 3                         IMPLEMENTED / PARTIALLY VERIFIED
+  ensureConnection                   VERIFIED BY DETERMINISTIC FIXTURE (EXISTING idempotent; one-sided state →
+                                     invariant failure; destroyed node rejected; re-create exactly once)
+  topology listener ownership        VERIFIED — routed ≈20k calls, offDomain 0
+  remaining scope-3 fixtures         REQUIRED: interior ↔ border band, split/merge, chunk unload
+                                     (S3 not reproduced in live churn after the fix)
+end-of-tick listeners                OUT OF SCOPE → NEW GATE AE2-NODE-LISTENER-ENDTICK-001
+0.3.0 production survival regression CORRELATED, NOT CONFIRMED (possible regression signal: yes)
+additional statistical A/B           DEFERRED (more valuable after the pin leak is closed, on an environment without
+                                     the known S1/S2/MB failures)
+next for the survival question       per-tick-failure ATTRIBUTION (timestamp, thread, call site, host, host domain,
+                                     pin state, readiness in flight, MBCalculator active, topology listener delivery
+                                     active)
+0.3.0 production promotion           NOT APPROVED / BLOCKED
+pushed                               be2044fdd .. d742b9700 (push ≠ production approval)
+```
+
+**AE2-NODE-LISTENER-ENDTICK-001** (new gate): the 57/run listener calls from AE2 server-end-tick paths
+(`Grid.notifyAllNodes`, `ChannelFinalizer.visitNode` / `GridConnection.finalizeChannels`) — not part of a topology
+transaction under T0. Candidate contract: host domain resolution → deferred delivery. Before implementation verify:
+same-tick delivery requirement; coalescing of identical state notifications; ordering POWER / CHANNEL / GRID_BOOT;
+lifecycle generation; host removed before delivery; callback re-entering AE2; pathing completion before callback.
