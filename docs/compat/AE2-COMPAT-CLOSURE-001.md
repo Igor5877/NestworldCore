@@ -820,3 +820,24 @@ R1-a Scope 3 required fixtures      interior ↔ border band  PASS (×40 cycles 
 live-churn S3 reproduction          still NOT REPRODUCED (pre- and post-fix)
 0.3.0 production promotion          NOT APPROVED (survival signal CORRELATED; attribution pending)
 ```
+
+#### Owner decisions 2026-10-29 (11) — R1-a scope 3 VERIFIED (engineering)
+
+```
+R1-a SCOPE 3                       atomic ensureConnection VERIFIED · topology callback routing VERIFIED ·
+                                   interior↔MAIN-band VERIFIED · region split VERIFIED · region merge VERIFIED ·
+                                   chunk unload/reload VERIFIED · stale callback rejection VERIFIED (cbStale = positive
+                                   test: host removed before delivery → revalidation → cancelled) · topology invariants
+                                   VERIFIED · routed callback offDomain 0 · S1/S2/S3 in lifecycle fixtures 0
+  engineering status               VERIFIED
+  production status                NOT APPROVED
+live-churn S3 not reproduced       does not block engineering verification (deterministic fixture covers
+                                   ABSENT→CREATED, EXACT→EXISTING, BROKEN→invariant failure, DEAD→rejected,
+                                   destroy+recreate→exactly one)
+R1-a (scopes 1–3)                  engineering implementation complete and verified
+addon 0.3.0                        PRODUCTION NOT APPROVED
+next                               causal tick-failure attribution (candidates: A pin leak, B MB-MODIFICATION,
+                                   C PathingService CME, D scope-3 listener delivery timing, E none) →
+                                   decide scope-3 regression YES / NO / UNKNOWN → then AE2-NODE-LISTENER-ENDTICK-001 audit
+pushed                             686a5d7c2 .. f6e65e3f7
+```
