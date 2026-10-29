@@ -60,6 +60,7 @@ public final class Detect {
                 net.minecraft.commands.Commands.literal("nwbeready").requires(s -> s.hasPermission(2))
                         .executes(c -> say(c.getSource(), BeReadyDetect.summary()))
                         .then(net.minecraft.commands.Commands.literal("stacks").executes(c -> say(c.getSource(), BeReadyDetect.stacks())))
+                        .then(net.minecraft.commands.Commands.literal("listeners").executes(c -> say(c.getSource(), BeReadyDetect.listenerSites())))
                         .then(net.minecraft.commands.Commands.literal("domain")
                                 .then(net.minecraft.commands.Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
                                         .then(net.minecraft.commands.Commands.argument("type", com.mojang.brigadier.arguments.StringArgumentType.greedyString())

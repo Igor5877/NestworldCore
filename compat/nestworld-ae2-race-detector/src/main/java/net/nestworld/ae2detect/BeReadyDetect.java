@@ -127,6 +127,26 @@ public final class BeReadyDetect {
         }
     }
 
+    /** Unrouted off-domain listener calls grouped by their AE2 calling site (first appeng frame above GridNode). */
+    static final Map<String, LongAdder> UNROUTED_SITES = new ConcurrentHashMap<>();
+
+    private static String callerSite() {
+        StackTraceElement[] st = new Throwable().getStackTrace();
+        for (StackTraceElement e : st) {
+            String c = e.getClassName();
+            if (!c.startsWith("appeng.") || c.equals("appeng.me.GridNode") || c.startsWith("appeng.me.GridNode$")) continue;
+            return c.substring(c.lastIndexOf('.') + 1) + "." + e.getMethodName() + ":" + e.getLineNumber() + "@" + threadClass(Thread.currentThread());
+        }
+        return "non-appeng@" + threadClass(Thread.currentThread());
+    }
+
+    public static String listenerSites() {
+        StringBuilder sb = new StringBuilder("unrouted off-domain listener sites:");
+        UNROUTED_SITES.entrySet().stream().sorted((x, y) -> Long.compare(y.getValue().sum(), x.getValue().sum())).limit(12)
+                .forEach(e -> sb.append("\n  ").append(e.getValue().sum()).append("  ").append(e.getKey()));
+        return sb.toString();
+    }
+
     public static final LongAdder listenerRouted = new LongAdder(), listenerRoutedOffDomain = new LongAdder(),
             listenerUnroutedOffDomain = new LongAdder();
     public static final LongAdder listenerCalls = new LongAdder(), listenerNoHost = new LongAdder(),
@@ -154,6 +174,7 @@ public final class BeReadyDetect {
         if (in != null && !in) {
             listenerOffDomain.increment();
             (routed ? listenerRoutedOffDomain : listenerUnroutedOffDomain).increment();
+            if (!routed) UNROUTED_SITES.computeIfAbsent(callerSite(), k -> new LongAdder()).increment();
             if ("-".equals(firstListenerOffDomain)) {
                 firstListenerOffDomain = BlockEntityType.getKey(host.getType()) + "@" + host.getBlockPos().toShortString()
                         + " on " + Thread.currentThread().getName();
