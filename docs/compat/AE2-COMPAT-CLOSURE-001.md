@@ -934,3 +934,11 @@ production (ae2 pinned)              AE2 hosts' domain is MAIN → end-tick deli
                                      unpinned AE2-integrated hosts in regions only
 addon 0.4.0 production               NOT APPROVED (blockers unchanged: AE2-PIN-LEAK-001, AE2-MB-MODIFICATION-001)
 ```
+
+Scope-3 regression on addon 0.4.0 (transport refactor): first run FAIL only at "A's domain did not change after the
+split" — Core log `Split/merge lock guard: timed out locking region 0 — skipping this pass`; the fixture issued the
+split once and the merge step then merged A's region with its real sibling (region 0). Topology invariants held
+(topoInvariant 0, routed off-domain 0) → fixture weakness, run moved to `invalid/`. Fixture now retries split/merge
+(≤10 × 20 ticks, domain change asserted). Re-run `evidence-be-ready/topo-lifecycle-addon040/` (jar sha256
+`51bed4cd…c097`): **PASS**, 99 steps, split #1 → #3, merge #3 → #4, routed and unrouted listener off-domain 0 island-
+wide, crashNew 0. Cosmetic: the status repeats the success line for the remaining attempt steps.
