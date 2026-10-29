@@ -20,8 +20,8 @@ import net.minecraft.world.level.block.entity.BlockEntity;
  * next to a cell B in the adjacent border-band chunk (MAIN domain). A is mutated in its own domain through Core's
  * enqueueForBlockEntityDomain, B on main — no foreign-thread world write. After every settled step the validator checks
  * the topology invariant: both present → exactly one shared connection object and one grid; one present → no
- * connection to the other position. Cases: interior↔band place/remove cycles, region split/merge with A's domain
- * changing, chunk unload/reload of both (adjacent chunks unload together).
+ * connection to the other position. Cases: interior↔band place/remove cycles, region split then merge (A's domain
+ * changing each time), chunk unload/reload of both (adjacent chunks unload together).
  */
 public final class TopologyLifecycleFixtures {
     private static final String TYPE = "ae2:energy_cell";
@@ -126,6 +126,25 @@ public final class TopologyLifecycleFixtures {
         steps.add(new Step("split-place-B", 30, placeB, both));
         steps.add(new Step("split-remove-A", 20, removeA, onlyB));
         steps.add(new Step("split-place-A", 30, placeA, both));
+        String[] beforeMerge = new String[1];
+        steps.add(new Step("merge-A-region", 40, () -> {
+            beforeMerge[0] = BeDomainReady.domainName(level, a, TYPE);
+            String sib = siblingId(level, Integer.parseInt(beforeMerge[0].substring("REGION#".length())));
+            if (sib == null) {
+                failures.add("merge: no tree sibling found for " + beforeMerge[0]);
+                return;
+            }
+            command(level, "nestworld merge " + beforeMerge[0].substring("REGION#".length()) + " " + sib);
+        }, f -> {
+            String now = BeDomainReady.domainName(level, a, TYPE);
+            log.add("merge " + beforeMerge[0] + " -> " + now);
+            if (now.equals(beforeMerge[0])) f.add("A's domain did not change after the merge (" + now + ")");
+            validate(level, a, b, true, true, f);
+        }));
+        steps.add(new Step("merge-remove-B", 20, removeB, onlyA));
+        steps.add(new Step("merge-place-B", 30, placeB, both));
+        steps.add(new Step("merge-remove-A", 20, removeA, onlyB));
+        steps.add(new Step("merge-place-A", 30, placeA, both));
         steps.add(new Step("unload", 200, () -> {
             removeForceload(level, a, b);
         }, f -> {
@@ -142,6 +161,37 @@ public final class TopologyLifecycleFixtures {
         stepIndex = 0;
         start(level.getServer().getTickCount());
         return "LIFECYCLE: started A=" + a + " (" + da + ") B=" + b + " (" + db + ") steps=" + steps.size();
+    }
+
+    /** The other child of region {@code id}'s last split: same extent on one axis, adjacent on the other
+     *  (Core's public grid API, reflectively — the addon has no Core compile dependency). */
+    private static String siblingId(ServerLevel level, int id) {
+        try {
+            Class<?> sysC = Class.forName("net.nestworld.region.NestworldRegionSystem");
+            Object sys = sysC.getMethod("get").invoke(null);
+            Object dr = sysC.getMethod("getDimensionRegion", net.minecraft.world.level.Level.class).invoke(sys, level);
+            Object grid = dr.getClass().getMethod("getGrid").invoke(dr);
+            java.util.Collection<?> regions = (java.util.Collection<?>) grid.getClass().getMethod("getAllRegions").invoke(grid);
+            Object me = null;
+            for (Object r : regions) if ((int) r.getClass().getMethod("getId").invoke(r) == id) me = r;
+            if (me == null) return null;
+            int[] m = bounds(me);
+            for (Object r : regions) {
+                if (r == me) continue;
+                int[] o = bounds(r);
+                boolean sameX = o[0] == m[0] && o[2] == m[2], sameZ = o[1] == m[1] && o[3] == m[3];
+                boolean adjZ = o[3] + 1 == m[1] || m[3] + 1 == o[1], adjX = o[2] + 1 == m[0] || m[2] + 1 == o[0];
+                if ((sameX && adjZ) || (sameZ && adjX)) return String.valueOf(r.getClass().getMethod("getId").invoke(r));
+            }
+        } catch (Throwable t) {
+            failures.add("sibling lookup failed: " + t);
+        }
+        return null;
+    }
+
+    private static int[] bounds(Object r) throws Exception {
+        return new int[]{(int) r.getClass().getMethod("getMinChunkX").invoke(r), (int) r.getClass().getMethod("getMinChunkZ").invoke(r),
+                (int) r.getClass().getMethod("getMaxChunkX").invoke(r), (int) r.getClass().getMethod("getMaxChunkZ").invoke(r)};
     }
 
     private static void inDomain(ServerLevel level, BlockPos pos, Runnable op) {
