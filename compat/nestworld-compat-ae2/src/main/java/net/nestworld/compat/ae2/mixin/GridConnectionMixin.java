@@ -84,4 +84,11 @@ public abstract class GridConnectionMixin {
         };
         GridPhaseGate.topology(grids, () -> KERNEL.guardedStrictUnchecked(Specs.topology(grids), () -> op.call()));
     }
+
+    /** AE2-NODE-LISTENER-ENDTICK-001: CHANNEL from GridConnection.finalizeChannels (both sides). */
+    @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(method = "finalizeChannels", at = @org.spongepowered.asm.mixin.injection.At(value = "INVOKE",
+            target = "Lappeng/me/GridNode;notifyStatusChange(Lappeng/api/networking/IGridNodeListener$State;)V"))
+    private void nw$routeChannelState(GridNode node, appeng.api.networking.IGridNodeListener.State state, Operation<Void> op) {
+        net.nestworld.compat.ae2.glue.EndTickStateCallbacks.route(node, state, () -> op.call(node, state));
+    }
 }

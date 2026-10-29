@@ -22,6 +22,7 @@
     "GridMixin",
     "GridNodeAccessor",
     "GridNodeMixin",
+    "EndTickStateGridMixin",
     "InterestManagerMixin",
     "LevelChunkMixin",
     "LevelMixin",

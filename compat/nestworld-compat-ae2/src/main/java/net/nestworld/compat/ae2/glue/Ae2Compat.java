@@ -88,6 +88,16 @@ public final class Ae2Compat {
         public final LongAdder cbDropped = new LongAdder();
         public final LongAdder cbEnqueueFailed = new LongAdder();
         public final LongAdder cbFailed = new LongAdder();
+        // AE2-NODE-LISTENER-ENDTICK-001: end-of-tick state callbacks (GRID_BOOT / POWER / CHANNEL)
+        public final LongAdder stEmitted = new LongAdder();
+        public final LongAdder stNoHost = new LongAdder();
+        public final LongAdder stInDomain = new LongAdder();
+        public final LongAdder stDeferred = new LongAdder();
+        public final LongAdder stRanInDomain = new LongAdder();
+        public final LongAdder stStale = new LongAdder();
+        public final LongAdder stDropped = new LongAdder();
+        public final LongAdder stEnqueueFailed = new LongAdder();
+        public final LongAdder stFailed = new LongAdder();
         public final LongAdder lifeOrderViolation = new LongAdder();
         public final LongAdder pTryFailures = new LongAdder();
         public final LongAdder pRetryCount = new LongAdder();
