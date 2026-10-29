@@ -221,6 +221,17 @@ public final class BeDomainReady {
         ENQUEUE.invokeExact(level, pos, type, op, onTerminal);
     }
 
+    /** Fixture helper: the canonical domain's name ("MAIN" / "REGION#n"), reflectively; "?" when unavailable. */
+    static String domainName(ServerLevel level, BlockPos pos, String type) {
+        try {
+            Class<?> d = Class.forName("net.nestworld.region.BlockEntityExecutionDomain", true, BeDomainReady.class.getClassLoader());
+            return String.valueOf(d.getMethod("resolveBlockEntityExecutionDomain", ServerLevel.class, BlockPos.class, String.class)
+                    .invoke(null, level, pos, type));
+        } catch (Throwable t) {
+            return "?";
+        }
+    }
+
     static String typeOf(BlockEntity be) {
         return typeId(be);
     }

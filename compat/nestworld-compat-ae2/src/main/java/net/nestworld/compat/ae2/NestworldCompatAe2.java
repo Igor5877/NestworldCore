@@ -35,6 +35,7 @@ public final class NestworldCompatAe2 {
                     GridPhaseFixtures.onServerTickEnd(e.getServer().getTickCount());
                     P2PFixtures.onServerTickEnd(e.getServer().getTickCount());
                     net.nestworld.compat.ae2.glue.TopologyFixtures.onServerTickEnd(e.getServer().getTickCount());
+                    net.nestworld.compat.ae2.glue.TopologyLifecycleFixtures.onServerTickEnd(e.getServer().getTickCount());
                 }
             });
         }
@@ -117,6 +118,13 @@ public final class NestworldCompatAe2 {
                                                     com.mojang.brigadier.arguments.StringArgumentType.getString(c, "up"))))))));
             var tx = Commands.literal("topology")
                     .then(Commands.literal("status").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.TopologyFixtures.status())))
+                    .then(Commands.literal("lifecycle")
+                            .then(Commands.literal("status").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.TopologyLifecycleFixtures.status())))
+                            .then(Commands.argument("a", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                    .then(Commands.argument("cycles", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 200))
+                                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.TopologyLifecycleFixtures.run(c.getSource().getLevel(),
+                                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "a"),
+                                                    com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "cycles")))))))
                     .then(Commands.literal("ensure").then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
                             .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.TopologyFixtures.ensure(c.getSource().getLevel(),
                                     net.minecraft.commands.arguments.coordinates.BlockPosArgument.getLoadedBlockPos(c, "pos"))))));
