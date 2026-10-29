@@ -25,6 +25,7 @@ import net.minecraft.world.level.block.entity.BlockEntity;
  */
 public final class TopologyLifecycleFixtures {
     private static final String TYPE = "ae2:energy_cell";
+    private static final int TOPOLOGY_ATTEMPTS = 10;
     private static volatile String status = "idle";
     private static final List<Step> steps = new ArrayList<>();
     private static volatile int stepIndex = -1;
@@ -55,7 +56,8 @@ public final class TopologyLifecycleFixtures {
         stepIndex++;
         if (stepIndex >= steps.size()) {
             stepIndex = -1;
-            status = "LIFECYCLE" + (failures.isEmpty() ? ": PASS" : ": FAIL " + failures) + " steps=" + log.size()
+            String topo = String.join("; ", log.stream().filter(x -> x.startsWith("split ") || x.startsWith("merge ")).toList());
+            status = "LIFECYCLE" + (failures.isEmpty() ? ": PASS" : ": FAIL " + failures) + " steps=" + log.size() + " [" + topo + "]"
                     + " counters{" + counters() + "}";
             Ae2Compat.LOG.info("[nestworld-compat-ae2] topology lifecycle fixture {}", status);
             return;
@@ -112,35 +114,45 @@ public final class TopologyLifecycleFixtures {
             steps.add(new Step("c" + k + "-remove-A", 20, removeA, onlyB));
             steps.add(new Step("c" + k + "-place-A", 30, placeA, both));
         }
+        // Core's split/merge lock guard skips a pass when a region is busy ("will be retried"): bounded retries
         String[] before = new String[1];
-        steps.add(new Step("split-A-region", 40, () -> {
-            before[0] = BeDomainReady.domainName(level, a, TYPE);
-            command(level, "nestworld split " + before[0].substring("REGION#".length()));
-        }, f -> {
-            String now = BeDomainReady.domainName(level, a, TYPE);
-            log.add("split " + before[0] + " -> " + now);
-            if (now.equals(before[0])) f.add("A's domain did not change after the split (" + now + ")");
-            validate(level, a, b, true, true, f);
-        }));
+        steps.add(new Step("split-A-region", 1, () -> before[0] = BeDomainReady.domainName(level, a, TYPE), null));
+        for (int k = 1; k <= TOPOLOGY_ATTEMPTS; k++) {
+            final int attempt = k;
+            steps.add(new Step("split-attempt-" + k, 20, () -> {
+                if (BeDomainReady.domainName(level, a, TYPE).equals(before[0])) {
+                    command(level, "nestworld split " + before[0].substring("REGION#".length()));
+                }
+            }, f -> {
+                String now = BeDomainReady.domainName(level, a, TYPE);
+                if (!now.equals(before[0])) log.add("split " + before[0] + " -> " + now + " (attempt " + attempt + ")");
+                else if (attempt == TOPOLOGY_ATTEMPTS) f.add("A's domain did not change after " + TOPOLOGY_ATTEMPTS + " split attempts (" + now + ")");
+                validate(level, a, b, true, true, f);
+            }));
+        }
         steps.add(new Step("split-remove-B", 20, removeB, onlyA));
         steps.add(new Step("split-place-B", 30, placeB, both));
         steps.add(new Step("split-remove-A", 20, removeA, onlyB));
         steps.add(new Step("split-place-A", 30, placeA, both));
         String[] beforeMerge = new String[1];
-        steps.add(new Step("merge-A-region", 40, () -> {
-            beforeMerge[0] = BeDomainReady.domainName(level, a, TYPE);
-            String sib = siblingId(level, Integer.parseInt(beforeMerge[0].substring("REGION#".length())));
-            if (sib == null) {
-                failures.add("merge: no tree sibling found for " + beforeMerge[0]);
-                return;
-            }
-            command(level, "nestworld merge " + beforeMerge[0].substring("REGION#".length()) + " " + sib);
-        }, f -> {
-            String now = BeDomainReady.domainName(level, a, TYPE);
-            log.add("merge " + beforeMerge[0] + " -> " + now);
-            if (now.equals(beforeMerge[0])) f.add("A's domain did not change after the merge (" + now + ")");
-            validate(level, a, b, true, true, f);
-        }));
+        steps.add(new Step("merge-A-region", 1, () -> beforeMerge[0] = BeDomainReady.domainName(level, a, TYPE), null));
+        for (int k = 1; k <= TOPOLOGY_ATTEMPTS; k++) {
+            final int attempt = k;
+            steps.add(new Step("merge-attempt-" + k, 20, () -> {
+                if (!BeDomainReady.domainName(level, a, TYPE).equals(beforeMerge[0])) return;
+                String sib = siblingId(level, Integer.parseInt(beforeMerge[0].substring("REGION#".length())));
+                if (sib == null) {
+                    failures.add("merge: no tree sibling found for " + beforeMerge[0]);
+                    return;
+                }
+                command(level, "nestworld merge " + beforeMerge[0].substring("REGION#".length()) + " " + sib);
+            }, f -> {
+                String now = BeDomainReady.domainName(level, a, TYPE);
+                if (!now.equals(beforeMerge[0])) log.add("merge " + beforeMerge[0] + " -> " + now + " (attempt " + attempt + ")");
+                else if (attempt == TOPOLOGY_ATTEMPTS) f.add("A's domain did not change after " + TOPOLOGY_ATTEMPTS + " merge attempts (" + now + ")");
+                validate(level, a, b, true, true, f);
+            }));
+        }
         steps.add(new Step("merge-remove-B", 20, removeB, onlyA));
         steps.add(new Step("merge-place-B", 30, placeB, both));
         steps.add(new Step("merge-remove-A", 20, removeA, onlyB));
