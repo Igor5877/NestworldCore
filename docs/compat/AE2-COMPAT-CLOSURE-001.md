@@ -703,3 +703,61 @@ AE2 pin removal                      NOT APPROVED
 Next                                 CORE-PIN-DOMAIN-COMPLETENESS-001 (contract audit first) and R1-a scope 3
                                      (topology commit / callback routing)
 ```
+
+#### Owner decisions 2026-10-28 (9) and R1-a scope 3 — first evidence (2026-10-29)
+
+Decisions (9): refined D for pins — `pin` = tick pin, `pinmod` = mod-wide tick pin (unchanged), `pinzone` = future
+spatial MAIN zone (CORE-PINZONE-001, separate gate); overclaiming texts corrected (`be2044fdd`); scope 3 approved
+to start now (explicit routing of its own callbacks; does not rely on pin).
+
+Scope 3 commits: `bc5b844c6` detector (listener domain), `907dffa4a` ensureConnection under T0, `2e66fef83`
+listener intents → host BE domain (addon 0.3.0, sha256 `4daa983c…50cf`), `0e9896992` ensure fixture, `13017bc18`
+detector (unrouted listener call sites).
+
+Deterministic `nwcompatae2 topology ensure` (H401BEDOM, production pins, MAIN-domain energy cells; evidence
+`evidence-be-ready/smoke-addon030/`): **PASS** — EXISTING (same object, no ISE, counts unchanged), INVARIANT (one-
+sided state → addon invariant failure, restored), CREATED (exactly once after destroy), REJECTED_STALE (destroyed
+node, nothing connected); each counter +1. Mixin apply errors 0.
+
+Churn matrix (same rig as scope 2; 240 s; fresh world; pins unchanged in every run):
+
+```
+run                     listeners calls  off-domain        routed  routedOffDomain  unroutedOffDomain  S1 S2 S3  crash
+s3-prodpins-addon020    70836            13829 (19.5%)     n/a     -                13829              6  0  0   7 (alive)
+s3-prodpins-addon030    11863 (77 s)     57    (0.5%)      3968    0                57                 3  0  0   6 (died)
+s3-unpinned-addon020    12222            5899  (48%)       n/a     -                5899               0  0  0   0
+s3-unpinned-addon030    7078             2995  (42%)       2971    0                2995               0  0  0   0
+```
+
+Unrouted off-domain listener call sites (`/nwbeready listeners`, prod pins, 90 s): **0.2.0** ≈1618 each at
+`GridConnection.destroy` / `create` listener calls **on region threads** (T0 listeners of pinned hosts — the
+AE2-NODE-LISTENER-OWNER-001 volume) + 57 on main; **0.3.0** only the 57 on main: `Grid.notifyAllNodes` (36) and
+channel finalization `ChannelFinalizer.visitNode` / `GridConnection.finalizeChannels` (21) — AE2 end-of-tick paths,
+**outside any kernel section**, delivering to hosts whose domain is a region (e.g. unpinned `expatternprovider`).
+
+Production-pin survival A/B (failures in the first 60 s; Core breaker ≈ 6 tick failures / 60 s → crash shutdown;
+evidence `ab-prodpins-0{2,3}0-{1,2,3}` 90 s + the two 240 s runs each; one 0.3.0 run interrupted by a host restart →
+`invalid/`):
+
+```
+0.2.0   first-60 s failures 3, 5, 3, 6, 2   mean 3.8   died 1/5
+0.3.0   first-60 s failures 6, 5, 6, 5, 3   mean 5.0   died 4/5
+crash classes identical (AirBlock CCE in readiness, MBCalculator ISE; single NPE / CME reports in both versions)
+MB_MODIFICATION calls 14404 / 14206 (0.2.0) vs 14309 (0.3.0); offMain ≈12600 both; concurrent 11 / 49 vs 22
+```
+
+Statuses:
+
+```
+ensureConnection (EXISTING / INVARIANT / CREATED / REJECTED_STALE)   VERIFIED (deterministic fixture)
+TOCTOU duplicate in churn                                             NOT REPRODUCED (S3 0, topoExisting 0 in all runs)
+in-section listener intents → host BE domain                          VERIFIED — routedOffDomain 0 in every run
+AE2-NODE-LISTENER-OWNER-001 (T0 listeners on foreign threads)         CONFIRMED (≈1618/site/90 s in 0.2.0) → FIXED by 0.3.0
+remaining listener off-domain: AE2 main end-of-tick paths             CONFIRMED (Grid.notifyAllNodes, channel
+  (outside sections; not in scope 3's T0 mandate)                     finalization; 57/run) — decision needed
+prod-pins survival worse with 0.3.0                                   CORRELATED (n=5 each, distributions overlap, not
+                                                                      significant); mechanism check (MB work on main)
+                                                                      does NOT support it — NOT CONFIRMED
+scope 3 fixtures still missing                                        interior↔band pair, region split/merge, chunk unload
+AE2-BE-READY-001 (production, pinned)                                 OPEN (unchanged)
+```
