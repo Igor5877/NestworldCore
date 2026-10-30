@@ -231,6 +231,16 @@ public final class BeReadyDetect {
         }
     }
 
+    /** Shared with D2Detect: is the current thread the canonical BE execution domain of (pos, type)? null = n/a. */
+    static Boolean inDomainOf(ServerLevel sl, BlockPos pos, String type) {
+        if (IS_CURRENT_THREAD_IN == null) return null;
+        try {
+            return (boolean) IS_CURRENT_THREAD_IN.invokeExact(sl, pos, type);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     private static Boolean inDomain(Object be) {
         if (IS_CURRENT_THREAD_IN == null || !(be instanceof BlockEntity b) || !(b.getLevel() instanceof ServerLevel sl)) {
             return null;

@@ -15,6 +15,7 @@ public abstract class ClusterDestroyDetectMixin {
     @WrapMethod(method = "destroy")
     private void nwd$destroy(Operation<Void> op) {
         StaticDetect.enter(Site.MB_MODIFICATION);
+        net.nestworld.ae2detect.D2Detect.mb(true);
         try { op.call(); } finally { StaticDetect.exit(Site.MB_MODIFICATION); }
     }
 }

@@ -22,7 +22,11 @@
     "ManagedGridNodeInitDetectMixin",
     "GridConnectionCreateDetectMixin",
     "GridNodeListenerDetectMixin",
-    "TickFailureAttributionMixin"
+    "TickFailureAttributionMixin",
+    "CraftingBlockEntityD2DetectMixin",
+    "QuantumBridgeD2DetectMixin",
+    "SpatialPylonD2DetectMixin",
+    "CableBusContainerD2DetectMixin"
   ],
   "injectors": {
     "defaultRequire": 1

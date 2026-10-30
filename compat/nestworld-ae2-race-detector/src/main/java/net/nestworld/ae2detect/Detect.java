@@ -62,6 +62,7 @@ public final class Detect {
                         .then(net.minecraft.commands.Commands.literal("stacks").executes(c -> say(c.getSource(), BeReadyDetect.stacks())))
                         .then(net.minecraft.commands.Commands.literal("listeners").executes(c -> say(c.getSource(), BeReadyDetect.listenerSites())))
                         .then(net.minecraft.commands.Commands.literal("failures").executes(c -> say(c.getSource(), FailureAttribution.summary())))
+                        .then(net.minecraft.commands.Commands.literal("d2").executes(c -> say(c.getSource(), D2Detect.summary())))
                         .then(net.minecraft.commands.Commands.literal("domain")
                                 .then(net.minecraft.commands.Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
                                         .then(net.minecraft.commands.Commands.argument("type", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
