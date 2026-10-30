@@ -961,3 +961,59 @@ pushed                               bcfde5ea3 .. 8aa00c1c3
 ```
 
 AE2-PIN-LEAK-001 audit: `docs/compat/AE2-PIN-LEAK-001-audit.md` (ingress I1–I7, options D1/D2/D3, decision requested).
+
+#### Owner decisions 2026-10-30 (15) and AE2-PIN-LEAK-001 Phase A (D2) evidence
+
+Decisions (15): D2 + D1 APPROVED; D2 scope I3 + I4 + async side effect of I5; D1 APPROVED CONDITIONALLY — pinned AE2
+host replacement/removal only, per-host `nw$life` mutual exclusion only after a complete lock-order proof; general
+region→main synchronous waiting NOT APPROVED; D3 REJECTED; CORE-PINZONE-001 NOT REQUIRED YET; phases A (D2) → B (D1) →
+C (D1+D2 churn + attribution); `68997658c` pushed.
+
+Phase A commits: `2fb2508f8` detector (D2 execution sites), `3ef6c1ffe` D2 (addon 0.5.0, sha256 `087ff296…31c9e`),
+`71e487684` fixture. I5 narrowed by source: `AbstractCraftingUnitBlock.updateShape`'s only AE2 call,
+`requestModelDataUpdate`, is client-only (`level.isClientSide`) → nothing to route; I5 = cable bus `onUpdateShape`.
+
+Deterministic `nwcompatae2 topology neighbor` (production pins; S = crafting storage (-20,120,130), domain MAIN;
+neighbour updates from REGION#0; evidence `evidence-be-ready/neighbor-run{2,3}/`; run1 invalid — detector invoke owner):
+
+```
+NEIGHBOR: PASS (×2)   S's handler deferred, executed on MAIN once per emission, in order; stale (S removed in its
+                      domain ahead of the callback) cancelled, 0 deliveries to removed S; negative control (routing off)
+                      → handler on NestWorld-Region-0
+accounting            bkDeferred 534 = ranInDomain 532 + stale 2; dropped 0, failed 0
+island-wide (run3)    off-domain D2 executions with routing ON: 0 (crafting 4, cable bus ≈3900 on main); all 82
+                      off-domain executions occurred in the routing-OFF window (crafting 2, cable bus 80)
+```
+
+Churn A/B (production pins, 90 s × 3 alternating, fresh world; `evidence-be-ready/d2ab-prodpins-0{4,5}0-{1,2,3}/`):
+
+```
+                                 0.4.0                          0.5.0 (D2)
+deaths                           3/3                            2/3
+S1 records (CCE in readiness)    6, 5, 6                        6, 5, 4          (unchanged — D1 not yet)
+S2 records                       2: 1 neighbour path, 1 I2      1: I2 (cluster destroy) — neighbour path 0
+MB ISE crash reports             1                              4                (main readiness calculateMultiblock
+                                                                                  vs static flag)
+D2 sites (surviving run 050-2)   n/a                            crafting 3609 / 3609 on main, cable bus 26253 /
+                                                                26253 on main, off-domain 0
+MBCalculator                     n/a                            calculation 5268, off-main 0;
+                                                                cluster destroy 8981, OFF-MAIN 5393
+```
+
+Statuses:
+
+```
+D2 (I3 + I4 + I5 cable bus)                         VERIFIED (engineering) — neighbour-driven AE2 work runs in the host
+                                                    domain (fixture + churn: off-domain 0 with routing on; all
+                                                    MBCalculator calculation on main); neighbour-path S2 0
+residual S2 + MB ISE                                CONFIRMED via I2: region-thread AbstractCraftingUnitBlock.onRemove →
+                                                    breakCluster → CraftingCPUCluster.destroy → updateStatus of OTHER
+                                                    members (setExposedOnSides / static flag) while main readies or
+                                                    calculates — stack + 5393 off-main cluster destroys
+MB ISE count did not decrease (1 → 4, small n)      with all calculation moved to main, the remaining race participant
+                                                    is cluster destroy on the region thread — NOT closed by D2
+S1                                                  unchanged (D1)
+D1 lock-order proof                                 WRITTEN — docs/compat/AE2-PIN-LEAK-001-D1-lock-proof.md (owner review)
+D1 vs I2                                            D1 is per host (the removed host X); I2 updates OTHER cluster members
+                                                    → D1 alone does NOT close the I2 S2 / MB path (decision needed)
+```
