@@ -44,6 +44,19 @@ public final class FailureAttribution {
     private static volatile String lastReadyFailure = "-";
     private static volatile long lastReadyFailureNanos;
 
+    /** Addon 0.6.0+ D1 activity (LifeAdmission.IN_ADMISSION / LAST_END_NANOS, by name); null when absent. */
+    private static final java.util.concurrent.atomic.AtomicInteger D1_ACTIVE = d1Field("IN_ADMISSION");
+    private static final java.util.concurrent.atomic.AtomicLong D1_LAST_END = d1Field("LAST_END_NANOS");
+
+    @SuppressWarnings("unchecked")
+    private static <T> T d1Field(String name) {
+        try {
+            return (T) Class.forName("net.nestworld.compat.ae2.glue.LifeAdmission").getField(name).get(null);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     private FailureAttribution() {}
 
     public static void enter(Kind k, String host) {
@@ -126,6 +139,11 @@ public final class FailureAttribution {
                 DURING.computeIfAbsent(names[i], k -> new LongAdder()).increment();
                 dur.append(kinds[i]).append(' ');
             }
+        }
+        if (D1_ACTIVE != null && (D1_ACTIVE.get() > 0 || (D1_LAST_END.get() != 0 && now - D1_LAST_END.get() <= WINDOW_NANOS))) {
+            any = true;
+            DURING.computeIfAbsent("failureDuringD1Admission", k -> new LongAdder()).increment();
+            dur.append("D1_ADMISSION ");
         }
         if (!any) DURING.computeIfAbsent("failureWithNone", k -> new LongAdder()).increment();
         StringBuilder frames = new StringBuilder();
