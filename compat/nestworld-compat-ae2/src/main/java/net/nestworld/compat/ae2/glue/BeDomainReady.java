@@ -232,6 +232,34 @@ public final class BeDomainReady {
         }
     }
 
+    private static final MethodHandle IS_BE_PINNED = lookupPins();
+
+    private static MethodHandle lookupPins() {
+        try {
+            ClassLoader cl = BeDomainReady.class.getClassLoader();
+            Class<?> sys = Class.forName("net.nestworld.region.NestworldRegionSystem", true, cl);
+            Class<?> pins = Class.forName("net.nestworld.region.NestworldPins", true, cl);
+            MethodHandle get = MethodHandles.publicLookup().findStatic(sys, "get", MethodType.methodType(sys));
+            MethodHandle getPins = MethodHandles.publicLookup().findVirtual(sys, "getPins", MethodType.methodType(pins));
+            MethodHandle isPinned = MethodHandles.publicLookup().findVirtual(pins, "isBePinned", MethodType.methodType(boolean.class, String.class));
+            // (String) -> boolean  ==  isPinned(getPins(get()), type)
+            MethodHandle pinsNow = MethodHandles.filterReturnValue(get, getPins);
+            return MethodHandles.collectArguments(isPinned, 0, pinsNow);
+        } catch (ReflectiveOperationException | LinkageError e) {
+            return null;
+        }
+    }
+
+    /** AE2-PIN-LEAK-001 D1: is this block-entity type pinned by the compatibility policy (Core NestworldPins)? */
+    static boolean pinnedByPolicy(String type) {
+        if (IS_BE_PINNED == null) return false;
+        try {
+            return (boolean) IS_BE_PINNED.invokeExact(type);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     static String typeOf(BlockEntity be) {
         return typeId(be);
     }

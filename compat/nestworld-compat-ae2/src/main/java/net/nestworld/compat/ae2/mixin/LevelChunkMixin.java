@@ -63,11 +63,33 @@ public abstract class LevelChunkMixin {
             return;
         }
         life.nw$life().lock();
+        net.nestworld.compat.ae2.glue.LifeAdmission.enterLife();
         try {
             life.nw$markRemoved();
             op.call(be);
         } finally {
+            net.nestworld.compat.ae2.glue.LifeAdmission.exitLife();
             life.nw$life().unlock();
         }
+    }
+
+    /**
+     * AE2-PIN-LEAK-001 D1: admission around the whole block write — for a pinned AE2 host being removed/replaced from
+     * a thread that is not its execution domain, the host's nw$life is taken BEFORE the section write and held through
+     * onRemove and setRemoved (see {@link net.nestworld.compat.ae2.glue.LifeAdmission}).
+     */
+    @com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod(method = "setBlockState")
+    private net.minecraft.world.level.block.state.BlockState nw$lifeAdmission(net.minecraft.core.BlockPos pos,
+            net.minecraft.world.level.block.state.BlockState state, boolean isMoving,
+            Operation<net.minecraft.world.level.block.state.BlockState> op) {
+        return net.nestworld.compat.ae2.glue.LifeAdmission.around((LevelChunk) (Object) this, pos, state, () -> op.call(pos, state, isMoving));
+    }
+
+    /** Fixture point (no-op in production): the section already holds the new state, onRemove has not run yet. */
+    @org.spongepowered.asm.mixin.injection.Inject(method = "setBlockState", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/world/level/block/state/BlockState;onRemove(Lnet/minecraft/world/level/Level;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;Z)V"))
+    private void nw$afterSectionWrite(net.minecraft.core.BlockPos pos, net.minecraft.world.level.block.state.BlockState state,
+            boolean isMoving, org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<net.minecraft.world.level.block.state.BlockState> cir) {
+        net.nestworld.compat.ae2.glue.LifeAdmission.afterSectionWrite(pos);
     }
 }

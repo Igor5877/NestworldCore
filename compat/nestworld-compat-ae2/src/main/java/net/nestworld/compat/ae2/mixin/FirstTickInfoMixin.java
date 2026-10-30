@@ -58,6 +58,7 @@ public abstract class FirstTickInfoMixin {
         LifeHooks.Hook h = LifeHooks.hook;
         if (h != null) h.at("init-prelock", be);
         life.nw$life().lock();
+        net.nestworld.compat.ae2.glue.LifeAdmission.enterLife();
         try {
             String reason = nw$invalid(be, life);
             if (reason != null) {
@@ -66,9 +67,17 @@ public abstract class FirstTickInfoMixin {
                 return;
             }
             if (h != null) h.at("init-locked", be);
-            op.call();
+            try {
+                op.call();
+            } finally {
+                // AE2-PIN-LEAK-001 D1 probe: the host's block changed while onReady ran (the S1 window)
+                if (be.getLevel() != null && be.getLevel().getBlockState(be.getBlockPos()).getBlock() != be.getBlockState().getBlock()) {
+                    COUNTERS.lifeWindowObserved.increment();
+                }
+            }
             if (h != null) h.at("init-done", be);
         } finally {
+            net.nestworld.compat.ae2.glue.LifeAdmission.exitLife();
             life.nw$life().unlock();
         }
     }

@@ -108,6 +108,18 @@ public final class Ae2Compat {
         public final LongAdder bkDropped = new LongAdder();
         public final LongAdder bkEnqueueFailed = new LongAdder();
         public final LongAdder bkFailed = new LongAdder();
+        // AE2-PIN-LEAK-001 D1: per-host lifecycle admission for pinned-host removal off its domain
+        public final LongAdder lifeAdmissionAttempts = new LongAdder();
+        public final LongAdder lifeAdmissionContended = new LongAdder();
+        public final LongAdder lifeAdmissionCompleted = new LongAdder();
+        public final LongAdder lifeAdmissionWaitNanos = new LongAdder();
+        public final java.util.concurrent.atomic.LongAccumulator lifeAdmissionMaxWaitNanos = new java.util.concurrent.atomic.LongAccumulator(Math::max, 0);
+        public final LongAdder lifeAdmissionLongWaits = new LongAdder();
+        public final LongAdder lifeAdmissionSecondWaits = new LongAdder();
+        public final LongAdder lifeAdmissionSkippedInSection = new LongAdder();
+        public final LongAdder lifeAdmissionSkippedNested = new LongAdder();
+        /** readiness of a lifecycle host whose block changed while onReady ran (the S1 window) */
+        public final LongAdder lifeWindowObserved = new LongAdder();
         public final LongAdder lifeOrderViolation = new LongAdder();
         public final LongAdder pTryFailures = new LongAdder();
         public final LongAdder pRetryCount = new LongAdder();
