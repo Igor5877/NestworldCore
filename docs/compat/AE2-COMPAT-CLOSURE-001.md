@@ -1017,3 +1017,30 @@ D1 lock-order proof                                 WRITTEN — docs/compat/AE2-
 D1 vs I2                                            D1 is per host (the removed host X); I2 updates OTHER cluster members
                                                     → D1 alone does NOT close the I2 S2 / MB path (decision needed)
 ```
+
+#### Owner decisions 2026-10-30 (16)
+
+```
+AE2-PIN-LEAK-001
+  I3/I4/I5 — D2                    CLOSED / VERIFIED (engineering)
+  I1 — D1                          DESIGN APPROVED, IMPLEMENTATION NEXT
+    lock safety                    ENGINEERING-APPROVED FOR IMPLEMENTATION; production safety NOT YET VERIFIED
+                                   (drop/addEntity STRONGLY INDICATED — confirmed by wait telemetry)
+    acceptance                     S1 deterministic fixture PASS · AIR-before-setRemoved window 0 · lifeAdmission
+                                   deadlocks 0 · nested-host admission 0 / rejected by contract · admission inside T0
+                                   0 / rejected · wait telemetry attempts / contended / totalWaitNs / maxWaitNs /
+                                   p50 p95 p99 · long waits counted · tick failures attributable to D1 0 · churn:
+                                   no second-scale maxWait tails (worst case matters more than the mean)
+  I2 — cluster teardown            CONFIRMED SEPARATE INGRESS; D4a SOURCE AUDIT APPROVED (no code) — framed as
+                                   "cluster teardown as an exactly-once cluster-domain operation", not "move breakCluster
+                                   to the removed host's domain"; execution domain of a multi-domain cluster NOT assumed
+                                   = MAIN (candidate: capture intent → serialize cluster state under the kernel →
+                                   per-host mutation intents → deliver in each host's domain)
+  D4b multi-host locking           REJECTED
+  D4c global MB guard              DEFERRED
+  expectations after D1            S1 → 0; S2 / MB ISE from I2 may remain (class separation, not a D1 failure)
+  CORE-PINZONE-001                 still NOT REQUIRED; global AE2 lock still REJECTED / DEFERRED
+  order                            Phase B D1 implementation → S1 fixture → telemetry → churn; D4a source audit in
+                                   parallel; D4a design decision only after D1 evidence
+pushed                             2fb2508f8, 3ef6c1ffe, 71e487684, 0a0885bb2
+```
