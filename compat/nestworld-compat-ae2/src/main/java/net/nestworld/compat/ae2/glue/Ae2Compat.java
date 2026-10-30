@@ -98,6 +98,16 @@ public final class Ae2Compat {
         public final LongAdder stDropped = new LongAdder();
         public final LongAdder stEnqueueFailed = new LongAdder();
         public final LongAdder stFailed = new LongAdder();
+        // AE2-PIN-LEAK-001 D2: void AE2 block callbacks routed to the host BE domain
+        public final LongAdder bkEmitted = new LongAdder();
+        public final LongAdder bkNoHost = new LongAdder();
+        public final LongAdder bkInDomain = new LongAdder();
+        public final LongAdder bkDeferred = new LongAdder();
+        public final LongAdder bkRanInDomain = new LongAdder();
+        public final LongAdder bkStale = new LongAdder();
+        public final LongAdder bkDropped = new LongAdder();
+        public final LongAdder bkEnqueueFailed = new LongAdder();
+        public final LongAdder bkFailed = new LongAdder();
         public final LongAdder lifeOrderViolation = new LongAdder();
         public final LongAdder pTryFailures = new LongAdder();
         public final LongAdder pRetryCount = new LongAdder();
