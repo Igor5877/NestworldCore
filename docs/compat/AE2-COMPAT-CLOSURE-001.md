@@ -942,3 +942,22 @@ split once and the merge step then merged A's region with its real sibling (regi
 (≤10 × 20 ticks, domain change asserted). Re-run `evidence-be-ready/topo-lifecycle-addon040/` (jar sha256
 `51bed4cd…c097`): **PASS**, 99 steps, split #1 → #3, merge #3 → #4, routed and unrouted listener off-domain 0 island-
 wide, crashNew 0. Cosmetic: the status repeats the success line for the remaining attempt steps.
+
+#### Owner decisions 2026-10-30 (14)
+
+```
+AE2-NODE-LISTENER-ENDTICK-001        CLOSED / VERIFIED (engineering, copy); known node-listener off-domain paths 0
+                                     with routing enabled; scope-3 regression on 0.4.0 PASS; first split run stays
+                                     in invalid/ (fixture weakness); cosmetic status repeat not changed in these commits
+nestworld-compat-ae2 0.4.0           ENERGY VERIFIED · TickManager VERIFIED · R1-a scope 1 VERIFIED · scope 2 CLOSED/
+                                     VERIFIED · scope 3 CLOSED/VERIFIED · ENDTICK listener routing CLOSED/VERIFIED ·
+                                     known node-listener ownership CLOSED · engineering compatibility VERIFIED ·
+                                     production NOT APPROVED
+remaining blockers                   1. AE2-PIN-LEAK-001  2. AE2-MB-MODIFICATION-001
+order                                AE2-PIN-LEAK-001 first (MB-MODIFICATION may be partly a consequence of the
+                                     region→pinned-AE2 channel) → audit/design first → addon-level closure preferred →
+                                     CORE-PINZONE-001 only if proven necessary → then retest AE2-MB-MODIFICATION-001
+pushed                               bcfde5ea3 .. 8aa00c1c3
+```
+
+AE2-PIN-LEAK-001 audit: `docs/compat/AE2-PIN-LEAK-001-audit.md` (ingress I1–I7, options D1/D2/D3, decision requested).
