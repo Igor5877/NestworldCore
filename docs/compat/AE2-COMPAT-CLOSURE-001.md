@@ -1044,3 +1044,60 @@ AE2-PIN-LEAK-001
                                    parallel; D4a design decision only after D1 evidence
 pushed                             2fb2508f8, 3ef6c1ffe, 71e487684, 0a0885bb2
 ```
+
+#### AE2-PIN-LEAK-001 Phase B (D1) and Phase C (D1 + D2) evidence (2026-10-30)
+
+Commits: `fe0806ba3` detector (failures attributed to an in-flight D1 admission), `e6f3ff2b2` D1 (addon 0.6.0, sha256
+`ce785d5e…6732`), `9a415e4b7` S1 fixture.
+
+Deterministic `nwcompatae2 topology s1` (production pins, crafting storage (-20,120,130) pinned → MAIN, region 0
+free-running; evidence `evidence-be-ready/s1-run{2,3}/`; run1 invalid — fixture hook armed before placement and
+region not yet free-running):
+
+```
+S1: PASS (×2)
+NEG (D1 off)  main at init-locked observed the region's section write → onReady read AIR → S1 CCE (detector S1 1,
+              tick failure "Readying AE2 block entity"), window probe +1           — negative control reproduces S1
+POS (D1 on)   region blocked at admission before the write; main did NOT observe it; readiness completed; window 0;
+              admission contended 1, wait 2000 / 2002 ms = the fixture-imposed main hold; X removed, BE gone afterwards
+```
+
+Churn (production pins, 90 s × 3 per config, fresh world; Phase B = D1 only via `-Dnestworld.compatAe2.
+blockCallbackRoutingOff=true`; evidence `evidence-be-ready/d1b-prodpins-060-D1only-{1,2,3}/`,
+`d1c-prodpins-060-D1D2-{1,2,3}/`; baselines = the d2ab runs on the same rig):
+
+```
+config            deaths  crash reports   S1 (records)   S2    MB ISE   PathingService CME
+0.4.0 (none)      3/3     5, 6, 6         6, 5, 6        2     1        0
+0.5.0 (D2)        2/3     6, 7, 6         6, 5, 4        1     4        0
+0.6.0 D1 only     0/3     2, 1, 1         0, 0, 0        0     3        1
+0.6.0 D1 + D2     0/3     0, 1, 0         0, 0, 0        0     1        0
+```
+
+D1 telemetry (per run, ≈1815 admissions each, ≈10 900 total):
+
+```
+contended 6 / 10 / 7 (D1 only), 18 / 4 / 19 (D1 + D2)     — 0.2–1 % of admissions
+maxWait ≤ 4 ms; p50 ≤ 0.5 ms; p95 / p99 ≤ 8.4 ms (log2 bucket upper bounds)
+longWaits (≥ 50 ms) 0; secondWaits (≥ 1 s) 0; skippedInSection 0; skippedNested 0
+windowObserved (AIR during onReady) 0; tick failures attributed to D1 (failureDuringD1Admission) 0; deadlocks 0
+```
+
+MBCalculator thread split: D1 only — calculation off-main ≈3630 / 5200, cluster destroy off-main ≈9050 / 9060; D1 + D2
+— calculation off-main 0, cluster destroy off-main ≈5440 / 9060.
+
+Statuses:
+
+```
+I1 — D1                           VERIFIED (engineering): S1 deterministic fixture PASS ×2 with negative control;
+                                  churn S1 0 in 6 / 6 runs (was 4–6 per run); window 0; no long waits, max 4 ms;
+                                  0 failures attributable to D1; no deadlock
+D1 production safety              NOT YET VERIFIED (canary)
+D1 hold time on the region side   NOT MEASURED (main readiness waiting for a region D1 section is visible only as
+                                  readiness latency) — recommended addition: hold-time histogram
+drop/addEntity inside D1          STRONGLY INDICATED no main wait (no long waits, no deadlock under load)
+remaining failures                MB ISE (static flag) — cluster destroy off main (I2) is the only off-main static-flag
+                                  user with D1 + D2; PathingService CME seen only with D2 off (CORRELATED with
+                                  region-thread multiblock work)
+next                              D4a design decision — audit: docs/compat/AE2-PIN-LEAK-001-D4a-audit.md
+```
