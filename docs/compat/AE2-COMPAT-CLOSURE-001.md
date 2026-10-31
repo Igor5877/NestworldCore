@@ -1125,3 +1125,60 @@ D4a DoD                           teardown claim exactly once · concurrent memb
                                   still 0 · scope 2/3/endtick regressions PASS · negative control (crafting teardown)
 pushed                            8794eec94 .. 674d1aa7a
 ```
+
+#### AE2-PIN-LEAK-001 D4a evidence (2026-10-31)
+
+Rig H401BEDOM (Core 47.4.401, fresh pristine world per run, netns, taskset 0-2). Addon 0.7.0 (999a66806 + fixture
+4c3fef555; final jar sha256 05e430a0…; churn/regressions ran on the same code minus the removal of one dead, never
+incremented counter `requesterReassigned` — re-verified by teardown-run8-final). Evidence:
+`/root/airis-2026-10-25/evidence-be-ready/{teardown-*,d4a-*}`; pre-fix runs kept as `teardown-prefix-run{1,3,4}`;
+`invalid/teardown-run2-startup-race` (script checked for the JVM before it spawned — fixture never ran).
+
+Defect found by the fixture and fixed before commit (CONFIRMED, claim call-stacks in teardown-prefix-run4): AE2's
+re-formation path `member.updateStatus(new) → oldCluster.breakCluster() → core.breakCluster()` resolves the cluster from
+the core's CURRENT field. With the teardown deferred, the core already belongs to the NEW cluster → the new cluster was
+claimed and torn down (S0.cluster = null before delivery). AE2 original hides this because destroy is synchronous
+(the first member's call destroys the old cluster and nulls the others). Fix: `CraftingCPUCluster.breakCluster` adapter
+requests the teardown for the cluster instance of the call. QNB / pylon re-formation does not break old clusters
+(no equivalent path; old-cluster member intents are revalidated and skipped).
+
+```
+deterministic fixture (production pins)   PASS ×4 (teardown-run5, -run6, -run7, -run8-final)
+  CONCURRENT                              old cluster requests 3 / claims 1 (the extra global claim is a NEW
+                                          single-member cluster formed by the main removal's neighbour recalc —
+                                          legitimate, hence per-instance assertions); items captured / delivered /
+                                          world 37 / 37 / 37, retained 0; teardown offDomain 0, member offDomain 0
+  REBUILD                                 {S0,S1} re-formed (D2-routed neighbour recalc) BEFORE the held teardown is
+                                          delivered; old claimed once (4 requests); new cluster untouched;
+                                          skippedReassigned 2; items 11 / 11 / 11
+  NEGATIVE (coordinator off)              bypassedOffDomain +3 (AE2 teardown off the anchor's domain) — control valid
+  S1 / S2 / S3, tick failures, crashes    0 / 0 / 0, 0, 0
+
+churn, production pins, 90 s × 3          d4a-churn-prodpins-070-{1,2,3}; baseline d1c-prodpins-060-D1D2-{1,2,3}
+  clusterDestroyOffMain                   0 / 0 / 0            (baseline 5460 / 5430 / 5439)
+  detector clusterDestroy calls           3635 / 3619 / 3633   (baseline ~9050 = claims + duplicates: duplicate
+                                                                requests no longer reach destroy)
+  teardown claimed / duplicate            3639 / 5458 · 3624 / 5435 · 3639 / 5459; offDomain 0, fallback 0
+  member intents / offDomain              5458 / 0 · 5435 / 0 · 5459 / 0
+  S1 / S2 / S3                            0 / 0 / 0 in 3 / 3
+  tick failures / new crashes             0 / 0 in 3 / 3   (baseline: 1 MB ISE crash in 3 runs)
+  MB ISE                                  0 observed in 3 / 3 — CORRELATED only (baseline rate 1 in 3; not a proof)
+  PathingService CME                      0 in 3 / 3
+  drops in churn                          0 (churn CPUs hold no inventory) — drop exactness covered by the fixture only
+  open detail                             claimed − detector destroys = 4 / 5 / 6 per run: HYPOTHESIS snapshot skew
+                                          (the two counters are read by separate rcon calls while toggling continues);
+                                          run 2 deferred 1813 vs ranInDomain 1812 likewise in flight at snapshot
+
+regressions                               lifecycle (scope 2/3, unpinned) PASS · ENDTICK PASS · NEIGHBOR (D2) PASS ·
+                                          S1 (D1) PASS — its 1 tick failure / 1 crash report is the NEG phase (D1 off)
+                                          reproducing S1 by design, identical to s1-run2 / s1-run3
+```
+
+Statuses:
+
+```
+I2 — D4a                          DoD met on the rig (engineering) — proposed VERIFIED pending owner review
+MB ISE                            0 observed with D1 + D2 + D4a; all static-flag users on MAIN under production pins
+                                  (STRONGLY INDICATED by clusterDestroyOffMain 0) — AE2-MB-MODIFICATION-001 re-measure
+production / canary               NOT APPROVED (canary prerequisites: owner review, hold-time telemetry in place)
+```
