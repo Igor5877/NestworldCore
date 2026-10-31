@@ -39,6 +39,7 @@ public final class NestworldCompatAe2 {
                     net.nestworld.compat.ae2.glue.EndTickStateFixtures.onServerTickEnd(e.getServer().getTickCount());
                     net.nestworld.compat.ae2.glue.NeighborCallbackFixtures.onServerTickEnd(e.getServer().getTickCount());
                     net.nestworld.compat.ae2.glue.LifeAdmissionFixtures.onServerTickEnd(e.getServer().getTickCount());
+                    net.nestworld.compat.ae2.glue.TeardownFixtures.onServerTickEnd(e.getServer().getTickCount());
                 }
             });
         }
@@ -121,6 +122,11 @@ public final class NestworldCompatAe2 {
                                                     com.mojang.brigadier.arguments.StringArgumentType.getString(c, "up"))))))));
             var tx = Commands.literal("topology")
                     .then(Commands.literal("status").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.TopologyFixtures.status())))
+                    .then(Commands.literal("teardown")
+                            .then(Commands.literal("status").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.TeardownFixtures.status())))
+                            .then(Commands.argument("p", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                    .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.TeardownFixtures.run(c.getSource().getLevel(),
+                                            net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "p"))))))
                     .then(Commands.literal("s1")
                             .then(Commands.literal("status").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.LifeAdmissionFixtures.status())))
                             .then(Commands.argument("p", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
