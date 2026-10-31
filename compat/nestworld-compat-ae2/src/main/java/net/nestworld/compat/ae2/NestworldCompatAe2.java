@@ -256,6 +256,7 @@ public final class NestworldCompatAe2 {
         append(sb, Ae2Compat.KERNEL.metrics);
         append(sb, Ae2Compat.COUNTERS);
         sb.append(' ').append(net.nestworld.compat.ae2.glue.LifeAdmission.summary());
+        sb.append(' ').append(net.nestworld.compat.ae2.glue.ClusterTeardownCoordinator.summary());
         return sb.toString();
     }
 

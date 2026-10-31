@@ -108,6 +108,37 @@ public final class Ae2Compat {
         public final LongAdder bkDropped = new LongAdder();
         public final LongAdder bkEnqueueFailed = new LongAdder();
         public final LongAdder bkFailed = new LongAdder();
+        // AE2-PIN-LEAK-001 D4a: cluster teardown coordinator
+        public final LongAdder tdRequests = new LongAdder();
+        public final LongAdder tdClaimed = new LongAdder();
+        public final LongAdder tdDuplicate = new LongAdder();
+        public final LongAdder tdInline = new LongAdder();
+        public final LongAdder tdDeferred = new LongAdder();
+        public final LongAdder tdRanInDomain = new LongAdder();
+        public final LongAdder tdOffDomain = new LongAdder();
+        public final LongAdder tdFallback = new LongAdder();
+        public final LongAdder tdDeferredToSectionExit = new LongAdder();
+        public final LongAdder tdBypassedOffDomain = new LongAdder();
+        public final LongAdder tmIntents = new LongAdder();
+        public final LongAdder tmSkippedReassigned = new LongAdder();
+        public final LongAdder tmOffDomain = new LongAdder();
+        public final LongAdder drIntents = new LongAdder();
+        public final LongAdder drInline = new LongAdder();
+        public final LongAdder drDeferred = new LongAdder();
+        public final LongAdder drRanInDomain = new LongAdder();
+        public final LongAdder drFallback = new LongAdder();
+        public final LongAdder drItemsCaptured = new LongAdder();
+        public final LongAdder drItemsDelivered = new LongAdder();
+        public final LongAdder drItemsRetained = new LongAdder();
+        public final LongAdder clEmitted = new LongAdder();
+        public final LongAdder clNoHost = new LongAdder();
+        public final LongAdder clInDomain = new LongAdder();
+        public final LongAdder clDeferred = new LongAdder();
+        public final LongAdder clRanInDomain = new LongAdder();
+        public final LongAdder clStale = new LongAdder();
+        public final LongAdder clDropped = new LongAdder();
+        public final LongAdder clEnqueueFailed = new LongAdder();
+        public final LongAdder clFailed = new LongAdder();
         // AE2-PIN-LEAK-001 D1: per-host lifecycle admission for pinned-host removal off its domain
         public final LongAdder lifeAdmissionAttempts = new LongAdder();
         public final LongAdder lifeAdmissionContended = new LongAdder();
