@@ -1101,3 +1101,27 @@ remaining failures                MB ISE (static flag) — cluster destroy off m
                                   region-thread multiblock work)
 next                              D4a design decision — audit: docs/compat/AE2-PIN-LEAK-001-D4a-audit.md
 ```
+
+#### Owner decisions 2026-10-31 (17)
+
+```
+AE2-PIN-LEAK-001 / I1 / D1        CLOSED / VERIFIED (engineering)
+hold-time telemetry               REQUIRED BEFORE CANARY (lifeAdmissionHold total / max / p50 p95 p99 / >50 ms / >1 s —
+                                  how long MAIN can be excluded while a region owns nw$life)
+D4a                               APPROVED
+hook strategy                     ENTRY-POINT ADAPTERS (crafting breakCluster, QNB break/remove/disconnect, spatial pylon
+                                  teardown) + COMMON ClusterTeardownCoordinator — not interception at *Cluster.destroy
+execution model                   FULL DOMAIN-GENERIC NOW (no "if ae2 pinned → main"): cluster-wide state transition in
+                                  the core/anchor member's current BE domain; member mutation intents in each member's
+                                  host domain; drop intents in the domain owning the drop position
+drops                             one safe point later ACCEPTABLE, but NOT a callback: captured exactly once → delivered
+                                  exactly once, independent of the old BE; capturedItems = deliveredItems + explicitly
+                                  retainedItems; never "stale → discard"
+D4a DoD                           teardown claim exactly once · concurrent member removals PASS (claimed 1, scattered 1,
+                                  duplicate drops 0, lost drops 0) · old cluster rebuilt before delivery: old teardown
+                                  exactly once, new cluster untouched · cluster-state mutation in the correct domain ·
+                                  member updates in each host domain · drops exactly once / no loss · nothing external
+                                  under T0 · off-domain cluster destroy 0 · S2 0 · MB ISE 0 expected (then verify) · S1
+                                  still 0 · scope 2/3/endtick regressions PASS · negative control (crafting teardown)
+pushed                            8794eec94 .. 674d1aa7a
+```
