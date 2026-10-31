@@ -47,6 +47,8 @@ public final class LifeAdmission {
 
     /** Wait histogram: bucket b counts waits in [2^b, 2^(b+1)) ns (b = 0..47); uncontended admissions are not recorded. */
     private static final AtomicLongArray WAIT_BUCKETS = new AtomicLongArray(48);
+    /** Hold histogram: how long an admitted thread OWNED nw$life (= how long MAIN could be excluded), same buckets. */
+    private static final AtomicLongArray HOLD_BUCKETS = new AtomicLongArray(48);
 
     /** Fixture-only hook after the section write, before onRemove (null in production). */
     public interface SectionHook {
@@ -109,17 +111,31 @@ public final class LifeAdmission {
                 }
             }
             enterLife();
+            long held = System.nanoTime();
             try {
                 BlockState r = op.get();
                 COUNTERS.lifeAdmissionCompleted.increment();
                 return r;
             } finally {
                 exitLife();
+                recordHold(System.nanoTime() - held, type, pos);
             }
         } finally {
             if (locked) lock.unlock();
             IN_ADMISSION.decrementAndGet();
             LAST_END_NANOS.set(System.nanoTime());
+        }
+    }
+
+    private static void recordHold(long held, String type, BlockPos pos) {
+        COUNTERS.lifeAdmissionHoldNanos.add(held);
+        COUNTERS.lifeAdmissionHoldMaxNanos.accumulate(held);
+        HOLD_BUCKETS.incrementAndGet(Math.min(47, 63 - Long.numberOfLeadingZeros(Math.max(1, held))));
+        if (held >= LONG_WAIT_NANOS) COUNTERS.lifeAdmissionHoldOver50ms.increment();
+        if (held >= SECOND_WAIT_NANOS) {
+            COUNTERS.lifeAdmissionHoldOver1s.increment();
+            Ae2Compat.LOG.warn("[nestworld-compat-ae2] D1 admission for {} at {} held nw$life {} ms on {}",
+                    type, pos.toShortString(), held / 1_000_000, Thread.currentThread().getName());
         }
     }
 
@@ -131,12 +147,20 @@ public final class LifeAdmission {
 
     /** p-th percentile upper bound (ns) of contended waits, from the histogram; -1 when no contended wait. */
     public static long percentileNanos(double p) {
+        return percentile(WAIT_BUCKETS, p);
+    }
+
+    public static long holdPercentileNanos(double p) {
+        return percentile(HOLD_BUCKETS, p);
+    }
+
+    private static long percentile(AtomicLongArray buckets, double p) {
         long total = 0;
-        for (int b = 0; b < WAIT_BUCKETS.length(); b++) total += WAIT_BUCKETS.get(b);
+        for (int b = 0; b < buckets.length(); b++) total += buckets.get(b);
         if (total == 0) return -1;
         long rank = (long) Math.ceil(p * total), seen = 0;
-        for (int b = 0; b < WAIT_BUCKETS.length(); b++) {
-            seen += WAIT_BUCKETS.get(b);
+        for (int b = 0; b < buckets.length(); b++) {
+            seen += buckets.get(b);
             if (seen >= rank) return 1L << (b + 1);
         }
         return Long.MAX_VALUE;
@@ -149,6 +173,10 @@ public final class LifeAdmission {
                 + COUNTERS.lifeAdmissionMaxWaitNanos.get() / 1_000_000 + " p50<=" + us(percentileNanos(0.50)) + " p95<="
                 + us(percentileNanos(0.95)) + " p99<=" + us(percentileNanos(0.99)) + " longWaits(>=50ms)="
                 + COUNTERS.lifeAdmissionLongWaits.sum() + " secondWaits(>=1s)=" + COUNTERS.lifeAdmissionSecondWaits.sum()
+                + " hold{totalMs=" + COUNTERS.lifeAdmissionHoldNanos.sum() / 1_000_000 + " maxMs="
+                + COUNTERS.lifeAdmissionHoldMaxNanos.get() / 1_000_000 + " p50<=" + us(holdPercentileNanos(0.50)) + " p95<="
+                + us(holdPercentileNanos(0.95)) + " p99<=" + us(holdPercentileNanos(0.99)) + " over50ms="
+                + COUNTERS.lifeAdmissionHoldOver50ms.sum() + " over1s=" + COUNTERS.lifeAdmissionHoldOver1s.sum() + "}"
                 + " skippedInSection=" + COUNTERS.lifeAdmissionSkippedInSection.sum() + " skippedNested="
                 + COUNTERS.lifeAdmissionSkippedNested.sum() + " windowObserved=" + COUNTERS.lifeWindowObserved.sum() + "}";
     }

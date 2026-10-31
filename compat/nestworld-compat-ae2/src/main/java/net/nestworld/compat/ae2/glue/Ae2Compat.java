@@ -116,6 +116,10 @@ public final class Ae2Compat {
         public final java.util.concurrent.atomic.LongAccumulator lifeAdmissionMaxWaitNanos = new java.util.concurrent.atomic.LongAccumulator(Math::max, 0);
         public final LongAdder lifeAdmissionLongWaits = new LongAdder();
         public final LongAdder lifeAdmissionSecondWaits = new LongAdder();
+        public final LongAdder lifeAdmissionHoldNanos = new LongAdder();
+        public final java.util.concurrent.atomic.LongAccumulator lifeAdmissionHoldMaxNanos = new java.util.concurrent.atomic.LongAccumulator(Math::max, 0);
+        public final LongAdder lifeAdmissionHoldOver50ms = new LongAdder();
+        public final LongAdder lifeAdmissionHoldOver1s = new LongAdder();
         public final LongAdder lifeAdmissionSkippedInSection = new LongAdder();
         public final LongAdder lifeAdmissionSkippedNested = new LongAdder();
         /** readiness of a lifecycle host whose block changed while onReady ran (the S1 window) */
