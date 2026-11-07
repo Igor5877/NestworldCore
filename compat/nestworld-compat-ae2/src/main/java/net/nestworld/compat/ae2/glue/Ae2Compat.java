@@ -35,6 +35,20 @@ public final class Ae2Compat {
             "com.glodblock.github.extendedae.common.tileentities.TileCircuitCutter",
             "net.pedroksl.advanced_ae.common.entities.QuantumCrafterEntity",
             "net.pedroksl.advanced_ae.common.entities.ReactionChamberEntity",
+            // ALLOWLIST-002: power path = AE2's EnergyCellBlockEntity code (no power-path override)
+            "net.oktawia.crazyae2addons.entities.EnergyStorage1kBE",
+            "net.oktawia.crazyae2addons.entities.EnergyStorage4kBE",
+            "net.oktawia.crazyae2addons.entities.EnergyStorage16kBE",
+            "net.oktawia.crazyae2addons.entities.EnergyStorage64kBE",
+            "net.oktawia.crazyae2addons.entities.EnergyStorage256kBE",
+            "net.oktawia.crazyae2addons.entities.EnergyStorage1mBE",
+            "net.oktawia.crazyae2addons.entities.EnergyStorage4mBE",
+            "net.oktawia.crazyae2addons.entities.EnergyStorage16mBE",
+            "net.oktawia.crazyae2addons.entities.EnergyStorage64mBE",
+            "net.oktawia.crazyae2addons.entities.EnergyStorage256mBE",
+            // ALLOWLIST-002: AENetworkPowerBlockEntity subclass, no override; own StoredEnergyAmount cell (AE2 pattern)
+            "cn.dancingsnow.neoecoae.blocks.entity.ECOIntegratedWorkingStationBlockEntity",
+            "cn.dancingsnow.neoecoae.blocks.entity.storage.ECOEnergyCellBlockEntity",
             "org.zeith.solarflux.block.SolarPanelTile");
 
     public static boolean isAllowedParticipant(Object participant) {

@@ -86,31 +86,53 @@ public final class StartupGate {
             "999281e5e12efc7b2b947a05c698a35b315502a07a99be9e6ad3f9499821b29f");
     private static final Allowed ADVANCEDAE = new Allowed("advanced_ae", "1.3.5-1.20.1",
             "a580ee70f20c6465f3d7d68fa99fba91f6885efe1dc9df70b5af951ed64c211c");
+    // AE2-COMPAT-ALLOWLIST-002 (owner pack project-infinity, 2026-11-07): bytecode-audited releases
+    private static final Allowed EXTENDEDAE_1421 = new Allowed("expatternprovider", "1.20-1.4.21-forge",
+            "30fc8abe66d4b96919f0fd7b33badd0bb2013b31e2ee57f6aeaa63ffae37df4b");
+    private static final Allowed ADVANCEDAE_136 = new Allowed("advanced_ae", "1.3.6-1.20.1",
+            "e216f95ac73eb4c1e8f3db22cc3d30f37f2612a7cb1762b9ebce148d0d5657b2");
+    private static final Allowed CRAZYAE2_262 = new Allowed("crazyae2addons", "2.6.2",
+            "6a0e023beefd183fc5995b3e65b1a3392b846d8a7ff3f56c17c9092201025e22");
+    private static final Allowed NEOECOAE_2042 = new Allowed("neoecoae", "20.4.2",
+            "e6ba909b2bf4ccce2ab055a7293d487b8df1ae8239220181e0f9d4bf0cf95571");
     private static final Allowed SOLARFLUX = new Allowed("solarflux", "20.1.11",
             "b8460262e2e657af8ce5ea4dd85fae5e611c7685e363d58c0f4389765ff1d463");
 
     /** Closure classes (internal names) and their audited owner; interfaces of the chain included. */
-    static final Map<String, Allowed> ALLOWLIST = Map.ofEntries(
-            Map.entry("appeng/blockentity/grid/AENetworkPowerBlockEntity", AE2),
-            Map.entry("appeng/blockentity/misc/ChargerBlockEntity", AE2),
-            Map.entry("appeng/blockentity/misc/InscriberBlockEntity", AE2),
-            Map.entry("appeng/blockentity/networking/ControllerBlockEntity", AE2),
-            Map.entry("appeng/blockentity/networking/CreativeEnergyCellBlockEntity", AE2),
-            Map.entry("appeng/blockentity/networking/EnergyAcceptorBlockEntity", AE2),
-            Map.entry("appeng/blockentity/networking/EnergyCellBlockEntity", AE2),
-            Map.entry("appeng/blockentity/powersink/AEBasePoweredBlockEntity", AE2),
-            Map.entry("appeng/blockentity/powersink/IExternalPowerSink", AE2),
-            Map.entry("appeng/blockentity/storage/ChestBlockEntity", AE2),
-            Map.entry("appeng/me/energy/GridEnergyStorage", AE2),
-            Map.entry("appeng/parts/networking/EnergyAcceptorPart", AE2),
-            Map.entry("com/glodblock/github/extendedae/common/tileentities/TileCaner", EXTENDEDAE),
-            Map.entry("com/glodblock/github/extendedae/common/tileentities/TileCircuitCutter", EXTENDEDAE),
-            Map.entry("com/glodblock/github/extendedae/common/tileentities/TileExCharger", EXTENDEDAE),
-            Map.entry("com/glodblock/github/extendedae/common/tileentities/TileExInscriber", EXTENDEDAE),
-            Map.entry("net/pedroksl/advanced_ae/common/entities/QuantumCrafterEntity", ADVANCEDAE),
-            Map.entry("net/pedroksl/advanced_ae/common/entities/ReactionChamberEntity", ADVANCEDAE),
-            Map.entry("org/zeith/solarflux/mixins/compat/ae2/SolarPanelTileMixin", SOLARFLUX),
-            Map.entry("org/zeith/solarflux/block/SolarPanelTile", SOLARFLUX));
+    /** Audited releases per class (any match admits; ALLOWLIST-001, ALLOWLIST-002). */
+    static final Map<String, List<Allowed>> ALLOWLIST = Map.ofEntries(
+            Map.entry("appeng/blockentity/grid/AENetworkPowerBlockEntity", List.of(AE2)),
+            Map.entry("appeng/blockentity/misc/ChargerBlockEntity", List.of(AE2)),
+            Map.entry("appeng/blockentity/misc/InscriberBlockEntity", List.of(AE2)),
+            Map.entry("appeng/blockentity/networking/ControllerBlockEntity", List.of(AE2)),
+            Map.entry("appeng/blockentity/networking/CreativeEnergyCellBlockEntity", List.of(AE2)),
+            Map.entry("appeng/blockentity/networking/EnergyAcceptorBlockEntity", List.of(AE2)),
+            Map.entry("appeng/blockentity/networking/EnergyCellBlockEntity", List.of(AE2)),
+            Map.entry("appeng/blockentity/powersink/AEBasePoweredBlockEntity", List.of(AE2)),
+            Map.entry("appeng/blockentity/powersink/IExternalPowerSink", List.of(AE2)),
+            Map.entry("appeng/blockentity/storage/ChestBlockEntity", List.of(AE2)),
+            Map.entry("appeng/me/energy/GridEnergyStorage", List.of(AE2)),
+            Map.entry("appeng/parts/networking/EnergyAcceptorPart", List.of(AE2)),
+            Map.entry("com/glodblock/github/extendedae/common/tileentities/TileCaner", List.of(EXTENDEDAE, EXTENDEDAE_1421)),
+            Map.entry("com/glodblock/github/extendedae/common/tileentities/TileCircuitCutter", List.of(EXTENDEDAE, EXTENDEDAE_1421)),
+            Map.entry("com/glodblock/github/extendedae/common/tileentities/TileExCharger", List.of(EXTENDEDAE, EXTENDEDAE_1421)),
+            Map.entry("com/glodblock/github/extendedae/common/tileentities/TileExInscriber", List.of(EXTENDEDAE, EXTENDEDAE_1421)),
+            Map.entry("net/pedroksl/advanced_ae/common/entities/QuantumCrafterEntity", List.of(ADVANCEDAE, ADVANCEDAE_136)),
+            Map.entry("net/pedroksl/advanced_ae/common/entities/ReactionChamberEntity", List.of(ADVANCEDAE, ADVANCEDAE_136)),
+            Map.entry("org/zeith/solarflux/mixins/compat/ae2/SolarPanelTileMixin", List.of(SOLARFLUX)),
+            Map.entry("org/zeith/solarflux/block/SolarPanelTile", List.of(SOLARFLUX)),
+            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage1kBE", List.of(CRAZYAE2_262)),
+            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage4kBE", List.of(CRAZYAE2_262)),
+            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage16kBE", List.of(CRAZYAE2_262)),
+            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage64kBE", List.of(CRAZYAE2_262)),
+            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage256kBE", List.of(CRAZYAE2_262)),
+            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage1mBE", List.of(CRAZYAE2_262)),
+            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage4mBE", List.of(CRAZYAE2_262)),
+            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage16mBE", List.of(CRAZYAE2_262)),
+            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage64mBE", List.of(CRAZYAE2_262)),
+            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage256mBE", List.of(CRAZYAE2_262)),
+            Map.entry("cn/dancingsnow/neoecoae/blocks/entity/ECOIntegratedWorkingStationBlockEntity", List.of(NEOECOAE_2042)),
+            Map.entry("cn/dancingsnow/neoecoae/blocks/entity/storage/ECOEnergyCellBlockEntity", List.of(NEOECOAE_2042)));
 
     public record Result(boolean active, List<String> problems, long scannedClasses, long millis, List<String> manifestProblems) {
     }
@@ -201,16 +223,16 @@ public final class StartupGate {
         }
         for (String name : closure) {
             Header h = classes.get(name);
-            Allowed a = ALLOWLIST.get(name);
-            if (a == null) {
+            List<Allowed> as = ALLOWLIST.get(name);
+            if (as == null) {
                 problems.add("unaudited IAEPowerStorage implementation " + name + " in " + h.owner().modId() + " "
                         + h.owner().version() + " (" + h.owner().file().getFileName() + ")");
                 continue;
             }
             String sha = sha256(h.owner().file(), shaCache);
-            if (!audited(name, a.modId(), a.version(), a.sha256(), h.owner().modId(), h.owner().version(), sha)) {
+            if (as.stream().noneMatch(a -> audited(name, a.modId(), a.version(), a.sha256(), h.owner().modId(), h.owner().version(), sha))) {
                 problems.add(name + " comes from " + h.owner().modId() + " " + h.owner().version() + " sha256 " + sha
-                        + ", audited " + a.modId() + " " + a.version() + " " + a.sha256());
+                        + ", audited " + as.stream().map(a -> a.modId() + " " + a.version() + " " + a.sha256()).toList());
             }
         }
         // compatibility manifest (provider / service sets) — eligibility, not activation (owner: no fail-open)
