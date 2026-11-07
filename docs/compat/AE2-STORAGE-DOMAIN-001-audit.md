@@ -63,3 +63,31 @@ crafting card / craft-only; no fuzzy card (fuzzy needs the cached inventory on t
    protocol + split bus tick, no lock).
 2. Continue WP3-A.2: owner-pack callers of network storage (appliedenhancements, ExtendedAE, crazyae2addons, neoecoae,
    AdvancedAE) and the region-part reach of the split bus tick (what else a bus touches besides its neighbour).
+
+## 5. Owner decisions 2026-11-07
+
+```
+WP3-A.1  storage-domain source audit            DONE
+         decision: AE2 network storage domain = MAIN; NO new global / storage lock;
+         a region machine never performs a network-storage operation
+WP3-A.2  ecosystem storage audit (all pack AE2 integrations)   APPROVED / NEXT — before any MachineTickDispatcher code
+WP3-B    transit protocol design                NEXT AFTER A.2
+WP3-C    conservation + crash / lifecycle fixtures   REQUIRED BEFORE MACHINE OFFLOAD
+WP4      MachineTickDispatcher                  BLOCKED BY WP3 transit verification
+```
+Ownership model: REGION owns external-side interaction, MAIN owns AE2 network-side interaction, TRANSIT owns the
+handoff state. Not an atomic cross-inventory transaction — a two-phase resource transfer with explicit intermediate
+ownership (source relinquishes → transit owns → destination accepts).
+
+Transit requirements (WP3-B): per transfer `transferId, machineId / hostGeneration, direction, resource identity,
+amount, source reservation / result, destination state, phase, createdTick`; phases PREPARED → IN_TRANSIT → COMMITTED |
+CANCELLED | RECOVERY_REQUIRED; invariant `source + destination + transit = constant` throughout. Interruption between
+halves (bus broken, chunk unload, grid gone, server stop) must never lose, duplicate or re-extract: transit lifecycle is
+not owned by the BE alone — a recovery owner applies exactly one defined policy (commit to network / return to source /
+materialise a safe recovery drop), never a plain cancel. Latency: ≤ 1 tick per handoff phase; end-to-end ≈ one scheduler
+cycle, up to ~2 tick boundaries — to be MEASURED, not promised as ≤ 1 tick.
+
+WP3-A.2 classification per integration: MAIN_NATIVE · TRANSIT_SAFE · EXTERNAL_MOUNT · CUSTOM_SHARED_STATE · UNKNOWN
+(UNKNOWN → MAIN / fail-closed). Questions per mod: who mounts inventory/storage; foreign capability calls; custom
+MEStorage; custom monitor/listener; crafting/storage callbacks; async access; static/shared state; which thread enters
+storage today.
