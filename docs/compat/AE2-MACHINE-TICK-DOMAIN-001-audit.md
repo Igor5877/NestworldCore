@@ -91,3 +91,33 @@ Player-visible change: a region-domain bus's work and its rate decision land ≤
 1. Scope: import/export buses only (≈ 9.7 ms of 10.9), storage buses stay on main — agree?
 2. One-tick latency of bus work/rate in a region domain — acceptable?
 3. Proceed to the lock-order proof (§4.1) as the next step, before implementation?
+
+## 7. Owner decisions 2026-11-07
+
+```
+AE2-MACHINE-TICK-DOMAIN-001
+Phase 0  inventory / profiling           DONE
+Phase 1  lock-order + reentrancy proof   REQUIRED (stricter than D1) — before any code
+Phase 2  import/export buses only        APPROVED CONDITIONALLY (on Phase 1)
+         exact allowlist by class + mod version (ExtendedAE included), not "all IGridTickable"
+Storage bus                              OUT OF SCOPE
+Other AE2 machines                       OUT OF SCOPE
+Max scheduling delay                     1 tick ACCEPTED
+Concurrent same-machine ticks            FORBIDDEN (at most one in-flight per tracker; a late region task never
+                                         spawns a second tick)
+```
+Invariants: one scheduled tick → at most one execution; FASTER/SLOWER/SLEEP applied only to the same tracker
+generation; host removed / domain changed → stale, not applied; queue backlog bounded.
+
+Phase 1 must cover the full graph — region chunk/write lock, AE2 grid / T0 / domain locks, storage, energy, crafting,
+adjacent capability / inventory, HostDomainCallbackDelivery, main end-tick paths. Forbidden cycle: REGION chunk lock →
+waits grid lock while MAIN grid lock → waits / enters region-owned state. Any such path without bounded fail-fast →
+design rejected as is. Red flag even without a formal deadlock: an external mod callback under a wide AE2 grid lock
+(re-entry into AE2). Paths to check explicitly: bus tick → network storage → capability → external inventory →
+callback → world access; bus tick → energy extraction → grid service callback; main grid phase → listener →
+host / world lookup → region-owned state.
+
+Evidence after implementation: main / region machine time p50/p95/p99; offloaded / inline ticks; stale results;
+in-flight collisions; queue delay p50/p95/p99/max; grid-lock wait p50/p95/p99/max; region-lock wait; deadlock watchdog
+hits; duplicate / lost item movement = 0 — item conservation over N minutes under split/merge, unload, bus removal
+mid-flight and domain change: source_before + created = source_after + destination_after + in_transit.
