@@ -4,7 +4,7 @@ plugins {
 }
 // Observation-only race detector for AE2 EnergyService (test copies only; changes no AE2 behaviour).
 java.toolchain.languageVersion = JavaLanguageVersion.of(17)
-version = '0.1.0'
+version = '0.1.1'
 group = 'net.nestworld.tools'
 minecraft { mappings channel: 'official', version: '1.20.1' }
 jarJar.enable()
