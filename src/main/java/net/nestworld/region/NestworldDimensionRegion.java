@@ -293,6 +293,16 @@ public final class NestworldDimensionRegion {
         return BE_POLICY_NORMAL;
     }
 
+    /** {@link #blockEntityTypePolicy} plus the position pins (CORE-PINZONE-001): a pinned position is PINNED whatever
+     *  its type. */
+    int blockEntityPolicy(NestworldPins pins, String typeId, BlockPos pos) {
+        int policy = blockEntityTypePolicy(pins, typeId);
+        if (policy != BE_POLICY_PINNED && !pins.isBePositionPinEmpty() && pins.isBePositionPinned(key, pos.asLong())) {
+            return BE_POLICY_PINNED;
+        }
+        return policy;
+    }
+
     /** The region whose thread executes block-entity work of {@code policy} at chunk (cx,cz), or
      *  null for the main thread: pinned → main; cascade-safe → its grid region (band included);
      *  otherwise the region whose interior contains the chunk; border band / no region → main. */
@@ -304,8 +314,9 @@ public final class NestworldDimensionRegion {
 
     /** Canonical BE execution-domain resolution for chunk (cx,cz) and block-entity type
      *  {@code typeId}: the region whose thread runs it, or null for main. Safe from any thread. */
-    public WorldRegion resolveBlockEntityRegion(int cx, int cz, String typeId) {
-        return blockEntityRegionFor(blockEntityTypePolicy(NestworldRegionSystem.get().getPins(), typeId), cx, cz);
+    public WorldRegion resolveBlockEntityRegion(BlockPos pos, String typeId) {
+        return blockEntityRegionFor(blockEntityPolicy(NestworldRegionSystem.get().getPins(), typeId, pos),
+                pos.getX() >> 4, pos.getZ() >> 4);
     }
 
     /** MAIN-domain block-entity tasks of this dimension, drained on the main thread by {@link #tick}. */
@@ -544,7 +555,7 @@ public final class NestworldDimensionRegion {
             BlockPos pos = ticker.getPos();
             if (BE_TRACE_POS != null && BE_TRACE_POS.equals(pos)) traced = true;
             int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
-            int policy = blockEntityTypePolicy(pins, ticker.getType());
+            int policy = blockEntityPolicy(pins, ticker.getType(), pos);
             if (policy != BE_POLICY_NORMAL) {
                 blockTickHeat.record(cx, cz);
             } else {

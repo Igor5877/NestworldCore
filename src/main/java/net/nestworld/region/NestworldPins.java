@@ -209,6 +209,52 @@ public final class NestworldPins {
         return false;
     }
 
+    /**
+     * CORE-PINZONE-001 (minimal, position form): runtime block-entity POSITION pins. A block entity at a pinned position
+     * ticks on main exactly like a pinned type, whatever its type. Generic — the core does not know why a position is
+     * pinned; a caller (typically a compatibility layer) pins the positions a main-thread host reaches into (e.g. the
+     * block next to an automation port), so both sides run on one thread. Reference-counted per (dimension, position):
+     * several callers may pin the same position; it stays pinned until every pin is released. Runtime state only —
+     * never persisted (the callers re-derive it on load).
+     */
+    private final ConcurrentHashMap<net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level>,
+            ConcurrentHashMap<Long, Integer>> pinnedBePositions = new ConcurrentHashMap<>();
+    private final AtomicInteger pinnedBePositionCount = new AtomicInteger();
+
+    /** Adds one reference to the position pin at {@code pos} in {@code dimension}. Safe from any thread. */
+    public void pinBlockEntityPosition(net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension, long pos) {
+        pinnedBePositions.computeIfAbsent(dimension, d -> new ConcurrentHashMap<>()).compute(pos, (k, v) -> {
+            if (v == null) pinnedBePositionCount.incrementAndGet();
+            return v == null ? 1 : v + 1;
+        });
+    }
+
+    /** Releases one reference; the position is unpinned when the last reference is released. Safe from any thread. */
+    public void unpinBlockEntityPosition(net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension, long pos) {
+        ConcurrentHashMap<Long, Integer> m = pinnedBePositions.get(dimension);
+        if (m == null) return;
+        m.computeIfPresent(pos, (k, v) -> {
+            if (v > 1) return v - 1;
+            pinnedBePositionCount.decrementAndGet();
+            return null;
+        });
+    }
+
+    /** True when no position pin exists anywhere — lets the BE phase skip the per-position lookup. */
+    public boolean isBePositionPinEmpty() {
+        return pinnedBePositionCount.get() == 0;
+    }
+
+    public boolean isBePositionPinned(net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension, long pos) {
+        if (pinnedBePositionCount.get() == 0) return false;
+        ConcurrentHashMap<Long, Integer> m = pinnedBePositions.get(dimension);
+        return m != null && m.containsKey(pos);
+    }
+
+    public int bePositionPinCount() {
+        return pinnedBePositionCount.get();
+    }
+
     /** True when no cascade-safe block-entity type is marked — lets callers skip the check. */
     public boolean isCascadeSafeBeEmpty() {
         return cascadeSafeBeIds.isEmpty();
@@ -498,8 +544,26 @@ public final class NestworldPins {
         boolean beIsPinned = pb.isBePinned(be);
         boolean beIdem = !pb.noteBlockEntityTickError(be, null);
 
+        // CORE-PINZONE-001 position pins: reference-counted per (dimension, position).
+        NestworldPins pp = new NestworldPins(false, 3);
+        var ow = net.minecraft.world.level.Level.OVERWORLD;
+        long a = net.minecraft.core.BlockPos.asLong(1, 2, 3), b = net.minecraft.core.BlockPos.asLong(1, 2, 4);
+        boolean posEmpty0 = pp.isBePositionPinEmpty();
+        pp.pinBlockEntityPosition(ow, a);
+        pp.pinBlockEntityPosition(ow, a);
+        boolean posTwice = pp.isBePositionPinned(ow, a) && !pp.isBePositionPinned(ow, b)
+                && !pp.isBePositionPinned(net.minecraft.world.level.Level.NETHER, a) && pp.bePositionPinCount() == 1;
+        pp.unpinBlockEntityPosition(ow, a);
+        boolean posStill = pp.isBePositionPinned(ow, a);
+        pp.unpinBlockEntityPosition(ow, a);
+        pp.unpinBlockEntityPosition(ow, a);                                                      // extra release: no-op
+        boolean posGone = !pp.isBePositionPinned(ow, a) && pp.isBePositionPinEmpty() && pp.bePositionPinCount() == 0;
+        boolean posOk = posEmpty0 && posTwice && posStill && posGone;
+        LOGGER.info("[POSPIN SELF-TEST] {} (empty0={} twice={} stillAfterOneRelease={} goneAfterLast={})",
+                posOk ? "PASS" : "FAIL", posEmpty0, posTwice, posStill, posGone);
+
         boolean ok = !below && atThreshold && isPinnedNow && idempotent
-                && !beBelow && beAt && beIsPinned && beIdem;
+                && !beBelow && beAt && beIsPinned && beIdem && posOk;
         LOGGER.info("[AUTOPIN SELF-TEST] {} (entity: below={} at={} pinned={} idem={}; "
                 + "be: below={} at={} pinned={} idem={})", ok ? "PASS" : "FAIL",
                 !below, atThreshold, isPinnedNow, idempotent,

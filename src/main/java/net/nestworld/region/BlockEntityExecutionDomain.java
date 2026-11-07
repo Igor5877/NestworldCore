@@ -90,8 +90,22 @@ public final class BlockEntityExecutionDomain {
     public static Domain resolveBlockEntityExecutionDomain(ServerLevel level, BlockPos pos, @Nullable String beTypeId) {
         NestworldDimensionRegion dr = dimension(level);
         if (dr == null) return Domain.MAIN;
-        WorldRegion r = dr.resolveBlockEntityRegion(pos.getX() >> 4, pos.getZ() >> 4, beTypeId);
+        WorldRegion r = dr.resolveBlockEntityRegion(pos, beTypeId);
         return r == null ? Domain.MAIN : new Domain(r);
+    }
+
+    /**
+     * CORE-PINZONE-001 (position form): pins the block-entity execution domain of {@code pos} to MAIN (one reference;
+     * see {@link NestworldPins#pinBlockEntityPosition}). Runtime only, safe from any thread; takes effect at the next
+     * block-entity phase / domain resolution.
+     */
+    public static void pinPositionToMain(ServerLevel level, BlockPos pos) {
+        NestworldRegionSystem.get().getPins().pinBlockEntityPosition(level.dimension(), pos.asLong());
+    }
+
+    /** Releases one reference taken by {@link #pinPositionToMain}. */
+    public static void unpinPositionFromMain(ServerLevel level, BlockPos pos) {
+        NestworldRegionSystem.get().getPins().unpinBlockEntityPosition(level.dimension(), pos.asLong());
     }
 
     /** True if the current thread is the execution domain of block-entity work at {@code pos}. */
@@ -132,7 +146,7 @@ public final class BlockEntityExecutionDomain {
             server.tell(new TickTask(server.getTickCount(), () -> execute(task, executedMain)));
             return;
         }
-        WorldRegion r = dr.resolveBlockEntityRegion(task.pos().getX() >> 4, task.pos().getZ() >> 4, task.beTypeId());
+        WorldRegion r = dr.resolveBlockEntityRegion(task.pos(), task.beTypeId());
         if (r == null) {
             dr.enqueueMainBlockEntityTask(task);
         } else {
@@ -146,7 +160,7 @@ public final class BlockEntityExecutionDomain {
     static void runOnRegion(Task task, WorldRegion here) {
         NestworldDimensionRegion dr = dimension(task.level());
         WorldRegion now = dr == null ? null
-                : dr.resolveBlockEntityRegion(task.pos().getX() >> 4, task.pos().getZ() >> 4, task.beTypeId());
+                : dr.resolveBlockEntityRegion(task.pos(), task.beTypeId());
         if (now != here) {
             reroute(task);
             return;
@@ -158,7 +172,7 @@ public final class BlockEntityExecutionDomain {
     static void runOnMain(Task task) {
         NestworldDimensionRegion dr = dimension(task.level());
         WorldRegion now = dr == null ? null
-                : dr.resolveBlockEntityRegion(task.pos().getX() >> 4, task.pos().getZ() >> 4, task.beTypeId());
+                : dr.resolveBlockEntityRegion(task.pos(), task.beTypeId());
         if (now != null) {
             reroute(task);
             return;

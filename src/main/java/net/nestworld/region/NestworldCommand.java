@@ -3525,7 +3525,7 @@ public final class NestworldCommand {
         var entityPins = p.list();
         var bePins = p.beList();
         var modPinsEarly = p.modList();
-        if (entityPins.isEmpty() && bePins.isEmpty() && modPinsEarly.isEmpty()) {
+        if (entityPins.isEmpty() && bePins.isEmpty() && modPinsEarly.isEmpty() && p.isBePositionPinEmpty()) {
             src.sendSuccess(() -> Component.literal(
                     "No pins (all entities and block entities tick on region threads)."), false);
             return 0;
@@ -3544,6 +3544,11 @@ public final class NestworldCommand {
             src.sendSuccess(() -> Component.literal(
                     modPinsEarly.size() + " pinned mod(s) — all their entities/BEs tick on main:"), false);
             for (String ns : modPinsEarly) src.sendSuccess(() -> Component.literal("  " + ns), false);
+        }
+        int posPins = p.bePositionPinCount();
+        if (posPins > 0) {
+            src.sendSuccess(() -> Component.literal(posPins
+                    + " pinned block-entity position(s) (runtime, set by compatibility layers) — tick on main"), false);
         }
         return entityPins.size() + bePins.size() + modPinsEarly.size();
     }
