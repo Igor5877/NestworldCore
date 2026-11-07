@@ -121,3 +121,36 @@ Evidence after implementation: main / region machine time p50/p95/p99; offloaded
 in-flight collisions; queue delay p50/p95/p99/max; grid-lock wait p50/p95/p99/max; region-lock wait; deadlock watchdog
 hits; duplicate / lost item movement = 0 — item conservation over N minutes under split/merge, unload, bus removal
 mid-flight and domain change: source_before + created = source_after + destination_after + in_transit.
+
+## 8. Phase 1 result (lock-order + reentrancy) — 2026-11-07
+
+**Verdict: the §3 design is REJECTED as is** (owner rule: a forbidden path without bounded fail-fast, or an external
+callback under a wide AE2 lock, rejects it). Findings, all CONFIRMED from source / bytecode unless marked:
+
+| # | finding | consequence |
+|---|---|---|
+| B1 | The addon kernel guards only energy (`Specs.energy`), grid phases (`Specs.grid`, TickManager T1), nodes and topology. **Network storage (`MEStorage` / `NetworkStorage` / cell inventories) and `CraftingService` are not guarded by anything** — today they are safe only because every AE2 caller runs on the server thread (pins + grid ticks on main). | A device tick on a region thread races every main-thread storage user (other devices, `StorageService.updateCachedStacks`, crafting CPUs, interfaces, terminals). A new storage domain per grid is required. |
+| B2 | `StorageExportStrategy.transfer` / `StorageImportStrategy.transfer` interleave, inside ONE call, network-storage simulate/modulate with external capability calls (`handlerStrategy.insert`, `adjacentStorage.extract/insert`); appliedenhancements mixins wrap those external calls. | Atomic over the network ⇒ storage domain held across external mod code (**red flag**: foreign code under an AE2 lock, re-entry into AE2 through capabilities/subnets). Not atomic ⇒ main changes the network between simulate and modulate ⇒ "voided" items (the live `bad attempt at managing inventory` symptom). Neither is acceptable as-is. |
+| B3 | Kernel locks are ordered but **blocking** for every thread (`g.lock`, `t0.lock`, `d.lock.lock()` in ascending order; only lower-order nested entries are refusable). | A region thread inside its tick (holding its chunk write lock) would block on a domain main holds. Acceptable only if no main path holding that domain can wait for / enter region-owned state — not proven for energy phases (provider callbacks into region-owned BEs, SolarFlux participant still OPEN) and grid phases (devices left on main, storage-bus external reads). |
+| B4 | Export bus with a crafting card: `attemptCrafting` → `CraftingService` request / `beginCraftingCalculation` (grid state mutated on submit; calculation on `CRAFTING_POOL`). Fuzzy export reads `storageService.getCachedInventory()` (main-maintained cache). | Crafting-card buses must stay on main (or stage the request to main); fuzzy reads need the storage domain. |
+| B5 | `ExtendedAE PartExExportBus extends ExportBusPart`, `PartExImportBus extends ImportBusPart` (bytecode) — same strategies, so B2 applies to the dominant cost. | Exact allowlist feasible; the strategy problem is shared. |
+| B6 | With `ae2` pinned the cable-bus host domain is MAIN, so "host domain = REGION" never holds. The device tick must use the host chunk's region regardless of the tick pin — then the part's own fields are shared with main-side writers (player GUI config edits, redstone/neighbour updates, part add/remove). | Needs either AE2 unpinned (AE2-PINS-001, still gated by P2P / SolarFlux / CALLBACK-UNDER-P / canary) or a per-part state guard. |
+
+### Revised direction for review (T3′) — no code until approved
+
+1. **Transit protocol instead of a lock across foreign code.** Addon-owned faithful ports of the two strategies
+   (version-locked like `ClusterTeardownPorts`): export = (a) under the grid storage domain: powered-extract up to N
+   into a bus-local *transit buffer* (counted `in_transit`); (b) no AE2 lock: insert the buffer into the neighbour on the
+   region thread (neighbour shares that thread); (c) under the storage domain: return the leftover; if refused it stays
+   in transit, persisted with the part and retried — never voided. Import mirrors it (external extract into transit
+   without AE2 locks, then insert under the domain). Conservation becomes exactly the owner's equation with
+   `in_transit` explicit.
+2. **Storage domain** (new kernel domain per grid) taken only for the short network steps; never held while foreign
+   code runs; ordered after T0 like existing domains; main's storage users (cache rebuild, devices on main) take it too —
+   a large, separate change to audit on its own (every `MEStorage` entry point on main).
+3. Excluded from offload: crafting-card / craft-only buses, fuzzy buses (until the cached-inventory read is guarded),
+   buses in the border band / non-interior chunks, storage buses (already out of scope).
+4. B6 resolved by a per-part guard for config / redstone / lifecycle writes, or by deferring T3′ until AE2-PINS-001.
+
+Estimated size: the storage domain (2) is the dominant cost and risk — comparable to GRID-PHASE-001. Decision
+requested: (i) accept the transit protocol in principle, (ii) storage-domain audit as the next gate, (iii) B6 route.
