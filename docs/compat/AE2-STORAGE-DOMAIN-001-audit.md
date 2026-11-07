@@ -91,3 +91,32 @@ WP3-A.2 classification per integration: MAIN_NATIVE · TRANSIT_SAFE · EXTERNAL_
 (UNKNOWN → MAIN / fail-closed). Questions per mod: who mounts inventory/storage; foreign capability calls; custom
 MEStorage; custom monitor/listener; crafting/storage callbacks; async access; static/shared state; which thread enters
 storage today.
+
+## 6. Owner decisions 2026-11-07 (2)
+
+```
+WP1 Registry            IMPLEMENTED; equivalence tests PASS; runtime E1/E2/E3 PENDING — not CLOSED yet
+WP3-A.1                 DONE (MAIN-owned storage ACCEPTED)
+WP3-A.2                 IN PROGRESS / APPROVED
+WP3-B transit protocol  DIRECTION APPROVED; implementation waits for consolidated A.2
+WP4                     BLOCKED by WP3 evidence
+GAMEPLAY_EQUIVALENCE    finalized: SEMANTIC_EQUIVALENCE hard; TIMING_TOLERANCE 0–2 ticks bounded, non-accumulating
+split watcher           operational mitigation only (not architecture) until the split heuristic is fixed
+```
+
+WP3-A.2 consolidated document: one row per dangerous entry —
+`source / class / method → current thread/domain → state touched → AE2-owned | external-owned | mixed → can invoke
+foreign code (YES/NO) → same-tick requirement (YES/NO/UNKNOWN) → routing candidate (MAIN / REGION / TRANSIT / CALLBACK /
+FAIL-CLOSED) → evidence`. extendedae_plus JeiSyncManager, TagInventoryME, Wireless Transceiver, MirrorPatternProvider,
+EntitySpeedTicker: check own shared state outside the AE2 grid and whether they can run world / capability code from
+inside a storage operation.
+
+WP3-B mandatory invariants (fixture-proven, import and export tested separately — no symmetry assumed):
+```
+scheduled operations = reference;  completed operations = reference;  missed operations = 0
+normal transfer latency p100 ≤ 2 ticks
+latency does not grow with runtime;  transit backlog does not grow with runtime
+a transfer still in transit never causes the next scheduled bus operation (e.g. every 5 ticks) to be skipped
+IMPORT:  REGION external inventory → TRANSIT → MAIN AE2 storage
+EXPORT:  MAIN AE2 storage → TRANSIT → REGION external inventory
+```
