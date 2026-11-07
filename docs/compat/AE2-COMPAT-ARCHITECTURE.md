@@ -50,3 +50,25 @@ Not started on purpose: distributed bridge (§44), lock-free / sharded grid stat
    per-class bytecode equivalence). The registry keeps 15.4.10 as the audited base and 15.4.11 as an equivalent release.
 3. §42 forbids "redirect all AE2 to MAIN as the final fix": today's production profile is exactly that (pins); it stays
    the fallback until WP3/WP4 are verified — not the final state.
+
+## 4. Owner decisions 2026-11-07 (strategic status)
+
+```
+existing safety/runtime primitives   VERIFIED / PRESERVE
+WP1 Compatibility Registry           APPROVED FOR IMPLEMENTATION
+     acceptance: OLD gate decision == NEW registry decision for every current (mod, version, SHA, runtime state);
+     regression table StartupGate / manifest / runtime barrier → descriptor → activation mode, 0 mismatches;
+     no SUPPORTED↔DEGRADED or REJECTED→ACTIVE change without an explicit policy change.
+     descriptor = modId, version, jarSha256, tier, machine / callback / storage / topology policy, fallback, support status
+WP2 pack compatibility matrix        STARTED
+WP3 Storage Domain                   AUDIT/DESIGN APPROVED (WP3-A: StorageService entrances, crafting/storage
+                                     cross-calls, external capability boundaries, lock/reentrancy graph, contract → STOP);
+                                     IMPLEMENTATION NOT YET APPROVED (WP3-B after review)
+WP4 Machine Tick Dispatcher          BLOCKED BY WP3
+WP5 conservation fixtures            PLANNED
+WP6 ExtendedAE                       PLANNED (hotspot evidence available)
+WP7 unified diagnostics              PARTIAL → PLANNED
+WP8 narrow-lock                      EVIDENCE-TRIGGERED ONLY
+```
+Target storage form: prepare → short storage admission/transaction → external operation OUTSIDE the storage lock →
+short validate/commit; never storage lock → foreign capability → world mutation → callback into AE2.
