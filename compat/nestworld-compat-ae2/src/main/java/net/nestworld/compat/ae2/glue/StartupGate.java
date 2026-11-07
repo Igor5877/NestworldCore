@@ -146,9 +146,9 @@ public final class StartupGate {
     private record ManifestEntry(String iface, String modId, String version, String sha256) {
     }
 
-    /** iface simple name + "|" + internal class name → entry. */
-    private static Map<String, ManifestEntry> loadManifest(List<String> problems) {
-        Map<String, ManifestEntry> m = new HashMap<>();
+    /** iface simple name + "|" + internal class name → audited entries (one per audited release). */
+    private static Map<String, List<ManifestEntry>> loadManifest(List<String> problems) {
+        Map<String, List<ManifestEntry>> m = new HashMap<>();
         try (InputStream in = StartupGate.class.getResourceAsStream("/compat-manifest.tsv")) {
             if (in == null) {
                 problems.add("COMPAT_MANIFEST_MISSING");
@@ -157,7 +157,7 @@ public final class StartupGate {
             for (String line : new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).split("\n")) {
                 if (line.isBlank() || line.startsWith("#")) continue;
                 String[] f = line.split("\t");
-                m.put(f[0] + "|" + f[1], new ManifestEntry(f[0], f[2], f[3], f[4]));
+                m.computeIfAbsent(f[0] + "|" + f[1], k -> new ArrayList<>()).add(new ManifestEntry(f[0], f[2], f[3], f[4]));
             }
         } catch (IOException e) {
             problems.add("COMPAT_MANIFEST_UNREADABLE " + e);
@@ -237,7 +237,7 @@ public final class StartupGate {
         }
         // compatibility manifest (provider / service sets) — eligibility, not activation (owner: no fail-open)
         List<String> manifestProblems = new ArrayList<>();
-        Map<String, ManifestEntry> manifest = loadManifest(manifestProblems);
+        Map<String, List<ManifestEntry>> manifest = loadManifest(manifestProblems);
         for (String iface : MANIFEST_INTERFACES) {
             String simple = iface.substring(iface.lastIndexOf('/') + 1);
             Map<String, List<String>> added = new HashMap<>();
@@ -250,16 +250,17 @@ public final class StartupGate {
             for (String name : new TreeSet<>(classes.keySet())) {
                 if (name.equals(iface) || !reachesTarget(iface, name, classes, added, memo2, 0)) continue;
                 Header h = classes.get(name);
-                ManifestEntry e = manifest.get(simple + "|" + name);
-                if (e == null) {
+                List<ManifestEntry> es = manifest.get(simple + "|" + name);
+                if (es == null) {
                     manifestProblems.add("COMPAT_MANIFEST_UNKNOWN_PROVIDER mod=" + h.owner().modId() + " version=" + h.owner().version()
                             + " class=" + name.replace('/', '.') + " interface=" + simple);
                     continue;
                 }
                 String sha = sha256(h.owner().file(), shaCache);
-                if (!audited(name, e.modId(), e.version(), e.sha256(), h.owner().modId(), h.owner().version(), sha)) {
+                if (es.stream().noneMatch(e -> audited(name, e.modId(), e.version(), e.sha256(), h.owner().modId(), h.owner().version(), sha))) {
                     manifestProblems.add("COMPAT_MANIFEST_VERSION_MISMATCH mod=" + h.owner().modId() + " version=" + h.owner().version()
-                            + " class=" + name.replace('/', '.') + " interface=" + simple + " audited=" + e.modId() + " " + e.version());
+                            + " class=" + name.replace('/', '.') + " interface=" + simple + " audited="
+                            + es.stream().map(e -> e.modId() + " " + e.version()).toList());
                 }
             }
         }
