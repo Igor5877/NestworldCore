@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 import net.minecraft.world.level.Level;
+import net.nestworld.compat.ae2.glue.GridCensus;
 import net.nestworld.compat.ae2.glue.GridPhaseGate;
 import net.nestworld.compat.ae2.glue.GridStaging;
 import net.nestworld.compat.ae2.glue.NwGrid;
@@ -79,13 +80,17 @@ public abstract class GridMixin implements NwGrid {
 
     @WrapMethod(method = "onLevelEndTick")
     private void nw$levelEnd(Level level, Operation<Void> op) {
+        long t0 = GridCensus.on ? System.nanoTime() : 0;
         GridPhaseGate.phase((Grid) (Object) this, false, () -> op.call(level));
+        if (t0 != 0) GridCensus.record((Grid) (Object) this, false, System.nanoTime() - t0);
     }
 
     /** Server END runs Storage/Crafting phases: staged service mutations are drained first (the cut). */
     @WrapMethod(method = "onServerEndTick")
     private void nw$serverEnd(Operation<Void> op) {
+        long t0 = GridCensus.on ? System.nanoTime() : 0;
         GridPhaseGate.phase((Grid) (Object) this, true, () -> op.call());
+        if (t0 != 0) GridCensus.record((Grid) (Object) this, true, System.nanoTime() - t0);
     }
 
     // ---------------------------------------------------------------- topology (G1)
