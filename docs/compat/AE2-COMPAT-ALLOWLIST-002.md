@@ -34,3 +34,22 @@ other                    10 entity tick CMEs: Botania / botanicalextramachinery 
 ```
 Evidence: `/root/perf1-evidence/infinity-2026-11-07/smoke-072/latest.log`; artifact
 `/root/canary-artifacts/ae2-compat-0.7.2-dev/` (sha256 `b34068df…`).
+
+## Manifest (addon 0.7.3) — BYTECODE-SCREEN-1 of the 39 unknown / mismatched providers
+
+Tool `compat/nestworld-compat-ae2/tools/screen.py`: depth-1 screen of the add/remove-path methods
+(`IGridServiceProvider.addNode/removeNode`, `IStorageProvider.mountInventories`,
+`ICraftingProvider.getAvailablePatterns/getPatternPriority/getEmitableItems`, resolved to the declaring class) for world,
+capability, blocking or topology calls. Result: 38 CLEAN or inherited from audited AE2 classes; 1 flag —
+bmaddon `BloodAltarAssemblerBlockEntity.getAvailablePatterns` → `BloodAltarPatternDetails.create(Level, …)` — depth 2:
+`Level` is used only for `getRecipeManager()` (same as AE2's own pattern decoding) → CLEAN. aeallpattern `CoreGameTests$3/$5`
+are gametest-only anonymous providers. The manifest now holds several audited releases per class (any match).
+
+Smoke on `/root/pi-smoke` with 0.7.3: manifest **ELIGIBLE**, mode **NORMAL**, unauditedPaths 0; 5 min NORMAL with pins: 0
+failures; **11 min with ae2 / expatternprovider / advanced_ae / crazyae2addons / neoecoae UNPINNED (isolated copy only)**:
+0 tick failures, 0 crashes, 0 AE2 exceptions, mode stayed NORMAL.
+
+Finding (CONFIRMED, JFR): unpinning does not lower main-thread load — AE2 stays ~57% of main because ~42% of main is AE2's
+global grid ticking (`TickHandler.onServerLevelTickEnd` / `onServerTickEnd` → `Grid.onLevelEndTick` / `onServerEndTick`),
+which runs on the server thread regardless of pins. The TPS lever is a per-grid tick in the grid's own domain (design
+needed), not unpinning. Addon self-cost: ~1.2 % of main, no long parks on its locks.
