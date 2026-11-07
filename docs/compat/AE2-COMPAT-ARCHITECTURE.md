@@ -72,3 +72,9 @@ WP8 narrow-lock                      EVIDENCE-TRIGGERED ONLY
 ```
 Target storage form: prepare → short storage admission/transaction → external operation OUTSIDE the storage lock →
 short validate/commit; never storage lock → foreign capability → world mutation → callback into AE2.
+
+## 5. GAMEPLAY_EQUIVALENCE (owner invariant 2026-11-07)
+
+See `docs/GAMEPLAY_EQUIVALENCE.md`. Every WP gate adds `GAMEPLAY_EQUIVALENCE = PASS` (reference Forge result == NestWorld
+result under the same logical tick schedule). Rejected as fixes: AE2 bus tick-rate changes, gameplay throttling,
+mob-spawn changes, player restrictions.
