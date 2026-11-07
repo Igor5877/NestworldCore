@@ -10,6 +10,7 @@ import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Stream;
 import net.minecraftforge.fml.loading.FMLLoader;
@@ -26,6 +27,11 @@ import org.objectweb.asm.Type;
  * {@code IAEPowerStorage} (own interfaces or parent chain, transitively; a mixin declaring it counts
  * for its targets and their subclasses) is on the allowlist with its exact mod, version and jar hash.
  * Any mismatch: no mixin applies, the environment runs exactly as without the addon, and the pins stay.
+ *
+ * <p>AE2-RELEASE-EQUIV-001: the audit is of AE2 {@link #AE2_BASE}; a later AE2 release is admitted only through
+ * {@link #AE2_RELEASES}, with its exact jar hash and the classes whose bytecode differs from the base. An AE2 class
+ * from such a release counts as audited only when it is NOT in that set, and the release is refused when any mixin of
+ * this addon targets a changed class.
  */
 public final class StartupGate {
     static final String TARGET = "appeng/api/networking/energy/IAEPowerStorage";
@@ -35,6 +41,47 @@ public final class StartupGate {
     }
 
     private static final Allowed AE2 = new Allowed("ae2", "15.4.10", AE2_SHA256);
+    static final String AE2_BASE = "15.4.10";
+    static final String SELF_MOD_ID = "nestworld_compat_ae2";
+
+    /** An audited AE2 release: exact jar, and the classes (internal names) whose bytecode differs from {@link #AE2_BASE}. */
+    record Ae2Release(String version, String sha256, Set<String> changedVsBase) {
+    }
+
+    static final List<Ae2Release> AE2_RELEASES = List.of(
+            new Ae2Release(AE2_BASE, AE2_SHA256, Set.of()),
+            // 15.4.11: per-class bytecode compare vs 15.4.10 — 5 changed + 2 added (client overlay, tooltips, crafting
+            // terminal packet, test plots, CraftingCPUCalculator.verifyInternalStructure: same predicate, since
+            // CraftingBlockEntity.isValid() is constantly true). Evidence: docs/compat/AE2-RELEASE-EQUIV-001.md
+            new Ae2Release("15.4.11", "f2ff9ee5122b037d4e93537425ab9fbe49860fc9c3977db13b20a50ca7d30f9e", Set.of(
+                    "appeng/client/render/overlay/OverlayManager",
+                    "appeng/core/localization/Tooltips",
+                    "appeng/core/sync/packets/FillCraftingGridFromRecipePacket",
+                    "appeng/core/sync/packets/FillCraftingGridFromRecipePacket$DisplacedItem",
+                    "appeng/me/cluster/implementations/CraftingCPUCalculator",
+                    "appeng/server/testplots/CraftingTerminalTestPlots",
+                    "appeng/server/testplots/TestPlots")));
+
+    static Ae2Release ae2Release(String version, String sha) {
+        for (Ae2Release r : AE2_RELEASES) {
+            if (r.version().equals(version) && r.sha256().equals(sha)) return r;
+        }
+        return null;
+    }
+
+    /**
+     * An audited (mod, version, sha) for {@code className} matches the loaded owner: exactly, or — for an AE2 class
+     * audited at the base — the owner is an admitted AE2 release in which this class is unchanged.
+     */
+    static boolean audited(String className, String auditedMod, String auditedVersion, String auditedSha,
+                           String mod, String version, String sha) {
+        if (auditedMod.equals(mod) && auditedVersion.equals(version) && auditedSha.equals(sha)) return true;
+        if (!"ae2".equals(auditedMod) || !"ae2".equals(mod) || !AE2_BASE.equals(auditedVersion) || !AE2_SHA256.equals(auditedSha)) {
+            return false;
+        }
+        Ae2Release r = ae2Release(version, sha);
+        return r != null && !r.changedVsBase().contains(className);
+    }
     private static final Allowed EXTENDEDAE = new Allowed("expatternprovider", "1.20-1.4.15-forge",
             "999281e5e12efc7b2b947a05c698a35b315502a07a99be9e6ad3f9499821b29f");
     private static final Allowed ADVANCEDAE = new Allowed("advanced_ae", "1.3.5-1.20.1",
@@ -108,6 +155,7 @@ public final class StartupGate {
         Map<String, Header> classes = new HashMap<>();
         Map<Path, String> shaCache = new HashMap<>();
         boolean ae2Seen = false;
+        Ae2Release ae2Release = null;
         for (ModFileInfo mf : FMLLoader.getLoadingModList().getModFiles()) {
             if (mf.getMods().isEmpty()) continue;
             String modId = mf.getMods().get(0).getModId();
@@ -117,13 +165,28 @@ public final class StartupGate {
             if (modId.equals("ae2")) {
                 ae2Seen = true;
                 String sha = sha256(file, shaCache);
-                if (!AE2.version().equals(version) || !AE2_SHA256.equals(sha)) {
-                    problems.add("ae2 " + version + " sha256 " + sha + " is not the audited 15.4.10 (" + AE2_SHA256 + ")");
+                ae2Release = ae2Release(version, sha);
+                if (ae2Release == null) {
+                    problems.add("ae2 " + version + " sha256 " + sha + " is not an audited AE2 release " + AE2_RELEASES.stream()
+                            .map(r -> r.version() + "/" + r.sha256().substring(0, 12)).toList());
                 }
             }
             scan(mf.getFile().getSecureJar().getRootPath(), owner, classes, problems);
         }
         if (!ae2Seen) problems.add("ae2 is not loaded");
+        if (ae2Release != null && !ae2Release.changedVsBase().isEmpty()) {
+            // this addon's mixins must not target a class that changed since the audited base
+            for (String name : new TreeSet<>(classes.keySet())) {
+                Header h = classes.get(name);
+                if (!SELF_MOD_ID.equals(h.owner().modId())) continue;
+                for (String t : h.mixinTargets()) {
+                    if (ae2Release.changedVsBase().contains(t)) {
+                        problems.add("mixin " + name + " targets " + t + ", changed in ae2 " + ae2Release.version()
+                                + " since the audited " + AE2_BASE);
+                    }
+                }
+            }
+        }
         // mixins that declare the interface count for their targets
         Map<String, List<String>> addedInterfaces = new HashMap<>();
         classes.forEach((name, h) -> {
@@ -145,7 +208,7 @@ public final class StartupGate {
                 continue;
             }
             String sha = sha256(h.owner().file(), shaCache);
-            if (!a.modId().equals(h.owner().modId()) || !a.version().equals(h.owner().version()) || !a.sha256().equals(sha)) {
+            if (!audited(name, a.modId(), a.version(), a.sha256(), h.owner().modId(), h.owner().version(), sha)) {
                 problems.add(name + " comes from " + h.owner().modId() + " " + h.owner().version() + " sha256 " + sha
                         + ", audited " + a.modId() + " " + a.version() + " " + a.sha256());
             }
@@ -172,7 +235,7 @@ public final class StartupGate {
                     continue;
                 }
                 String sha = sha256(h.owner().file(), shaCache);
-                if (!e.modId().equals(h.owner().modId()) || !e.version().equals(h.owner().version()) || !e.sha256().equals(sha)) {
+                if (!audited(name, e.modId(), e.version(), e.sha256(), h.owner().modId(), h.owner().version(), sha)) {
                     manifestProblems.add("COMPAT_MANIFEST_VERSION_MISMATCH mod=" + h.owner().modId() + " version=" + h.owner().version()
                             + " class=" + name.replace('/', '.') + " interface=" + simple + " audited=" + e.modId() + " " + e.version());
                 }

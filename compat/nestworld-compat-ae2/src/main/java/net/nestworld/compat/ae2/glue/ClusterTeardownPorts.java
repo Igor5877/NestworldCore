@@ -14,7 +14,8 @@ import net.minecraft.world.level.Level;
  * AE2-PIN-LEAK-001 D4a: teardown bodies run by {@link ClusterTeardownCoordinator}, operating on the CAPTURED cluster
  * (never on a requester's cluster field at delivery time — a requester such as a crafting core can already belong to a
  * re-formed cluster by then). Faithful port of AE2 15.4.10 {@code CraftingBlockEntity.breakCluster} (version-locked by
- * the addon's AE2 manifest gate); the only change: each {@code Platform.spawnDrops} becomes an exactly-once drop intent.
+ * the addon's AE2 manifest gate; a later admitted release must leave CraftingBlockEntity — a mixin target — unchanged,
+ * see StartupGate); the only change: each {@code Platform.spawnDrops} becomes an exactly-once drop intent.
  */
 public final class ClusterTeardownPorts {
     private ClusterTeardownPorts() {
