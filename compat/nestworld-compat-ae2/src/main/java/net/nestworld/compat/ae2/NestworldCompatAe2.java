@@ -61,7 +61,9 @@ public final class NestworldCompatAe2 {
                         .then(Commands.literal("start").executes(c -> say(c.getSource(),
                                 net.nestworld.compat.ae2.glue.GridCensus.start(c.getSource().getServer().getTickCount()))))
                         .then(Commands.literal("report").executes(c -> say(c.getSource(),
-                                net.nestworld.compat.ae2.glue.GridCensus.report(c.getSource().getServer().getTickCount(), 15)))));
+                                net.nestworld.compat.ae2.glue.GridCensus.report(c.getSource().getServer().getTickCount(), 15))))
+                        .then(Commands.literal("devices").executes(c -> say(c.getSource(),
+                                net.nestworld.compat.ae2.glue.GridCensus.devices(c.getSource().getServer().getTickCount(), 25)))));
         if (T2Fixtures.ENABLED) {
             var fx = Commands.literal("fixture").then(Commands.literal("status").executes(c -> {
                 c.getSource().sendSuccess(() -> Component.literal(T2Fixtures.status()), false);

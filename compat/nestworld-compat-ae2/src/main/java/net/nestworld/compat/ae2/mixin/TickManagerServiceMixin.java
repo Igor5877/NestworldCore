@@ -181,7 +181,9 @@ public abstract class TickManagerServiceMixin implements NwTickManager {
         COUNTERS.t2Suspensions.increment();
         TickRateModulation mod;
         try {
+            long t0 = net.nestworld.compat.ae2.glue.GridCensus.on ? System.nanoTime() : 0;
             mod = KERNEL.suspendedUnchecked(Specs.grid(nw$grid), () -> op.call(self, tt, diff));
+            if (t0 != 0) net.nestworld.compat.ae2.glue.GridCensus.recordDevice(tt.getNode(), System.nanoTime() - t0);
         } catch (Throwable t) {
             nw$suspTt = null;
             nw$suspThread = null;

@@ -38,8 +38,42 @@ public final class GridCensus {
         c[serverEnd ? 3 : 2]++;
     }
 
+    /** device class → {nanos, calls, domainMain, domainRegion}; recorded on the thread running the device tick. */
+    private static final Map<String, long[]> DEVICE = new java.util.concurrent.ConcurrentHashMap<>();
+
+    public static void recordDevice(IGridNode node, long nanos) {
+        Object owner = node.getOwner();
+        String cls = owner == null ? "null" : owner.getClass().getName();
+        BlockEntity be = owner instanceof BlockEntity b ? b
+                : owner instanceof AEBasePart p && p.getHost() != null ? p.getHost().getBlockEntity() : null;
+        boolean main = true;
+        if (be != null && node.getLevel() != null) {
+            main = BeDomainReady.domainName(node.getLevel(), be.getBlockPos(), BeDomainReady.typeOf(be)).equals("MAIN");
+        }
+        long[] c = DEVICE.computeIfAbsent(cls, k -> new long[4]);
+        synchronized (c) {
+            c[0] += nanos;
+            c[1]++;
+            c[main ? 2 : 3]++;
+        }
+    }
+
+    public static String devices(int serverTick, int top) {
+        long ticks = Math.max(1, serverTick - startTick);
+        List<Map.Entry<String, long[]>> l = new ArrayList<>(DEVICE.entrySet());
+        l.sort((a, b) -> Long.compare(b.getValue()[0], a.getValue()[0]));
+        StringBuilder sb = new StringBuilder("device ticks over " + ticks + " ticks (domain = where the device BE would tick):");
+        for (int i = 0; i < Math.min(top, l.size()); i++) {
+            long[] c = l.get(i).getValue();
+            sb.append(String.format("%n%.3f ms/tick calls/tick=%.1f mainDomain=%d regionDomain=%d %s", c[0] / 1e6 / ticks,
+                    (double) c[1] / ticks, c[2], c[3], l.get(i).getKey()));
+        }
+        return sb.toString();
+    }
+
     public static String start(int serverTick) {
         COST.clear();
+        DEVICE.clear();
         startNanos = System.nanoTime();
         startTick = serverTick;
         on = true;
