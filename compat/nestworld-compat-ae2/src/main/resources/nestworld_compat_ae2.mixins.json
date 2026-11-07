@@ -36,6 +36,8 @@
     "CraftingCPUClusterD4aMixin",
     "QuantumClusterD4aMixin",
     "SpatialPylonClusterD4aMixin",
+    "PartNeighborAffinityMixin",
+    "HostNeighborAffinityMixin",
     "InterestManagerMixin",
     "LevelChunkMixin",
     "LevelMixin",

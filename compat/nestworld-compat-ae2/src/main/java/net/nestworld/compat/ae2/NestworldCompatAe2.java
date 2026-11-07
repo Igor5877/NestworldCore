@@ -52,6 +52,11 @@ public final class NestworldCompatAe2 {
                     c.getSource().sendSuccess(() -> Component.literal(stats()), false);
                     return 1;
                 }))
+                .then(Commands.literal("domainat")
+                        .then(Commands.argument("p", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.NeighborAffinity.domainAt(
+                                        c.getSource().getLevel(),
+                                        net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "p"))))))
                 .then(Commands.literal("gridcensus")
                         .then(Commands.literal("start").executes(c -> say(c.getSource(),
                                 net.nestworld.compat.ae2.glue.GridCensus.start(c.getSource().getServer().getTickCount()))))
@@ -268,6 +273,7 @@ public final class NestworldCompatAe2 {
         append(sb, Ae2Compat.COUNTERS);
         sb.append(' ').append(net.nestworld.compat.ae2.glue.LifeAdmission.summary());
         sb.append(' ').append(net.nestworld.compat.ae2.glue.ClusterTeardownCoordinator.summary());
+        sb.append(' ').append(net.nestworld.compat.ae2.glue.NeighborAffinity.summary());
         return sb.toString();
     }
 
