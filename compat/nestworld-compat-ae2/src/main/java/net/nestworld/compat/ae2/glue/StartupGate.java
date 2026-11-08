@@ -35,32 +35,21 @@ import org.objectweb.asm.Type;
  */
 public final class StartupGate {
     static final String TARGET = "appeng/api/networking/energy/IAEPowerStorage";
-    static final String AE2_SHA256 = "fbfee05c6674cb6b00fe425e945ca4818d41eb34069b60dcb4a36221a0390fcc";
+    static final String AE2_SHA256 = net.nestworld.compat.ae2.registry.Ae2CompatibilityRegistry.AE2_BASE_SHA256;
 
     record Allowed(String modId, String version, String sha256) {
     }
 
-    private static final Allowed AE2 = new Allowed("ae2", "15.4.10", AE2_SHA256);
-    static final String AE2_BASE = "15.4.10";
+    static final String AE2_BASE = net.nestworld.compat.ae2.registry.Ae2CompatibilityRegistry.AE2_BASE_VERSION;
     static final String SELF_MOD_ID = "nestworld_compat_ae2";
 
     /** An audited AE2 release: exact jar, and the classes (internal names) whose bytecode differs from {@link #AE2_BASE}. */
     record Ae2Release(String version, String sha256, Set<String> changedVsBase) {
     }
 
-    static final List<Ae2Release> AE2_RELEASES = List.of(
-            new Ae2Release(AE2_BASE, AE2_SHA256, Set.of()),
-            // 15.4.11: per-class bytecode compare vs 15.4.10 — 5 changed + 2 added (client overlay, tooltips, crafting
-            // terminal packet, test plots, CraftingCPUCalculator.verifyInternalStructure: same predicate, since
-            // CraftingBlockEntity.isValid() is constantly true). Evidence: docs/compat/AE2-RELEASE-EQUIV-001.md
-            new Ae2Release("15.4.11", "f2ff9ee5122b037d4e93537425ab9fbe49860fc9c3977db13b20a50ca7d30f9e", Set.of(
-                    "appeng/client/render/overlay/OverlayManager",
-                    "appeng/core/localization/Tooltips",
-                    "appeng/core/sync/packets/FillCraftingGridFromRecipePacket",
-                    "appeng/core/sync/packets/FillCraftingGridFromRecipePacket$DisplacedItem",
-                    "appeng/me/cluster/implementations/CraftingCPUCalculator",
-                    "appeng/server/testplots/CraftingTerminalTestPlots",
-                    "appeng/server/testplots/TestPlots")));
+    /** View of {@link net.nestworld.compat.ae2.registry.Ae2CompatibilityRegistry#ae2Releases()} (WP1). */
+    static final List<Ae2Release> AE2_RELEASES = net.nestworld.compat.ae2.registry.Ae2CompatibilityRegistry.ae2Releases()
+            .stream().map(d -> new Ae2Release(d.version(), d.sha256(), d.ae2ChangedVsBase())).toList();
 
     static Ae2Release ae2Release(String version, String sha) {
         for (Ae2Release r : AE2_RELEASES) {
@@ -82,57 +71,16 @@ public final class StartupGate {
         Ae2Release r = ae2Release(version, sha);
         return r != null && !r.changedVsBase().contains(className);
     }
-    private static final Allowed EXTENDEDAE = new Allowed("expatternprovider", "1.20-1.4.15-forge",
-            "999281e5e12efc7b2b947a05c698a35b315502a07a99be9e6ad3f9499821b29f");
-    private static final Allowed ADVANCEDAE = new Allowed("advanced_ae", "1.3.5-1.20.1",
-            "a580ee70f20c6465f3d7d68fa99fba91f6885efe1dc9df70b5af951ed64c211c");
-    // AE2-COMPAT-ALLOWLIST-002 (owner pack project-infinity, 2026-11-07): bytecode-audited releases
-    private static final Allowed EXTENDEDAE_1421 = new Allowed("expatternprovider", "1.20-1.4.21-forge",
-            "30fc8abe66d4b96919f0fd7b33badd0bb2013b31e2ee57f6aeaa63ffae37df4b");
-    private static final Allowed ADVANCEDAE_136 = new Allowed("advanced_ae", "1.3.6-1.20.1",
-            "e216f95ac73eb4c1e8f3db22cc3d30f37f2612a7cb1762b9ebce148d0d5657b2");
-    private static final Allowed CRAZYAE2_262 = new Allowed("crazyae2addons", "2.6.2",
-            "6a0e023beefd183fc5995b3e65b1a3392b846d8a7ff3f56c17c9092201025e22");
-    private static final Allowed NEOECOAE_2042 = new Allowed("neoecoae", "20.4.2",
-            "e6ba909b2bf4ccce2ab055a7293d487b8df1ae8239220181e0f9d4bf0cf95571");
-    private static final Allowed SOLARFLUX = new Allowed("solarflux", "20.1.11",
-            "b8460262e2e657af8ce5ea4dd85fae5e611c7685e363d58c0f4389765ff1d463");
+    /** View of {@link net.nestworld.compat.ae2.registry.Ae2CompatibilityRegistry#powerAllowlist()} (WP1):
+     *  closure class (internal name) → audited releases (any match admits; ALLOWLIST-001, ALLOWLIST-002). */
+    static final Map<String, List<Allowed>> ALLOWLIST = buildAllowlist();
 
-    /** Closure classes (internal names) and their audited owner; interfaces of the chain included. */
-    /** Audited releases per class (any match admits; ALLOWLIST-001, ALLOWLIST-002). */
-    static final Map<String, List<Allowed>> ALLOWLIST = Map.ofEntries(
-            Map.entry("appeng/blockentity/grid/AENetworkPowerBlockEntity", List.of(AE2)),
-            Map.entry("appeng/blockentity/misc/ChargerBlockEntity", List.of(AE2)),
-            Map.entry("appeng/blockentity/misc/InscriberBlockEntity", List.of(AE2)),
-            Map.entry("appeng/blockentity/networking/ControllerBlockEntity", List.of(AE2)),
-            Map.entry("appeng/blockentity/networking/CreativeEnergyCellBlockEntity", List.of(AE2)),
-            Map.entry("appeng/blockentity/networking/EnergyAcceptorBlockEntity", List.of(AE2)),
-            Map.entry("appeng/blockentity/networking/EnergyCellBlockEntity", List.of(AE2)),
-            Map.entry("appeng/blockentity/powersink/AEBasePoweredBlockEntity", List.of(AE2)),
-            Map.entry("appeng/blockentity/powersink/IExternalPowerSink", List.of(AE2)),
-            Map.entry("appeng/blockentity/storage/ChestBlockEntity", List.of(AE2)),
-            Map.entry("appeng/me/energy/GridEnergyStorage", List.of(AE2)),
-            Map.entry("appeng/parts/networking/EnergyAcceptorPart", List.of(AE2)),
-            Map.entry("com/glodblock/github/extendedae/common/tileentities/TileCaner", List.of(EXTENDEDAE, EXTENDEDAE_1421)),
-            Map.entry("com/glodblock/github/extendedae/common/tileentities/TileCircuitCutter", List.of(EXTENDEDAE, EXTENDEDAE_1421)),
-            Map.entry("com/glodblock/github/extendedae/common/tileentities/TileExCharger", List.of(EXTENDEDAE, EXTENDEDAE_1421)),
-            Map.entry("com/glodblock/github/extendedae/common/tileentities/TileExInscriber", List.of(EXTENDEDAE, EXTENDEDAE_1421)),
-            Map.entry("net/pedroksl/advanced_ae/common/entities/QuantumCrafterEntity", List.of(ADVANCEDAE, ADVANCEDAE_136)),
-            Map.entry("net/pedroksl/advanced_ae/common/entities/ReactionChamberEntity", List.of(ADVANCEDAE, ADVANCEDAE_136)),
-            Map.entry("org/zeith/solarflux/mixins/compat/ae2/SolarPanelTileMixin", List.of(SOLARFLUX)),
-            Map.entry("org/zeith/solarflux/block/SolarPanelTile", List.of(SOLARFLUX)),
-            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage1kBE", List.of(CRAZYAE2_262)),
-            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage4kBE", List.of(CRAZYAE2_262)),
-            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage16kBE", List.of(CRAZYAE2_262)),
-            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage64kBE", List.of(CRAZYAE2_262)),
-            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage256kBE", List.of(CRAZYAE2_262)),
-            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage1mBE", List.of(CRAZYAE2_262)),
-            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage4mBE", List.of(CRAZYAE2_262)),
-            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage16mBE", List.of(CRAZYAE2_262)),
-            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage64mBE", List.of(CRAZYAE2_262)),
-            Map.entry("net/oktawia/crazyae2addons/entities/EnergyStorage256mBE", List.of(CRAZYAE2_262)),
-            Map.entry("cn/dancingsnow/neoecoae/blocks/entity/ECOIntegratedWorkingStationBlockEntity", List.of(NEOECOAE_2042)),
-            Map.entry("cn/dancingsnow/neoecoae/blocks/entity/storage/ECOEnergyCellBlockEntity", List.of(NEOECOAE_2042)));
+    private static Map<String, List<Allowed>> buildAllowlist() {
+        Map<String, List<Allowed>> m = new java.util.LinkedHashMap<>();
+        net.nestworld.compat.ae2.registry.Ae2CompatibilityRegistry.powerAllowlist().forEach((c, owners) ->
+                m.put(c, owners.stream().map(o -> new Allowed(o.modId(), o.version(), o.sha256())).toList()));
+        return java.util.Collections.unmodifiableMap(m);
+    }
 
     public record Result(boolean active, List<String> problems, long scannedClasses, long millis, List<String> manifestProblems) {
     }
@@ -146,21 +94,13 @@ public final class StartupGate {
     private record ManifestEntry(String iface, String modId, String version, String sha256) {
     }
 
-    /** iface simple name + "|" + internal class name → audited entries (one per audited release). */
-    private static Map<String, List<ManifestEntry>> loadManifest(List<String> problems) {
+    /** iface simple name + "|" + internal class name → audited entries (one per audited release); view of
+     *  {@link net.nestworld.compat.ae2.registry.Ae2CompatibilityRegistry#manifestEntries} (WP1), file order kept. */
+    static Map<String, List<ManifestEntry>> loadManifest(List<String> problems) {
         Map<String, List<ManifestEntry>> m = new HashMap<>();
-        try (InputStream in = StartupGate.class.getResourceAsStream("/compat-manifest.tsv")) {
-            if (in == null) {
-                problems.add("COMPAT_MANIFEST_MISSING");
-                return m;
-            }
-            for (String line : new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).split("\n")) {
-                if (line.isBlank() || line.startsWith("#")) continue;
-                String[] f = line.split("\t");
-                m.computeIfAbsent(f[0] + "|" + f[1], k -> new ArrayList<>()).add(new ManifestEntry(f[0], f[2], f[3], f[4]));
-            }
-        } catch (IOException e) {
-            problems.add("COMPAT_MANIFEST_UNREADABLE " + e);
+        for (var r : net.nestworld.compat.ae2.registry.Ae2CompatibilityRegistry.manifestEntries(problems)) {
+            m.computeIfAbsent(r.iface() + "|" + r.internalClass(), k -> new ArrayList<>())
+                    .add(new ManifestEntry(r.iface(), r.owner().modId(), r.owner().version(), r.owner().sha256()));
         }
         return m;
     }

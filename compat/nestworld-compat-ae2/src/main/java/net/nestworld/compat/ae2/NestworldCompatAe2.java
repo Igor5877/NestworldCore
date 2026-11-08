@@ -52,6 +52,7 @@ public final class NestworldCompatAe2 {
                     c.getSource().sendSuccess(() -> Component.literal(stats()), false);
                     return 1;
                 }))
+                .then(Commands.literal("status").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.CompatStatus.render())))
                 .then(Commands.literal("domainat")
                         .then(Commands.argument("p", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
                                 .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.NeighborAffinity.domainAt(

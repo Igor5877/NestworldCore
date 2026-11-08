@@ -18,38 +18,8 @@ public final class Ae2Compat {
      * of {@code IAEPowerStorage} participants whose power-path code is audited. A mixin's runtime class
      * is its target (SolarFlux: {@code SolarPanelTile}). Subclasses are not implied.
      */
-    static final Set<String> ALLOWED_PARTICIPANTS = Set.of(
-            "appeng.blockentity.grid.AENetworkPowerBlockEntity",
-            "appeng.blockentity.misc.ChargerBlockEntity",
-            "appeng.blockentity.misc.InscriberBlockEntity",
-            "appeng.blockentity.networking.ControllerBlockEntity",
-            "appeng.blockentity.networking.CreativeEnergyCellBlockEntity",
-            "appeng.blockentity.networking.EnergyAcceptorBlockEntity",
-            "appeng.blockentity.networking.EnergyCellBlockEntity",
-            "appeng.blockentity.storage.ChestBlockEntity",
-            "appeng.me.energy.GridEnergyStorage",
-            "appeng.parts.networking.EnergyAcceptorPart",
-            "com.glodblock.github.extendedae.common.tileentities.TileExCharger",
-            "com.glodblock.github.extendedae.common.tileentities.TileExInscriber",
-            "com.glodblock.github.extendedae.common.tileentities.TileCaner",
-            "com.glodblock.github.extendedae.common.tileentities.TileCircuitCutter",
-            "net.pedroksl.advanced_ae.common.entities.QuantumCrafterEntity",
-            "net.pedroksl.advanced_ae.common.entities.ReactionChamberEntity",
-            // ALLOWLIST-002: power path = AE2's EnergyCellBlockEntity code (no power-path override)
-            "net.oktawia.crazyae2addons.entities.EnergyStorage1kBE",
-            "net.oktawia.crazyae2addons.entities.EnergyStorage4kBE",
-            "net.oktawia.crazyae2addons.entities.EnergyStorage16kBE",
-            "net.oktawia.crazyae2addons.entities.EnergyStorage64kBE",
-            "net.oktawia.crazyae2addons.entities.EnergyStorage256kBE",
-            "net.oktawia.crazyae2addons.entities.EnergyStorage1mBE",
-            "net.oktawia.crazyae2addons.entities.EnergyStorage4mBE",
-            "net.oktawia.crazyae2addons.entities.EnergyStorage16mBE",
-            "net.oktawia.crazyae2addons.entities.EnergyStorage64mBE",
-            "net.oktawia.crazyae2addons.entities.EnergyStorage256mBE",
-            // ALLOWLIST-002: AENetworkPowerBlockEntity subclass, no override; own StoredEnergyAmount cell (AE2 pattern)
-            "cn.dancingsnow.neoecoae.blocks.entity.ECOIntegratedWorkingStationBlockEntity",
-            "cn.dancingsnow.neoecoae.blocks.entity.storage.ECOEnergyCellBlockEntity",
-            "org.zeith.solarflux.block.SolarPanelTile");
+    static final Set<String> ALLOWED_PARTICIPANTS =
+            net.nestworld.compat.ae2.registry.Ae2CompatibilityRegistry.runtimeParticipants();   // WP1 view
 
     public static boolean isAllowedParticipant(Object participant) {
         return ALLOWED_PARTICIPANTS.contains(participant.getClass().getName());
