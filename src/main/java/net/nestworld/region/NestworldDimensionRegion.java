@@ -538,7 +538,11 @@ public final class NestworldDimensionRegion {
                 TickAttribution.recordChunkCost(level.dimension().location().toString(),
                         new net.minecraft.world.level.ChunkPos(nestworldBePos), nestworldTickAttrNanos);
             } catch (Throwable err) {
-                if (pins.isAutoPinEnabled()) pins.noteBlockEntityTickError(ticker.getType(), err);
+                if (pins.isAutoPinEnabled()) {
+                    BlockPos p = ticker.getPos();
+                    pins.noteBlockEntityTickError(ticker.getType(), err, AutoPinDiagnostics.context(
+                            key.location().toString(), p.getX() + "," + p.getY() + "," + p.getZ()));
+                }
                 LOGGER.warn("Block entity tick failed at {}: {}", ticker.getPos(), err.toString());
             }
         }

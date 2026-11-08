@@ -133,7 +133,17 @@ public final class NestworldPins {
      */
     public record PinReason(String kind, String key, String mechanism, int errorCount,
                              int threshold, String exceptionClass, String exceptionMessage,
-                             String topFrame, long timestampMillis) {
+                             String topFrame, long timestampMillis,
+                             // CORE-AUTOPIN-DIAGNOSTICS-001: link to the AUTO_PIN_<KIND> log line, root cause, context
+                             String reasonId, String rootCauseClass, String rootCauseMessage, String causeChain,
+                             String context, long firstFailureMillis) {
+        /** Pre-diagnostics form (old pin-reasons lines, manual / carried-over reasons). */
+        public PinReason(String kind, String key, String mechanism, int errorCount, int threshold, String exceptionClass,
+                         String exceptionMessage, String topFrame, long timestampMillis) {
+            this(kind, key, mechanism, errorCount, threshold, exceptionClass, exceptionMessage, topFrame, timestampMillis,
+                    "", "", "", "", "", 0L);
+        }
+
         /** Human-readable one-paragraph explanation, for chat/RCON output. */
         public String describe() {
             StringBuilder sb = new StringBuilder();
@@ -147,6 +157,12 @@ public final class NestworldPins {
                 }
                 if (!topFrame.isEmpty()) sb.append(" at ").append(topFrame);
             }
+            if (!rootCauseClass.isEmpty() && !rootCauseClass.equals(exceptionClass)) {
+                sb.append(" -- root cause: ").append(rootCauseClass);
+                if (!rootCauseMessage.isEmpty() && !"null".equals(rootCauseMessage)) sb.append(": ").append(rootCauseMessage);
+            }
+            if (!context.isEmpty()) sb.append(" [").append(context).append(']');
+            if (!reasonId.isEmpty()) sb.append(" reasonId=").append(reasonId);
             long ageSec = Math.max(0, (System.currentTimeMillis() - timestampMillis) / 1000L);
             sb.append(" (").append(formatAge(ageSec)).append(" ago)");
             return sb.toString();
@@ -359,15 +375,22 @@ public final class NestworldPins {
      *          may be {@code null} (report will just omit exception detail).
      */
     public boolean noteEntityTickError(EntityType<?> type, Throwable t) {
+        return noteEntityTickError(type, t, AutoPinDiagnostics.context(null, null));
+    }
+
+    /** As {@link #noteEntityTickError(EntityType, Throwable)}, with the failure context for the diagnostics. */
+    public boolean noteEntityTickError(EntityType<?> type, Throwable t, String context) {
         if (!autoPin || type == null || pinnedTypes.contains(type)) return false;
         int count = errorCounts.computeIfAbsent(type, k -> new AtomicInteger()).incrementAndGet();
         saveErrorCountsThrottled(); // persist progress -- see saveErrorCounts()/throttle javadoc
-        if (count < autoPinThreshold) return false;
         ResourceLocation id = BuiltInRegistries.ENTITY_TYPE.getKey(type);
+        AutoPinDiagnostics.onFailure("entity", String.valueOf(id), context, t, count, autoPinThreshold);
+        if (count < autoPinThreshold) return false;
         if (!pinnedTypes.add(type)) return false; // pinned concurrently
         pinnedIds.add(id);
         save();
-        recordPinReason("entity", String.valueOf(id), "own-tick error (region thread)", count, t);
+        String reasonId = AutoPinDiagnostics.onPin("entity", String.valueOf(id), context, t, count);
+        recordPinReason("entity", String.valueOf(id), "own-tick error (region thread)", count, t, reasonId, context);
         LOGGER.warn("AUTO-PINNED {} to the main thread after {} region-thread tick "
                 + "errors — it now ticks on main (vanilla parity) so a region thread "
                 + "stops crashing on it. Restore parallelism with /nestworld unpin {} "
@@ -385,13 +408,20 @@ public final class NestworldPins {
      *          may be {@code null} (report will just omit exception detail).
      */
     public boolean noteBlockEntityTickError(String typeId, Throwable t) {
+        return noteBlockEntityTickError(typeId, t, AutoPinDiagnostics.context(null, null));
+    }
+
+    /** As {@link #noteBlockEntityTickError(String, Throwable)}, with the failure context for the diagnostics. */
+    public boolean noteBlockEntityTickError(String typeId, Throwable t, String context) {
         if (!autoPin || typeId == null || pinnedBeIds.contains(typeId)) return false;
         int count = beErrorCounts.computeIfAbsent(typeId, k -> new AtomicInteger()).incrementAndGet();
         saveErrorCountsThrottled();
+        AutoPinDiagnostics.onFailure("be", typeId, context, t, count, autoPinThreshold);
         if (count < autoPinThreshold) return false;
         if (!pinnedBeIds.add(typeId)) return false; // pinned concurrently
         saveBe();
-        recordPinReason("be", typeId, "own-tick error (region thread)", count, t);
+        String reasonId = AutoPinDiagnostics.onPin("be", typeId, context, t, count);
+        recordPinReason("be", typeId, "own-tick error (region thread)", count, t, reasonId, context);
         LOGGER.warn("AUTO-PINNED block entity {} to the main thread after {} region-thread "
                 + "tick errors. Restore parallelism with /nestworld unpin {} once fixed.",
                 typeId, count, typeId);
@@ -562,8 +592,37 @@ public final class NestworldPins {
         LOGGER.info("[POSPIN SELF-TEST] {} (empty0={} twice={} stillAfterOneRelease={} goneAfterLast={})",
                 posOk ? "PASS" : "FAIL", posEmpty0, posTwice, posStill, posGone);
 
+        // CORE-AUTOPIN-DIAGNOSTICS-001: root cause through a wrapper, reasonId, context, file round-trip (new + old format)
+        boolean diagOk = false;
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("nw-pinreasons", ".txt");
+            NestworldPins pd = new NestworldPins(true, 2);
+            pd.loadPinReasons(tmp);
+            Throwable wrapped = new RuntimeException("Ticking block entity",
+                    new java.util.ConcurrentModificationException("root-cme"));
+            pd.noteBlockEntityTickError("nw:selftest_be", wrapped, "dim=test pos=1,2,3 thread=selftest");
+            pd.noteBlockEntityTickError("nw:selftest_be", wrapped, "dim=test pos=1,2,3 thread=selftest");
+            PinReason r = pd.getPinReason("be", "nw:selftest_be");
+            java.nio.file.Files.writeString(tmp, java.nio.file.Files.readString(tmp)
+                    + "be:nw:legacy|own-tick error (region thread)|20|20|x.Y|msg|frame|1000\n");
+            NestworldPins pl = new NestworldPins(true, 2);
+            pl.loadPinReasons(tmp);
+            PinReason back = pl.getPinReason("be", "nw:selftest_be"), legacy = pl.getPinReason("be", "nw:legacy");
+            diagOk = r != null && r.reasonId().startsWith("AP-")
+                    && r.rootCauseClass().equals("java.util.ConcurrentModificationException")
+                    && r.causeChain().contains("RuntimeException") && r.causeChain().contains("root-cme")
+                    && r.context().contains("pos=1,2,3") && r.firstFailureMillis() > 0
+                    && back != null && back.reasonId().equals(r.reasonId())
+                    && back.rootCauseClass().equals(r.rootCauseClass())
+                    && legacy != null && legacy.reasonId().isEmpty() && legacy.errorCount() == 20;
+            java.nio.file.Files.deleteIfExists(tmp);
+        } catch (Exception e) {
+            LOGGER.warn("[AUTOPIN-DIAG SELF-TEST] exception", e);
+        }
+        LOGGER.info("[AUTOPIN-DIAG SELF-TEST] {}", diagOk ? "PASS" : "FAIL");
+
         boolean ok = !below && atThreshold && isPinnedNow && idempotent
-                && !beBelow && beAt && beIsPinned && beIdem && posOk;
+                && !beBelow && beAt && beIsPinned && beIdem && posOk && diagOk;
         LOGGER.info("[AUTOPIN SELF-TEST] {} (entity: below={} at={} pinned={} idem={}; "
                 + "be: below={} at={} pinned={} idem={})", ok ? "PASS" : "FAIL",
                 !below, atThreshold, isPinnedNow, idempotent,
@@ -940,6 +999,11 @@ public final class NestworldPins {
      *  at most one per distinct mod/type/BE — that this doesn't need the throttle
      *  {@link #saveErrorCountsThrottled} uses for the much hotter per-error counters). */
     private void recordPinReason(String kind, String key, String mechanism, int count, Throwable t) {
+        recordPinReason(kind, key, mechanism, count, t, "", "");
+    }
+
+    private void recordPinReason(String kind, String key, String mechanism, int count, Throwable t, String reasonId,
+                                 String context) {
         String exClass = "";
         String exMsg = "";
         String topFrame = "";
@@ -950,9 +1014,19 @@ public final class NestworldPins {
             StackTraceElement[] trace = t.getStackTrace();
             if (trace.length > 0) topFrame = trace[0].toString().replace('|', '/');
         }
+        Throwable root = AutoPinDiagnostics.rootCause(t);
+        String rootClass = root == null ? "" : root.getClass().getName();
+        String rootMsg = root == null || root.getMessage() == null ? "" : clean(root.getMessage());
+        Long first = AutoPinDiagnostics.firstFailureMillis(kind, key);
         pinReasons.put(kind + ":" + key, new PinReason(kind, key, mechanism, count,
-                autoPinThreshold, exClass, exMsg, topFrame, System.currentTimeMillis()));
+                autoPinThreshold, exClass, exMsg, topFrame, System.currentTimeMillis(), reasonId == null ? "" : reasonId,
+                rootClass, rootMsg, t == null ? "" : AutoPinDiagnostics.chain(t), clean(context == null ? "" : context),
+                first == null ? 0L : first));
         savePinReasons();
+    }
+
+    private static String clean(String s) {
+        return s.replace('|', '/').replace('\n', ' ').replace('\r', ' ');
     }
 
     /** Reason for one pinned key ({@code "entity:minecraft:zombie"}, {@code "be:..."},
@@ -980,7 +1054,7 @@ public final class NestworldPins {
             for (String line : Files.readAllLines(file)) {
                 String trimmed = line.trim();
                 if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
-                String[] parts = trimmed.split("\\|", 8);
+                String[] parts = trimmed.split("\\|", 14);
                 if (parts.length < 8) continue;
                 int colon = parts[0].indexOf(':');
                 if (colon < 0) continue;
@@ -990,8 +1064,14 @@ public final class NestworldPins {
                     int count = Integer.parseInt(parts[2]);
                     int threshold = Integer.parseInt(parts[3]);
                     long ts = Long.parseLong(parts[7]);
-                    pinReasons.put(kind + ":" + key, new PinReason(kind, key, parts[1], count,
-                            threshold, parts[4], parts[5], parts[6], ts));
+                    if (parts.length >= 14) {
+                        pinReasons.put(kind + ":" + key, new PinReason(kind, key, parts[1], count, threshold, parts[4],
+                                parts[5], parts[6], ts, parts[8], parts[9], parts[10], parts[11], parts[12],
+                                Long.parseLong(parts[13])));
+                    } else {
+                        pinReasons.put(kind + ":" + key, new PinReason(kind, key, parts[1], count,
+                                threshold, parts[4], parts[5], parts[6], ts));
+                    }
                 } catch (NumberFormatException e) {
                     // skip malformed line
                 }
@@ -1008,10 +1088,13 @@ public final class NestworldPins {
             if (parent != null) Files.createDirectories(parent);
             List<String> lines = new ArrayList<>();
             lines.add("# NestWorld auto-pin reasons — why each pin fired, for /nestworld pinreason.");
-            lines.add("# Format: kind:key|mechanism|errorCount|threshold|exceptionClass|exceptionMessage|topFrame|timestampMillis");
+            lines.add("# Format: kind:key|mechanism|errorCount|threshold|exceptionClass|exceptionMessage|topFrame|timestampMillis"
+                    + "|reasonId|rootCauseClass|rootCauseMessage|causeChain|context|firstFailureMillis");
             pinReasons.forEach((k, reason) -> lines.add(k + "|" + reason.mechanism() + "|"
                     + reason.errorCount() + "|" + reason.threshold() + "|" + reason.exceptionClass()
-                    + "|" + reason.exceptionMessage() + "|" + reason.topFrame() + "|" + reason.timestampMillis()));
+                    + "|" + reason.exceptionMessage() + "|" + reason.topFrame() + "|" + reason.timestampMillis()
+                    + "|" + reason.reasonId() + "|" + reason.rootCauseClass() + "|" + reason.rootCauseMessage()
+                    + "|" + reason.causeChain() + "|" + reason.context() + "|" + reason.firstFailureMillis()));
             Files.write(pinReasonsFile, lines);
         } catch (IOException e) {
             LOGGER.warn("Could not write pin-reasons file {}: {}", pinReasonsFile, e.toString());

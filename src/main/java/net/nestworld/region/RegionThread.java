@@ -1152,7 +1152,10 @@ public class RegionThread extends Thread {
                 // Feed the auto-pin detector: a type that keeps throwing here
                 // gets pinned to main (no-op unless -Dnestworld.autoPin=true).
                 if (NestworldRegionSystem.isInitialised()) {
-                    NestworldRegionSystem.get().getPins().noteEntityTickError(entity.getType(), t);
+                    NestworldRegionSystem.get().getPins().noteEntityTickError(entity.getType(), t,
+                            AutoPinDiagnostics.context(entity.level().dimension().location().toString(),
+                                    entity.blockPosition().getX() + "," + entity.blockPosition().getY() + ","
+                                            + entity.blockPosition().getZ() + " uuid=" + entity.getUUID()));
                 }
             }
             // Check the budget every 4 entities, not every 16: a single dense-pack
