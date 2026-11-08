@@ -115,6 +115,9 @@ GRID_ISOLATION = PASS
 GRID_ISOLATION: no global FIFO for all grids. Each grid has its own queue / accounting; the MAIN commit scheduler serves
 grids fairly. Acceptance: huge grid overloaded + small grid normal → small grid missed = 0, throughput unchanged,
 backlog does not grow, no starvation.
+Mandatory per-grid metrics: `gridId, scheduled, completed, missed, transit backlog, main commit time, queue latency
+p50/p95/p99/p100, budget exhausted, starvation ticks`.
+AE2 order: MAIN-hop facade audit → review → WP3-B transit → GRID_ISOLATION design → WP4 → WP5.
 
 WP4 first scope: AE2 Import Bus, AE2 Export Bus, approved ExtendedAE equivalents — not the whole ecosystem. Profiling
 basis: AE2 machines ~10.9 ms/tick, I/O buses ~9.7 ms/tick, region-eligible ~80–87 % → ~7.8–8.4 ms/tick theoretical;
