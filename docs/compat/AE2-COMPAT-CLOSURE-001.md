@@ -1182,3 +1182,23 @@ MB ISE                            0 observed with D1 + D2 + D4a; all static-flag
                                   (STRONGLY INDICATED by clusterDestroyOffMain 0) — AE2-MB-MODIFICATION-001 re-measure
 production / canary               NOT APPROVED (canary prerequisites: owner review, hold-time telemetry in place)
 ```
+
+#### Final closure gate (owner ТЗ 2026-11-09) — mapping to current state
+
+Chain: D1 → D1 PASS → D4a audit → D4a impl → D4a PASS → integrated PASS → 30 min soak → restart PASS →
+AE2-COMPAT-PRODUCTION-VERIFIED → stop AE2 correctness research, move to TPS. Scope frozen (§0, §28).
+
+Target check (§1): rig H401BEDOM et al. AE2 15.4.10 sha256 `fbfee05c…` = ТЗ target (CONFIRMED). Live / pi-smoke run
+AE2 15.4.11 `f2ff9ee5…` (admitted by AE2-RELEASE-EQUIV-001). Addon is 0.7.6 (ТЗ names 0.5.0 as baseline; D1 = 0.6.0,
+D4a = 0.7.0 are already in it).
+
+| ТЗ step | state | gap |
+|---|---|---|
+| A baseline push | D2 pushed long ago (0a0885bb2…); D1 / D4a pushed a2e4105e6 | none |
+| B/C D1 | IMPLEMENTED e6f3ff2b2 (0.6.0); fixture 9a415e4b7; S1 0 in 6/6, max wait 4 ms; owner decisions (17) "D1 closed" | (1) §5 says nested / in-T0 / invalid-identity → fail closed + diagnostic event; code today proceeds unlocked and only counts (`lifeAdmissionSkippedInSection/Nested`, as approved in the D1 lock proof §20); observed 0 in all runs. (2) §6 names `…RejectedNested/RejectedT0` and wait p50/p95/p99: hold percentiles exist, wait percentiles do not |
+| D D4a audit | DONE (AE2-PIN-LEAK-001-D4a-audit.md) | none |
+| E D4a | IMPLEMENTED 999a66806 (0.7.0), exactly-once coordinator | §17 counter names / §13 terminal outcomes not in the ТЗ vocabulary (claimed / duplicate / skippedReassigned / offDomain / fallback) — mapping or aliases needed |
+| F D4a fixtures | PASS ×4: CONCURRENT (=F3), REBUILD (=F4), NEGATIVE control; churn clusterDestroyOffMain 0 ×3 | F1 single-domain normal, F2 explicit REGION-interior + MAIN-band members, F5 split/merge while pending, F6 unload/reload while pending — not explicit scenarios yet. Status "proposed VERIFIED, pending owner review" |
+| G integrated fixture | NOT STARTED | composite regression of existing fixtures + churn + split/merge + unload/reload |
+| H 30 min soak | NOT STARTED | where: rig 15.4.10 vs pack copy 15.4.11 |
+| I restart smoke | NOT STARTED | — |
