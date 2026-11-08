@@ -67,3 +67,26 @@ served from a MAIN-published snapshot where the caller only reads, writes deferr
    the drain per bus keeps it per batch.
 6. REGION transit code must not call `KeyCounter`-based snapshot / provider / pattern code (molecularmanipulator global
    mixins, mae2 statics, neoecoae / AppMek static caches).
+
+## 4. Owner decisions 2026-11-09
+
+```
+WP1                         CLOSED / VERIFIED (E1/E2/E3 0 mismatches — docs/compat/AE2-COMPAT-WP1-REGISTRY-RESULTS.md)
+WP3-A.1                     CLOSED (storage MAIN-owned)
+WP3-A.2                     CLOSED / AUDIT VERIFIED (29+ dangerous ingress paths classified) — not "production solved"
+temporary pinmod ×5         ACCEPTED mitigation (~+1 ms idle)
+AE2-MAIN-HOP-FACADE-001     AUDIT/DESIGN APPROVED; IMPLEMENTATION NOT YET APPROVED
+WP3-B transit               after the facade contract audit
+CORE-AUTOPIN-DIAGNOSTICS-001 APPROVED FOR IMPLEMENTATION
+```
+Architecture conclusion: no single mechanism makes the AE2 ecosystem region-safe — at least three classes:
+REGION↔TRANSIT↔MAIN for buses, MAIN-hop for deferrable ingress, FAIL-CLOSED / own ownership model for synchronous
+capability calls.
+
+AE2-MAIN-HOP-FACADE-001 — every D-entry additionally classified by CALL CONTRACT:
+`ASYNC_SIDE_EFFECT | SYNC_VOID | SYNC_RESULT | SYNC_MUTATING_RESULT`. Allowed decisions: ASYNC / deferrable →
+MAIN_CALLBACK; synchronous call with a safe snapshot / read model → SNAPSHOT / typed facade (after proof); synchronous
+mutation needing an immediate result → never deferred → FAIL_CLOSED or an explicit ownership design; unknown contract →
+FAIL_CLOSED. Forbidden: "region call → enqueue MAIN → return a fake / default value". Priority entries: JeiSyncManager,
+AdvancedAE armor, crazyae2addons wireless terminal, TagInventoryME, AppliedFlux Flux Accessor (foreign pipes / cables
+expected to be mostly SYNC_RESULT).
