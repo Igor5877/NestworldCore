@@ -81,10 +81,12 @@ public final class LifeAdmission {
         if (BeDomainReady.currentThreadIn(level, pos, type) || !BeDomainReady.pinnedByPolicy(type)) return op.get();
         if (Ae2Compat.KERNEL.inSection()) {
             COUNTERS.lifeAdmissionSkippedInSection.increment();
+            warnSkipped("inSection", level, pos, type, life, newState);
             return op.get();
         }
         if (DEPTH.get()[0] > 0) {
             COUNTERS.lifeAdmissionSkippedNested.increment();
+            warnSkipped("nested(depth=" + DEPTH.get()[0] + ")", level, pos, type, life, newState);
             return op.get();
         }
         COUNTERS.lifeAdmissionAttempts.increment();
@@ -125,6 +127,37 @@ public final class LifeAdmission {
             IN_ADMISSION.decrementAndGet();
             LAST_END_NANOS.set(System.nanoTime());
         }
+    }
+
+    /** Rate limit for the skipped-admission WARN: first {@link #SKIP_WARN_BURST} with stack, then one per minute. */
+    static final int SKIP_WARN_BURST = 5;
+    static final long SKIP_WARN_INTERVAL_NANOS = 60_000_000_000L;
+    private static final AtomicInteger SKIP_WARNS = new AtomicInteger();
+    private static final AtomicLong SKIP_WARN_LAST = new AtomicLong(Long.MIN_VALUE / 2);
+
+    /**
+     * Owner contract 2026-11-09 (closure gate): an unexpected nested / in-section removal keeps the existing fallback
+     * (unlocked, as before — no gameplay change) but leaves full attribution. Any non-zero skipped counter FAILS the
+     * closure / production gate.
+     */
+    private static void warnSkipped(String reason, ServerLevel level, BlockPos pos, String type, NwAeBlockEntity life,
+            BlockState newState) {
+        long now = System.nanoTime();
+        int n = SKIP_WARNS.incrementAndGet();
+        if (n > SKIP_WARN_BURST) {
+            long last = SKIP_WARN_LAST.get();
+            if (now - last < SKIP_WARN_INTERVAL_NANOS || !SKIP_WARN_LAST.compareAndSet(last, now)) return;
+        } else {
+            SKIP_WARN_LAST.set(now);
+        }
+        String msg = "[nestworld-compat-ae2] D1_ADMISSION_SKIPPED reason=" + reason + " type=" + type + " dim="
+                + level.dimension().location() + " pos=" + pos.toShortString() + " newState=" + newState + " cbGen="
+                + life.nw$cbGen() + " removed=" + life.nw$removed() + " thread=" + Thread.currentThread().getName()
+                + " hostDomain=" + BeDomainReady.domainName(level, pos, type) + " skippedInSection="
+                + COUNTERS.lifeAdmissionSkippedInSection.sum() + " skippedNested=" + COUNTERS.lifeAdmissionSkippedNested.sum()
+                + " (closure gate: non-zero = FAIL)";
+        if (n <= SKIP_WARN_BURST) Ae2Compat.LOG.warn(msg, new Throwable("D1 admission skipped here"));
+        else Ae2Compat.LOG.warn(msg + " (rate-limited, no stack)");
     }
 
     private static void recordHold(long held, String type, BlockPos pos) {
@@ -170,7 +203,8 @@ public final class LifeAdmission {
         return "lifeAdmission{enabled=" + ENABLED + " attempts=" + COUNTERS.lifeAdmissionAttempts.sum() + " contended="
                 + COUNTERS.lifeAdmissionContended.sum() + " completed=" + COUNTERS.lifeAdmissionCompleted.sum()
                 + " totalWaitMs=" + COUNTERS.lifeAdmissionWaitNanos.sum() / 1_000_000 + " maxWaitMs="
-                + COUNTERS.lifeAdmissionMaxWaitNanos.get() / 1_000_000 + " p50<=" + us(percentileNanos(0.50)) + " p95<="
+                + COUNTERS.lifeAdmissionMaxWaitNanos.get() / 1_000_000 + " maxWait=" + us(COUNTERS.lifeAdmissionMaxWaitNanos.get())
+                + " wait p50<=" + us(percentileNanos(0.50)) + " p95<="
                 + us(percentileNanos(0.95)) + " p99<=" + us(percentileNanos(0.99)) + " longWaits(>=50ms)="
                 + COUNTERS.lifeAdmissionLongWaits.sum() + " secondWaits(>=1s)=" + COUNTERS.lifeAdmissionSecondWaits.sum()
                 + " hold{totalMs=" + COUNTERS.lifeAdmissionHoldNanos.sum() / 1_000_000 + " maxMs="
