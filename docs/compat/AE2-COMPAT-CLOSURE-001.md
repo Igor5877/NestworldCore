@@ -1202,3 +1202,77 @@ D4a = 0.7.0 are already in it).
 | G integrated fixture | NOT STARTED | composite regression of existing fixtures + churn + split/merge + unload/reload |
 | H 30 min soak | NOT STARTED | where: rig 15.4.10 vs pack copy 15.4.11 |
 | I restart smoke | NOT STARTED | — |
+
+#### Owner decisions 2026-11-09 (closure tail)
+
+```
+D1 nested / in-T0           runtime fallback unchanged (no block-mutation refusal); rate-limited attributed WARN
+                            D1_ADMISSION_SKIPPED; closure / production gate FAILS if skippedNested or skippedInSection > 0
+counters / states           not renamed; normative mapping below; D1 wait p50/p95/p99/max reported
+D4a                         only F1, F2, F5, F6 added; F3 (CONCURRENT) and F4 (REBUILD) accepted evidence, not repeated
+versions                    reference correctness target  AE2 15.4.10  sha256 fbfee05c6674cb6b00fe425e945ca4818d41eb34069b60dcb4a36221a0390fcc
+                            production validation target  AE2 15.4.11  sha256 f2ff9ee5122b037d…  (admitted by AE2-RELEASE-EQUIV-001)
+                            deterministic fixtures on 15.4.10 (rig H401BEDOM); H soak + I restart smoke on a production-pack copy (15.4.11)
+frozen until PRODUCTION-VERIFIED   AE2-MAIN-HOP-FACADE-001, WP3-B, WP4 — no new AE2 workstreams
+order                       D1 telemetry → D4a F1/F2/F5/F6 → G integrated → H 30 min soak → I restart smoke →
+                            AE2-COMPAT-PRODUCTION-VERIFIED → STOP AE2 correctness work
+failure rule                a failing final test reopens only the causal gate (D1 / D4a / a proven closed gate)
+```
+
+Normative counter / state mapping (ТЗ name → implemented name; semantics identical unless noted):
+
+| ТЗ (§6, §13, §17) | implemented |
+|---|---|
+| lifeAdmissionAttempts / Contended / Completed / WaitNanos / MaxWaitNanos | same names |
+| lifeAdmissionRejectedNested | `lifeAdmissionSkippedNested` (fallback proceeds unlocked + WARN; gate: must be 0) |
+| lifeAdmissionRejectedT0 | `lifeAdmissionSkippedInSection` (same) |
+| wait p50 / p95 / p99 / max | `lifeAdmission{… maxWait= wait p50<= p95<= p99<=}` (log2 histogram upper bounds) |
+| clusterIntentCreated | `tdRequests` (every request) ; logical operations = `tdClaimed` |
+| clusterIntentExecuted | `tdInline + tdRanInDomain` (+ `tdFallback`, server thread, counted) |
+| clusterIntentAlreadyCompleted | `tdDuplicate` (claim lost: the cluster instance is already claimed) |
+| clusterIntentStale | per-member: `tmSkippedReassigned` (member re-formed into another cluster; old intent skipped) |
+| clusterIntentInvariantRejected | `topoInvariantFailure` (topology); teardown has no separate reject path |
+| clusterIntentFailed | `tdFallback` / `drFallback` (delivered on the server thread, never dropped) + `drItemsRetained` (logged) |
+| clusterHostMutationCreated / Executed | `tmIntents` / `tmIntents − tmSkippedReassigned` |
+| clusterHostMutationStale | `tmSkippedReassigned` |
+| host mutation off-domain | `tmOffDomain`; teardown transition off-domain `tdOffDomain` |
+| terminal EXECUTED / STALE_CANCELLED / ALREADY_COMPLETED / REJECTED_INVARIANT / FAILED | ranInDomain or inline / skippedReassigned / duplicate / topoInvariant / fallback + retained |
+| accounting `created = terminal + outstanding` | `tdClaimed = tdInline + tdRanInDomain + tdFallback + held/in-flight`; drops `captured = delivered + retained` |
+
+#### D1 diagnostic telemetry — evidence (2026-11-09)
+
+Addon 0.7.7 (fa9dac93d). Rig H401BEDOM (Core 47.4.401, AE2 15.4.10 `fbfee05c…`), production pins, fresh world.
+`evidence-be-ready/d1-diag-077-s1`: S1 fixture PASS — POS (D1 on) `writtenSeenByMain=false initDone=true`; NEG (D1 off)
+reproduces S1 by design (the run's only S1_CCE / tick failure / crash report, as in s1-run2/3). `D1_ADMISSION_SKIPPED`
+WARN lines 0 (every skip logs, first 5 with stack) ⇒ skippedNested = skippedInSection = 0. Wait (deliberate 2 s fixture
+hold): max 2001 ms; steady-state waits come from G / H.
+
+#### D4a F1 / F2 / F5 / F6 — evidence (2026-11-09)
+
+Fixture 121234b04 (`nwcompatae2 topology teardownclosure <band pos>`), addon 0.7.7 jar `c14313f3…`, rig H401BEDOM.
+
+```
+                         unpinned (tdc-unpinned-run2)          production pins (tdc-prodpins-run2)
+F1 normal                PASS  claims 1, items 17/17/17        PASS  claims 1, items 17/17/17
+F2 cross-domain          PASS  band MAIN + interior REGION#1,  N/A  (all crafting storage MAIN under prod pins)
+                               member intents 3, offDomain 0
+F5 split pending         PASS  owner REGION#1 -> REGION#3      PASS  owner REGION#1 -> REGION#3
+F5 merge pending         PASS  owner REGION#3 -> REGION#4      PASS  owner REGION#3 -> REGION#4
+F6a unload (non-core)    PASS  delivered while unloaded; world 23 + reloaded 0 = 23; ghost mutation none
+F6b unload (core)        PASS  same                            PASS  same
+every case               old cluster claimed exactly once; tdOffDomain 0; tmOffDomain 0; retained 0; fallback 0
+run                      S1/S2/S3 0; tick failures 0; crashes 0; lifeAdmission skipped 0/0
+```
+
+Fixture-harness defects fixed before the valid runs (not D4a defects): tdc-unpinned-run1 counted drops in an 8-block box
+while the items fell (y=120 is air at z=2000) and parsed a band domain as a region id; tdc-prodpins-run1 used a spawn
+chunk that cannot unload (kept as `invalid-tdc-prodpins-run1-spawnchunk`).
+
+F6 note (HYPOTHESIS, not reproduced, not pursued per §26): conservation in F6 holds because the surviving member
+re-forms (D2 neighbour callback, ≤ 1 tick) before the chunk is saved, so the old cluster's items exist only in the held
+teardown. A save inside that ≤ 1-tick window would persist the old cluster in the core's NBT and also drop it.
+
+```
+AE2-I2-CLUSTER-TEARDOWN-001 (D4a)    CLOSED / VERIFIED   (F1–F6: F3/F4 2026-10-31, F1/F2/F5/F6 2026-11-09)
+AE2-I1-LIFECYCLE-ADMISSION-001 (D1)  CLOSED / VERIFIED   (2026-10-31; diagnostic telemetry 0.7.7, skipped 0)
+```
