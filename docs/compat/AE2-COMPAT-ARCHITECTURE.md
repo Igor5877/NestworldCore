@@ -78,3 +78,51 @@ short validate/commit; never storage lock → foreign capability → world mutat
 See `docs/GAMEPLAY_EQUIVALENCE.md`. Every WP gate adds `GAMEPLAY_EQUIVALENCE = PASS` (reference Forge result == NestWorld
 result under the same logical tick schedule). Rejected as fixes: AE2 bus tick-rate changes, gameplay throttling,
 mob-spawn changes, player restrictions.
+
+## 6. Owner plan 2026-11-09 (two parallel tracks)
+
+Core track (generic, see `docs/CORE-TRACK-PLAN.md`) and AE2 runtime track run in parallel.
+
+```
+AE2 RUNTIME TRACK
+WP1  CompatibilityRegistry        IMPLEMENTED; static equivalence PASS; E3 + 0 activation mismatches → CLOSED / VERIFIED
+WP3-A.1 storage ownership         DONE — AE2 network storage = MAIN-owned; no big storage lock
+WP3-A.2 ecosystem audit           CLOSED / AUDIT VERIFIED (16 mods, D1–D29)
+AE2-MAIN-HOP-FACADE-001           AUDIT/DESIGN IN PROGRESS (next gate)
+WP3-B transit protocol            after facade
+WP4  MachineTickDispatcher        after WP3
+WP5  conservation / gameplay / isolation tests
+ExtendedAE + ecosystem production gates
+```
+
+WP3-A.2 integration classes (no universal `enqueueToMain()`):
+1. BE machine ingress → pin / REGION / TRANSIT per class
+2. player / async ingress → MAIN-hop candidate
+3. foreign capability ingress → sync-contract audit
+
+MAIN-hop facade: per ingress call contract ASYNC_SIDE_EFFECT / SYNC_VOID / SYNC_RESULT / SYNC_MUTATING_RESULT, then
+decision MAIN_CALLBACK / SNAPSHOT / typed synchronous facade / FAIL_CLOSED. Critical: JeiSyncManager, AdvancedAE armor,
+crazyae2addons wireless terminal, TagInventoryME, AppliedFlux Flux Accessor.
+
+WP3-B transit (import/export buses): IMPORT REGION external → TRANSIT → MAIN storage; EXPORT MAIN storage → TRANSIT →
+REGION external; 0–2 ticks. Hard invariants:
+```
+scheduled == reference   completed == reference   missed == 0
+duplicate == 0           lost == 0                throughput == reference
+latency p100 <= 2 ticks  transit backlog bounded  no accumulated latency
+GRID_ISOLATION = PASS
+```
+GRID_ISOLATION: no global FIFO for all grids. Each grid has its own queue / accounting; the MAIN commit scheduler serves
+grids fairly. Acceptance: huge grid overloaded + small grid normal → small grid missed = 0, throughput unchanged,
+backlog does not grow, no starvation.
+
+WP4 first scope: AE2 Import Bus, AE2 Export Bus, approved ExtendedAE equivalents — not the whole ecosystem. Profiling
+basis: AE2 machines ~10.9 ms/tick, I/O buses ~9.7 ms/tick, region-eligible ~80–87 % → ~7.8–8.4 ms/tick theoretical;
+target ~5–8 ms/tick off MAIN with no bus-speed or gameplay change.
+
+WP5 acceptance (all together): ITEM / ENERGY / FLUID (if applicable) CONSERVATION, GAMEPLAY_EQUIVALENCE,
+TIMING_TOLERANCE, GRID_ISOLATION = PASS; deadlock = duplicate = lost = missed = 0.
+
+Final shape: AE2 ecosystem → nestworld-compat-ae2 (policy: REGION / TRANSIT / MAIN-hop / MAIN / FAIL-CLOSED) →
+NestWorldCore. A concurrency/runtime adaptation layer for AE2 + ExtendedAE + compatible addons, with per-grid isolation
+and unchanged gameplay.
