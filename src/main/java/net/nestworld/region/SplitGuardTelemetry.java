@@ -67,6 +67,7 @@ public final class SplitGuardTelemetry {
 
     void ghostBeginCall() {
         callRegion.clear();
+        callMissed.clear();
     }
 
     /** True for 1 save in {@value #UNCHANGED_SAMPLE}: the caller then passes the previous tag to {@link #ghostSample}. */
@@ -91,8 +92,11 @@ public final class SplitGuardTelemetry {
         t[2] += nanos;
     }
 
+    private final java.util.Set<Integer> callMissed = new java.util.HashSet<>();
+
     void ghostLockMiss(int regionId) {
         regionGhost.computeIfAbsent(regionId, k -> new double[3])[2]++;
+        callMissed.add(regionId);
     }
 
     void ghostEndCall(long totalNanos, long nbtNanos) {
@@ -105,6 +109,7 @@ public final class SplitGuardTelemetry {
         var it = regionGhost.entrySet().iterator();
         while (it.hasNext()) {
             var e = it.next();
+            if (callMissed.contains(e.getKey())) continue;   // snapshot skipped (lock miss): cost unknown, keep the estimate
             long[] c = callRegion.get(e.getKey());
             double ms = c == null ? 0 : c[0] / 1e6;
             double[] g = e.getValue();
@@ -222,6 +227,11 @@ public final class SplitGuardTelemetry {
     }
 
     private final Map<Integer, Verdict> lastVerdict = new HashMap<>();
+    private final Map<Integer, Long> lastVetoLog = new HashMap<>();
+    /** Stage 3: regret merges still to be done (merge can fail on the 2 ms split lock); retried each tick ≤ 60 s. */
+    private record Regret(WorldRegion a, WorldRegion b, long untilNanos, String line) {
+    }
+    private final List<Regret> regrets = new ArrayList<>();
     /** key = dim|minX,minZ,maxX,maxZ|axis|cut → expiry nanos */
     private final Map<String, Long> badLines = new HashMap<>();
     private long enforceVetoes, enforceRedirects, regretMerges;
@@ -257,7 +267,12 @@ public final class SplitGuardTelemetry {
         }
         if (v == null || v.axis() == null) {
             enforceVetoes++;
-            LOGGER.info("SPLIT_GUARD_ENFORCE region=#{} reason={} → VETO (no line with net > {} ms)", region.getId(), reason, SHADOW_MARGIN_MS);
+            Long lastLog = lastVetoLog.get(region.getId());
+            if (lastLog == null || System.nanoTime() - lastLog > SHADOW_INTERVAL_NANOS) {
+                lastVetoLog.put(region.getId(), System.nanoTime());
+                LOGGER.info("SPLIT_GUARD_ENFORCE region=#{} reason={} → VETO (no line with net > {} ms; {} vetoes so far)",
+                        region.getId(), reason, SHADOW_MARGIN_MS, enforceVetoes);
+            }
             return null;
         }
         if (scorerAxis != v.axis() || scorerCut == null || scorerCut != v.cut()) enforceRedirects++;
@@ -372,14 +387,20 @@ public final class SplitGuardTelemetry {
             remember("SPLIT_GUARD_NOT_APPLIED region=#" + p.parentId());
             return;
         }
+        // key from the line actually applied (RegionTree clamps the requested cut into the region)
+        WorldRegion c0 = children[0], c1 = children[1];
+        boolean xAxis = c0.getMinChunkZ() == c1.getMinChunkZ() && c0.getMaxChunkZ() == c1.getMaxChunkZ();
+        String actualKey = lineKey(Math.min(c0.getMinChunkX(), c1.getMinChunkX()), Math.min(c0.getMinChunkZ(), c1.getMinChunkZ()),
+                Math.max(c0.getMaxChunkX(), c1.getMaxChunkX()), Math.max(c0.getMaxChunkZ(), c1.getMaxChunkZ()),
+                xAxis ? SplitAxis.X : SplitAxis.Z, xAxis ? c0.getMaxChunkX() : c0.getMaxChunkZ());
         pending.add(new Pending(System.nanoTime() + POST_SPLIT_SECONDS * 1_000_000_000L, p.parentId(),
-                new int[]{children[0].getId(), children[1].getId()}, children, p.lineKey(), p.tR(), p.ghostBefore(), p.mainBefore(),
+                new int[]{children[0].getId(), children[1].getId()}, children, actualKey, p.tR(), p.ghostBefore(), p.mainBefore(),
                 p.parentGhostBefore(), p.msptBefore(), p.predGain(), p.predG(), p.predM(), p.predNet(), p.line()));
     }
 
     /** Once per main tick (cheap: pending list is usually empty). */
     void tick() {
-        if (pending.isEmpty()) return;
+        if (pending.isEmpty() && regrets.isEmpty()) return;
         long now = System.nanoTime();
         var it = pending.iterator();
         while (it.hasNext()) {
@@ -410,16 +431,47 @@ public final class SplitGuardTelemetry {
             remember(p.line());
             remember(line);
             double msptNet = p.msptBefore() - msptAfter;
-            if (ENFORCE && intact && msptNet < -REGRET_MS) {
+            // regret only when BOTH signals agree: MSPT alone is noisy on a shared host, the component net alone misses
+            // effects outside the measured terms
+            if (ENFORCE && intact && msptNet < -REGRET_MS && net < -REGRET_MS) {
                 badLines.put(p.lineKey(), System.nanoTime() + BAD_LINE_TTL_NANOS);
-                WorldRegion merged = merger == null ? null : merger.apply(a, b);
-                if (merged != null) regretMerges++;
                 String r = String.format(java.util.Locale.ROOT,
-                        "SPLIT_GUARD_REGRET parent=#%d children=#%d/#%d MSPT net %+.1f ms < -%.1f → regret merge %s; line %s blocked for %d min",
-                        p.parentId(), p.childIds()[0], p.childIds()[1], msptNet, REGRET_MS,
-                        merged == null ? "FAILED (locks / not siblings; retry on next trigger is not automatic)" : "-> #" + merged.getId(),
-                        p.lineKey(), BAD_LINE_TTL_NANOS / 60_000_000_000L);
-                LOGGER.warn(r);
+                        "SPLIT_GUARD_REGRET parent=#%d children=#%d/#%d MSPT net %+.1f ms, component net %+.1f ms (< -%.1f) → regret merge queued; line %s blocked for %d min",
+                        p.parentId(), p.childIds()[0], p.childIds()[1], msptNet, net, REGRET_MS, p.lineKey(),
+                        BAD_LINE_TTL_NANOS / 60_000_000_000L);
+                LOGGER.info(r);
+                remember(r);
+                regrets.add(new Regret(a, b, System.nanoTime() + 60_000_000_000L, p.lineKey()));
+            } else if (ENFORCE && intact && (msptNet < -REGRET_MS || net < -REGRET_MS)) {
+                String r = String.format(java.util.Locale.ROOT, "SPLIT_GUARD_KEEP parent=#%d signals disagree (MSPT net %+.1f, component net %+.1f) → keep",
+                        p.parentId(), msptNet, net);
+                LOGGER.info(r);
+                remember(r);
+            }
+        }
+        if (!regrets.isEmpty()) retryRegrets(now);
+    }
+
+    private void retryRegrets(long now) {
+        var it = regrets.iterator();
+        while (it.hasNext()) {
+            Regret g = it.next();
+            if (g.a().nestworldIsRetired() || g.b().nestworldIsRetired()) {
+                it.remove();
+                remember("SPLIT_GUARD_REGRET_DROPPED children changed before merge: " + g.line());
+                continue;
+            }
+            WorldRegion merged = merger == null ? null : merger.apply(g.a(), g.b());
+            if (merged != null) {
+                regretMerges++;
+                it.remove();
+                String r = "SPLIT_GUARD_REGRET_MERGED #" + g.a().getId() + " + #" + g.b().getId() + " -> #" + merged.getId() + " (" + g.line() + ")";
+                LOGGER.info(r);
+                remember(r);
+            } else if (now > g.untilNanos()) {
+                it.remove();
+                String r = "SPLIT_GUARD_REGRET_GAVE_UP after 60 s (split locks): " + g.line();
+                LOGGER.info(r);
                 remember(r);
             }
         }
