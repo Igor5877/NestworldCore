@@ -1276,3 +1276,77 @@ teardown. A save inside that ≤ 1-tick window would persist the old cluster in 
 AE2-I2-CLUSTER-TEARDOWN-001 (D4a)    CLOSED / VERIFIED   (F1–F6: F3/F4 2026-10-31, F1/F2/F5/F6 2026-11-09)
 AE2-I1-LIFECYCLE-ADMISSION-001 (D1)  CLOSED / VERIFIED   (2026-10-31; diagnostic telemetry 0.7.7, skipped 0)
 ```
+
+#### G integrated regression — evidence (2026-11-09)
+
+`evidence-be-ready/g-integrated-run2` (rig H401BEDOM, AE2 15.4.10, addon 0.7.7, production pins, ONE session).
+Phase A (quiet): teardownclosure PASS · teardown (F3/F4 + NEG) PASS · neighbor (D2 + NEG) PASS · s1 (D1 + NEG) PASS.
+Phase B (150 s, concurrent): crafting-storage churn on two region drivers + a separate AE2 network toggling energy
+cell (power), controller (channels / pathing), interface (topology / neighbour), crafting storage (cluster
+teardown / rebuild); 2 region splits (ownership change, both churn regions → MAIN band); 3 network-chunk unload / reload.
+
+```
+ready offDomain 0 · listeners offDomain 0 (routed / unrouted 0) · topoInvariant 0 · lifeOrderViolation 0
+cb / st / bk dropped 0 failed 0 · readyDropped 0 · readyInitFailed 0 · unauditedPaths 0
+teardown offDomain 0 · member offDomain 0 · fallback 0 · drops captured 137 = delivered 137, retained 0
+D1 skippedInSection 0 skippedNested 0 · wait p50 <= 524 us (p95/max = the s1 fixture's deliberate 2 s hold)
+non-zero, all NEGATIVE-control phases by construction:
+  S1_CCE 1 + tick failure 1 + tick-skipped report 1   02:02:13, inside s1 NEG (D1 off), between neighbor end 02:02:06 and s1 PASS 02:02:32
+  d2 crafting / cablebus offDomain 2 / 88             all counted under routingOff (neighbor NEG)
+  bypassedOffDomain 3 = clusterDestroyOffMain 3 = MB_MODIFICATION offMain 3   teardown NEG (coordinator off)
+crashes (real) 0 · deadlocks 0 · JVM alive
+```
+Invalid attempt kept: `invalid-g-integrated-run1-split-broke-fixture-positions` (stress splits ran before the fixtures
+and moved their positions into the MAIN band; harness reordered — fixtures first).
+
+#### H 30-minute production-like soak — evidence (2026-11-09)
+
+`evidence-be-ready/h-soak-run2`: production-pack copy `/root/pi-smoke`, AE2 15.4.11 `f2ff9ee5…`, addon 0.7.7, Core = live
+jar (47.4.445 + autopin diagnostics), pin files byte-identical to live (checked as a precondition; ae2:crafting_storage →
+MAIN, churn drivers → REGION#8 / REGION#7), 92 AE2 grids loaded. Test-only additions for the run: race detector 0.1.1 and
+churn driver (removed afterwards). Workload: region-thread crafting churn (period 1), network toggles as in G, 3 region
+splits, 8 network-chunk unload / reload cycles.
+
+```
+duration 1822 s · alive · crashes 0 · tick failures 0 · churn toggles 31 778, errors 0 · log anomalies 0 (incl. watchdog)
+S1 / S2 / S3 0 / 0 / 0
+off-domain: readiness 0 · listeners 0 · crafting 0 · cablebus.neighbor 0 (13.0 M calls) · cablebus.shape 0 · qnb 0
+            teardown 0 · members 0 · mbCalcOffMain 0 · clusterDestroyOffMain 0
+MB_MODIFICATION offMain 0 concurrent 0 · ITERATION_BUFFER offMain 0 concurrent 0
+lifeOrderViolation 0 · topoInvariant 0 · cb / st / bk dropped 0 failed 0 · readyInitFailed 0
+D1 admissions 9 258, contended 0, skipped 0 / 0; hold p50 <= 131 us, p99 <= 524 us, max 250 ms (1 × > 50 ms, 0 × > 1 s)
+teardown accounting claimed 32 144 = inline 22 886 + ranInDomain 9 258 → outstanding 0; duplicates 48 399 = no-ops; fallback 0
+normal stop 16 s
+```
+Not a correctness criterion, recorded for honesty: TPS on the copy under period-1 churn ≈ 7.7 (host shared with live).
+Drop exactness is covered by the fixtures only (churn CPUs hold no inventory).
+
+Invalid attempt kept: `invalid-h-soak-run1-pismoke-pins-not-production` — the copy's pin files were stale (2 pinned mods,
+ae2 NOT pinned; live has 14 incl. ae2). With AE2 on region threads AE2's static `MBCalculator` modification flag raced
+(`MB_MODIFICATION concurrent 1259`, ISE "A modification is already in-progress", 149 churn errors) — the known reason
+AE2 is pinned; not a production configuration. Precondition check added to the soak harness.
+
+#### I restart smoke — evidence (2026-11-09)
+
+`evidence-be-ready/i-restart-smoke-run1`: same world after the H normal stop; start OK, addon active NORMAL / manifest
+ELIGIBLE; grids 82 at tick 3 → 87 after 1 438 ticks (soak end 86; difference = churn CPUs). 141 s lifecycle / cluster
+smoke: 2 370 toggles, errors 0; S1/S2/S3 0; off-domain 0; mbCalcOffMain 0; MB concurrent 0; readyInitFailed 0;
+lifeOrderViolation 0; topoInvariant 0; D1 skipped 0/0; teardown offDomain 0, fallback 0; log anomalies 0; stop 13 s.
+
+#### Final status (2026-11-09)
+
+```
+AE2-I1-LIFECYCLE-ADMISSION-001 (D1)    CLOSED / VERIFIED
+AE2-I2-CLUSTER-TEARDOWN-001 (D4a)      CLOSED / VERIFIED
+G integrated fixture                   PASS
+H 30 min production-like soak          PASS
+I restart smoke                        PASS
+
+AE2-COMPAT-PRODUCTION-VERIFIED         reference AE2 15.4.10 fbfee05c… · production AE2 15.4.11 f2ff9ee5…
+                                       addon nestworld-compat-ae2 0.7.7 · production pins (ae2 pinned) required
+```
+Precondition for this status: AE2 pinned to MAIN as on live (`nestworld-pinned-mods.txt` contains `ae2`). An AE2-unpinned
+configuration is outside the verified scope (see the invalid H run).
+
+AE2 correctness work STOPPED (§26). Reopen only via production symptom → detector attribution → minimal reproduction →
+targeted gate. Frozen workstreams (MAIN-hop facade, WP3-B, WP4) stay frozen until the owner reopens them.
