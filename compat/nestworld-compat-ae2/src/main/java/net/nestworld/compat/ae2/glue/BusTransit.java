@@ -103,7 +103,7 @@ public final class BusTransit {
 
     private static final SecureRandom IDS = new SecureRandom();
 
-    /** Session set of transfer ids already owned by a live record or terminal (B6 dedup). */
+    /** Session set of transfer ids that have (had) an NBT copy and are owned live or terminal (B6 dedup); bounded by persisted records. */
     static final Set<Long> CLAIMED = ConcurrentHashMap.newKeySet();
 
     // ---------------------------------------------------------------- counters (global)
@@ -527,7 +527,6 @@ public final class BusTransit {
                 r.inverted = bus.isUpgradedWith(AEItems.INVERTER_CARD);
                 C.opsTransitImport.increment();
             }
-            CLAIMED.add(r.id);
             bs.live.add(r);
             C.outstanding.incrementAndGet();
             gs.outstanding.incrementAndGet();
@@ -1240,6 +1239,7 @@ public final class BusTransit {
                 list.add(t);
                 r.savedSeq = bs.saveSeq;
                 r.dirtySinceSave = false;
+                CLAIMED.add(r.id);        // an NBT copy exists from now on: a later load of it must dedup
                 C.persisted.increment();
             }
         }
