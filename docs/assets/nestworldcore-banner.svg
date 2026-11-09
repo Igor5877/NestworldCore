@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-labelledby="title desc">
+  <title id="title">NestWorldCore</title>
+  <desc id="desc">Open core. Parallel worlds. A diagram of connected execution regions.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#0b1420"/><stop offset="1" stop-color="#162b38"/></linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#8caeb8" stroke-opacity=".07"/></pattern>
+  </defs>
+  <rect width="1200" height="300" rx="12" fill="url(#bg)"/>
+  <rect width="1200" height="300" rx="12" fill="url(#grid)"/>
+  <path d="M0 299H1200" stroke="#69d3b0" stroke-width="3"/>
+  <g font-family="Segoe UI,Arial,sans-serif">
+    <text x="64" y="70" font-size="13" letter-spacing="3" fill="#7de0bd">THE NESTWORLD PROJECT</text>
+    <text x="60" y="147" font-size="64" font-weight="700" letter-spacing="-2" fill="#f0f6fc">NestWorldCore</text>
+    <text x="64" y="191" font-size="23" fill="#b9cbd5">Open core. Parallel worlds.</text>
+    <text x="64" y="250" font-size="13" letter-spacing="2" fill="#7895a5">REGIONS / MOD API / MODULES</text>
+  </g>
+  <g transform="translate(815 44)" stroke-width="1.5">
+    <path d="M57 48H178V160H288M57 48V160H178M178 48H288V160" fill="none" stroke="#73d9b5" stroke-opacity=".6" stroke-dasharray="4 6"/>
+    <rect x="10" y="4" width="94" height="88" rx="9" fill="#163b3b" stroke="#6dd7b1"/>
+    <rect x="131" y="4" width="94" height="88" rx="9" fill="#203943" stroke="#5f8d9c"/>
+    <rect x="252" y="4" width="64" height="88" rx="9" fill="#203943" stroke="#5f8d9c"/>
+    <rect x="10" y="116" width="94" height="88" rx="9" fill="#203943" stroke="#5f8d9c"/>
+    <rect x="131" y="116" width="94" height="88" rx="9" fill="#3c3529" stroke="#dfbb72"/>
+    <rect x="252" y="116" width="64" height="88" rx="9" fill="#203943" stroke="#5f8d9c"/>
+    <g fill="#76dcb8"><rect x="31" y="25" width="22" height="22" rx="3"/><rect x="61" y="25" width="22" height="22" rx="3"/><rect x="31" y="55" width="22" height="16" rx="3"/></g>
+    <g fill="#7798a7"><rect x="152" y="25" width="22" height="22" rx="3"/><rect x="182" y="55" width="22" height="16" rx="3"/><rect x="273" y="25" width="22" height="46" rx="3"/><rect x="31" y="137" width="52" height="16" rx="3"/><rect x="31" y="165" width="22" height="18" rx="3"/><rect x="273" y="137" width="22" height="46" rx="3"/></g>
+    <g fill="#e6c17a"><rect x="152" y="137" width="22" height="46" rx="3"/><rect x="182" y="137" width="22" height="22" rx="3"/></g>
+  </g>
+</svg>
