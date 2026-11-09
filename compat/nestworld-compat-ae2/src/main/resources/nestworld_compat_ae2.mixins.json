@@ -54,7 +54,9 @@
     "TickManagerServiceAccessor",
     "TickManagerServiceInvoker",
     "TickManagerServiceMixin",
-    "TickTrackerMixin"
+    "TickTrackerMixin",
+    "MBCalculatorAccessor",
+    "MBCalculatorLaneMixin"
   ],
   "injectors": {
     "defaultRequire": 1

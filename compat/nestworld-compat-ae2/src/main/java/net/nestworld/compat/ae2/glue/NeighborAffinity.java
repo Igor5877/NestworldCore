@@ -59,6 +59,41 @@ public final class NeighborAffinity {
         }
     }
 
+    /** AE2-DEMAIN-001 B1 D2: Core position pins available (CORE-PINZONE-001)? */
+    public static boolean available() {
+        return PIN != null && UNPIN != null;
+    }
+
+    /** B1 D2 straddle fence: pins without the affinity switch / counters (the lane counts its own). */
+    public static boolean pinRaw(ServerLevel level, long[] positions) {
+        if (PIN == null || level == null) return false;
+        int done = 0;
+        try {
+            for (long pos : positions) {
+                PIN.invokeExact(level, BlockPos.of(pos));
+                done++;
+            }
+            return true;
+        } catch (Throwable t) {
+            try {
+                for (int i = 0; i < done; i++) UNPIN.invokeExact(level, BlockPos.of(positions[i]));
+            } catch (Throwable ignored) {
+                // best effort rollback
+            }
+            Ae2Compat.LOG.warn("[nestworld-compat-ae2] MB lane position pin failed: {}", t.toString());
+            return false;
+        }
+    }
+
+    public static void releaseRaw(ServerLevel level, long[] positions) {
+        if (UNPIN == null || level == null) return;
+        try {
+            for (long pos : positions) UNPIN.invokeExact(level, BlockPos.of(pos));
+        } catch (Throwable t) {
+            Ae2Compat.LOG.warn("[nestworld-compat-ae2] MB lane position unpin failed: {}", t.toString());
+        }
+    }
+
     public static void release(ServerLevel level, long[] positions) {
         if (UNPIN == null || level == null) return;
         try {

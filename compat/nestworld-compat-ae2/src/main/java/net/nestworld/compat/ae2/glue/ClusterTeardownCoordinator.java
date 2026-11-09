@@ -64,8 +64,11 @@ public final class ClusterTeardownCoordinator {
      */
     public static boolean request(Object cluster, BlockEntity anchor, String label, Runnable transition) {
         COUNTERS.tdRequests.increment();
+        // AE2-DEMAIN-001 B1 (D4): the cluster-state transition (MBCalculator flag window) runs under the MB lane token;
+        // the claim below stays first, so exactly-once is unchanged — only WHEN the transition runs can change
+        Runnable laned = () -> MbLane.teardown(cluster, anchor, label, transition);
         if (!(cluster instanceof NwCluster c)) {
-            transition.run();
+            laned.run();
             return true;
         }
         boolean won = c.nw$claimTeardown();
@@ -76,7 +79,7 @@ public final class ClusterTeardownCoordinator {
             return false;
         }
         COUNTERS.tdClaimed.increment();
-        Runnable deliver = () -> runAt(anchor, label, transition, true);
+        Runnable deliver = () -> runAt(anchor, label, laned, true);
         if (Ae2Compat.KERNEL.defer(deliver)) {
             COUNTERS.tdDeferredToSectionExit.increment();
             return true;
