@@ -412,3 +412,22 @@ coming as AUTO_SPLIT_SUPPRESSED + SPLIT_GUARD_SHADOW), gain calibration, a secon
 STRONGLY INDICATED: G and net match MSPT for the base lines. Gain model wrong when the region is the bottleneck
 (cows + X=2: predicted −22, measured +8.8 → a false reject, the safe direction). Before Stage 2: gain from the barrier /
 MSPT critical path instead of chunk-cost shares; reproduce the two refused positive-control splits.
+
+## 13. Stage 2 / 3 implemented (4958ee807) — enforce run 1 (2026-11-09, pi-smoke, `sg-enforce-run1`)
+
+Flags (TEST-ONLY on the copy): `-Dnestworld.autoSplit=true -Dnestworld.splitGuard=enforce`; production default stays
+`shadow` (no decision change); live keeps autoSplit=false. Core patched7 `2bd504e4` (gain model 591afc2c9 + Stage 2/3).
+
+```
+base region #3 (contains the base)     auto-split triggers (fill-cores / p95-tail) → VETO every time (68 vetoes), base line never applied
+cows, region #3                        guard split at X = −102 between the clusters (predicted +10.2 ms; today's scorer: no line)
+cows, region #4                        guard split at X = 100 (predicted +4.2, measured MSPT +0.8, component +1.1)
+manual bad split #0                    regret merge after 30 s (MSPT −146.7) → #7; line blocked 30 min
+X = −102 split                         FALSE regret: MSPT 59 → 83 (copy overloaded, MSPT 59–230 during the run), component net −11
+                                       driven by a ghost "before" deflated by lock misses (parent 13.4 vs ~33 ms); regret merge FAILED
+                                       (2 ms split lock) and was not retried
+```
+
+Fixes (next commit): regret only when MSPT net AND component net < −3 ms; regret merge retried ≤ 60 s; a lock miss freezes
+the owner's ghost EWMA instead of decaying it to 0; VETO log ≤ 1/min/region; bad-line key = the applied (clamped) line.
+Still open before production enforce: rerun on a quiet copy (no concurrent tests), and a regret test with a real base line.
