@@ -183,3 +183,134 @@ Invalid run kept: `E/invalid-b1-P0-prodpins-lane-on-power-loss` (host power loss
 5. Ticket latency p99 ≈ 275 ms at ~10 TPS (handoff waits for the target domain's next safe point while the token is
    reserved); acceptable as TIMING_TOLERANCE per D1, to be re-measured at normal TPS.
 6. Longer soak (30 min, B10 shape) and repeat runs for variance not done.
+
+## B4–B6 — WP3-B bus transit: design note (2026-11-09)
+
+Scope: exact classes `appeng.parts.automation.ImportBusPart` / `ExportBusPart` (AE2 15.4.10/15.4.11, `getClass() ==`,
+no subclasses: ExtendedAE / AdvancedAE / crazy / appliede stay MAIN-whole). Flag `-Dnestworld.compatAe2.busTransit=true`,
+default OFF (addon 0.9.0). Everything not eligible stays on MAIN exactly as today, counted per reason.
+
+### What the live profile actually is, and where the split goes
+
+Bus work does not run in the cable-bus BE tick: it runs in AE2's grid tick on MAIN (`TickManagerService.onLevelEndTick →
+tickQueue → unsafeTickingRequest → IOBusPart.tickingRequest → doBusWork`, already wrapped by T2 `nw$suspend`). The
+expensive part of `doBusWork` is the **neighbour side** (`ExternalStorageFacade` slot scans / capability extract-insert);
+the network side is a few `MEStorage` calls. Unpinning `ae2:cable_bus` moves nothing (no BE ticker). So:
+
+- **Scheduling stays in AE2's TickManagerService on MAIN, untouched.** One scheduled `tickingRequest` = one bus
+  operation, at the same tick as without transit → `scheduled == reference` by construction; the operation is never
+  skipped or delayed by a transfer still in flight (a new transfer record is created per operation; no per-bus mutual
+  exclusion that could defer an operation).
+- **The neighbour half runs in the NEIGHBOUR's current BE execution domain** (Core `enqueueForBlockEntityDomain`,
+  re-resolved before execution). WP3-A.2 §3.4: the external block's owner is the neighbour's domain, which can differ
+  from the bus host's at a region edge; with production pins the host (cable_bus, `ae2` pinned) is MAIN anyway, the
+  neighbour (chest, machine) is in its region. No Core pin change is needed for the transit (the parent's
+  `pinmodexcept` hook is not used; `ae2` stays mod-pinned).
+- **The network half runs on MAIN** (the AE2 grid domain; storage stays MAIN-owned, no storage lock), in the addon's
+  per-grid commit scheduler at the end of the server tick (Forge `ServerTickEvent END`, priority LOWEST = after AE2's
+  `TickHandler`), outside any `tickQueue` iteration, under `Specs.grid` (T1) only for tick-queue updates.
+
+Import (`ImportBusPart.doBusWork`), op at MAIN tick t:
+```
+MAIN  t    tickingRequest → doBusWork (wrapped): eligible? → record PREPARED{ops, filter, inverted} → enqueue to the
+           neighbour domain; return SAME (or SLEEP/IDLE exactly as AE2 decides, those do not depend on the work)
+REGION t+1 revalidate (record PREPARED→RUNNING CAS, bus incarnation, neighbour BE-ticking) → run AE2's OWN import facade
+           (StackImportFacade → StorageImportStrategy / appmek / appbot import strategies, unchanged code) with a
+           transit context: getInternalStorage().getInventory() = the record's transit MEStorage (insert SIMULATE =
+           amount, MODULATE = held += amount). → IN_TRANSIT{held}, published to the grid's queue
+MAIN  t+1  commit scheduler: network insert MODULATE (plain insert, as AE2) → COMMITTED; deferred modulation applied
+           (FASTER if anything moved, else SLOWER) to the same tracker; leftover → RETURNING (neighbour push in the
+           neighbour domain, t+2) → remainder (if refused) stays held, persisted, retried (never voided; AE2 voids here)
+```
+Export (`ExportBusPart.doBusWork`), op at MAIN tick t:
+```
+MAIN  t    candidate slots in AE2 order (DEFAULT / ROUND_ROBIN from nextSlot), key != null, network poweredExtraction
+           SIMULATE > 0 → record PROBE{keys, max} → enqueue to the neighbour domain; return SAME
+REGION t+1 capacity probe: exportFacade.push(key, max, SIMULATE) per candidate (side-effect-free) → PROBED, published
+MAIN  t+1  plan = AE2's export loop with "adjacent insert SIMULATE" replaced by the probed capacity: poweredExtraction
+           MODULATE (energy charged exactly as AE2) → IN_TRANSIT{held}, ops / slot cursor x as AE2 → enqueue insert
+REGION t+2 exportFacade.push(key, held, MODULATE) → inserted; leftover → RETURNING, published
+MAIN  t+2  leftover → network insert (as AE2's "give the overflow back"; remainder kept held, retried, never voided);
+           COMMITTED; deferred modulation + round-robin cursor update (if work done)
+```
+Deferred modulation: `tickingRequest` returns SAME for a transit operation; when the terminal result arrives (≤ 2 ticks,
+min bus rate is 5 ticks) the commit scheduler applies AE2's own rule (`FASTER: rate−2`, `SLOWER: rate+1`, clamped by
+`setCurrentRate`) to the tracker, only if it is still the same tracker, awake, and `lastTick == opTick` (no later op);
+re-queued through AE2's `removeFromQueue/addToQueue` (heap order). The next due tick is then identical to the reference.
+A result that arrives after the next op already ran is counted `modulationLate` (not applied; must be 0).
+Known divergence (TIMING / SEMANTIC, counted): import uses an optimistic network acceptance (no network SIMULATE on the
+region); items the network then refuses go back to the source ≤ 1 tick later (`importRefusedReturned`) instead of not
+being extracted; AE2 would void what the source does not take back — transit keeps it. Export plans from a capacity probe
+one tick old; if the neighbour's capacity shrank, the leftover returns to the network (`exportLeftoverReturned`).
+
+### Eligibility (exact allowlist, fail-closed, re-evaluated at every op)
+transit active (flag) · exact class · no crafting card, no craft-only, no pending crafting links (export) · no fuzzy card ·
+scheduling mode DEFAULT or ROUND_ROBIN (RANDOM consumes level RNG on MAIN → excluded) · every strategy in the bus's
+facade is an allowlisted class (AE2 `StorageImport/ExportStrategy`, appmek 1.4.3 `MekanismStackImport/ExportStrategy`,
+appbot 1.5.2 `ManaStorageImport/ExportStrategy` — bytecode-checked: only context getters, network insert / powered
+extraction, neighbour capability calls; `push` = neighbour insert only) · neighbour domain (resolved now) is a REGION.
+Neighbour domain MAIN (border band, pinned type, a storage bus / interface affinity-pinning the same block) → the
+operation runs inline on MAIN = AE2 reference (counted `inlineMainNeighbour`). Any other ineligibility → the addon's
+neighbour-affinity pin for that bus is taken first (the neighbour becomes MAIN-domain, as today) and the op runs inline.
+Affinity for the two exact classes becomes dynamic: an eligible bus releases its neighbour pin, an ineligible one holds
+it. All other parts keep the static affinity pin (unchanged).
+
+### Transfer record (B6) and phases
+`transferId` (random 63-bit, unique across sessions) · bus incarnation (part identity + addToWorld counter = host
+generation) · grid identity at op time (grid generation; commit goes to the bus's CURRENT grid, a change is counted
+`gridChanged`) · direction · opTick (AE2 currentTick) / server tick at each phase · per resource: key, requested,
+held, committed, returned · terminal result. Phases (owner model): `PREPARED` (nothing moved) → `IN_TRANSIT` (held > 0,
+transit owns) → `COMMITTED` | `CANCELLED` (nothing moved) | `RECOVERY_REQUIRED` → recovery terminal (`RECOVERED_NETWORK`,
+`RECOVERED_SOURCE`, `RECOVERED_DROP`). Internal sub-states (RUNNING, PROBED, RETURNING) are CAS transitions on the
+record; each phase is executed by exactly one owner: PREPARED/PROBE by the neighbour domain (CAS PREPARED→RUNNING —
+a cancelled record is never executed), IN_TRANSIT by MAIN. Dedup: a session set of terminal transferIds; a record whose
+id is already terminal (NBT copied by spatial IO / pickup mods, a part NBT loaded twice) is dropped as duplicate
+(`dedupDropped`). Invariant per record: `extracted = committed + returned + held`; globally (fixtures): `source + destination
++ transit = constant (+ created by the fixture generator)`.
+
+### Persistence and the recovery owner
+`IOBusPart.writeToNBT` (MAIN) writes the records with held resources (`nwTransit` list: id, direction, key NBT, amount);
+the snapshot is taken under the record monitor so a region phase is either fully before or after it. Ownership rule:
+**after the host leaves the world, NBT owns exactly what the last save wrote; the live object owns the rest.**
+- chunk unload (`CableBusBlockEntity.onChunkUnloaded` marks the host): records are SEALED — live processing stops;
+  amounts written by the last save are left to the NBT; anything a still-running region phase adds after that save is
+  recovered live. Every MAIN-side change of persisted transit state marks the host `setChanged` (the unload save then
+  writes the current state, never a stale one).
+- server stop: same as unload (the final save writes held records; on restart they load as RECOVERY_REQUIRED).
+- bus broken / part removed (no unload mark): records are handed to the global recovery owner (MAIN) immediately.
+- loaded RECOVERY_REQUIRED records are owned by the recovery owner from the bus's `addToWorld`.
+Recovery owner = the commit scheduler, one policy per resource unit, applied exactly once: import-held → commit to the
+network of the bus's current grid (destination), refused → return to source (neighbour, in its domain), refused → keep,
+retry every tick; export-held → insert into the neighbour (destination), refused → return to the network (source),
+refused → keep, retry. After 200 ticks without a live bus and with no taker, item keys become a safe recovery drop at
+the bus position (`RECOVERED_DROP`, ItemEntity on MAIN only if the position's domain is MAIN, else in its domain);
+non-item keys stay RECOVERY_REQUIRED (counted, logged, retried) — never voided. In-flight Core tasks that end by a Core
+terminal (`REDELIVERY_LIMIT_DROPPED`, `LEVEL_GONE`) before RUNNING → CANCELLED (nothing moved); after RUNNING the record
+holds only what was published (the transit MEStorage counts under the record monitor).
+
+### Lock order (no new cycle with `nw$life → P(G) → T0 → domains`)
+New monitors: the record monitor and the per-grid queue monitor — **leaves**: held only for O(1) bookkeeping, never
+across AE2, Core, foreign code, logging or another monitor. The region half runs the strategies under the region's own
+chunk write lock (Core mailbox drain) and takes **no AE2 lock**: it touches only the neighbour (owned by that thread) and
+the record (leaf). The MAIN half runs AE2 storage / energy calls exactly as AE2's own MAIN code does (energy → `Specs.energy`
+via the existing mixins, tick-queue updates under `Specs.grid`), and never waits for a region. Nothing waits for
+anything: every hand-off is a non-blocking enqueue (Core mailbox / per-grid ConcurrentLinkedQueue). Forbidden cycle
+(region chunk lock → waits grid lock while MAIN grid lock → waits region state) cannot form: the region side never
+requests an AE2 lock, MAIN never requests region state.
+
+### GRID_ISOLATION scheduler
+Per grid: own result queue + own accounting (no global FIFO). Commit pass on MAIN each server tick: grids with pending
+results in a rotating order (start index advances each tick); deficit round robin with a per-grid quantum = budget /
+active grids (default budget 20 ms/tick total, `-Dnestworld.compatAe2.busTransitBudgetUs`; a grid always gets ≥ 1 entry
+per tick so it cannot starve). An overloaded grid keeps its own backlog (`budgetExhausted`), the others are served in
+the same tick. Per-grid metrics (`nwcompatae2 bustransit grids`): gridId, scheduled, completed, missed, transit backlog
+(outstanding records + held units), main commit ns, queue latency in ticks p50/p95/p99/p100 (import / export separate),
+budget exhausted, starvation ticks (pending but 0 served). `missed` = an operation whose transfer was neither executed
+nor cancelled for a valid reason (enqueue failure, Core terminal while the bus is alive and eligible).
+
+### Fixtures (B4–B6 acceptance, rig H401BEDOM, production pins: `ae2` mod-pinned, chests unpinned)
+import and export separately: N transfers, conservation exact, latency p100 ≤ 2, scheduled == completed == reference
+(transit-off run), missed 0, backlog bounded; interruptions mid-transit (records held by a fixture-only commit hold):
+bus broken, chunk unload + reload, grid split / grid gone, server stop + restart → 0 loss / 0 dup; GRID_ISOLATION: huge
+grid (many buses, tiny budget) vs small grid → small grid missed 0, latency unchanged, no starvation; negative controls:
+transit OFF (reference), recovery OFF (loss detected → the fixture can see loss), FIFO scheduler (small grid latency grows).
