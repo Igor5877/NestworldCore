@@ -53,6 +53,7 @@ public final class NestworldCompatAe2 {
                     net.nestworld.compat.ae2.glue.TeardownFixtures.onServerTickEnd(e.getServer().getTickCount());
                     net.nestworld.compat.ae2.glue.TeardownClosureFixtures.onServerTickEnd(e.getServer().getTickCount());
                     net.nestworld.compat.ae2.glue.MbLaneFixtures.onServerTickEnd(e.getServer().getTickCount());
+                    net.nestworld.compat.ae2.glue.BusTransitFixtures.onServerTickEnd(e.getServer().getTickCount());
                 }
             });
         }
@@ -83,6 +84,48 @@ public final class NestworldCompatAe2 {
                         .then(Commands.literal("devices").executes(c -> say(c.getSource(),
                                 net.nestworld.compat.ae2.glue.GridCensus.devices(c.getSource().getServer().getTickCount(), 25)))));
         if (T2Fixtures.ENABLED) {
+            root = root.then(Commands.literal("bustransitfx")
+                    .then(Commands.literal("on").executes(c -> say(c.getSource(), "transit active=" + (net.nestworld.compat.ae2.glue.BusTransit.active = true))))
+                    .then(Commands.literal("off").executes(c -> say(c.getSource(), "transit active=" + (net.nestworld.compat.ae2.glue.BusTransit.active = false))))
+                    .then(Commands.literal("hold").then(Commands.argument("v", com.mojang.brigadier.arguments.StringArgumentType.word()).executes(c -> say(c.getSource(),
+                            "hold=" + (net.nestworld.compat.ae2.glue.BusTransit.fxHold = "on".equals(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "v")))))))
+                    .then(Commands.literal("recoveryoff").then(Commands.argument("v", com.mojang.brigadier.arguments.StringArgumentType.word()).executes(c -> say(c.getSource(),
+                            "recoveryOff=" + (net.nestworld.compat.ae2.glue.BusTransit.fxRecoveryOff = "on".equals(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "v")))))))
+                    .then(Commands.literal("fifo").then(Commands.argument("v", com.mojang.brigadier.arguments.StringArgumentType.word()).executes(c -> say(c.getSource(),
+                            "fifo=" + (net.nestworld.compat.ae2.glue.BusTransit.fxFifo = "on".equals(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "v")))))))
+                    .then(Commands.literal("budget").then(Commands.argument("us", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 1000000)).executes(c -> say(c.getSource(),
+                            "budgetUs=" + (net.nestworld.compat.ae2.glue.BusTransit.budgetNs = 1000L * com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "us")) / 1000))))
+                    .then(Commands.literal("reset").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.resetMetrics())))
+                    .then(Commands.literal("list").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.list())))
+                    .then(Commands.literal("build").then(Commands.argument("kind", com.mojang.brigadier.arguments.StringArgumentType.word())
+                            .then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos()).then(Commands.argument("n", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 256))
+                                    .then(Commands.argument("speed", com.mojang.brigadier.arguments.IntegerArgumentType.integer(0, 4)).then(Commands.argument("prefill", com.mojang.brigadier.arguments.IntegerArgumentType.integer(0, 2000000000))
+                                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.build(c.getSource().getLevel(), com.mojang.brigadier.arguments.StringArgumentType.getString(c, "kind"),
+                                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "n"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "speed"),
+                                                    com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "prefill"))))))))))
+                    .then(Commands.literal("attach").then(Commands.argument("kind", com.mojang.brigadier.arguments.StringArgumentType.word())
+                            .then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos()).then(Commands.argument("n", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 256))
+                                    .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.attach(c.getSource().getLevel(), com.mojang.brigadier.arguments.StringArgumentType.getString(c, "kind"),
+                                            net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "n"))))))))
+                    .then(Commands.literal("gen").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1)).then(Commands.argument("v", com.mojang.brigadier.arguments.StringArgumentType.word())
+                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.gen(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"), "on".equals(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "v"))))))))
+                    .then(Commands.literal("window").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1)).then(Commands.argument("ticks", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1))
+                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.window(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"), c.getSource().getServer().getTickCount(),
+                                    com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "ticks")))))))
+                    .then(Commands.literal("wstatus").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1))
+                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.windowStatus(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"))))))
+                    .then(Commands.literal("count").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1)).then(Commands.argument("label", com.mojang.brigadier.arguments.StringArgumentType.word())
+                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.count(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"), com.mojang.brigadier.arguments.StringArgumentType.getString(c, "label")))))))
+                    .then(Commands.literal("cstatus").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1))
+                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.countStatus(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"))))))
+                    .then(Commands.literal("break").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1)).then(Commands.argument("k", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1))
+                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.breakBuses(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "k")))))))
+                    .then(Commands.literal("rebuild").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1)).then(Commands.argument("speed", com.mojang.brigadier.arguments.IntegerArgumentType.integer(0, 4))
+                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.rebuild(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "speed")))))))
+                    .then(Commands.literal("split").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1)).then(Commands.argument("v", com.mojang.brigadier.arguments.StringArgumentType.word())
+                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.split(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"), "cut".equals(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "v"))))))))
+                    .then(Commands.literal("power").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1)).then(Commands.argument("v", com.mojang.brigadier.arguments.StringArgumentType.word())
+                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.power(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"), "on".equals(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "v")))))))));
             root = root.then(Commands.literal("mblanefx")
                     .then(Commands.literal("on").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLane.setEnabled(true))))
                     .then(Commands.literal("off").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLane.setEnabled(false))))
