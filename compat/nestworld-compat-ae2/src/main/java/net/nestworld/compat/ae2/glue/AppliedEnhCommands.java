@@ -43,6 +43,11 @@ public final class AppliedEnhCommands {
                     .then(Commands.literal("reset").executes(c -> { AppliedEnhRecheckElision.resetCounters(); return say(c.getSource(), "counters reset"); }))
                     .then(Commands.literal("trace").then(Commands.argument("pos", BlockPosArgument.blockPos())
                             .executes(c -> say(c.getSource(), AppliedEnhFixtures.trace(c.getSource().getLevel(), BlockPosArgument.getBlockPos(c, "pos"))))))
+                    .then(Commands.literal("tracemem").executes(c -> say(c.getSource(), AppliedEnhFixtures.traceMem())))
+                    .then(Commands.literal("benchmem").then(Commands.argument("ticks", IntegerArgumentType.integer(1, 72000))
+                            .then(Commands.argument("iters", IntegerArgumentType.integer(1, 100000))
+                                    .executes(c -> say(c.getSource(), AppliedEnhFixtures.benchStart(c.getSource().getLevel(), null,
+                                            IntegerArgumentType.getInteger(c, "ticks"), IntegerArgumentType.getInteger(c, "iters")))))))
                     .then(Commands.literal("benchstatus").executes(c -> say(c.getSource(), AppliedEnhFixtures.benchStatus())))
                     .then(Commands.literal("bench").then(Commands.argument("pos", BlockPosArgument.blockPos())
                             .then(Commands.argument("ticks", IntegerArgumentType.integer(1, 72000))

@@ -123,6 +123,15 @@ public final class AppliedEnhFixtures {
     public static String trace(ServerLevel level, BlockPos pos) {
         IItemHandler raw = handlerAt(level, pos);
         if (!(raw instanceof IItemHandlerModifiable h)) return "no modifiable item handler at " + pos;
+        return traceHandler(h);
+    }
+
+    /** same script on a detached Forge ItemStackHandler (exact class, in the audited allowlist): no world needed. */
+    public static String traceMem() {
+        return traceHandler(new net.minecraftforge.items.ItemStackHandler(27));
+    }
+
+    static String traceHandler(IItemHandlerModifiable h) {
         ItemStack[] saved = snapshot(h);
         boolean was = AppliedEnhRecheckElision.enabled();
         try {
@@ -169,9 +178,13 @@ public final class AppliedEnhFixtures {
     }
 
     public static String benchStart(ServerLevel level, BlockPos pos, int ticks, int iters) {
-        if (bench != null) return "bench already running";
-        IItemHandler raw = handlerAt(level, pos);
+        IItemHandler raw = pos == null ? new net.minecraftforge.items.ItemStackHandler(27) : handlerAt(level, pos);
         if (!(raw instanceof IItemHandlerModifiable h)) return "no modifiable item handler at " + pos;
+        return benchHandler(h, ticks, iters);
+    }
+
+    static String benchHandler(IItemHandlerModifiable h, int ticks, int iters) {
+        if (bench != null) return "bench already running";
         AppliedEnhRecheckElision.resetCounters();
         bench = new Bench(h, ticks, iters);
         return "bench started elision=" + bench.mode + " ticks=" + ticks + " iters/tick=" + iters + " handler=" + h.getClass().getSimpleName();
