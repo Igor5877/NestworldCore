@@ -56,7 +56,14 @@
     "TickManagerServiceMixin",
     "TickTrackerMixin",
     "MBCalculatorAccessor",
-    "MBCalculatorLaneMixin"
+    "MBCalculatorLaneMixin",
+    "IOBusPartTransitMixin",
+    "ImportBusPartAccessor",
+    "ExportBusPartAccessor",
+    "StackImportFacadeAccessor",
+    "StackExportFacadeAccessor",
+    "CableBusUnloadMixin",
+    "BusTransitTmAccess"
   ],
   "injectors": {
     "defaultRequire": 1

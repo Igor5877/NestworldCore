@@ -21,6 +21,11 @@ public abstract class PartNeighborAffinityMixin {
     @Inject(method = "addToWorld", at = @At("TAIL"))
     private void nw$pinFacing(CallbackInfo ci) {
         AEBasePart self = (AEBasePart) (Object) this;
+        if (net.nestworld.compat.ae2.glue.BusTransit.manages(self)) {
+            // WP3-B: the two exact bus classes pin / release their neighbour per operation (eligibility-driven)
+            net.nestworld.compat.ae2.glue.BusTransit.onAddToWorld((appeng.parts.automation.IOBusPart) self);
+            return;
+        }
         if (nw$affinity != null || self instanceof CablePart || self.getHost() == null) return;
         Direction side = self.getSide();
         BlockEntity host = self.getHost().getBlockEntity();
@@ -34,6 +39,9 @@ public abstract class PartNeighborAffinityMixin {
 
     @Inject(method = "removeFromWorld", at = @At("HEAD"))
     private void nw$releaseFacing(CallbackInfo ci) {
+        AEBasePart self = (AEBasePart) (Object) this;
+        if (self instanceof appeng.parts.automation.IOBusPart bus && net.nestworld.compat.ae2.glue.BusTransit.FLAG)
+            net.nestworld.compat.ae2.glue.BusTransit.onRemoveFromWorld(bus);
         if (nw$affinity == null) return;
         NeighborAffinity.release(nw$affinityLevel, nw$affinity);
         nw$affinity = null;

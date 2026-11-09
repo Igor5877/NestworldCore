@@ -26,6 +26,17 @@ public final class NestworldCompatAe2 {
 
     public NestworldCompatAe2() {
         MinecraftForge.EVENT_BUS.addListener((RegisterCommandsEvent e) -> register(e.getDispatcher()));
+        if (net.nestworld.compat.ae2.glue.BusTransit.FLAG) {
+            // WP3-B commit scheduler: after AE2's TickHandler (server END) → LOWEST
+            MinecraftForge.EVENT_BUS.addListener(net.minecraftforge.eventbus.api.EventPriority.LOWEST, false,
+                    TickEvent.ServerTickEvent.class, e -> {
+                        if (e.phase == TickEvent.Phase.END) net.nestworld.compat.ae2.glue.BusTransit.onServerTickEnd(e.getServer());
+                    });
+            MinecraftForge.EVENT_BUS.addListener((net.minecraftforge.event.server.ServerStoppingEvent e) ->
+                    net.nestworld.compat.ae2.glue.BusTransit.onServerStopping());
+            MinecraftForge.EVENT_BUS.addListener((net.minecraftforge.event.server.ServerStartingEvent e) ->
+                    net.nestworld.compat.ae2.glue.BusTransit.onServerStarting());
+        }
         if (T2Fixtures.ENABLED) {
             MinecraftForge.EVENT_BUS.addListener((TickEvent.ServerTickEvent e) -> {
                 if (e.phase == TickEvent.Phase.END) {
@@ -60,6 +71,8 @@ public final class NestworldCompatAe2 {
                                 .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.NeighborAffinity.domainAt(
                                         c.getSource().getLevel(),
                                         net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "p"))))))
+                .then(Commands.literal("bustransit").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.summary()))
+                        .then(Commands.literal("grids").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.grids(20)))))
                 .then(Commands.literal("mblane").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLane.summary()))
                         .then(Commands.literal("calculators").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLane.calculators()))))
                 .then(Commands.literal("gridcensus")
