@@ -1350,3 +1350,20 @@ configuration is outside the verified scope (see the invalid H run).
 
 AE2 correctness work STOPPED (§26). Reopen only via production symptom → detector attribution → minimal reproduction →
 targeted gate. Frozen workstreams (MAIN-hop facade, WP3-B, WP4) stay frozen until the owner reopens them.
+
+#### Milestone closed (owner 2026-11-09)
+
+```
+AE2-COMPAT-PRODUCTION-VERIFIED    ACCEPTED by the owner — AE2 correctness work CLOSED
+pushed                            fa9dac93d 121234b04 3aadadb99 4cb2126b2 (19bc9c0f7..4cb2126b2)
+live deploy                       project-infinity addon 0.7.6 → 0.7.7 (jar sha256 c14313f3…), restart 13:00, 0 players;
+                                  backup /root/core-hotpatch-2026-11-09/addon-backup/
+live smoke (5 min)                startup gate PASS · 0.7.7 active NORMAL / manifest ELIGIBLE · ae2 pinned · 80 grids up ·
+                                  D1_ADMISSION_SKIPPED 0 · MB "modification already in-progress" 0 · AE2-FAIL-ATTR 0 · crash 0
+                                  (the one ISE in the log is Core's deliberate FailingExampleModule, MODULE-1 test spec)
+F6 one-tick save window           HYPOTHESIS / NOT REPRODUCED — not investigated without production evidence
+H TPS ≈ 7.7                       NOT a performance baseline (artificial period-1 churn, host shared with live)
+normal-stop times                 two measurements: H soak stop 16 s (h-soak-run2), I restart-smoke stop 13 s (i-restart-smoke-run1)
+contract                          AE2 production = mandatory MAIN pin of ae2; reopen only: production symptom → detector
+                                  attribution → minimal reproduction → targeted gate
+```
