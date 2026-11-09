@@ -81,6 +81,15 @@ public final class TickAttribution {
                 .add(elapsedNanos);
     }
 
+    /** Decayed tick cost of one chunk (BE + entity ticks, any thread) in the current window; 0 when absent.
+     *  CORE-SPLIT-DENSE-BE-GUARD-001 Stage 0 uses it for side / band SHARES only. */
+    public static long chunkCostNanos(String dimensionKey, long chunkPosLong) {
+        ConcurrentHashMap<Long, LongAdder> m = chunkNanos.get(dimensionKey);
+        if (m == null) return 0;
+        LongAdder a = m.get(chunkPosLong);
+        return a == null ? 0 : a.sum();
+    }
+
     /** Періодичний decay (той самий підхід що BlockTickHeat) -- викликати раз на
      *  ~1с з головного потоку (напр. з RegionSplitManager's 20-tick оцінки), щоб
      *  мапа відображала "недавнє" навантаження, а не весь uptime, і щоб дрібні

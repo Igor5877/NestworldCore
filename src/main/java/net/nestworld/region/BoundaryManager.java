@@ -32,6 +32,9 @@ public class BoundaryManager {
     private final ServerLevel level;
     private final WorldGrid grid;
 
+    /** CORE-SPLIT-DENSE-BE-GUARD-001 Stage 0 telemetry (measurement only); null = off. */
+    SplitGuardTelemetry splitGuardTelemetry;
+
     public BoundaryManager(ServerLevel level, WorldGrid grid) {
         this.level = level;
         this.grid = grid;
@@ -87,6 +90,8 @@ public class BoundaryManager {
         int nestworldScanned = 0, nestworldSerializedChunks = 0, nestworldSerializedBes = 0;
         java.util.Map<WorldRegion, java.util.List<LevelChunk>> chunksByRegion =
                 new java.util.IdentityHashMap<>();
+        final SplitGuardTelemetry tel = splitGuardTelemetry;
+        if (tel != null) tel.ghostBeginCall();
         for (LevelChunk chunk : level.getChunkSource().nestworldLoadedFull.values()) {
             nestworldScanned++;
             net.minecraft.world.level.ChunkPos pos = chunk.getPos();
@@ -112,6 +117,7 @@ public class BoundaryManager {
                 }
                 if (stamp == 0L) {
                     nestworldGhostLockMisses++;
+                    if (tel != null) tel.ghostLockMiss(owner.getId());
                     continue;
                 }
             }
@@ -129,8 +135,15 @@ public class BoundaryManager {
                     for (java.util.Map.Entry<BlockPos, BlockEntity> e : entries) {
                         long nestworldNbtStart = System.nanoTime();
                         try {
-                            snapshot.put(e.getKey().asLong(), e.getValue().saveWithFullMetadata());
+                            net.minecraft.nbt.CompoundTag nestworldTag = e.getValue().saveWithFullMetadata();
+                            snapshot.put(e.getKey().asLong(), nestworldTag);
                             nestworldSerializedBes++;
+                            if (tel != null) {
+                                tel.ghostSaved(owner.getId(), e.getValue(), System.nanoTime() - nestworldNbtStart);
+                                if (tel.ghostSampleNext()) {
+                                    tel.ghostSample(nestworldTag, owner.nestworldGetGhostSnapshot().get(e.getKey().asLong()));
+                                }
+                            }
                         } catch (Throwable t) {
                             // Preserve the last valid value if a mod's serialization fails.
                             net.minecraft.nbt.CompoundTag prev = owner.nestworldGetGhostSnapshot().get(e.getKey().asLong());
@@ -165,6 +178,7 @@ public class BoundaryManager {
         nestworldGhostChunksScanned = nestworldScanned;
         nestworldGhostChunksSerialized = nestworldSerializedChunks;
         nestworldGhostBlockEntitiesSerialized = nestworldSerializedBes;
+        if (tel != null) tel.ghostEndCall(nestworldElapsed, nestworldNbtNanos);
     }
 
     /**

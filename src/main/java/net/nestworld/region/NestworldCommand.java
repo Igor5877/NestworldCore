@@ -419,6 +419,7 @@ public final class NestworldCommand {
                 .then(Commands.literal("chunkscheduler").executes(ctx -> chunkScheduler(ctx.getSource())))
                 .then(Commands.literal("tickets").executes(ctx -> ticketDistribution(ctx.getSource())))
                 .then(Commands.literal("ghostzones").executes(ctx -> ghostZoneStats(ctx.getSource())))
+                .then(Commands.literal("splitguard").executes(ctx -> splitGuardStats(ctx.getSource())))
                 .then(Commands.literal("regionpool").executes(ctx -> regionPoolStats(ctx.getSource())))
                 .then(Commands.literal("regionslow").executes(ctx -> regionSlowStats(ctx.getSource())))
                 .then(Commands.literal("polltask").executes(ctx -> pollTaskStats(ctx.getSource())))
@@ -1617,6 +1618,16 @@ public final class NestworldCommand {
      * entity NBT serialization) is the same "unconditional O(n) scan" bug class found 3x already
      * this session -- see project memory syncghostzones-unbounded-scan-investigation. Read-only.
      */
+    /** CORE-SPLIT-DENSE-BE-GUARD-001 Stage 0: ghost cost by region / BE type, MAIN BE phase, split predictions vs
+     *  measurements (overworld). Read-only, no behaviour change. */
+    private static int splitGuardStats(CommandSourceStack src) {
+        net.nestworld.region.NestworldDimensionRegion dr = overworldRegion(net.nestworld.region.NestworldRegionSystem.get());
+        SplitGuardTelemetry t = dr.getSplitGuardTelemetry();
+        String result = t == null ? "split-guard telemetry disabled (-Dnestworld.splitGuardTelemetry=false)" : t.report(12);
+        src.sendSuccess(() -> Component.literal(result), false);
+        return 0;
+    }
+
     private static int ghostZoneStats(CommandSourceStack src) {
         net.nestworld.region.NestworldRegionSystem sys = net.nestworld.region.NestworldRegionSystem.get();
         net.nestworld.region.NestworldDimensionRegion dr = overworldRegion(sys);

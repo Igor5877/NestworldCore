@@ -499,7 +499,26 @@ public class RegionSplitManager {
         return doSplit(region, reason, new CutChoice(axis, cut));
     }
 
+    /** CORE-SPLIT-DENSE-BE-GUARD-001 Stage 0: observes the line about to be applied (measurement only, never vetoes). */
+    interface SplitObserver {
+        void beforeSplit(WorldRegion region, SplitAxis axis, int cut, String reason);
+
+        void afterSplit(WorldRegion[] children);
+    }
+
+    SplitObserver splitObserver;
+
     private WorldRegion[] doSplit(WorldRegion region, String reason, CutChoice choice) {
+        SplitObserver nestworldObs = splitObserver;
+        if (nestworldObs != null) {
+            try {
+                nestworldObs.beforeSplit(region, choice != null ? choice.axis : region.preferredSplitAxis(),
+                        choice != null ? choice.cut : entityMedianCut(region), reason);
+            } catch (Throwable t) {
+                LOGGER.warn("split-guard telemetry failed (ignored, split unaffected): {}", t.toString());
+                nestworldObs = null;
+            }
+        }
         double avgTickMsAtDecision = region.getAvgTickMs();
         int entityCountAtDecision = region.getOwnedEntityIds().size();
         int parentId = region.getId();
@@ -569,6 +588,13 @@ public class RegionSplitManager {
                 result != null ? new int[] {result[0].getId(), result[1].getId()} : new int[] {-1, -1},
                 reason, avgTickMsAtDecision, entityCountAtDecision, System.nanoTime() - opStart,
                 lockTimedOut[0], result != null);
+        if (nestworldObs != null) {
+            try {
+                nestworldObs.afterSplit(result);
+            } catch (Throwable t) {
+                LOGGER.warn("split-guard telemetry failed (ignored): {}", t.toString());
+            }
+        }
         return result;
     }
 

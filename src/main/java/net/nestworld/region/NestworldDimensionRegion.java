@@ -70,6 +70,8 @@ public final class NestworldDimensionRegion {
     private final RegionThreadPool pool;
     private final RegionSplitManager splitManager;
     private final BoundaryManager boundaryManager;
+    /** CORE-SPLIT-DENSE-BE-GUARD-001 Stage 0 telemetry (measurement only); null when disabled. */
+    private final SplitGuardTelemetry splitGuardTelemetry;
     private final BoundarySignalQueue signalQueue;
     private final BoundaryEntityTransfer entityTransfer;
     private final CrossRegionCapabilityBus capabilityBus;
@@ -235,6 +237,24 @@ public final class NestworldDimensionRegion {
         this.capabilityBus = new CrossRegionCapabilityBus(level, grid, boundaryManager);
         this.chunkView = new RegionChunkView(grid, boundaryManager);
         this.splitManager = new RegionSplitManager(tree, pool, blockTickHeat);
+        if (SplitGuardTelemetry.ENABLED) {
+            this.splitGuardTelemetry = new SplitGuardTelemetry(level);
+            boundaryManager.splitGuardTelemetry = splitGuardTelemetry;
+            final SplitGuardTelemetry nestworldTel = splitGuardTelemetry;
+            splitManager.splitObserver = new RegionSplitManager.SplitObserver() {
+                @Override
+                public void beforeSplit(WorldRegion region, SplitAxis axis, int cut, String reason) {
+                    nestworldTel.predict(region, axis, cut, reason, NestworldRegionSystem.get().getPins(), NestworldDimensionRegion.this);
+                }
+
+                @Override
+                public void afterSplit(WorldRegion[] children) {
+                    nestworldTel.splitApplied(children);
+                }
+            };
+        } else {
+            this.splitGuardTelemetry = null;
+        }
 
         for (WorldRegion region : tree.getActiveRegions()) pool.spawn(region);
 
@@ -256,6 +276,7 @@ public final class NestworldDimensionRegion {
     public RegionThreadPool getPool() { return pool; }
     public RegionSplitManager getSplitManager() { return splitManager; }
     public BoundaryManager getBoundaryManager() { return boundaryManager; }
+    public SplitGuardTelemetry getSplitGuardTelemetry() { return splitGuardTelemetry; }
     public BoundarySignalQueue getSignalQueue() { return signalQueue; }
     public BoundaryEntityTransfer getEntityTransfer() { return entityTransfer; }
     public CrossRegionCapabilityBus getCapabilityBus() { return capabilityBus; }
@@ -585,7 +606,9 @@ public final class NestworldDimensionRegion {
             }
             LOGGER.info("BE phase [{}]: due={} main={} buckets:{}", key.location(), due.size(), mainBes.size(), sb);
         }
+        long nestworldMainBeStart = System.nanoTime();
         tickBlockEntityList(pins, mainBes);
+        if (splitGuardTelemetry != null) splitGuardTelemetry.mainBePhase(System.nanoTime() - nestworldMainBeStart, mainBes.size());
         final int nestworldBeBatch = 32;
         Map<WorldRegion, List<Runnable>> buckets = new IdentityHashMap<>();
         for (var e : beBuckets.entrySet()) {
@@ -1127,6 +1150,7 @@ public final class NestworldDimensionRegion {
 
         // 6. Adaptive split / merge
         splitManager.onTick();
+        if (splitGuardTelemetry != null) splitGuardTelemetry.tick();
         // 6b. CORE-MAILBOX-MERGE-001: messages orphaned by THIS tick's retirements are
         // re-addressed to their successor owners immediately (drained next tick).
         MailboxRetargeting.redeliver(this);
