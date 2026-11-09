@@ -47,6 +47,10 @@ public final class Ae2Compat {
         public final LongAdder setChangedUnexpectedClaim = new LongAdder();
         public final LongAdder initCancelled = new LongAdder();
         // AE2-BE-READY-001 R1-a scope 2 (BeDomainReady)
+        /** AE2-DEMAIN-001 B0: wall time of DEFERRED callback deliveries in the host domain (ns), per channel; max in ns. */
+        public final LongAdder cbDeliverNanos = new LongAdder(), stDeliverNanos = new LongAdder(), bkDeliverNanos = new LongAdder(),
+                clDeliverNanos = new LongAdder();
+        public final java.util.concurrent.atomic.LongAccumulator deliverMaxNanos = new java.util.concurrent.atomic.LongAccumulator(Math::max, 0);
         public final LongAdder readyInDomain = new LongAdder();
         public final LongAdder readyDeferred = new LongAdder();
         public final LongAdder readyRanInDomain = new LongAdder();

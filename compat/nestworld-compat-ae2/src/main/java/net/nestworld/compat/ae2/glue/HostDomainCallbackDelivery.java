@@ -126,6 +126,7 @@ public final class HostDomainCallbackDelivery {
             return;
         }
         c(ch, k.cbRanInDomain, k.stRanInDomain, k.bkRanInDomain, k.clRanInDomain).increment();
+        long t0 = System.nanoTime();
         try {
             runMarked(call);
             if (obs != null) obs.delivered(ch, node, label, host);
@@ -134,6 +135,10 @@ public final class HostDomainCallbackDelivery {
             Ae2Compat.LOG.error("[nestworld-compat-ae2] AE2 {} callback {} for {} at {} failed in its BE domain on {}",
                     ch, label, type, pos.toShortString(), Thread.currentThread().getName(), t);
             throw t;
+        } finally {
+            long d = System.nanoTime() - t0;
+            c(ch, k.cbDeliverNanos, k.stDeliverNanos, k.bkDeliverNanos, k.clDeliverNanos).add(d);
+            k.deliverMaxNanos.accumulate(d);
         }
     }
 }
