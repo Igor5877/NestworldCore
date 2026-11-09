@@ -80,6 +80,10 @@ public final class NestworldPins {
      *  attributed to these mods. Not a guarantee that all code belonging to the mod executes on
      *  the server thread (see the class javadoc). */
     private final Set<String> pinnedMods = ConcurrentHashMap.newKeySet();
+    /** AE2-DEMAIN-001 B8 (generic): block-entity types excluded from their mod's pin ("pin this mod except these types").
+     *  An explicit per-type BE pin still wins. Persisted in nestworld-pinmod-exceptions.txt. */
+    private final Set<String> pinModExceptions = ConcurrentHashMap.newKeySet();
+    private Path pinModExceptionsFile;
     private Path modFile;
     private Path errorCountsFile;
 
@@ -217,6 +221,7 @@ public final class NestworldPins {
     /** {@code typeId} is {@link TickingBlockEntity#getType()} (a registry id string). */
     public boolean isBePinned(String typeId) {
         if (!pinnedBeIds.isEmpty() && pinnedBeIds.contains(typeId)) return true;
+        if (!pinModExceptions.isEmpty() && pinModExceptions.contains(typeId)) return false;
         if (!pinnedMods.isEmpty()) {
             int c = typeId.indexOf(':');
             String ns = c < 0 ? "minecraft" : typeId.substring(0, c);
@@ -805,6 +810,56 @@ public final class NestworldPins {
             Files.write(cascadeSafeBeFile, lines);
         } catch (IOException e) {
             LOGGER.warn("Could not write cascade-safe block-entity file {}: {}", cascadeSafeBeFile, e.toString());
+        }
+    }
+
+    public List<String> pinModExceptionList() {
+        return new ArrayList<>(new TreeSet<>(pinModExceptions));
+    }
+
+    /** Excludes block-entity type {@code typeId} from its mod's pin; returns false when already excluded. */
+    public boolean addPinModException(String typeId) {
+        boolean added = pinModExceptions.add(typeId.trim());
+        if (added) savePinModExceptions();
+        return added;
+    }
+
+    public boolean removePinModException(String typeId) {
+        boolean removed = pinModExceptions.remove(typeId.trim());
+        if (removed) savePinModExceptions();
+        return removed;
+    }
+
+    public void loadPinModExceptions(Path file) {
+        this.pinModExceptionsFile = file;
+        pinModExceptions.clear();
+        if (!Files.isRegularFile(file)) return;
+        try {
+            for (String line : Files.readAllLines(file)) {
+                String t = line.trim();
+                if (!t.isEmpty() && !t.startsWith("#")) pinModExceptions.add(t);
+            }
+            if (!pinModExceptions.isEmpty()) {
+                LOGGER.info("Loaded {} pinmod exception(s) (block-entity types NOT pinned by their mod pin): {}",
+                        pinModExceptions.size(), pinModExceptionList());
+            }
+        } catch (IOException e) {
+            LOGGER.warn("Could not read pinmod-exceptions file {}: {}", file, e.toString());
+        }
+    }
+
+    private void savePinModExceptions() {
+        if (pinModExceptionsFile == null) return;
+        try {
+            Path parent = pinModExceptionsFile.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            List<String> lines = new ArrayList<>();
+            lines.add("# NestWorld pinmod exceptions — block-entity type ids NOT pinned by their mod's pin (one per line).");
+            lines.add("# An explicit per-type block-entity pin still wins.");
+            lines.addAll(pinModExceptionList());
+            Files.write(pinModExceptionsFile, lines);
+        } catch (IOException e) {
+            LOGGER.warn("Could not write pinmod-exceptions file {}: {}", pinModExceptionsFile, e.toString());
         }
     }
 

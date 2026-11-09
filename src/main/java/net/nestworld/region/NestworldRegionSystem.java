@@ -382,6 +382,7 @@ public class NestworldRegionSystem {
         pins.load(pinsFile());
         pins.loadBe(bePinsFile());
         pins.loadMods(pinnedModsFile());
+        pins.loadPinModExceptions(server.getWorldPath(LevelResource.ROOT).resolve("data").resolve("nestworld-pinmod-exceptions.txt"));
         pins.loadCascadeSafeBe(cascadeSafeBeFile());
         // Must run AFTER loadMods/loadBe/load above (see its own javadoc): a count already at
         // threshold from a previous crashed run pins retroactively right here, at startup.

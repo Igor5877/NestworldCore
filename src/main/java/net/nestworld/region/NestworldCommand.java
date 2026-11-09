@@ -400,6 +400,16 @@ public final class NestworldCommand {
                         .then(Commands.argument("namespace", com.mojang.brigadier.arguments.StringArgumentType.word())
                                 .executes(ctx -> pinMod(ctx.getSource(),
                                         com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "namespace")))))
+                .then(Commands.literal("pinmodexcept")
+                        .then(Commands.literal("list").executes(ctx -> pinModExceptList(ctx.getSource())))
+                        .then(Commands.literal("add")
+                                .then(Commands.argument("type", net.minecraft.commands.arguments.ResourceLocationArgument.id())
+                                        .executes(ctx -> pinModExcept(ctx.getSource(),
+                                                net.minecraft.commands.arguments.ResourceLocationArgument.getId(ctx, "type").toString(), true))))
+                        .then(Commands.literal("remove")
+                                .then(Commands.argument("type", net.minecraft.commands.arguments.ResourceLocationArgument.id())
+                                        .executes(ctx -> pinModExcept(ctx.getSource(),
+                                                net.minecraft.commands.arguments.ResourceLocationArgument.getId(ctx, "type").toString(), false)))))
                 .then(Commands.literal("unpinmod")
                         .then(Commands.argument("namespace", com.mojang.brigadier.arguments.StringArgumentType.word())
                                 .executes(ctx -> unpinMod(ctx.getSource(),
@@ -3652,6 +3662,30 @@ public final class NestworldCommand {
         }
         NestworldPins.PinReason finalReason = reason;
         src.sendSuccess(() -> Component.literal(finalReason.describe()), false);
+        return 1;
+    }
+
+    /** AE2-DEMAIN-001 B8 (generic): "pin this mod except these block-entity types". */
+    private static int pinModExcept(CommandSourceStack src, String typeId, boolean add) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        NestworldPins pins = NestworldRegionSystem.get().getPins();
+        boolean changed = add ? pins.addPinModException(typeId) : pins.removePinModException(typeId);
+        String msg = (add ? (changed ? "Excluded " : "Already excluded ") : (changed ? "Re-included " : "Not excluded: "))
+                + typeId + (add ? " from its mod pin (takes effect next tick; an explicit type pin still wins)" : "");
+        src.sendSuccess(() -> Component.literal(msg), true);
+        return changed ? 1 : 0;
+    }
+
+    private static int pinModExceptList(CommandSourceStack src) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        java.util.List<String> l = NestworldRegionSystem.get().getPins().pinModExceptionList();
+        src.sendSuccess(() -> Component.literal(l.size() + " pinmod exception(s): " + String.join(", ", l)), false);
         return 1;
     }
 
