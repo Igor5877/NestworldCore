@@ -363,6 +363,14 @@ public final class NestworldCommand {
                 .then(Commands.literal("split")
                         .then(Commands.argument("id", IntegerArgumentType.integer(0))
                                 .executes(ctx -> split(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "id")))))
+                .then(Commands.literal("splitat")
+                        .then(Commands.argument("id", IntegerArgumentType.integer(0))
+                                .then(Commands.argument("axis", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                        .then(Commands.argument("cut", IntegerArgumentType.integer())
+                                                .executes(ctx -> splitAt(ctx.getSource(),
+                                                        IntegerArgumentType.getInteger(ctx, "id"),
+                                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "axis"),
+                                                        IntegerArgumentType.getInteger(ctx, "cut")))))))
                 .then(Commands.literal("merge")
                         .then(Commands.argument("a", IntegerArgumentType.integer(0))
                                 .then(Commands.argument("b", IntegerArgumentType.integer(0))
@@ -3466,6 +3474,28 @@ public final class NestworldCommand {
                 "Split #" + id + " -> #" + children[0].getId() + " + #" + children[1].getId()
                 + " (pinned — won't auto-merge; use /nestworld merge)"), true);
         return 1;
+    }
+
+    /** Operator split at an explicit line (CORE-SPLIT-DENSE-BE-GUARD-001 calibration): same retirement path as every
+     *  split; child A keeps chunk coords <= cut on the axis. Manual operation (not affected by autoSplit=false). */
+    private static int splitAt(CommandSourceStack src, int id, String axisName, int cut) {
+        if (!NestworldRegionSystem.isInitialised()) {
+            src.sendFailure(Component.literal("NestWorld region system is not active"));
+            return 0;
+        }
+        NestworldRegionSystem sys = NestworldRegionSystem.get();
+        NestworldDimensionRegion dr = overworldRegion(sys);
+        WorldRegion r = findRegion(sys, id);
+        SplitAxis axis = "x".equalsIgnoreCase(axisName) ? SplitAxis.X : "z".equalsIgnoreCase(axisName) ? SplitAxis.Z : null;
+        if (r == null || axis == null) {
+            src.sendFailure(Component.literal(r == null ? "Region not found: " + id : "axis must be X or Z"));
+            return 0;
+        }
+        WorldRegion[] k = dr.getSplitManager().doSplitAtForTest(r, axis, cut, "manual-splitat");
+        String msg = k == null ? "split at " + axis + "=" + cut + " not possible (bounds / locks)"
+                : "Split #" + id + " at " + axis + "=" + cut + " -> #" + k[0].getId() + " + #" + k[1].getId();
+        src.sendSuccess(() -> Component.literal(msg), true);
+        return k == null ? 0 : 1;
     }
 
     private static int merge(CommandSourceStack src, int idA, int idB) {

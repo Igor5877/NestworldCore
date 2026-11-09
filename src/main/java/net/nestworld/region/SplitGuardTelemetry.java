@@ -139,7 +139,7 @@ public final class SplitGuardTelemetry {
     // ================================================================ split prediction (RegionSplitManager hook)
 
     private record Pending(long dueNanos, int parentId, int[] childIds, WorldRegion[] children, double tR,
-                           double ghostBefore, double mainBefore, double parentGhostBefore, double predGain, double predG, double predM,
+                           double ghostBefore, double mainBefore, double parentGhostBefore, double msptBefore, double predGain, double predG, double predM,
                            double predNet, String line) {
     }
 
@@ -201,7 +201,7 @@ public final class SplitGuardTelemetry {
                 veto ? "WOULD_VETO_LINE" : "accept", loaded, (System.nanoTime() - t0) / 1e6);
         LOGGER.info(line);
         pending.add(new Pending(0, region.getId(), null, null, tR, ghostEwmaMs, mainBeEwmaMs, regionGhostMs(region.getId()),
-                gain, g, m, net, line));
+                level.getServer().getAverageTickTime(), gain, g, m, net, line));
         return line;
     }
 
@@ -309,7 +309,7 @@ public final class SplitGuardTelemetry {
         }
         pending.add(new Pending(System.nanoTime() + POST_SPLIT_SECONDS * 1_000_000_000L, p.parentId(),
                 new int[]{children[0].getId(), children[1].getId()}, children, p.tR(), p.ghostBefore(), p.mainBefore(),
-                p.parentGhostBefore(), p.predGain(), p.predG(), p.predM(), p.predNet(), p.line()));
+                p.parentGhostBefore(), p.msptBefore(), p.predGain(), p.predG(), p.predM(), p.predNet(), p.line()));
     }
 
     /** Once per main tick (cheap: pending list is usually empty). */
@@ -331,14 +331,16 @@ public final class SplitGuardTelemetry {
             double dG = gA + gB - p.parentGhostBefore(), dM = mainBeEwmaMs - p.mainBefore();
             double dGdim = ghostEwmaMs - p.ghostBefore();
             double net = gain - dG - Math.max(0, dM);
+            double msptAfter = level.getServer().getAverageTickTime();
             String line = String.format(java.util.Locale.ROOT,
                     "SPLIT_GUARD_MEASURED dim=%s parent=#%d children=#%d/#%d intact=%s after=%ds child=%.2f/%.2fms gain=%.2fms "
                             + "ghostDelta=%.2fms(childGhost=%.2f/%.2fms parentBefore=%.2fms; dimension delta %.2fms) mainBeDelta=%.2fms(dimension) "
                             + "net=%.2fms | predicted gain=%.2f G=%.2f M<=%.2f net=%.2f "
-                            + "| G meas/pred=%s",
+                            + "| G meas/pred=%s | MSPT %.1f -> %.1f ms (measured net by MSPT %+.1f ms)",
                     dim, p.parentId(), p.childIds()[0], p.childIds()[1], intact, POST_SPLIT_SECONDS, ca, cb, gain, dG,
                     gA, gB, p.parentGhostBefore(), dGdim, dM, net, p.predGain(), p.predG(), p.predM(),
-                    p.predNet(), p.predG() > 0.01 ? String.format(java.util.Locale.ROOT, "%.2f", dG / p.predG()) : "-");
+                    p.predNet(), p.predG() > 0.01 ? String.format(java.util.Locale.ROOT, "%.2f", dG / p.predG()) : "-",
+                    p.msptBefore(), msptAfter, p.msptBefore() - msptAfter);
             LOGGER.info(line);
             remember(p.line());
             remember(line);
