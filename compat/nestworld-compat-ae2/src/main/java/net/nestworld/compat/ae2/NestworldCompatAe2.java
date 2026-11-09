@@ -74,6 +74,19 @@ public final class NestworldCompatAe2 {
                     .then(Commands.literal("on").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLane.setEnabled(true))))
                     .then(Commands.literal("off").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLane.setEnabled(false))))
                     .then(Commands.literal("status").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLaneFixtures.status())))
+                    .then(Commands.literal("items").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLaneFixtures.items())))
+                    .then(Commands.literal("seed")
+                            .then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                    .then(Commands.argument("n", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 100000))
+                                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLaneFixtures.seed(c.getSource().getLevel(),
+                                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"),
+                                                    com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "n")))))))
+                    .then(Commands.literal("collect")
+                            .then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                    .then(Commands.argument("r", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 32))
+                                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLaneFixtures.collect(c.getSource().getLevel(),
+                                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"),
+                                                    com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "r")))))))
                     .then(Commands.argument("mode", com.mojang.brigadier.arguments.StringArgumentType.word())
                             .then(Commands.argument("a", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
                                     .then(Commands.argument("b", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())

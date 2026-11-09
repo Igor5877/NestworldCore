@@ -4,9 +4,12 @@
 # pinned per type (crafting_unit / crafting_storage / crafting_monitor unpinned). Lane OFF (negative control) and ON
 # in one JVM via the fixture-only runtime switch. Usage: mb-lane-run.sh <label>
 set -u
+MODES=${MODES:-skip ise}; LANES=${LANES:-off on}   # e.g. MODES=drops LANES=on
 B=/root/airis-2026-10-25; I=H401BEDOM; E=$B/evidence-be-ready/${1:-mblane}; mkdir -p $E; cd $B/$I
 hjava() { for p in $(pgrep -x java); do [ "$(readlink /proc/$p/cwd)" = "$B/$I" ] && echo $p; done; }
+while [ -f $B/RIG_LOCK ] && ! grep -q "^agent-b1 ${1:-mblane}$" $B/RIG_LOCK; do sleep 30; done
 [ -n "$(hjava)" ] && { echo running; exit 1; }
+echo "agent-b1 ${1:-mblane}" > $B/RIG_LOCK
 rsync -a --delete $B/server/world/ world/; cp user_jvm_args.txt $E/user_jvm_args.before
 grep -q "compatAe2.fixtures" user_jvm_args.txt || printf '\n-Dnestworld.compatAe2.fixtures=true\n' >> user_jvm_args.txt
 # narrow unpin U (test-only, pristine copy untouched)
@@ -30,18 +33,19 @@ R "nestworld pins" > $E/pins-runtime.txt
 R "forceload add -200 -200" "forceload add 200 200" >/dev/null; sleep 15
 { echo "config: U narrow unpin (crafting types unpinned), mixinErrors=$(wc -l < $E/mixin-errors.txt)"
   R "nwbeready domain $A ae2:crafting_storage" "nwbeready domain $Bp ae2:crafting_storage"
-  for lane in off on; do
+  for lane in $LANES; do
     R "nwcompatae2 mblanefx $lane"
-    for mode in skip ise; do
+    for mode in $MODES; do
       R "nwcompatae2 mblanefx $mode $A $Bp"
       for i in $(seq 1 60); do s=$(R "nwcompatae2 mblanefx status"); case "$s" in *REPRODUCED*|*PASS*|*FAIL*|*invalid*) break;; esac; sleep 2; done
       echo "== lane=$lane mode=$mode"; echo "$s"; sleep 4
     done
   done
-  echo "== final"; R "nwae2mb" "nwcompatae2 mblane" "nwcompatae2 mblane calculators" "nwae2static" "nwbeready" "nwbeready failures"
+  echo "== final"; R "nwcompatae2 mblanefx items" "nwae2mb" "nwcompatae2 mblane" "nwcompatae2 mblane calculators" "nwae2static" "nwbeready" "nwbeready failures"
   R "nwcompatae2 stats" | grep -o "teardown{[^}]*}"; } > $E/out.txt 2>&1
 R "nwae2mb stacks" > $E/mb-stacks.txt
 tail -n +1 logs/latest.log | grep -a "B1 lane fixture\|MB lane\|IllegalStateException\|Exception in server tick\|Watchdog\|BE-DOMAIN\] task" | cut -c1-400 > $E/log-lines.txt
 ls crash-reports | sort | comm -13 $E/crash-before.txt - > $E/crash-new.txt
 ./rcon.sh stop >/dev/null 2>&1; for i in $(seq 1 40); do [ -z "$(hjava)" ] && break; sleep 3; done; P=$(hjava); [ -n "$P" ] && { echo "STOP HANG" >> $E/out.txt; kill -9 $P; }
 cp $E/user_jvm_args.before user_jvm_args.txt; echo "crashNew=$(wc -l < $E/crash-new.txt)" >> $E/out.txt; cat $E/out.txt
+rm -f $B/RIG_LOCK
