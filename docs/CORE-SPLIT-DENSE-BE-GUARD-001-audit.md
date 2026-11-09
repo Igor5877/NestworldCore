@@ -329,3 +329,45 @@ bad X = 2|3 line is the CURRENT live layout (restored from `nestworld-regions.da
 Harness note: the soak H on the copy left 13 persisted regions (its own split steps) — the copy's TPS ≈ 7.7 in H also
 reflected that fragmentation; the copy's layout was replaced by the live one for this check (old one kept in
 `/root/pi-smoke/pins-backup-2026-11-09/`).
+
+## 9. Live incident 2026-11-09 and emergency mitigation
+
+```
+incident (CONFIRMED)   5 × ServerHangWatchdog (single tick > 60 s) at 02:42, 05:11, 06:49, 08:44, 11:17, 0 players,
+                       systemd auto-restart masked them. Trigger 01:52 auto-split of #0 at X = 2|3 (through the base,
+                       cost 50 ms); the layout persists in nestworld-regions.dat and is restored on every boot.
+                       4 / 5 watchdog stacks: main thread in BoundaryManager.syncGhostZones → saveWithFullMetadata
+                       (titanium, AE2 CableBusContainer.writeToNBT, NBT); 1 / 5 in runBlockEntityPhase.
+causal chain           auto-split X=2|3 → dense base in the ghost strip → full saveWithFullMetadata per tick
+                       (~3 300 BEs, 21–30 ms/tick) → allocation / latency spikes (3.5 s ticks) → 60 s hang.
+                       GC as the last link: HYPOTHESIS (GC / safepoint log enabled from 16:17 to settle it).
+mitigation             333fefe93 -Dnestworld.autoSplit=false (default true = unchanged; blocks only the automatic
+                       split queue; manual split, merges, layout restore, free-running unchanged) + Stage 0, deployed
+                       16:17 (core patched4 f81fd364, backup /root/core-hotpatch-2026-11-09/live-2026-11-09-autosplit/),
+                       -Xlog:gc*,safepoint → logs/gc.log; then `merge 0 1`.
+production A/B         before merge: ghost ewma 16.4 ms (27.6–29.9 ms avg earlier), server tick 62.8 ms, MAIN BE 10.8 ms
+                       after merge (+4 min): ghost 0.06 ms, 0 BEs serialized, server tick 39.6 ms, TPS 20.0, MAIN BE 8.0 ms,
+                       merged region 9.9 ms; auto-split suppressed (AUTO_SPLIT_SUPPRESSED), 0 new splits.
+```
+
+autoSplit=false is a stabiliser, not the fix. It leaves production JVM args once Stage 2 + 3 are verified and stays only
+as an emergency kill switch.
+
+## 10. Permanent fix — owner plan 2026-11-09
+
+```
+p95-tail / avg / fill trigger → evaluate multiple candidate lines → predict gain − ghost serialization − MAIN band
+→ no good line → NO SPLIT (a 30 ms region is better than a split that adds 25 ms ghost on MAIN)
+→ good line → SPLIT → 30 s observation → good: keep | bad: REGRET MERGE + line cooldown
+```
+
+| stage | content | gate |
+|---|---|---|
+| 0 | telemetry (this doc §8) — ghost ns, strip BEs, cost by type, MAIN band, predicted vs measured | DONE, live; production A/B above |
+| 1 | shadow scorer over ALL candidate lines: `net = parallelGain − ghostCost − mainBandCost`, log `WOULD_REJECT` per line; no decision change | must consistently reject X=2\|3 and not reject good splits; calibrate k_ghost / gain |
+| 2 | enforce: line allowed only if `predictedNet > margin` (≈ +3 ms/tick initially); else try next line; none → no split | after Stage 1 calibration |
+| 3 | split-regret: 30 s post-split measurement; `measuredNet < −3 ms/tick` → automatic regret merge (bypasses the 35-region rule) + line cooldown ≈ 30 min | closes merge → 69 s → same bad split |
+| 4 | startup layout validation: after a stabilization window, a restored split that is known-bad / clearly negative → regret merge | regions.dat must not restore a known-bad layout forever |
+| 5 | CORE-GHOST-ZONE-DELTA-001: change-driven snapshots, skip unchanged (90–96 % measured), skip unused / MAIN-domain BEs, snapshot generation, full fallback on uncertainty | second layer; does not replace the guard |
+
+Exit: Stage 0 → shadow → X=2|3 proven negative → enforce → regret merge → autoSplit=true again.
