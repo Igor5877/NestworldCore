@@ -75,6 +75,26 @@ public final class TickAttribution {
 
     /** Додати вагу чанку (будь-який kind тіку -- entity чи block-entity, обидва
      *  однаково "цей чанк коштував часу"). dimensionKey -- напр. "minecraft:overworld". */
+    /** CORE-SPLIT-DENSE-BE-GUARD-001 gain model: the same chunk cost, but only work executed on a region thread
+     *  ({@code [0]} block entities, {@code [1]} entities) — pinned / band work on MAIN is not region cost. */
+    private static final ConcurrentHashMap<String, ConcurrentHashMap<Long, LongAdder[]>> regionChunkNanos = new ConcurrentHashMap<>();
+
+    public static void recordChunkCost(String dimensionKey, ChunkPos pos, long elapsedNanos, boolean blockEntity) {
+        recordChunkCost(dimensionKey, pos, elapsedNanos);
+        if (Thread.currentThread() instanceof RegionThread) {
+            regionChunkNanos.computeIfAbsent(dimensionKey, k -> new ConcurrentHashMap<>())
+                    .computeIfAbsent(pos.toLong(), k -> new LongAdder[]{new LongAdder(), new LongAdder()})[blockEntity ? 0 : 1]
+                    .add(elapsedNanos);
+        }
+    }
+
+    /** Region-thread cost of one chunk in the current decayed window: {be, entity} ns (zeros when absent). */
+    public static long[] regionChunkCostNanos(String dimensionKey, long chunkPosLong) {
+        ConcurrentHashMap<Long, LongAdder[]> m = regionChunkNanos.get(dimensionKey);
+        LongAdder[] a = m == null ? null : m.get(chunkPosLong);
+        return a == null ? new long[2] : new long[]{a[0].sum(), a[1].sum()};
+    }
+
     public static void recordChunkCost(String dimensionKey, ChunkPos pos, long elapsedNanos) {
         chunkNanos.computeIfAbsent(dimensionKey, k -> new ConcurrentHashMap<>())
                 .computeIfAbsent(pos.toLong(), k -> new LongAdder())
@@ -95,6 +115,18 @@ public final class TickAttribution {
      *  мапа відображала "недавнє" навантаження, а не весь uptime, і щоб дрібні
      *  записи не накопичувались вічно. */
     public static void decayChunks() {
+        for (ConcurrentHashMap<Long, LongAdder[]> perDim : regionChunkNanos.values()) {
+            var it = perDim.entrySet().iterator();
+            while (it.hasNext()) {
+                LongAdder[] a = it.next().getValue();
+                long be = (long) (a[0].sum() * CHUNK_DECAY), en = (long) (a[1].sum() * CHUNK_DECAY);
+                if (be + en < CHUNK_DROP_BELOW_NANOS) {
+                    it.remove();
+                } else {
+                    a[0].reset(); a[0].add(be); a[1].reset(); a[1].add(en);
+                }
+            }
+        }
         for (ConcurrentHashMap<Long, LongAdder> perDim : chunkNanos.values()) {
             var it = perDim.entrySet().iterator();
             while (it.hasNext()) {

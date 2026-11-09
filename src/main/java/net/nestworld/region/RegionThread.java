@@ -1124,7 +1124,7 @@ public class RegionThread extends Thread {
                         net.minecraft.world.entity.EntityType.getKey(entity.getType()).getNamespace(),
                         nestworldTickAttrNanos);
                 TickAttribution.recordChunkCost(level.dimension().location().toString(),
-                        entity.chunkPosition(), nestworldTickAttrNanos);
+                        entity.chunkPosition(), nestworldTickAttrNanos, false);
                 ticked++;
                 region.fairness.recordTick(uuid, nestworldTickAttrStart);
                 // Phase 2: track this owned entity now (region phase). Skip if the tick removed it.

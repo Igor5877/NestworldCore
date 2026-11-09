@@ -562,7 +562,7 @@ public final class NestworldDimensionRegion {
                         nestworldTickAttrNanos);
                 BlockPos nestworldBePos = ticker.getPos();
                 TickAttribution.recordChunkCost(level.dimension().location().toString(),
-                        new net.minecraft.world.level.ChunkPos(nestworldBePos), nestworldTickAttrNanos);
+                        new net.minecraft.world.level.ChunkPos(nestworldBePos), nestworldTickAttrNanos, true);
             } catch (Throwable err) {
                 if (pins.isAutoPinEnabled()) {
                     BlockPos p = ticker.getPos();

@@ -159,10 +159,11 @@ public final class SplitGuardTelemetry {
             if (cp.x < region.getMinChunkX() || cp.x > region.getMaxChunkX() || cp.z < region.getMinChunkZ() || cp.z > region.getMaxChunkZ()) continue;
             loaded++;
             int c = x ? cp.x : cp.z;
-            double ns = TickAttribution.chunkCostNanos(dim, cp.toLong());
+            long[] rc = TickAttribution.regionChunkCostNanos(dim, cp.toLong());   // region-thread work only
+            double ns = rc[0] + rc[1];
             if (c <= cut) nsA += ns; else nsB += ns;
             boolean strip = c >= stripLo && c <= stripHi, band = c >= bandLo && c <= bandHi;
-            if (band) nsBand += ns;
+            if (band) nsBand += rc[0];                                          // only BEs move to MAIN
             if (!strip && !band) continue;
             for (Map.Entry<BlockPos, BlockEntity> e : new ArrayList<>(chunk.getBlockEntities().entrySet())) {
                 BlockEntity be = e.getValue();
@@ -186,7 +187,7 @@ public final class SplitGuardTelemetry {
         double shareMax = total > 0 ? Math.max(nsA, nsB) / total : 0.5, bandShare = total > 0 ? nsBand / total : 0;
         double gain = tR * (1 - shareMax) - THREAD_OVERHEAD_MS;
         double g = predGus / 1000.0;
-        double m = tR * bandShare;          // upper bound: the band's whole chunk load (entities stay on the region)
+        double m = tR * bandShare;          // region-thread BE work in the band moves to MAIN (entities stay on the region)
         double net = gain - g - m, margin = Math.max(MARGIN_ABS_MS, MARGIN_REL * tR);
         boolean veto = net <= margin;
         splits++;
@@ -225,21 +226,23 @@ public final class SplitGuardTelemetry {
         if (last != null && now - last < SHADOW_INTERVAL_NANOS) return;
         lastShadow.put(region.getId(), now);
         long t0 = now;
-        java.util.TreeMap<Integer, double[]> colX = new java.util.TreeMap<>(), colZ = new java.util.TreeMap<>(); // {ns, ghostUs, bes}
+        java.util.TreeMap<Integer, double[]> colX = new java.util.TreeMap<>(), colZ = new java.util.TreeMap<>(); // {ns, ghostUs, bes, beNs}
         for (LevelChunk chunk : level.getChunkSource().nestworldLoadedFull.values()) {
             var cp = chunk.getPos();
             if (cp.x < region.getMinChunkX() || cp.x > region.getMaxChunkX() || cp.z < region.getMinChunkZ() || cp.z > region.getMaxChunkZ()) continue;
-            double ns = TickAttribution.chunkCostNanos(dim, cp.toLong()), gus = 0;
+            long[] rc = TickAttribution.regionChunkCostNanos(dim, cp.toLong());
+            double ns = rc[0] + rc[1], beNs = rc[0], gus = 0;
             int bes = 0;
             for (BlockEntity be : new ArrayList<>(chunk.getBlockEntities().values())) {
                 gus += typeSaveUs(be.getType());
                 bes++;
             }
             for (var m : java.util.List.of(colX, colZ)) {
-                double[] v = m.computeIfAbsent(m == colX ? cp.x : cp.z, k -> new double[3]);
+                double[] v = m.computeIfAbsent(m == colX ? cp.x : cp.z, k -> new double[4]);
                 v[0] += ns;
                 v[1] += gus;
                 v[2] += bes;
+                v[3] += beNs;
             }
         }
         double tR = region.getAvgTickMs();
@@ -262,7 +265,7 @@ public final class SplitGuardTelemetry {
                     double[] v = e.getValue();
                     if (k <= c) nsA += v[0];
                     if (k >= c - gd && k <= c + 1 + gd) { ghostUs += v[1]; stripBes += v[2]; }
-                    if (k >= c - bb + 1 && k <= c + bb) band += v[0];
+                    if (k >= c - bb + 1 && k <= c + bb) band += v[3];
                 }
                 if (Math.min(nsA, total - nsA) < total * 0.10) continue;   // same separation rule as the scorer
                 candidates++;
