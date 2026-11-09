@@ -41,6 +41,7 @@ public final class NestworldCompatAe2 {
                     net.nestworld.compat.ae2.glue.LifeAdmissionFixtures.onServerTickEnd(e.getServer().getTickCount());
                     net.nestworld.compat.ae2.glue.TeardownFixtures.onServerTickEnd(e.getServer().getTickCount());
                     net.nestworld.compat.ae2.glue.TeardownClosureFixtures.onServerTickEnd(e.getServer().getTickCount());
+                    net.nestworld.compat.ae2.glue.MbLaneFixtures.onServerTickEnd(e.getServer().getTickCount());
                 }
             });
         }
@@ -59,6 +60,8 @@ public final class NestworldCompatAe2 {
                                 .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.NeighborAffinity.domainAt(
                                         c.getSource().getLevel(),
                                         net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "p"))))))
+                .then(Commands.literal("mblane").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLane.summary()))
+                        .then(Commands.literal("calculators").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLane.calculators()))))
                 .then(Commands.literal("gridcensus")
                         .then(Commands.literal("start").executes(c -> say(c.getSource(),
                                 net.nestworld.compat.ae2.glue.GridCensus.start(c.getSource().getServer().getTickCount()))))
@@ -67,6 +70,17 @@ public final class NestworldCompatAe2 {
                         .then(Commands.literal("devices").executes(c -> say(c.getSource(),
                                 net.nestworld.compat.ae2.glue.GridCensus.devices(c.getSource().getServer().getTickCount(), 25)))));
         if (T2Fixtures.ENABLED) {
+            root = root.then(Commands.literal("mblanefx")
+                    .then(Commands.literal("on").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLane.setEnabled(true))))
+                    .then(Commands.literal("off").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLane.setEnabled(false))))
+                    .then(Commands.literal("status").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLaneFixtures.status())))
+                    .then(Commands.argument("mode", com.mojang.brigadier.arguments.StringArgumentType.word())
+                            .then(Commands.argument("a", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                    .then(Commands.argument("b", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLaneFixtures.run(c.getSource().getLevel(),
+                                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "a"),
+                                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "b"),
+                                                    com.mojang.brigadier.arguments.StringArgumentType.getString(c, "mode"))))))));
             var fx = Commands.literal("fixture").then(Commands.literal("status").executes(c -> {
                 c.getSource().sendSuccess(() -> Component.literal(T2Fixtures.status()), false);
                 return 1;
@@ -283,6 +297,7 @@ public final class NestworldCompatAe2 {
         sb.append(' ').append(net.nestworld.compat.ae2.glue.LifeAdmission.summary());
         sb.append(' ').append(net.nestworld.compat.ae2.glue.ClusterTeardownCoordinator.summary());
         sb.append(' ').append(net.nestworld.compat.ae2.glue.NeighborAffinity.summary());
+        sb.append(' ').append(net.nestworld.compat.ae2.glue.MbLane.summary());
         return sb.toString();
     }
 
