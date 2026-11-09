@@ -298,3 +298,34 @@ per-type save ns, dirty-rate counter).
 | D10 | Out of scope but observed: on 36 CPUs, fill-cores (target 35) and MAX_REGIONS 72 allowed the I-0 storm of ~50 tiny regions. Track as a separate gate? | — |
 
 STOP. No implementation until the owner reviews.
+
+## 8. Stage 0 telemetry — implemented (a9c72b724), first evidence (2026-11-09)
+
+Owner 2026-11-09: Stage 0 telemetry only, no enforce. Measurement only — split / merge decisions unchanged (observer
+runs before `tree.split`, failures are caught and ignored). `/nestworld splitguard`; `-Dnestworld.splitGuardTelemetry=false` off.
+
+Run on the production-pack copy `/root/pi-smoke` (live world copy, live pin files, region layout copied from live =
+#0 [..2] / #1 [3..], i.e. the X = 2|3 line), 0 players, core = live jar + Stage 0 classes
+(`patched3…445…universal.jar` 781d8ac6). Evidence `/root/airis-2026-10-25/evidence-be-ready/sg-stage0-check-run{1,2}`.
+
+```
+ghost cost (mirrored live layout, before any test split)   33.3 ms/tick ewma; #0 = 24.9 ms (2 694 BEs), #1 = 6.0 ms
+unchanged NBT between ticks (sampled 1/16)                 92.3–95.7 %   → CORE-GHOST-ZONE-DELTA-001 baseline
+top ghost save cost by type                                 ae2:cable_bus 4.5 us × many (16 %), extendedae_plus:assembler_matrix_hybrid_plus 96 us,
+                                                            mm:*_item_port_* 46–82 us, expatternprovider:ex_pattern_provider 76 us, ex_drive 205 us
+known-bad split reproduced: manual split of the base region #0 (cut Z = 2, through the base)
+  PREDICT   T_R 28.4 ms, parentGhost 25.1 ms, strip BEs 4 689 (pinned 2 667), G 51.0 ms, band normal/pinned 1 507/1 496,
+            M <= 16.4 ms, gain 0.63 ms, net −66.8 ms → shadowVerdict WOULD_VETO_LINE (calc 6.4 ms, one-shot)
+  MEASURED  +30 s: child 18.45 / 0.17 ms, gain 9.97 ms, ghost delta +24.1 ms (children 44.3 / 4.9 vs parent 25.1),
+            MAIN BE +2.7 ms, net −16.8 ms; G meas / pred 0.47
+  → verdict direction CORRECT; magnitudes need Stage 1 calibration (G overestimated ~2×, gain underestimated —
+    chunk-cost shares do not capture where the region thread's time goes)
+```
+
+Live (read-only, existing `/nestworld ghostzones`, 0 players, ~24 min after the 13:00 restart): ghost sync avg
+**27.6 ms/tick** (max 153 ms), 3 316 BEs serialized per tick, server tick 53 ms, layout #0 [..2] / #1 [3..] — the known
+bad X = 2|3 line is the CURRENT live layout (restored from `nestworld-regions.dat`). CONFIRMED.
+
+Harness note: the soak H on the copy left 13 persisted regions (its own split steps) — the copy's TPS ≈ 7.7 in H also
+reflected that fragmentation; the copy's layout was replaced by the live one for this check (old one kept in
+`/root/pi-smoke/pins-backup-2026-11-09/`).
