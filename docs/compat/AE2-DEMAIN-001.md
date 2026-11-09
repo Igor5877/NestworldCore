@@ -28,3 +28,23 @@ B0/B1 audit: `AE2-DEMAIN-001-B0-B1-audit.md` (STOP for review, decisions D1–D9
 from it: MEGA crafting unit / storage are AE2 `CraftingBlockEntity` types registered under `megacells:` (CONFIRMED by
 javap of megacells-forge-2.4.6 MEGABlockEntities) and `megacells` was NOT pinned on live → same MBCalculator race class
 as invalid H run1; `/nestworld pinmod megacells` applied on live (0 players, persisted; standing pin permission).
+
+## Owner decisions 2026-11-09 — B1 (D1–D9)
+
+| | decision |
+|---|---|
+| D1 lane | APPROVED: non-blocking serialization token, no AE2 thread. Free → MBCalculator runs now in the current host domain; busy → register request, caller returns; on release the next target is enqueued into THAT target's current BE execution domain, revalidated, calculated there. MAIN is not the lane executor. The token decides who may touch MBCalculator's global state, not which thread does world access |
+| D2 cross-domain multiblock | APPROVED as transitional: position-pin such members to MAIN + counter `crossDomainMultiblockPinned`; not final (cluster execution domain later) |
+| D3 queue | NO unbounded FIFO: per multiblock / target max `1 active + 1 dirty rerun` (`dirtyGeneration`, one fresh calculation after the active one) |
+| D4 D4a | D4a stays; its MBCalculator part takes the same B1 token; exactly-once untouched; nested acquisition of another token forbidden; repeated same operationId defined, never deadlock |
+| D5 addons | one shared semantic entrypoint if they really go through MBCalculator; per-addon fixture proving the wrapper intercepts its calculation path |
+| D6 megacells | KEEP pinned until the selective-unpin gate after B1 |
+| D7 unpin order | selective only: verified crafting / multiblock types → transit / WP3-B → other machine paths → global ae2 pin last |
+| D8 acceptance | negative control + positive no-pin run: MB concurrent 0, ISE 0, silent-skip 0, init failures 0, dup / loss 0, queue outstanding 0 at quiescence; ticket latency p50/p95/p99/max; dirty-rerun / coalesced counts. Instrument BEFORE B1: concurrent entry, already-in-progress ISE, silent skipped recalculation (MBCalculator:84), foreign-finally reset anomaly, recalculation requested / completed; after B1 `requested = completed + coalesced + stale` |
+| D9 B0 | APPROVED now; diagnostic / debug, no noticeable hot-path overhead; fix soak harness `gridcensus report → start` |
+
+Production prerequisite (current versions): **AE2 and every MBCalculator / CraftingBlockEntity-based addon MUST be
+pinned until B1 selective-unpin verification.** Check: `compat/nestworld-compat-ae2/tools/mbcalc-pin-audit.sh <server>`
+(exit 1 on any unpinned user). Live 2026-11-09: the audit found `ae2omnicells` (OmniCraftingBlockEntity extends
+CraftingBlockEntity) and `mae2` (DENSE_ACCELERATOR = BlockEntityType<CraftingBlockEntity>) unpinned besides megacells →
+all three pinned on live (0 players, persisted); audit now exit 0.
