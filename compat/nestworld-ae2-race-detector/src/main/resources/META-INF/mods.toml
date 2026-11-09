@@ -3,7 +3,7 @@ loaderVersion="[47,)"
 license="test-only"
 [[mods]]
 modId="nestworld_ae2detect"
-version="0.1.1"
+version="0.2.0"
 displayName="NestWorld AE2 race detector (observation only, test copies)"
 [[dependencies.nestworld_ae2detect]]
     modId="ae2"

@@ -26,7 +26,13 @@
     "CraftingBlockEntityD2DetectMixin",
     "QuantumBridgeD2DetectMixin",
     "SpatialPylonD2DetectMixin",
-    "CableBusContainerD2DetectMixin"
+    "CableBusContainerD2DetectMixin",
+    "B0TickHandlerMixin",
+    "B0GridServiceMixin",
+    "B0CraftingLogicMixin",
+    "B0NetworkStorageMixin",
+    "B0TransitMixin",
+    "B0TransitFluidMixin"
   ],
   "injectors": {
     "defaultRequire": 1

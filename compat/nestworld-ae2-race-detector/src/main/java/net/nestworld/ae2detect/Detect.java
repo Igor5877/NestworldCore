@@ -69,6 +69,18 @@ public final class Detect {
                                                 .executes(c -> say(c.getSource(), BeReadyDetect.domainAt(c.getSource().getLevel(),
                                                         net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "pos"),
                                                         com.mojang.brigadier.arguments.StringArgumentType.getString(c, "type")))))))));
+        // AE2-DEMAIN-001 D8 (read-only) and B0 (diagnostic timing window; start/stop toggle only the timing, never AE2)
+        MinecraftForge.EVENT_BUS.addListener((RegisterCommandsEvent e) -> e.getDispatcher().register(
+                net.minecraft.commands.Commands.literal("nwae2mb").requires(s -> s.hasPermission(2))
+                        .executes(c -> say(c.getSource(), MbDetect.summary()))
+                        .then(net.minecraft.commands.Commands.literal("stacks").executes(c -> say(c.getSource(), MbDetect.stacks())))));
+        MinecraftForge.EVENT_BUS.addListener((RegisterCommandsEvent e) -> e.getDispatcher().register(
+                net.minecraft.commands.Commands.literal("nwae2b0").requires(s -> s.hasPermission(2))
+                        .executes(c -> say(c.getSource(), B0Detect.report(c.getSource().getServer().getTickCount(), c.getSource().getServer().getAverageTickTime())))
+                        .then(net.minecraft.commands.Commands.literal("start").executes(c -> say(c.getSource(), B0Detect.start(c.getSource().getServer().getTickCount()))))
+                        .then(net.minecraft.commands.Commands.literal("stop").executes(c -> say(c.getSource(), B0Detect.stop())))
+                        .then(net.minecraft.commands.Commands.literal("report").executes(c -> say(c.getSource(), B0Detect.report(c.getSource().getServer().getTickCount(), c.getSource().getServer().getAverageTickTime()))))
+                        .then(net.minecraft.commands.Commands.literal("callers").executes(c -> say(c.getSource(), B0Detect.callers(30))))));
         MinecraftForge.EVENT_BUS.addListener((RegisterCommandsEvent e) -> e.getDispatcher().register(
                 net.minecraft.commands.Commands.literal("nwmekdetect").requires(s -> s.hasPermission(2))
                         .executes(c -> say(c.getSource(), MekDetect.summary()))
