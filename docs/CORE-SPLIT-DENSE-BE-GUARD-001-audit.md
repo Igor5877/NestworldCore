@@ -371,3 +371,31 @@ p95-tail / avg / fill trigger → evaluate multiple candidate lines → predict 
 | 5 | CORE-GHOST-ZONE-DELTA-001: change-driven snapshots, skip unchanged (90–96 % measured), skip unused / MAIN-domain BEs, snapshot generation, full fallback on uncertainty | second layer; does not replace the guard |
 
 Exit: Stage 0 → shadow → X=2|3 proven negative → enforce → regret merge → autoSplit=true again.
+
+## 11. Stage 1 shadow scorer — first evidence (2026-11-09, production-pack copy, live pins + layout)
+
+Implementation: commit after a1ea1229d (`SplitGuardTelemetry.shadowScore`, hook `SplitObserver.wantsSplit`). Every time
+the heuristic wants to split (applied or suppressed by autoSplit=false), every line on both axes that passes the
+scorer's 10 % separation rule is scored `net = gain − G − M` (gain from chunk-cost shares, G = Σ strip BE save cost,
+M = band chunk-cost share × T_R); verdict `net > 3 ms`. No decision changes. Evidence
+`/root/airis-2026-10-25/evidence-be-ready/sg-stage1-{shadow,positive}-run*`.
+
+```
+known-bad layout / base only (sg-stage1-shadow-run1)
+  merged region, fill-cores trigger: candidates 9–10, accepted 0 → NO_GOOD_LINE (would stay whole)
+  best line X = 2: net −29.6 ms, G = 26.4 ms (3 265 strip BEs)  ← live measured ghost on X=2|3: 27.6–29.9 ms avg
+positive control: 2 × ~430 floating cows at x = ±1 600, no BEs between (sg-stage1-positive-run2)
+  T_R 40.5 ms: candidates 205, accepted 187–189 → SPLIT_AT_BEST X = −99 (net +13.7 ms, G 0, M 0)
+  today's scorer choice under the same load: X = 2 (through the base) → shadow net −15.4 ms → WOULD_REJECT
+```
+
+Findings: (1) CONFIRMED on the copy — today's band-heat scorer picks the base line X = 2 even when good lines exist;
+the shadow scorer rejects it and accepts the good ones. (2) G for X = 2 predicted 26.4 ms vs 27.6–29.9 ms measured live.
+(3) Cold-start bias fixed: with no ghost strips (single region) every type fell back to 30 us → G 98 ms for X = 2; the
+default is now 8 us (live mean) and unseen types use the mean of measured saves. (4) Gain is still a chunk-cost-share
+model (underestimated 0.63 vs 9.97 ms in §8) — calibration item before Stage 2. (5) Test hygiene: pi-smoke runs on the
+same host caused 2–3 s "Can't keep up" on live (only inside the test windows, also with taskset 0-7) — further copy
+tests only when live has 0 players.
+
+Stage 1 exit criteria still open: shadow verdicts on real auto-split triggers on live (autoSplit=false keeps them
+coming as AUTO_SPLIT_SUPPRESSED + SPLIT_GUARD_SHADOW), gain calibration, a second positive case with BEs on both sides.
