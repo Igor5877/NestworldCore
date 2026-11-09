@@ -1280,6 +1280,10 @@ public final class NestworldCommand {
                         + (hidden > 0 ? " (" + NestworldChat.tr(loc, "showing top", "показано топ") + " "
                                 + STATUS_COMPACT_TOP_N + " " + NestworldChat.tr(loc, "by cost", "за вартістю") + ")" : ""))
                         .withStyle(net.minecraft.ChatFormatting.AQUA)));
+        if (!RegionSplitManager.AUTO_SPLIT) {
+            lines.add(Component.literal("  autoSplit=false (" + NestworldChat.tr(loc, "automatic splitting disabled",
+                    "автоматичний split вимкнено") + ")").withStyle(net.minecraft.ChatFormatting.GOLD));
+        }
         lines.add(NestworldChat.blank());
 
         for (WorldRegion r : shown) {

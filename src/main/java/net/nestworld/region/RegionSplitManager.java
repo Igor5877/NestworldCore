@@ -42,6 +42,11 @@ public class RegionSplitManager {
     // color displayed region cost -- presentation reads the engine's own threshold
     // rather than duplicating a second number that could drift out of sync.
     static final double SPLIT_MS_THRESHOLD = 25.0; // half the 50 ms tick budget
+
+    /** Emergency kill switch (owner 2026-11-09, live watchdog incidents): {@code -Dnestworld.autoSplit=false} stops the
+     *  automatic split heuristic from queuing splits. Nothing else changes: manual /nestworld split, merges (manual and
+     *  auto), layout restore and free-running behave exactly as with the default {@code true}. */
+    public static final boolean AUTO_SPLIT = !"false".equalsIgnoreCase(System.getProperty("nestworld.autoSplit"));
     static final double MERGE_MS_THRESHOLD = 10.0;
     private static final int    SPLIT_CHECKS_REQUIRED = 5;  // 100 game ticks
     private static final int    MERGE_CHECKS_REQUIRED = 25; // 500 game ticks
@@ -109,7 +114,14 @@ public class RegionSplitManager {
     private static final long EVAL_INTERVAL_NANOS = 1_000_000_000L; // 1 real second
     private long nestworldLastEvalNanos = 0L;
 
+    private static final java.util.concurrent.atomic.AtomicBoolean AUTO_SPLIT_LOGGED = new java.util.concurrent.atomic.AtomicBoolean();
+
     public RegionSplitManager(RegionTree tree, RegionThreadPool pool, BlockTickHeat blockTickHeat) {
+        if (AUTO_SPLIT_LOGGED.compareAndSet(false, true)) {
+            if (AUTO_SPLIT) LOGGER.info("autoSplit=true (automatic region splitting enabled)");
+            else LOGGER.warn("autoSplit=false — automatic region splitting DISABLED by -Dnestworld.autoSplit=false "
+                    + "(manual split, merges, layout restore and free-running unchanged)");
+        }
         this.tree = tree;
         this.pool = pool;
         this.blockTickHeat = blockTickHeat;
@@ -209,7 +221,9 @@ public class RegionSplitManager {
                 region.mergePressureChecks = 0;
                 mergeCandidates.remove(region);
                 if (++region.splitPressureChecks >= SPLIT_CHECKS_REQUIRED && region.canSplit()) {
-                    if (splitWouldSeparateLoad(region)) {
+                    if (!AUTO_SPLIT) {
+                        logSuppressedAutoSplit(region, costMs, p95Ms);
+                    } else if (splitWouldSeparateLoad(region)) {
                         pendingSplits.add(region);
                         pendingSplitReasons.put(region, fillSplit ? "fill-cores(spare)"
                                 : tailHot ? String.format("p95-tail(%.1fms>%.0f)", p95Ms, SPLIT_MS_THRESHOLD)
@@ -1020,6 +1034,22 @@ public class RegionSplitManager {
     // suppress every other region's for the next 30s (observed live — a chronically-vetoed
     // region masked a second one that was ALSO stuck, with no way to tell from the log alone).
     private final java.util.Map<WorldRegion, Long> lastGuardLogNanos = new java.util.WeakHashMap<>();
+    private final java.util.Map<WorldRegion, Long> lastSuppressedLogNanos = new java.util.WeakHashMap<>();
+    private long suppressedAutoSplits;
+
+    public long suppressedAutoSplits() {
+        return suppressedAutoSplits;
+    }
+
+    private void logSuppressedAutoSplit(WorldRegion region, double costMs, double p95Ms) {
+        suppressedAutoSplits++;
+        long now = System.nanoTime();
+        Long last = lastSuppressedLogNanos.get(region);
+        if (last != null && now - last < 60_000_000_000L) return;
+        lastSuppressedLogNanos.put(region, now);
+        LOGGER.info("AUTO_SPLIT_SUPPRESSED {} (autoSplit=false): would have split, avg {} ms p95 {} ms ({} suppressed so far)",
+                region, String.format("%.1f", costMs), String.format("%.1f", p95Ms), suppressedAutoSplits);
+    }
 
     private void logSkippedSplit(WorldRegion region) {
         long now = System.nanoTime();
