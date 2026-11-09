@@ -399,3 +399,16 @@ tests only when live has 0 players.
 
 Stage 1 exit criteria still open: shadow verdicts on real auto-split triggers on live (autoSplit=false keeps them
 coming as AUTO_SPLIT_SUPPRESSED + SPLIT_GUARD_SHADOW), gain calibration, a second positive case with BEs on both sides.
+
+## 12. Calibration run 1 (2026-11-09, pi-smoke, `sg-calibrate-run1`, explicit lines via `/nestworld splitat`)
+
+| line | pred net | pred G | meas ghost Δ | MSPT before → after (net) | G meas/pred |
+|---|---|---|---|---|---|
+| base X=2 | −29.4 | 26.1 | +32.8 | 19.8 → 51.3 (−31.5) | 1.26 |
+| base Z=1 | −58.7 | 53.8 | +57.7 | 18.7 → 83.1 (−64.4) | 1.07 |
+| cows + X=2 (region 40 ms) | −22.2 | 27.4 | +16.8 | 40.0 → 31.2 (+8.8) | 0.61 |
+| cows X=−99 / X=50 | +10.2 / +11.1 | 0 | — | split refused ("bounds / locks") — to investigate | — |
+
+STRONGLY INDICATED: G and net match MSPT for the base lines. Gain model wrong when the region is the bottleneck
+(cows + X=2: predicted −22, measured +8.8 → a false reject, the safe direction). Before Stage 2: gain from the barrier /
+MSPT critical path instead of chunk-cost shares; reproduce the two refused positive-control splits.

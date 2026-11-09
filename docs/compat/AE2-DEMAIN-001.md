@@ -23,3 +23,8 @@ players). Reopens the frozen WP3-B and WP4 (AE2-COMPAT-ARCHITECTURE §6).
 | B11 | `AE2-NO-MAIN-PIN-PRODUCTION-VERIFIED` → production `pinmod ae2` removed |
 
 Status 2026-11-09: B0 + B1 source audit started (audit → design → STOP for review).
+
+B0/B1 audit: `AE2-DEMAIN-001-B0-B1-audit.md` (STOP for review, decisions D1–D9). Immediate live action 2026-11-09
+from it: MEGA crafting unit / storage are AE2 `CraftingBlockEntity` types registered under `megacells:` (CONFIRMED by
+javap of megacells-forge-2.4.6 MEGABlockEntities) and `megacells` was NOT pinned on live → same MBCalculator race class
+as invalid H run1; `/nestworld pinmod megacells` applied on live (0 players, persisted; standing pin permission).
