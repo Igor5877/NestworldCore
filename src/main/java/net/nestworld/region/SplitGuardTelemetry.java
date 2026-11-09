@@ -138,7 +138,7 @@ public final class SplitGuardTelemetry {
 
     // ================================================================ split prediction (RegionSplitManager hook)
 
-    private record Pending(long dueNanos, int parentId, int[] childIds, WorldRegion[] children, double tR,
+    private record Pending(long dueNanos, int parentId, int[] childIds, WorldRegion[] children, String lineKey, double tR,
                            double ghostBefore, double mainBefore, double parentGhostBefore, double msptBefore, double predGain, double predG, double predM,
                            double predNet, String line) {
     }
@@ -201,7 +201,8 @@ public final class SplitGuardTelemetry {
                 g, stripBes, stripPinned, top, m, bandShare, bandNormal, bandCascade, bandPinned, net, margin,
                 veto ? "WOULD_VETO_LINE" : "accept", loaded, (System.nanoTime() - t0) / 1e6);
         LOGGER.info(line);
-        pending.add(new Pending(0, region.getId(), null, null, tR, ghostEwmaMs, mainBeEwmaMs, regionGhostMs(region.getId()),
+        pending.add(new Pending(0, region.getId(), null, null,
+                lineKey(region.getMinChunkX(), region.getMinChunkZ(), region.getMaxChunkX(), region.getMaxChunkZ(), axis, cut), tR, ghostEwmaMs, mainBeEwmaMs, regionGhostMs(region.getId()),
                 level.getServer().getAverageTickTime(), gain, g, m, net, line));
         return line;
     }
@@ -209,6 +210,61 @@ public final class SplitGuardTelemetry {
     // ================================================================ Stage 1: shadow scorer over all candidate lines
 
     static final double SHADOW_MARGIN_MS = Double.parseDouble(System.getProperty("nestworld.splitGuardMarginMs", "3.0"));
+    /** off = no scoring at all; shadow (default) = score + log, decisions unchanged; enforce = Stage 2 line choice / veto
+     *  + Stage 3 regret merge + bad-line memory. */
+    public static final String MODE = System.getProperty("nestworld.splitGuard", "shadow").toLowerCase(java.util.Locale.ROOT);
+    public static final boolean ENFORCE = "enforce".equals(MODE);
+    static final double REGRET_MS = Double.parseDouble(System.getProperty("nestworld.splitGuardRegretMs", "3.0"));
+    static final long BAD_LINE_TTL_NANOS = Long.getLong("nestworld.splitGuardBadLineMinutes", 30L) * 60_000_000_000L;
+
+    /** Result of scoring a region: best admissible line (null axis = no good line). */
+    record Verdict(SplitAxis axis, int cut, double net, int candidates, int accepted, long atNanos) {
+    }
+
+    private final Map<Integer, Verdict> lastVerdict = new HashMap<>();
+    /** key = dim|minX,minZ,maxX,maxZ|axis|cut → expiry nanos */
+    private final Map<String, Long> badLines = new HashMap<>();
+    private long enforceVetoes, enforceRedirects, regretMerges;
+
+    /** Stage 3 merge hook (RegionSplitManager.doMerge), set by the dimension; null in tests. */
+    java.util.function.BiFunction<WorldRegion, WorldRegion, WorldRegion> merger;
+
+    private String lineKey(int minX, int minZ, int maxX, int maxZ, SplitAxis axis, int cut) {
+        return dim + "|" + minX + "," + minZ + "," + maxX + "," + maxZ + "|" + axis + "|" + cut;
+    }
+
+    private boolean isBadLine(WorldRegion r, SplitAxis axis, int cut) {
+        Long exp = badLines.get(lineKey(r.getMinChunkX(), r.getMinChunkZ(), r.getMaxChunkX(), r.getMaxChunkZ(), axis, cut));
+        if (exp == null) return false;
+        if (System.nanoTime() > exp) {
+            badLines.values().removeIf(e -> System.nanoTime() > e);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Stage 2: the line the split should use, or null to veto (no line with net > margin, bad lines excluded).
+     * Reuses a verdict younger than the shadow interval; otherwise scores now.
+     */
+    Verdict decide(WorldRegion region, String reason, SplitAxis scorerAxis, Integer scorerCut, NestworldPins pins,
+                   NestworldDimensionRegion dr) {
+        Verdict v = lastVerdict.get(region.getId());
+        if (v == null || System.nanoTime() - v.atNanos() > SHADOW_INTERVAL_NANOS) {
+            lastShadow.remove(region.getId());
+            shadowScore(region, reason, scorerAxis, scorerCut, pins, dr);
+            v = lastVerdict.get(region.getId());
+        }
+        if (v == null || v.axis() == null) {
+            enforceVetoes++;
+            LOGGER.info("SPLIT_GUARD_ENFORCE region=#{} reason={} → VETO (no line with net > {} ms)", region.getId(), reason, SHADOW_MARGIN_MS);
+            return null;
+        }
+        if (scorerAxis != v.axis() || scorerCut == null || scorerCut != v.cut()) enforceRedirects++;
+        LOGGER.info("SPLIT_GUARD_ENFORCE region=#{} reason={} → split at {}={} (net {} ms; today's scorer {}={})", region.getId(),
+                reason, v.axis(), v.cut(), String.format(java.util.Locale.ROOT, "%+.1f", v.net()), scorerAxis, scorerCut);
+        return v;
+    }
     static final long SHADOW_INTERVAL_NANOS = 60_000_000_000L;
     private final Map<Integer, Long> lastShadow = new HashMap<>();
     private long shadowEvals, shadowNoGoodLine, shadowScorerChoiceRejected;
@@ -249,7 +305,9 @@ public final class SplitGuardTelemetry {
         int bb = NestworldTuning.BORDER_BAND_CHUNKS, gd = BoundaryManager.GHOST_DEPTH;
         List<String> lines = new ArrayList<>();
         String bestLine = null, scorerVerdict = "none";
-        double bestNet = Double.NEGATIVE_INFINITY;
+        double bestNet = Double.NEGATIVE_INFINITY, bestOkNet = Double.NEGATIVE_INFINITY;
+        SplitAxis bestOkAxis = null;
+        int bestOkCut = 0, badLineRejected = 0;
         int candidates = 0, accepted = 0;
         for (SplitAxis axis : SplitAxis.values()) {
             java.util.TreeMap<Integer, double[]> col = axis == SplitAxis.X ? colX : colZ;
@@ -271,10 +329,13 @@ public final class SplitGuardTelemetry {
                 candidates++;
                 double gain = tR * (1 - Math.max(nsA, total - nsA) / total) - THREAD_OVERHEAD_MS;
                 double g = ghostUs / 1000.0, m = tR * band / total, net = gain - g - m;
-                boolean ok = net > SHADOW_MARGIN_MS;
+                boolean bad = isBadLine(region, axis, c);
+                if (bad) badLineRejected++;
+                boolean ok = net > SHADOW_MARGIN_MS && !bad;
                 if (ok) accepted++;
+                if (ok && net > bestOkNet) { bestOkNet = net; bestOkAxis = axis; bestOkCut = c; }
                 String l = String.format(java.util.Locale.ROOT, "%s=%d:%+.1f(g%.1f,G%.1f,M%.1f,bes%d)%s", axis, c, net, gain, g, m,
-                        (long) stripBes, ok ? "" : "R");
+                        (long) stripBes, bad ? "B" : ok ? "" : "R");
                 lines.add(l);
                 if (net > bestNet) { bestNet = net; bestLine = axis + "=" + c; }
                 if (scorerAxis == axis && scorerCut != null && scorerCut == c) {
@@ -285,6 +346,7 @@ public final class SplitGuardTelemetry {
         }
         shadowEvals++;
         if (accepted == 0) shadowNoGoodLine++;
+        lastVerdict.put(region.getId(), new Verdict(bestOkAxis, bestOkCut, bestOkNet, candidates, accepted, System.nanoTime()));
         if (scorerAxis != null && scorerCut != null && "none".equals(scorerVerdict)) {
             scorerVerdict = scorerAxis + "=" + scorerCut + " (not a scored candidate: fails separation)";
         }
@@ -293,11 +355,11 @@ public final class SplitGuardTelemetry {
         String shown = lines.size() <= 6 ? String.join(" ", lines)
                 : String.join(" ", lines.subList(0, 3)) + " … " + String.join(" ", lines.subList(lines.size() - 3, lines.size()));
         String line = String.format(java.util.Locale.ROOT,
-                "SPLIT_GUARD_SHADOW dim=%s region=#%d reason=%s T_R=%.2fms margin=%.1fms candidates=%d accepted=%d best=%s(%+.1fms) "
-                        + "verdict=%s scorerChoice=[%s] lines(net,gain,G,M,stripBes;R=reject)=[%s] calcMs=%.2f mode=shadow(no effect)",
-                dim, region.getId(), reason, tR, SHADOW_MARGIN_MS, candidates, accepted, bestLine == null ? "-" : bestLine,
+                "SPLIT_GUARD_SHADOW dim=%s region=#%d reason=%s T_R=%.2fms margin=%.1fms candidates=%d accepted=%d badLines=%d best=%s(%+.1fms) "
+                        + "verdict=%s scorerChoice=[%s] lines(net,gain,G,M,stripBes;R=reject,B=bad line)=[%s] calcMs=%.2f mode=%s",
+                dim, region.getId(), reason, tR, SHADOW_MARGIN_MS, candidates, accepted, badLineRejected, bestLine == null ? "-" : bestLine,
                 bestLine == null ? 0 : bestNet, accepted == 0 ? "NO_GOOD_LINE(would stay whole)" : "SPLIT_AT_BEST", scorerVerdict, shown,
-                (System.nanoTime() - t0) / 1e6);
+                (System.nanoTime() - t0) / 1e6, ENFORCE ? "enforce" : "shadow(no effect)");
         LOGGER.info(line);
         remember(line);
     }
@@ -311,7 +373,7 @@ public final class SplitGuardTelemetry {
             return;
         }
         pending.add(new Pending(System.nanoTime() + POST_SPLIT_SECONDS * 1_000_000_000L, p.parentId(),
-                new int[]{children[0].getId(), children[1].getId()}, children, p.tR(), p.ghostBefore(), p.mainBefore(),
+                new int[]{children[0].getId(), children[1].getId()}, children, p.lineKey(), p.tR(), p.ghostBefore(), p.mainBefore(),
                 p.parentGhostBefore(), p.msptBefore(), p.predGain(), p.predG(), p.predM(), p.predNet(), p.line()));
     }
 
@@ -347,6 +409,19 @@ public final class SplitGuardTelemetry {
             LOGGER.info(line);
             remember(p.line());
             remember(line);
+            double msptNet = p.msptBefore() - msptAfter;
+            if (ENFORCE && intact && msptNet < -REGRET_MS) {
+                badLines.put(p.lineKey(), System.nanoTime() + BAD_LINE_TTL_NANOS);
+                WorldRegion merged = merger == null ? null : merger.apply(a, b);
+                if (merged != null) regretMerges++;
+                String r = String.format(java.util.Locale.ROOT,
+                        "SPLIT_GUARD_REGRET parent=#%d children=#%d/#%d MSPT net %+.1f ms < -%.1f → regret merge %s; line %s blocked for %d min",
+                        p.parentId(), p.childIds()[0], p.childIds()[1], msptNet, REGRET_MS,
+                        merged == null ? "FAILED (locks / not siblings; retry on next trigger is not automatic)" : "-> #" + merged.getId(),
+                        p.lineKey(), BAD_LINE_TTL_NANOS / 60_000_000_000L);
+                LOGGER.warn(r);
+                remember(r);
+            }
         }
     }
 
@@ -369,10 +444,11 @@ public final class SplitGuardTelemetry {
         sb.append(String.format(java.util.Locale.ROOT,
                 "split-guard telemetry [%s] (Stage 0, no effect on decisions): ghost ewma=%.3fms/tick nbt=%.3fms calls=%,d | "
                         + "MAIN BE phase ewma=%.3fms/tick (last %d tickers) | unchanged NBT (sampled 1/%d) %s | splits observed=%d wouldVetoLine=%d"
-                        + " | shadow evals=%d noGoodLine=%d scorerChoiceRejected=%d%n",
+                        + " | shadow evals=%d noGoodLine=%d scorerChoiceRejected=%d | mode=%s vetoes=%d redirects=%d regretMerges=%d badLines=%d%n",
                 dim, ghostEwmaMs, nbtEwmaMs, ghostCalls, mainBeEwmaMs, mainBeLastCount, UNCHANGED_SAMPLE,
                 sampled == 0 ? "-" : String.format(java.util.Locale.ROOT, "%.1f%% of %,d", 100.0 * sampledUnchanged / sampled, sampled),
-                splits, wouldVeto, shadowEvals, shadowNoGoodLine, shadowScorerChoiceRejected));
+                splits, wouldVeto, shadowEvals, shadowNoGoodLine, shadowScorerChoiceRejected, MODE, enforceVetoes, enforceRedirects,
+                regretMerges, badLines.size()));
         sb.append("ghost per owner region:");
         regionGhost.entrySet().stream().sorted((p, q) -> Double.compare(q.getValue()[0], p.getValue()[0])).limit(8)
                 .forEach(e -> sb.append(String.format(java.util.Locale.ROOT, " #%d=%.3fms(bes=%d,lockMiss=%d)", e.getKey(),

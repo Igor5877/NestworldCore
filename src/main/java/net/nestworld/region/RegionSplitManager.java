@@ -101,6 +101,8 @@ public class RegionSplitManager {
     // has no visibility into WHICH condition (avg threshold / p95 tail / fill-cores) fired.
     // Keyed by identity, cleared as each entry is consumed in applyPending().
     private final java.util.Map<WorldRegion, String> pendingSplitReasons = new java.util.IdentityHashMap<>();
+    /** Stage 2 enforce: the guard-chosen line per queued split (absent = today's scorer). */
+    private final java.util.Map<WorldRegion, CutChoice> pendingSplitChoices = new java.util.IdentityHashMap<>();
     /**
      * Merge candidates persist across evaluations (insertion-ordered) because
      * sibling regions rarely cross the threshold in the same second. A candidate
@@ -223,8 +225,24 @@ public class RegionSplitManager {
                 if (++region.splitPressureChecks >= SPLIT_CHECKS_REQUIRED && region.canSplit()) {
                     nestworldShadow(region, fillSplit ? "fill-cores(spare)" : tailHot ? String.format("p95-tail(%.1fms)", p95Ms)
                             : String.format("avg-threshold(%.1fms)", costMs));
+                    SplitObserver nestworldGuard = splitObserver;
                     if (!AUTO_SPLIT) {
                         logSuppressedAutoSplit(region, costMs, p95Ms);
+                    } else if (nestworldGuard != null && nestworldGuard.enforcing()) {
+                        // CORE-SPLIT-DENSE-BE-GUARD-001 Stage 2: the guard picks the line (or vetoes the split)
+                        CutChoice today = loadAwareCut(region), chosen = null;
+                        try {
+                            chosen = nestworldGuard.decide(region, fillSplit ? "fill-cores(spare)" : tailHot ? "p95-tail" : "avg-threshold",
+                                    today == null ? null : today.axis, today == null ? null : today.cut);
+                        } catch (Throwable t) {
+                            LOGGER.warn("split-guard enforce failed (split vetoed this round): {}", t.toString());
+                        }
+                        if (chosen != null) {
+                            pendingSplits.add(region);
+                            pendingSplitChoices.put(region, chosen);
+                            pendingSplitReasons.put(region, (fillSplit ? "fill-cores(spare)" : tailHot ? "p95-tail" : "avg-threshold")
+                                    + "+guard(" + chosen.axis + "=" + chosen.cut + ")");
+                        }
                     } else if (splitWouldSeparateLoad(region)) {
                         pendingSplits.add(region);
                         pendingSplitReasons.put(region, fillSplit ? "fill-cores(spare)"
@@ -456,10 +474,14 @@ public class RegionSplitManager {
 
     private void applyPending() {
         for (WorldRegion region : pendingSplits) {
-            doSplit(region, pendingSplitReasons.getOrDefault(region, "unknown"));
+            CutChoice guard = pendingSplitChoices.get(region);
+            String reason = pendingSplitReasons.getOrDefault(region, "unknown");
+            if (guard != null) doSplit(region, reason, guard);
+            else doSplit(region, reason);
         }
         pendingSplits.clear();
         pendingSplitReasons.clear();
+        pendingSplitChoices.clear();
 
         // NestWorld: 2026-08-28 O(n²) fix (see RegionTree.getMergeSibling's javadoc for the full
         // incident) -- O(active regions) via direct tree-sibling lookup, NOT O(candidates²) blind
@@ -523,6 +545,15 @@ public class RegionSplitManager {
 
         /** Stage 1 shadow: the heuristic wants to split {@code region}; {@code choice} = today's scorer line or null. */
         default void wantsSplit(WorldRegion region, String reason, SplitAxis axis, Integer cut) {
+        }
+
+        /** Stage 2 enforce: the line to use, or null to veto. Only called when the guard is in enforce mode. */
+        default CutChoice decide(WorldRegion region, String reason, SplitAxis axis, Integer cut) {
+            return axis == null || cut == null ? null : new CutChoice(axis, cut);
+        }
+
+        default boolean enforcing() {
+            return false;
         }
     }
 

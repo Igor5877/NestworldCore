@@ -241,6 +241,7 @@ public final class NestworldDimensionRegion {
             this.splitGuardTelemetry = new SplitGuardTelemetry(level);
             boundaryManager.splitGuardTelemetry = splitGuardTelemetry;
             final SplitGuardTelemetry nestworldTel = splitGuardTelemetry;
+            splitGuardTelemetry.merger = (a, b) -> splitManager.doMerge(a, b, "split-regret");
             splitManager.splitObserver = new RegionSplitManager.SplitObserver() {
                 @Override
                 public void beforeSplit(WorldRegion region, SplitAxis axis, int cut, String reason) {
@@ -254,7 +255,21 @@ public final class NestworldDimensionRegion {
 
                 @Override
                 public void wantsSplit(WorldRegion region, String reason, SplitAxis axis, Integer cut) {
-                    nestworldTel.shadowScore(region, reason, axis, cut, NestworldRegionSystem.get().getPins(), NestworldDimensionRegion.this);
+                    if (!"off".equals(SplitGuardTelemetry.MODE)) {
+                        nestworldTel.shadowScore(region, reason, axis, cut, NestworldRegionSystem.get().getPins(), NestworldDimensionRegion.this);
+                    }
+                }
+
+                @Override
+                public boolean enforcing() {
+                    return SplitGuardTelemetry.ENFORCE;
+                }
+
+                @Override
+                public RegionSplitManager.CutChoice decide(WorldRegion region, String reason, SplitAxis axis, Integer cut) {
+                    SplitGuardTelemetry.Verdict v = nestworldTel.decide(region, reason, axis, cut,
+                            NestworldRegionSystem.get().getPins(), NestworldDimensionRegion.this);
+                    return v == null ? null : new RegionSplitManager.CutChoice(v.axis(), v.cut());
                 }
             };
         } else {
