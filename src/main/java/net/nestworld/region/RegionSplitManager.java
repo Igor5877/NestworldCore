@@ -221,6 +221,8 @@ public class RegionSplitManager {
                 region.mergePressureChecks = 0;
                 mergeCandidates.remove(region);
                 if (++region.splitPressureChecks >= SPLIT_CHECKS_REQUIRED && region.canSplit()) {
+                    nestworldShadow(region, fillSplit ? "fill-cores(spare)" : tailHot ? String.format("p95-tail(%.1fms)", p95Ms)
+                            : String.format("avg-threshold(%.1fms)", costMs));
                     if (!AUTO_SPLIT) {
                         logSuppressedAutoSplit(region, costMs, p95Ms);
                     } else if (splitWouldSeparateLoad(region)) {
@@ -518,6 +520,10 @@ public class RegionSplitManager {
         void beforeSplit(WorldRegion region, SplitAxis axis, int cut, String reason);
 
         void afterSplit(WorldRegion[] children);
+
+        /** Stage 1 shadow: the heuristic wants to split {@code region}; {@code choice} = today's scorer line or null. */
+        default void wantsSplit(WorldRegion region, String reason, SplitAxis axis, Integer cut) {
+        }
     }
 
     SplitObserver splitObserver;
@@ -1039,6 +1045,18 @@ public class RegionSplitManager {
 
     public long suppressedAutoSplits() {
         return suppressedAutoSplits;
+    }
+
+    /** Stage 1 shadow scoring hook — measurement only; any failure is logged and ignored. */
+    private void nestworldShadow(WorldRegion region, String reason) {
+        SplitObserver obs = splitObserver;
+        if (obs == null) return;
+        try {
+            CutChoice c = loadAwareCut(region);
+            obs.wantsSplit(region, reason, c == null ? null : c.axis, c == null ? null : c.cut);
+        } catch (Throwable t) {
+            LOGGER.warn("split-guard shadow failed (ignored, split unaffected): {}", t.toString());
+        }
     }
 
     private void logSuppressedAutoSplit(WorldRegion region, double costMs, double p95Ms) {

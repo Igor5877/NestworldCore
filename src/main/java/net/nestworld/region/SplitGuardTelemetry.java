@@ -35,7 +35,7 @@ public final class SplitGuardTelemetry {
     public static final boolean ENABLED = !"false".equals(System.getProperty("nestworld.splitGuardTelemetry"));
     static final int UNCHANGED_SAMPLE = 16;
     static final int POST_SPLIT_SECONDS = Integer.getInteger("nestworld.splitGuardPostSplitSeconds", 30);
-    static final double DEFAULT_BE_SAVE_US = Double.parseDouble(System.getProperty("nestworld.splitGuardDefaultBeSaveUs", "30"));
+    static final double DEFAULT_BE_SAVE_US = Double.parseDouble(System.getProperty("nestworld.splitGuardDefaultBeSaveUs", "8"));
     static final double THREAD_OVERHEAD_MS = 0.3, MARGIN_ABS_MS = 2.0, MARGIN_REL = 0.2, ALPHA = 0.05;
     private static final int HISTORY = 32;
 
@@ -119,9 +119,14 @@ public final class SplitGuardTelemetry {
         return g == null ? 0 : g[0];
     }
 
+    /** EWMA save cost of {@code type}; unseen types use the mean of all measured saves, or the default (8 us, live
+     *  2026-11-09: 26.7 ms / 3 316 BEs) when nothing was measured yet (e.g. a single-region layout has no ghost strips). */
     double typeSaveUs(BlockEntityType<?> type) {
         double[] t = typeCost.get(type);
-        return t == null ? DEFAULT_BE_SAVE_US : t[0] / 1000.0;
+        if (t != null && t[1] >= 32) return t[0] / 1000.0;
+        double ns = 0, n = 0;
+        for (double[] v : typeCost.values()) { ns += v[2]; n += v[1]; }
+        return n >= 256 ? ns / n / 1000.0 : DEFAULT_BE_SAVE_US;
     }
 
     // ================================================================ MAIN BE phase (NestworldDimensionRegion)
@@ -200,6 +205,100 @@ public final class SplitGuardTelemetry {
         return line;
     }
 
+    // ================================================================ Stage 1: shadow scorer over all candidate lines
+
+    static final double SHADOW_MARGIN_MS = Double.parseDouble(System.getProperty("nestworld.splitGuardMarginMs", "3.0"));
+    static final long SHADOW_INTERVAL_NANOS = 60_000_000_000L;
+    private final Map<Integer, Long> lastShadow = new HashMap<>();
+    private long shadowEvals, shadowNoGoodLine, shadowScorerChoiceRejected;
+
+    /**
+     * CORE-SPLIT-DENSE-BE-GUARD-001 Stage 1 (shadow, NO effect): whenever the split heuristic wants to split
+     * {@code region} (applied or suppressed by autoSplit=false), score every candidate line on both axes with
+     * {@code net = parallelGain − ghostCost − mainBandCost} and log the verdicts, including the line today's scorer
+     * picks ({@code scorerAxis/scorerCut}, null when it picks none). At most once per region per minute.
+     */
+    void shadowScore(WorldRegion region, String reason, SplitAxis scorerAxis, Integer scorerCut, NestworldPins pins,
+                     NestworldDimensionRegion dr) {
+        long now = System.nanoTime();
+        Long last = lastShadow.get(region.getId());
+        if (last != null && now - last < SHADOW_INTERVAL_NANOS) return;
+        lastShadow.put(region.getId(), now);
+        long t0 = now;
+        java.util.TreeMap<Integer, double[]> colX = new java.util.TreeMap<>(), colZ = new java.util.TreeMap<>(); // {ns, ghostUs, bes}
+        for (LevelChunk chunk : level.getChunkSource().nestworldLoadedFull.values()) {
+            var cp = chunk.getPos();
+            if (cp.x < region.getMinChunkX() || cp.x > region.getMaxChunkX() || cp.z < region.getMinChunkZ() || cp.z > region.getMaxChunkZ()) continue;
+            double ns = TickAttribution.chunkCostNanos(dim, cp.toLong()), gus = 0;
+            int bes = 0;
+            for (BlockEntity be : new ArrayList<>(chunk.getBlockEntities().values())) {
+                gus += typeSaveUs(be.getType());
+                bes++;
+            }
+            for (var m : java.util.List.of(colX, colZ)) {
+                double[] v = m.computeIfAbsent(m == colX ? cp.x : cp.z, k -> new double[3]);
+                v[0] += ns;
+                v[1] += gus;
+                v[2] += bes;
+            }
+        }
+        double tR = region.getAvgTickMs();
+        int bb = NestworldTuning.BORDER_BAND_CHUNKS, gd = BoundaryManager.GHOST_DEPTH;
+        List<String> lines = new ArrayList<>();
+        String bestLine = null, scorerVerdict = "none";
+        double bestNet = Double.NEGATIVE_INFINITY;
+        int candidates = 0, accepted = 0;
+        for (SplitAxis axis : SplitAxis.values()) {
+            java.util.TreeMap<Integer, double[]> col = axis == SplitAxis.X ? colX : colZ;
+            if (col.size() < 2) continue;
+            double total = 0;
+            for (double[] v : col.values()) total += v[0];
+            if (total <= 0) continue;
+            int lo = col.firstKey(), hi = col.lastKey();
+            for (int c = lo; c < hi; c++) {
+                double nsA = 0, ghostUs = 0, band = 0, stripBes = 0;
+                for (var e : col.entrySet()) {
+                    int k = e.getKey();
+                    double[] v = e.getValue();
+                    if (k <= c) nsA += v[0];
+                    if (k >= c - gd && k <= c + 1 + gd) { ghostUs += v[1]; stripBes += v[2]; }
+                    if (k >= c - bb + 1 && k <= c + bb) band += v[0];
+                }
+                if (Math.min(nsA, total - nsA) < total * 0.10) continue;   // same separation rule as the scorer
+                candidates++;
+                double gain = tR * (1 - Math.max(nsA, total - nsA) / total) - THREAD_OVERHEAD_MS;
+                double g = ghostUs / 1000.0, m = tR * band / total, net = gain - g - m;
+                boolean ok = net > SHADOW_MARGIN_MS;
+                if (ok) accepted++;
+                String l = String.format(java.util.Locale.ROOT, "%s=%d:%+.1f(g%.1f,G%.1f,M%.1f,bes%d)%s", axis, c, net, gain, g, m,
+                        (long) stripBes, ok ? "" : "R");
+                lines.add(l);
+                if (net > bestNet) { bestNet = net; bestLine = axis + "=" + c; }
+                if (scorerAxis == axis && scorerCut != null && scorerCut == c) {
+                    scorerVerdict = String.format(java.util.Locale.ROOT, "%s=%d net=%+.1fms %s", axis, c, net, ok ? "ACCEPT" : "WOULD_REJECT");
+                    if (!ok) shadowScorerChoiceRejected++;
+                }
+            }
+        }
+        shadowEvals++;
+        if (accepted == 0) shadowNoGoodLine++;
+        if (scorerAxis != null && scorerCut != null && "none".equals(scorerVerdict)) {
+            scorerVerdict = scorerAxis + "=" + scorerCut + " (not a scored candidate: fails separation)";
+        }
+        lines.sort((a, b) -> Double.compare(Double.parseDouble(b.substring(b.indexOf(':') + 1, b.indexOf('('))),
+                Double.parseDouble(a.substring(a.indexOf(':') + 1, a.indexOf('(')))));
+        String shown = lines.size() <= 6 ? String.join(" ", lines)
+                : String.join(" ", lines.subList(0, 3)) + " … " + String.join(" ", lines.subList(lines.size() - 3, lines.size()));
+        String line = String.format(java.util.Locale.ROOT,
+                "SPLIT_GUARD_SHADOW dim=%s region=#%d reason=%s T_R=%.2fms margin=%.1fms candidates=%d accepted=%d best=%s(%+.1fms) "
+                        + "verdict=%s scorerChoice=[%s] lines(net,gain,G,M,stripBes;R=reject)=[%s] calcMs=%.2f mode=shadow(no effect)",
+                dim, region.getId(), reason, tR, SHADOW_MARGIN_MS, candidates, accepted, bestLine == null ? "-" : bestLine,
+                bestLine == null ? 0 : bestNet, accepted == 0 ? "NO_GOOD_LINE(would stay whole)" : "SPLIT_AT_BEST", scorerVerdict, shown,
+                (System.nanoTime() - t0) / 1e6);
+        LOGGER.info(line);
+        remember(line);
+    }
+
     /** After the split was applied (or not: {@code children == null} drops the pending record). */
     void splitApplied(WorldRegion[] children) {
         if (pending.isEmpty()) return;
@@ -264,10 +363,11 @@ public final class SplitGuardTelemetry {
         StringBuilder sb = new StringBuilder();
         sb.append(String.format(java.util.Locale.ROOT,
                 "split-guard telemetry [%s] (Stage 0, no effect on decisions): ghost ewma=%.3fms/tick nbt=%.3fms calls=%,d | "
-                        + "MAIN BE phase ewma=%.3fms/tick (last %d tickers) | unchanged NBT (sampled 1/%d) %s | splits observed=%d wouldVetoLine=%d%n",
+                        + "MAIN BE phase ewma=%.3fms/tick (last %d tickers) | unchanged NBT (sampled 1/%d) %s | splits observed=%d wouldVetoLine=%d"
+                        + " | shadow evals=%d noGoodLine=%d scorerChoiceRejected=%d%n",
                 dim, ghostEwmaMs, nbtEwmaMs, ghostCalls, mainBeEwmaMs, mainBeLastCount, UNCHANGED_SAMPLE,
                 sampled == 0 ? "-" : String.format(java.util.Locale.ROOT, "%.1f%% of %,d", 100.0 * sampledUnchanged / sampled, sampled),
-                splits, wouldVeto));
+                splits, wouldVeto, shadowEvals, shadowNoGoodLine, shadowScorerChoiceRejected));
         sb.append("ghost per owner region:");
         regionGhost.entrySet().stream().sorted((p, q) -> Double.compare(q.getValue()[0], p.getValue()[0])).limit(8)
                 .forEach(e -> sb.append(String.format(java.util.Locale.ROOT, " #%d=%.3fms(bes=%d,lockMiss=%d)", e.getKey(),

@@ -251,6 +251,11 @@ public final class NestworldDimensionRegion {
                 public void afterSplit(WorldRegion[] children) {
                     nestworldTel.splitApplied(children);
                 }
+
+                @Override
+                public void wantsSplit(WorldRegion region, String reason, SplitAxis axis, Integer cut) {
+                    nestworldTel.shadowScore(region, reason, axis, cut, NestworldRegionSystem.get().getPins(), NestworldDimensionRegion.this);
+                }
             };
         } else {
             this.splitGuardTelemetry = null;
