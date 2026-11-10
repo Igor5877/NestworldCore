@@ -10,7 +10,7 @@ hjava() { for p in $(pgrep -x java); do [ "$(readlink /proc/$p/cwd)" = "$B/$I" ]
 if [ ! -d $BK ]; then mkdir -p $BK; cp mods/nestworld-compat-ae2-test-all.jar user_jvm_args.txt $BK/; fi
 cp "$JAR" mods/nestworld-compat-ae2-test-all.jar
 [ "${KEEP:-0}" = 1 ] || rsync -a --delete $B/server/world/ world/
-cp $BK/user_jvm_args.txt user_jvm_args.txt
+grep -v -E "^-Dnestworld\.compatAe2\.(busTransit|appliedEnh)" $BK/user_jvm_args.txt > user_jvm_args.txt   # never inherit another run's test flags
 grep -q "compatAe2.fixtures=true" user_jvm_args.txt || printf '\n-Dnestworld.compatAe2.fixtures=true\n' >> user_jvm_args.txt
 for f in "$@"; do echo "$f" >> user_jvm_args.txt; done
 cp user_jvm_args.txt $E/user_jvm_args.used; cp world/data/nestworld-pinned-mods.txt world/data/nestworld-be-pins.txt $E/ 2>/dev/null
