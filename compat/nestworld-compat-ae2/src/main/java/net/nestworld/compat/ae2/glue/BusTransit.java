@@ -112,7 +112,7 @@ public final class BusTransit {
         public final LongAdder inlineInactive = new LongAdder(), inlineClass = new LongAdder(), inlineCrafting = new LongAdder(),
                 inlineFuzzy = new LongAdder(), inlineRandom = new LongAdder(), inlineStrategy = new LongAdder(),
                 inlineMainNeighbour = new LongAdder(), inlineNoNeighbourBe = new LongAdder(), inlineOverlapRisk = new LongAdder(),
-                exportNoWorkMain = new LongAdder();
+                exportNoWorkMain = new LongAdder(), inlineLinkedCrossDomain = new LongAdder(), transitLinkedSameDomain = new LongAdder();
         public final LongAdder mainOpNsInline = new LongAdder(), mainOpNsTransit = new LongAdder(), commitNs = new LongAdder(),
                 regionNs = new LongAdder();
         public final LongAdder mainOpsInline = new LongAdder(), mainOpsTransit = new LongAdder();
@@ -354,6 +354,64 @@ public final class BusTransit {
         return t.isEmpty() ? null : t;
     }
 
+    // ---------------------------------------------------------------- linked neighbours (multiblock ports)
+
+    /**
+     * Neighbour BE namespaces whose capability state is shared with ANOTHER block entity (MasterfulMachinery ports: the
+     * controller mutates the port handler from its own tick; the port has no back-pointer to its controller). Transit
+     * is allowed only when the whole surrounding area (radius) is the port's own region domain and no BE type of the
+     * namespace is pinned per type; otherwise fail-closed = AE2 reference on MAIN (counted inlineLinkedCrossDomain).
+     * Live note 2026-11-10 00:49 (mm ItemPortHandler.reindexSlot CME).
+     */
+    static final Set<String> LINKED_NAMESPACES = Set.of(System.getProperty("nestworld.compatAe2.busTransitLinked", "mm").split(","));
+    static final int LINKED_RADIUS = Integer.getInteger("nestworld.compatAe2.busTransitLinkedRadius", 32);
+    private static final Map<String, Boolean> NS_TYPE_PINNED = new ConcurrentHashMap<>();
+    private static volatile int nsPinnedTick = Integer.MIN_VALUE;
+
+    static boolean isLinked(String type) {
+        int c = type.indexOf(':');
+        return c > 0 && LINKED_NAMESPACES.contains(type.substring(0, c));
+    }
+
+    static boolean namespaceHasTypePin(ServerLevel level, String ns) {
+        int now = level.getServer().getTickCount();
+        if (now - nsPinnedTick > 200 || now < nsPinnedTick) {
+            NS_TYPE_PINNED.clear();
+            nsPinnedTick = now;
+        }
+        return NS_TYPE_PINNED.computeIfAbsent(ns, n -> {
+            for (var key : BuiltInRegistries.BLOCK_ENTITY_TYPE.keySet()) {
+                if (key.getNamespace().equals(n) && BeDomainReady.pinnedByPolicy(key.toString())) return true;
+            }
+            return false;
+        });
+    }
+
+    static boolean linkedSameDomain(ServerLevel level, BlockPos port, String type) {
+        if (RESOLVE == null) return false;
+        if (namespaceHasTypePin(level, type.substring(0, type.indexOf(':')))) return false;
+        try {
+            Object d = RESOLVE.invokeExact(level, port, type);
+            int r = LINKED_RADIUS;
+            for (int dx = -r; dx <= r; dx += 16) {
+                for (int dz = -r; dz <= r; dz += 16) {
+                    for (int dy = -r; dy <= r; dy += Math.max(1, r)) {
+                        Object o = RESOLVE.invokeExact(level, port.offset(dx, dy, dz), (String) null);
+                        if (!d.equals(o)) return false;
+                    }
+                }
+            }
+            // the exact corners of the radius box too (chunk steps may skip the last partial chunk)
+            for (int sx : new int[]{-r, r}) for (int sz : new int[]{-r, r}) {
+                Object o = RESOLVE.invokeExact(level, port.offset(sx, 0, sz), (String) null);
+                if (!d.equals(o)) return false;
+            }
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     static boolean blockEntitiesTicking(ServerLevel level, BlockPos pos) {
         LevelChunk chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
         return chunk != null && chunk.getFullStatus().isOrAfter(FullChunkStatus.BLOCK_TICKING);
@@ -482,6 +540,10 @@ public final class BusTransit {
                 else {
                     if (bs.pin != null) releasePin(bs);
                     if (domainIsMain(level, nPos, nType)) why = C.inlineMainNeighbour;
+                    else if (isLinked(nType)) {
+                        if (linkedSameDomain(level, nPos, nType)) C.transitLinkedSameDomain.increment();
+                        else why = C.inlineLinkedCrossDomain;
+                    }
                 }
             }
         }
@@ -1304,7 +1366,8 @@ public final class BusTransit {
                 + "\nops scheduled=" + c.scheduled.sum() + " transitImport=" + c.opsTransitImport.sum() + " transitExport="
                 + c.opsTransitExport.sum() + " inline{inactive=" + c.inlineInactive.sum() + " class=" + c.inlineClass.sum()
                 + " crafting=" + c.inlineCrafting.sum() + " fuzzy=" + c.inlineFuzzy.sum() + " random=" + c.inlineRandom.sum()
-                + " strategy=" + c.inlineStrategy.sum() + " mainNeighbour=" + c.inlineMainNeighbour.sum() + " noNeighbourBe="
+                + " strategy=" + c.inlineStrategy.sum() + " mainNeighbour=" + c.inlineMainNeighbour.sum() + " linkedCrossDomain="
+                + c.inlineLinkedCrossDomain.sum() + " (linkedSameDomain transit=" + c.transitLinkedSameDomain.sum() + ") noNeighbourBe="
                 + c.inlineNoNeighbourBe.sum() + " overlapRisk=" + c.inlineOverlapRisk.sum() + "}"
                 + "\nrecords completed=" + c.completed.sum() + " cancelled=" + c.cancelled.sum() + " missed=" + c.missed.sum()
                 + " outstanding=" + c.outstanding.get() + " enqueueFailed=" + c.enqueueFailed.sum() + " coreTerminal="

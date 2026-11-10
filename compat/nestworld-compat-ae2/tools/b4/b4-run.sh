@@ -7,13 +7,16 @@
 set -u
 B=/root/airis-2026-10-25; I=H401BEDOM; L=$1; JAR=$2; E=$B/evidence-be-ready/$L; T=$(dirname $(readlink -f $0))
 mkdir -p $E; cd $B/$I
-while [ -f $B/RIG_LOCK ] && ! grep -q "^agent-wp3b $L$" $B/RIG_LOCK; do sleep 30; done
-echo "agent-wp3b $L" > $B/RIG_LOCK
+# atomic lock (AGENT-RULES): noclobber create, retry; never overwrite / delete another agent's lock
+until ( set -o noclobber; echo "agent WP3-B $L" > $B/RIG_LOCK ) 2>/dev/null; do sleep 30; done
+trap "$T/rig-restore.sh $L" EXIT
 live0() { (cd /root/project-infinity && ./rcon.sh list 2>/dev/null | grep -q "There are 0 of"); }
 # heavy-test gate (coordinator 2026-11-09): 0 live players for >= 5 consecutive minutes
-n=0; until [ $n -ge 6 ]; do if live0; then n=$((n+1)); else n=0; echo "wait live players $(date +%T)"; fi; [ $n -ge 6 ] || sleep 60; done
+# owner 2026-11-09: rig tests allowed with live players -> gate only when LIVEGATE=1 (pi-smoke style)
+n=0; [ "${LIVEGATE:-0}" = 1 ] || n=6
+until [ $n -ge 6 ]; do if live0; then n=$((n+1)); else n=0; echo "wait live players $(date +%T)"; fi; [ $n -ge 6 ] || sleep 60; done
 # mid-run guard: a live player appears -> stop the rig, mark the run invalid
-guard() { live0 || { echo "ABORT: live player online at $(date +%T) -> run invalid"; RESTORE=1 $T/rig-down.sh $L; mv $E $B/evidence-be-ready/invalid-$L-live-player; rm -f $B/RIG_LOCK; exit 2; }; }
+guard() { [ "${LIVEGATE:-0}" = 1 ] || return 0; live0 || { echo "ABORT: live player online at $(date +%T) -> run invalid"; $T/rig-restore.sh $L; mv $E $B/evidence-be-ready/invalid-$L-live-player; exit 2; }; }
 R() { ./rcon.sh "$@" 2>/dev/null | grep -vE "^$|^>"; }
 F() { R "nwcompatae2 bustransitfx $*"; }
 quiesce() { for i in $(seq 1 120); do s=$(R "nwcompatae2 bustransit" | grep -o "outstanding=[0-9]*" | head -1); [ "$s" = "outstanding=0" ] && return 0; sleep 1; done; echo "NOT QUIESCENT: $s"; }
@@ -22,7 +25,7 @@ window() { F window $1 $2 >/dev/null; }
 wwait() { for i in $(seq 1 200); do s=$(F wstatus $1); case "$s" in window*) echo "$s"; return;; esac; sleep 2; done; echo "window $1 timeout"; }
 held() { F hold on >/dev/null; F gen 5 on >/dev/null; F gen 6 on >/dev/null; sleep 4; F gen 5 off >/dev/null; F gen 6 off >/dev/null; sleep 2; }
 settle() { sleep 25; quiesce; }   # generators off: import barrels drain empty, export barrels fill up -> no further movement
-$T/rig-up.sh $L $JAR -Dnestworld.compatAe2.busTransit=true > $E/up.txt 2>&1 || { cat $E/up.txt; rm -f $B/RIG_LOCK; exit 1; }
+$T/rig-up.sh $L $JAR -Dnestworld.compatAe2.busTransit=true > $E/up.txt 2>&1 || { cat $E/up.txt; exit 1; }
 cat $E/up.txt
 P1="-200 300 -200"; P2="-200 300 -180"; P3="200 300 200"; P4="200 300 230"; P5="-200 300 -160"; P6="-200 300 -140"
 R "forceload add -232 -232 -100 -100" "forceload add 168 168 280 280" >/dev/null; sleep 20
@@ -104,7 +107,6 @@ sleep 20; F attach import $P5 4; F attach export $P6 4; sleep 10; settle
 for s in 1 2; do count $s afterRestart; done
 R "nwcompatae2 bustransit"
 } > $E/out2.txt 2>&1
-RESTORE=1 $T/rig-down.sh $L >> $E/out2.txt 2>&1; cp logs/latest.log $E/latest-jvm2.log
+$T/rig-down.sh $L >> $E/out2.txt 2>&1; cp logs/latest.log $E/latest-jvm2.log
 grep -a "bus transit\|BE-DOMAIN\] task\|Exception in server tick\|Watchdog" $E/latest-jvm1.log $E/latest-jvm2.log | cut -c1-400 > $E/log-lines.txt
-rm -f $B/RIG_LOCK
 cat $E/out1.txt $E/out2.txt
