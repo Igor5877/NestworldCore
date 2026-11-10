@@ -314,3 +314,13 @@ import and export separately: N transfers, conservation exact, latency p100 ≤ 
 bus broken, chunk unload + reload, grid split / grid gone, server stop + restart → 0 loss / 0 dup; GRID_ISOLATION: huge
 grid (many buses, tiny budget) vs small grid → small grid missed 0, latency unchanged, no starvation; negative controls:
 transit OFF (reference), recovery OFF (loss detected → the fixture can see loss), FIFO scheduler (small grid latency grows).
+
+## Live note 2026-11-10 00:49 — MasterfulMachinery tick-skip (owner: no action now, expected to be resolved by WP3-B)
+
+`crash-reports/tick-skipped-2026-11-10_00.49.21`: ConcurrentModificationException in
+`io.ticticboom.mods.mm.port.item.ItemPortHandler.reindexSlot` (HashMap.computeIfAbsent) ← `onContentsChanged` ←
+`insertItem` ← appliedenhancements `insertUsingSlotHint` ← AE2 `StorageExportStrategy.transfer` ← `ExportBusPart.doBusWork`
+← TickManagerService (MAIN). STRONGLY INDICATED: the MM port is MAIN (neighbour affinity of the export bus) while its MM
+controller ticks on a region thread and mutates the same handler map. Tick skipped, no crash. Owner decision: option 3
+(no pin now); WP3-B acceptance must include an export bus feeding an MM item port whose controller is in the same /
+another region (expected: same region → no race; cross region → stays fail-closed on MAIN, counted).
