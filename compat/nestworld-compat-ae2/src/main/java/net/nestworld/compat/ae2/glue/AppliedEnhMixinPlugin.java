@@ -80,6 +80,7 @@ public final class AppliedEnhMixinPlugin implements IMixinConfigPlugin {
             if (p.length < 5 || !p[0].getName().equals("net.minecraftforge.items.IItemHandler") || p[1] != int.class
                     || p[2] != int.class || p[3] != boolean.class
                     || !p[4].getName().equals("com.llamalad7.mixinextras.injector.wrapoperation.Operation")) continue;
+            if (m.getName().contains("$mixinextras$bridge$") && m.getName().contains(OUR_HANDLER)) continue; // sugar bridge of ours
             if (m.getName().contains(OUR_HANDLER)) ours++;
             else if (m.getName().endsWith(THEIR_HANDLER_SUFFIX)) { theirs++; theirName = m.getName(); }
             else other++;

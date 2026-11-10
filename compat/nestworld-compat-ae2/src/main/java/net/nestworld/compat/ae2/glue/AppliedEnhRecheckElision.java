@@ -130,8 +130,10 @@ public final class AppliedEnhRecheckElision {
     private static boolean runtimeVerified() {
         int st = runtimeState;
         if (st != 0) return st > 0;
-        // frames: 0 = runtimeVerified, 1 = mayElide, 2 = our mixin handler, 3 = its caller
-        StackWalker.StackFrame caller = StackWalker.getInstance().walk(f -> f.skip(3).findFirst()).orElse(null);
+        // frames: 0 = runtimeVerified, 1 = mayElide, then our handler and its MixinExtras sugar bridge(s) (names contain
+        // the handler name; rig-pos2: "...$nestworld$elideFirstRecheck$mixinextras$bridge$23"), then the real caller
+        StackWalker.StackFrame caller = StackWalker.getInstance().walk(f -> f.skip(2)
+                .filter(fr -> !fr.getMethodName().contains(AppliedEnhMixinPlugin.OUR_HANDLER)).findFirst()).orElse(null);
         synchronized (AppliedEnhRecheckElision.class) {
             if (runtimeState != 0) return runtimeState > 0;
             java.util.List<String> problems = new java.util.ArrayList<>();
