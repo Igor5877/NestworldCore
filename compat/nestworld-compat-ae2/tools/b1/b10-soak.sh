@@ -24,7 +24,7 @@ mkdir -p $E/pins-orig; for f in $PF nestworld-autopin-error-counts.txt; do cp -p
 cp user_jvm_args.txt $E/user_jvm_args.orig
 # jars
 mv mods/nestworld-compat-ae2-0.7.7-all.jar $E/ 2>/dev/null
-cp /root/nestworldcore/compat/nestworld-compat-ae2/build/libs/nestworld-compat-ae2-0.8.0-all.jar mods/
+cp $B/evidence-be-ready/b1-jars/0.8.0-all-6b1aa219.jar mods/nestworld-compat-ae2-0.8.0-all.jar   # pinned copy (build/libs moves on: 0.9.x)
 cp /root/nestworldcore/compat/nestworld-ae2-race-detector/build/libs/nestworld-ae2-race-detector-0.2.0-all.jar mods/
 cp mods-disabled/nestworld-mek-churn-0.1.0.jar mods/
 restore() {
