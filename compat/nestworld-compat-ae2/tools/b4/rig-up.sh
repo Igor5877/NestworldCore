@@ -7,7 +7,7 @@ set -u
 B=/root/airis-2026-10-25; I=H401BEDOM; E=$B/evidence-be-ready/$1; BK=$B/b4-backup-$1; JAR=$2; shift 2; mkdir -p $E; cd $B/$I
 hjava() { for p in $(pgrep -x java); do [ "$(readlink /proc/$p/cwd)" = "$B/$I" ] && echo $p; done; }
 [ -n "$(hjava)" ] && { echo running; exit 1; }
-if [ ! -d $BK ]; then mkdir -p $BK; cp mods/nestworld-compat-ae2-test-all.jar user_jvm_args.txt $BK/; fi
+if [ ! -d $BK ]; then mkdir -p $BK; cp mods/nestworld-compat-ae2-test-all.jar user_jvm_args.txt config/ae2/common.json $BK/; fi
 cp "$JAR" mods/nestworld-compat-ae2-test-all.jar
 [ "${KEEP:-0}" = 1 ] || rsync -a --delete $B/server/world/ world/
 grep -v -E "^-Dnestworld\.compatAe2\.(busTransit|appliedEnh)" $BK/user_jvm_args.txt > user_jvm_args.txt   # never inherit another run's test flags

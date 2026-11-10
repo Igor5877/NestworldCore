@@ -28,13 +28,16 @@ settle() { sleep 25; quiesce; }   # generators off: import barrels drain empty, 
 $T/rig-up.sh $L $JAR -Dnestworld.compatAe2.busTransit=true > $E/up.txt 2>&1 || { cat $E/up.txt; exit 1; }
 cat $E/up.txt
 P1="-200 300 -200"; P2="-200 300 -180"; P3="200 300 200"; P4="200 300 230"; P5="-200 300 -160"; P6="-200 300 -140"
+# TEST-ONLY: stations have up to 48 buses on a controller-less grid (8 channels) -> AE2 channel mode infinite for this
+# run (same for the reference and the transit windows); common.json is restored by the EXIT trap
+R "ae2 channelmode infinite"
 R "forceload add -232 -232 -100 -100" "forceload add 168 168 280 280" >/dev/null; sleep 20
 {
 guard >> $E/out1.txt
 echo "== build"
 F build import $P1 8 2 0; F build export $P2 8 2 400000; F build import $P3 48 2 0; F build import $P4 1 2 0
 F build import $P5 4 2 0; F build export $P6 4 2 200000
-sleep 10; F list
+sleep 10; F list; R "ae2 channelmode"
 guard >> $E/out1.txt
 settle; echo "== baseline counts"; for s in 1 2 5 6; do count $s c0; done
 
