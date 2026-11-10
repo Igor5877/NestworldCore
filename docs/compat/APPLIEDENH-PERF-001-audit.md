@@ -214,5 +214,9 @@ bench workload frame). The absolute saving per elided R1 is the cost of one hand
 InventoryHandler → partitioner) it is larger than on a bare ItemStackHandler. Live saving: HYPOTHESIS (≈ 3–4 % of the
 server thread) until the pi-smoke run on the audited sophisticated jars.
 
-Open: (1) re-run rig with ecb1d8fd5 (barrel must then be ineligible on the rig); (2) pi-smoke POS + NEG on the audited
+`rig-pos4` (0.9.1-fx4 = ecb1d8fd5): ItemStackHandler PASS (692/692 equal, elidedOn=507); the rig's unaudited
+sophisticated barrel is now EQUAL-NO-ELISION (elidedOn=0); chest EQUAL-NO-ELISION; runtime P3 verified; bench (30 s
+arms) ON 592 / OFF 622 / ON 601 / OFF 640 ns/iter (−4.6 % … −6.1 %).
+
+Open: (1) pi-smoke POS + NEG on the audited
 sophisticated barrel + spark — blocked by the 5-min live-empty rule. STOP: no live enablement proposed before (2).
