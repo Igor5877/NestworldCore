@@ -10,9 +10,10 @@ B=/root/airis-2026-10-25; I=H401BEDOM; L=$1; JAR=$2; ARM=$3; BS=${4:-120}
 E=$B/evidence-appliedenh/rig-$L; mkdir -p $E; cd $B/$I
 AEH=/root/project-infinity/mods/appliedenhancements-1.1.2-forge.jar
 hjava() { for p in $(pgrep -x java); do [ "$(readlink /proc/$p/cwd)" = "$B/$I" ] && echo $p; done; }
-while [ -f $B/RIG_LOCK ]; do sleep 30; done
-[ -n "$(hjava)" ] && { echo "rig JVM already running" | tee $E/result.txt; exit 1; }
-echo "agent APPLIEDENH rig-$L" > $B/RIG_LOCK
+TAG="agent APPLIEDENH rig-$L"   # atomic lock (noclobber); retry while another agent holds it; never touch theirs
+until ( set -o noclobber; echo "$TAG" > $B/RIG_LOCK ) 2>/dev/null; do sleep 30; done
+unlock() { [ "$(cat $B/RIG_LOCK 2>/dev/null)" = "$TAG" ] && rm -f $B/RIG_LOCK; }
+[ -n "$(hjava)" ] && { echo "rig JVM already running" | tee $E/result.txt; unlock; exit 1; }
 rsync -a --delete $B/server/world/ world/
 cp user_jvm_args.txt $E/user_jvm_args.orig
 mkdir -p $E/orig-mods; mv mods/nestworld-compat-ae2-test-all.jar $E/orig-mods/
@@ -32,7 +33,7 @@ ls crash-reports 2>/dev/null | sort > $E/crash-before.txt
 [ -f console.log ] && mv console.log console-$(date +%H%M%S).log
 (setsid unshare -n bash -c 'ip link set lo up; exec nice -n 10 taskset -c 0-7 bash run.sh nogui' > console.log 2>&1 < /dev/null &)
 for i in $(seq 1 30); do [ -n "$(hjava)" ] && break; sleep 1; done; echo "pid=$(hjava)" > $E/pid.txt
-until ./rcon.sh list 2>/dev/null | grep -q "players online"; do [ -z "$(hjava)" ] && { echo "JVM exited during start" | tee -a $E/result.txt; cp console.log $E/; restore; rm -f $B/RIG_LOCK; exit 1; }; sleep 5; done
+until ./rcon.sh list 2>/dev/null | grep -q "players online"; do [ -z "$(hjava)" ] && { echo "JVM exited during start" | tee -a $E/result.txt; cp console.log $E/; restore; unlock; exit 1; }; sleep 5; done
 L0=$(grep -ac "" logs/latest.log)
 R() { ./rcon.sh "$@" 2>/dev/null | grep -vE "^$|^>"; }
 X=-200; Y=200; Z=200
@@ -66,4 +67,4 @@ grep -a -i "appliedenh\|Mixin apply failed\|InvalidInjection" logs/latest.log | 
 ls crash-reports 2>/dev/null | sort | comm -13 $E/crash-before.txt - > $E/crash-new.txt
 ./rcon.sh stop >/dev/null 2>&1; for i in $(seq 1 60); do [ -z "$(hjava)" ] && break; sleep 3; done; P=$(hjava); [ -n "$P" ] && { echo "STOP HANG" >> $E/result.txt; kill -9 $P; sleep 3; }
 echo "arm=$ARM crashNew=$(wc -l < $E/crash-new.txt)" >> $E/result.txt
-restore; rm -f $B/RIG_LOCK; cat $E/result.txt
+restore; unlock; cat $E/result.txt

@@ -10,12 +10,18 @@ E=/root/airis-2026-10-25/evidence-appliedenh/$L; mkdir -p $E; cd $P
 LIVE=/root/project-infinity/world/data; PF="nestworld-be-pins.txt nestworld-pinned-mods.txt nestworld-pins.txt nestworld-pin-reasons.txt"
 hjava() { for p in $(pgrep -x java); do [ "$(readlink /proc/$p/cwd)" = "$P" ] && echo $p; done; }
 livezero() { (cd /root/project-infinity && ./rcon.sh list 2>/dev/null) | grep -q "There are 0 of"; }
-# live must show "There are 0" for >= 5 consecutive minutes (11 polls x 30 s; a restart window does not count)
-ok=0; while [ $ok -lt 11 ]; do if [ ! -f $B/PI_SMOKE_LOCK ] && livezero; then ok=$((ok+1)); else ok=0; fi; [ $ok -lt 11 ] && sleep 30; done
-livezero || { echo "live not empty at start" | tee $E/result.txt; exit 1; }
-[ -n "$(hjava)" ] && { echo "pi-smoke JVM already running" | tee $E/result.txt; exit 1; }
-echo "agent APPLIEDENH $L" > $B/PI_SMOKE_LOCK
-for f in $PF; do cmp -s world/data/$f $LIVE/$f || { echo "PRECONDITION FAIL: $f differs from live" | tee $E/result.txt; rm -f $B/PI_SMOKE_LOCK; exit 1; }; done
+# live must show "There are 0" for >= 5 consecutive minutes (11 polls x 30 s; a restart window does not count), then the
+# lock is taken atomically (noclobber); on failure (another agent) the gate starts over. Never touch another agent's lock.
+TAG="agent APPLIEDENH $L"
+while true; do
+  ok=0; while [ $ok -lt 11 ]; do if [ ! -f $B/PI_SMOKE_LOCK ] && livezero; then ok=$((ok+1)); else ok=0; fi; [ $ok -lt 11 ] && sleep 30; done
+  ( set -o noclobber; echo "$TAG" > $B/PI_SMOKE_LOCK ) 2>/dev/null && break
+  sleep 30
+done
+unlock() { [ "$(cat $B/PI_SMOKE_LOCK 2>/dev/null)" = "$TAG" ] && rm -f $B/PI_SMOKE_LOCK; }
+livezero || { echo "live not empty at start" | tee $E/result.txt; unlock; exit 1; }
+[ -n "$(hjava)" ] && { echo "pi-smoke JVM already running" | tee $E/result.txt; unlock; exit 1; }
+for f in $PF; do cmp -s world/data/$f $LIVE/$f || { echo "PRECONDITION FAIL: $f differs from live" | tee $E/result.txt; unlock; exit 1; }; done
 mkdir -p $E/pins-orig; for f in $PF nestworld-autopin-error-counts.txt; do cp -p world/data/$f $E/pins-orig/; done
 cp user_jvm_args.txt $E/user_jvm_args.orig
 ORIG=$(ls mods/nestworld-compat-ae2-*-all.jar); echo "$ORIG" > $E/orig-addon.txt; mv $ORIG $E/
@@ -35,7 +41,7 @@ sha256sum mods/nestworld-*.jar mods/appliedenergistics2*.jar mods/appliedenhance
 ls crash-reports 2>/dev/null | sort > $E/crash-before.txt
 (setsid nohup nice -n 10 taskset -c 0-7 ./run.sh nogui > $E/console.log 2>&1 < /dev/null &)
 for i in $(seq 1 30); do [ -n "$(hjava)" ] && break; sleep 1; done; echo "pid=$(hjava)" > $E/pid.txt
-until ./rcon.sh list 2>/dev/null | grep -q "players online"; do [ -z "$(hjava)" ] && { echo "JVM exited during start" | tee -a $E/result.txt; restore; rm -f $B/PI_SMOKE_LOCK; exit 1; }; sleep 5; done
+until ./rcon.sh list 2>/dev/null | grep -q "players online"; do [ -z "$(hjava)" ] && { echo "JVM exited during start" | tee -a $E/result.txt; restore; unlock; exit 1; }; sleep 5; done
 L0=$(grep -ac "" logs/latest.log)
 R() { ./rcon.sh "$@" 2>/dev/null | grep -vE "^$|^>"; }
 X=-1000; Y=200; Z=1000
@@ -69,4 +75,4 @@ R "setblock $X $Y $Z air" "setblock $((X+2)) $Y $Z air" "forceload remove $X $Z"
 S0=$(date +%s); R stop >/dev/null; for i in $(seq 1 90); do [ -z "$(hjava)" ] && break; sleep 2; done
 [ -n "$(hjava)" ] && { echo "STOP HANG >180s" >> $E/result.txt; kill -9 $(hjava); sleep 3; }
 echo "arm=$ARM stopSeconds=$(( $(date +%s) - S0 )) crashNew=$(wc -l < $E/crash-new.txt)" >> $E/result.txt
-restore; rm -f $B/PI_SMOKE_LOCK; cat $E/result.txt
+restore; unlock; cat $E/result.txt
