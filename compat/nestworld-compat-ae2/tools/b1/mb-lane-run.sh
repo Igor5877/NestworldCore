@@ -7,9 +7,8 @@ set -u
 MODES=${MODES:-skip ise}; LANES=${LANES:-off on}   # e.g. MODES=drops LANES=on
 B=/root/airis-2026-10-25; I=H401BEDOM; E=$B/evidence-be-ready/${1:-mblane}; mkdir -p $E; cd $B/$I
 hjava() { for p in $(pgrep -x java); do [ "$(readlink /proc/$p/cwd)" = "$B/$I" ] && echo $p; done; }
-while [ -f $B/RIG_LOCK ] && ! grep -q "^agent-b1 ${1:-mblane}$" $B/RIG_LOCK; do sleep 30; done
-[ -n "$(hjava)" ] && { echo running; exit 1; }
-echo "agent-b1 ${1:-mblane}" > $B/RIG_LOCK
+until ( set -o noclobber; echo "agent-b1 ${1:-mblane}" > $B/RIG_LOCK ) 2>/dev/null; do grep -qx "agent-b1 ${1:-mblane}" $B/RIG_LOCK 2>/dev/null && break; sleep 30; done   # atomic (AGENT-RULES)
+[ -n "$(hjava)" ] && { echo running; grep -qx "agent-b1 ${1:-mblane}" $B/RIG_LOCK 2>/dev/null && rm -f $B/RIG_LOCK; exit 1; }
 rsync -a --delete $B/server/world/ world/; cp user_jvm_args.txt $E/user_jvm_args.before
 grep -q "compatAe2.fixtures" user_jvm_args.txt || printf '\n-Dnestworld.compatAe2.fixtures=true\n' >> user_jvm_args.txt
 # narrow unpin U (test-only, pristine copy untouched)
@@ -25,7 +24,7 @@ sha256sum mods/nestworld-*.jar > $E/mods.sha256; cat ACTIVE_CORE > $E/core.txt; 
 [ -f console.log ] && mv console.log console-$(date +%H%M%S).log
 (setsid unshare -n bash -c 'ip link set lo up; exec nice -n 10 taskset -c 0-7 bash run.sh nogui' > console.log 2>&1 < /dev/null &)
 for i in $(seq 1 30); do [ -n "$(hjava)" ] && break; sleep 1; done; echo "pid=$(hjava)" > $E/pid.txt
-until ./rcon.sh list 2>/dev/null | grep -q "players online"; do [ -z "$(hjava)" ] && { echo "JVM exited"; exit 1; }; sleep 5; done
+until ./rcon.sh list 2>/dev/null | grep -q "players online"; do [ -z "$(hjava)" ] && { echo "JVM exited"; cp $E/user_jvm_args.before user_jvm_args.txt; grep -qx "agent-b1 ${1:-mblane}" $B/RIG_LOCK 2>/dev/null && rm -f $B/RIG_LOCK; exit 1; }; sleep 5; done
 grep -a "Mixin apply failed\|InvalidInjectionException\|MixinTransformerError\|mixin.*error" logs/latest.log | cut -c1-300 > $E/mixin-errors.txt
 R() { ./rcon.sh "$@" 2>/dev/null | grep -vE "^$|^>"; }
 A="-200 300 -200"; Bp="200 300 200"
@@ -48,4 +47,4 @@ tail -n +1 logs/latest.log | grep -a "B1 lane fixture\|MB lane\|IllegalStateExce
 ls crash-reports | sort | comm -13 $E/crash-before.txt - > $E/crash-new.txt
 ./rcon.sh stop >/dev/null 2>&1; for i in $(seq 1 40); do [ -z "$(hjava)" ] && break; sleep 3; done; P=$(hjava); [ -n "$P" ] && { echo "STOP HANG" >> $E/out.txt; kill -9 $P; }
 cp $E/user_jvm_args.before user_jvm_args.txt; echo "crashNew=$(wc -l < $E/crash-new.txt)" >> $E/out.txt; cat $E/out.txt
-rm -f $B/RIG_LOCK
+grep -qx "agent-b1 ${1:-mblane}" $B/RIG_LOCK 2>/dev/null && rm -f $B/RIG_LOCK

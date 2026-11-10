@@ -7,9 +7,8 @@
 set -u
 B=/root/airis-2026-10-25; I=H401BEDOM; L=$1; FX=$2; CFG=$3; LANE=$4; E=$B/evidence-be-ready/$L; mkdir -p $E; cd $B/$I
 hjava() { for p in $(pgrep -x java); do [ "$(readlink /proc/$p/cwd)" = "$B/$I" ] && echo $p; done; }
-while [ -f $B/RIG_LOCK ] && ! grep -q "^agent-b1 $L$" $B/RIG_LOCK; do sleep 30; done
-[ -n "$(hjava)" ] && { echo running; exit 1; }
-echo "agent-b1 $L" > $B/RIG_LOCK
+until ( set -o noclobber; echo "agent-b1 $L" > $B/RIG_LOCK ) 2>/dev/null; do grep -qx "agent-b1 $L" $B/RIG_LOCK 2>/dev/null && break; sleep 30; done   # atomic (AGENT-RULES)
+[ -n "$(hjava)" ] && { echo running; grep -qx "agent-b1 $L" $B/RIG_LOCK 2>/dev/null && rm -f $B/RIG_LOCK; exit 1; }
 S=$B/server/world/data
 rsync -a --delete $B/server/world/ world/; cp user_jvm_args.txt $E/user_jvm_args.before
 if [ "$CFG" = unpinned ]; then
@@ -47,4 +46,4 @@ ls crash-reports | sort | comm -13 $E/crash-before.txt - > $E/crash-new.txt
 ./rcon.sh stop >/dev/null 2>&1; for i in $(seq 1 40); do [ -z "$(hjava)" ] && break; sleep 3; done; P=$(hjava); [ -n "$P" ] && { echo "STOP HANG" >> $E/out.txt; kill -9 $P; }
 sleep 2; for f in nestworld-be-pins.txt nestworld-pinned-mods.txt nestworld-pins.txt nestworld-autopin-error-counts.txt nestworld-pin-reasons.txt; do cp $S/$f world/data/$f; done
 cp $E/user_jvm_args.before user_jvm_args.txt; echo "crashNew=$(wc -l < $E/crash-new.txt)" >> $E/out.txt
-rm -f $B/RIG_LOCK; cat $E/out.txt
+grep -qx "agent-b1 $L" $B/RIG_LOCK 2>/dev/null && rm -f $B/RIG_LOCK; cat $E/out.txt

@@ -17,9 +17,8 @@ set -u
 P=/root/pi-smoke; B=/root/airis-2026-10-25; L=$1; T=$2; PINS=$3; LANE=$4; E=$B/evidence-be-ready/$L; mkdir -p $E; cd $P
 LIVE=/root/project-infinity/world/data; PF="nestworld-be-pins.txt nestworld-pinned-mods.txt nestworld-pins.txt nestworld-pin-reasons.txt"
 hjava() { for p in $(pgrep -x java); do [ "$(readlink /proc/$p/cwd)" = "$P" ] && echo $p; done; }
-while [ -f $B/PI_SMOKE_LOCK ] && ! grep -q "^agent $L$" $B/PI_SMOKE_LOCK; do sleep 30; done   # coordination lock
 [ -n "$(hjava)" ] && { echo running; exit 1; }
-echo "agent $L" > $B/PI_SMOKE_LOCK
+until ( set -o noclobber; echo "agent-b1 $L" > $B/PI_SMOKE_LOCK ) 2>/dev/null; do grep -qx "agent-b1 $L" $B/PI_SMOKE_LOCK 2>/dev/null && break; sleep 30; done   # atomic (AGENT-RULES)
 for f in $PF; do cmp -s world/data/$f $LIVE/$f || { echo "PRECONDITION FAIL: $f differs from live" | tee $E/result.txt; exit 1; }; done
 mkdir -p $E/pins-orig; for f in $PF nestworld-autopin-error-counts.txt; do cp -p world/data/$f $E/pins-orig/; done
 cp user_jvm_args.txt $E/user_jvm_args.orig
@@ -52,7 +51,7 @@ sha256sum mods/nestworld-*.jar mods/appliedenergistics2*.jar > $E/mods.sha256
 ls crash-reports 2>/dev/null | sort > $E/crash-before.txt
 (setsid nohup nice -n 10 taskset -c 0-7 ./run.sh nogui > $E/console.log 2>&1 < /dev/null &)
 for i in $(seq 1 30); do [ -n "$(hjava)" ] && break; sleep 1; done; JP=$(hjava); echo "pid=$JP" > $E/pid.txt
-until ./rcon.sh list 2>/dev/null | grep -q "players online"; do [ -z "$(hjava)" ] && { echo "JVM exited during start" | tee -a $E/result.txt; restore; rm -f $B/PI_SMOKE_LOCK; exit 1; }; sleep 5; done
+until ./rcon.sh list 2>/dev/null | grep -q "players online"; do [ -z "$(hjava)" ] && { echo "JVM exited during start" | tee -a $E/result.txt; restore; grep -qx "agent-b1 $L" $B/PI_SMOKE_LOCK 2>/dev/null && rm -f $B/PI_SMOKE_LOCK; exit 1; }; sleep 5; done
 L0=$(grep -ac "" logs/latest.log)
 R() { ./rcon.sh "$@" 2>/dev/null | grep -vE "^$|^>"; }
 R "nwcompatae2 status" > $E/status.txt; R "nestworld pins" > $E/pins-runtime-start.txt
@@ -121,4 +120,4 @@ ls crash-reports 2>/dev/null | sort | comm -13 $E/crash-before.txt - > $E/crash-
 S0=$(date +%s); R stop >/dev/null; for i in $(seq 1 90); do [ -z "$(hjava)" ] && break; sleep 2; done
 [ -n "$(hjava)" ] && { echo "STOP HANG >180s" >> $E/topology.txt; kill -9 $(hjava); sleep 3; }
 echo "alive=$alive seconds=$(( S0 - START )) stopSeconds=$(( $(date +%s) - S0 )) crashNew=$(wc -l < $E/crash-new.txt) pins=$PINS lane=$LANE" > $E/result.txt
-restore; rm -f $B/PI_SMOKE_LOCK; cat $E/result.txt
+restore; grep -qx "agent-b1 $L" $B/PI_SMOKE_LOCK 2>/dev/null && rm -f $B/PI_SMOKE_LOCK; cat $E/result.txt
