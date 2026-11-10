@@ -355,3 +355,14 @@ appliedenhancements) is not modelled here — perf benefit UNKNOWN until a pi-sm
 ticks (two region hops + free-running region phase), modulationLate 5 235 in JVM1 (hold / starved-budget phases; 0 in
 JVM2 normal run), recovery-off negative control needs grid-gone + break, MM item-port case (pi-smoke only), import
 return-failure fallback (returnFailed / stuckNonItem) implemented but not exercised.
+
+## Owner decisions 2026-11-10 — WP3-B (after rig run 5)
+
+```
+WP3-B                 UNFROZEN (AE2 correctness milestone closed)
+export latency        target stays p100 ≤ 2 ticks → find a shorter export path (currently 3–4 ticks, two region hops)
+optimistic import     ACCEPTED: take from source, return on network refusal (~1 tick); failed return → network → accounted
+                      drop; never lost, counted (importRefusedReturned / returnFailed)
+pi-smoke slot         right after the B1 soak: real MAIN benchmark (transit off vs on, production pack, Sophisticated /
+                      storage-bus workloads) + MasterfulMachinery item-port case; live transit stays OFF until both PASS
+```
