@@ -14,13 +14,17 @@ TAG="agent APPLIEDENH rig-$L"   # atomic lock (noclobber); retry while another a
 until ( set -o noclobber; echo "$TAG" > $B/RIG_LOCK ) 2>/dev/null; do sleep 30; done
 unlock() { [ "$(cat $B/RIG_LOCK 2>/dev/null)" = "$TAG" ] && rm -f $B/RIG_LOCK; }
 [ -n "$(hjava)" ] && { echo "rig JVM already running" | tee $E/result.txt; unlock; exit 1; }
+# clean-args precondition (rig-pos1 2026-11-10 was contaminated by another agent's leftover flags)
+grep -qE "^-Dnestworld.compatAe2.(fixtures|busTransit|mbLaneOff)=" user_jvm_args.txt && { echo "PRECONDITION FAIL: foreign compatAe2 flags in user_jvm_args.txt" | tee $E/result.txt; unlock; exit 1; }
 rsync -a --delete $B/server/world/ world/
 cp user_jvm_args.txt $E/user_jvm_args.orig
-mkdir -p $E/orig-mods; mv mods/nestworld-compat-ae2-test-all.jar $E/orig-mods/
+mkdir -p $E/orig-mods; [ -f mods/nestworld-compat-ae2-test-all.jar ] && mv mods/nestworld-compat-ae2-test-all.jar $E/orig-mods/
 cp $JAR mods/nestworld-compat-ae2-test-all.jar; cp $AEH mods/
 restore() {
   rm -f mods/appliedenhancements-1.1.2-forge.jar mods/nestworld-compat-ae2-test-all.jar
-  mv $E/orig-mods/nestworld-compat-ae2-test-all.jar mods/
+  # the rig's reference test jar is the 0.8.0 backup (*.b4orig) when present (coordinator 2026-11-10); else what we found
+  if [ -f mods/nestworld-compat-ae2-test-all.jar.b4orig ]; then cp -p mods/nestworld-compat-ae2-test-all.jar.b4orig mods/nestworld-compat-ae2-test-all.jar
+  else mv $E/orig-mods/nestworld-compat-ae2-test-all.jar mods/; fi
   cp $E/user_jvm_args.orig user_jvm_args.txt
   ok=1; cmp -s user_jvm_args.txt $E/user_jvm_args.orig || ok=0; [ -f mods/appliedenhancements-1.1.2-forge.jar ] && ok=0
   echo "restored: addon sha=$(sha256sum mods/nestworld-compat-ae2-test-all.jar | cut -c1-16) appliedenh removed + jvm args identical: $ok" | tee -a $E/result.txt
