@@ -324,3 +324,34 @@ transit OFF (reference), recovery OFF (loss detected → the fixture can see los
 controller ticks on a region thread and mutates the same handler map. Tick skipped, no crash. Owner decision: option 3
 (no pin now); WP3-B acceptance must include an export bus feeding an MM item port whose controller is in the same /
 another region (expected: same region → no race; cross region → stays fail-closed on MAIN, counted).
+
+### B4–B6 evidence — rig H401BEDOM (2026-11-10, run `E/b4-run5`, addon 0.9.0 dev8 = commit eaec198df, Core 401, AE2 15.4.10)
+
+Production pins (`ae2` mod-pinned, cable_bus/drive MAIN, vanilla barrels in REGION#0/#1); TEST-ONLY AE2 channel mode
+infinite (controller-less stations), restored by the harness EXIT trap. Harness `tools/b4/b4-run.sh`.
+Invalid runs kept: `invalid-b4-run1-jar-not-reobf-…` (jarJar without reobfJarJar), `invalid-b4-run2-adhoc-grid-8-channels`,
+`b4-run3-partial-orphan-ISE` (CONFIRMED bug: modulation read a destroyed node → ISE every tick, 20 orphans stuck, JVM1
+stopped; fixed e30095882), `b4-run4` (valid numbers; export records planned under the fixture hold were dropped from the
+scheduler — persisted and fully recovered after restart, never lost; fixed eaec198df), `invalid-b4-split-repro1`.
+
+| check (run5) | result |
+|---|---|
+| scheduled ops, 600 ticks, 8 buses each (transit OFF / ON) | import 960 / 960, export 960 / 960 (first OFF window 768 = AE2 rate ramp-up) |
+| throughput per op | 32.0 items OFF and ON, import and export; network delta == generator exactly |
+| conservation (network + barrels + transit + loose − created + consumed) | 0 in every count: baseline, after 2 400 + 2 400 transfers, bus broken, grid split, grid unpowered, chunk unload + reload |
+| missed / commitFailures / regionFailures / misuse / wrong domain | 0 / 0 / 0 / 0 / 0 |
+| bus broken mid-transit | 20 orphans → network 384 + neighbour 256, outstanding 0, invariant 0 |
+| server stop + restart (records held) | before 22 528 / 173 376, after 22 528 / 173 376: dup 0, loss 0; 20 records loaded, 640 held delivered; savedInflight 0, stopWaitTimeout 0 |
+| latency (ticks) default budget | import p50/p95 1/2, p100 up to 3; export p50 1–2, p95 2, p100 up to 4 (8-bus export grid) — **p100 ≤ 2 NOT met** |
+| GRID_ISOLATION, 30 µs/tick budget | huge grid #187 (48 buses): p100 39, budgetExhausted 782, backlog 48; small grid #237 (1 bus): p100 2, budgetExhausted 0, missed 0, starvation 0 — PASS |
+| negative control FIFO (same budget) | every grid p100 > 64 ticks, small grid backlog 44 — the scheduler is what isolates (CONFIRMED) |
+| negative control recovery-off | did NOT show loss: with the grid alive the orphans' network step succeeded before the void branch (fixture gap) |
+| MAIN time of bus work, 600 ticks, 16 buses (OFF / ON) | 68.1 ms inline / 28.2 ms op + 52.1 ms commit = 80.3 ms; region 68.7 ms moved off MAIN |
+
+Reading: correctness invariants hold (dup 0, loss 0, missed 0, scheduled == reference, throughput == reference) across
+all interruption classes — CONFIRMED on this workload. On the rig the neighbour side (vanilla barrel) is cheap, so MAIN
+time did not drop (commit overhead ≈ inline cost); the live hotspot (ExternalStorageFacade scans of large inventories,
+appliedenhancements) is not modelled here — perf benefit UNKNOWN until a pi-smoke measurement. Open: export p100 3–4
+ticks (two region hops + free-running region phase), modulationLate 5 235 in JVM1 (hold / starved-budget phases; 0 in
+JVM2 normal run), recovery-off negative control needs grid-gone + break, MM item-port case (pi-smoke only), import
+return-failure fallback (returnFailed / stuckNonItem) implemented but not exercised.
