@@ -67,6 +67,7 @@ public final class AppliedEnhRecheckElision {
         protected Boolean computeValue(Class<?> c) {
             String n = c.getName();
             int s = sophState();
+            if (s <= 0) return false; // -1 = no audited sophisticated jar set (all bits set: must not reach the bit tests)
             if (n.startsWith(STORAGE_LAMBDA)) return (s & 1) != 0;
             if (n.startsWith(BACKPACK_LAMBDA)) return (s & 2) != 0;
             return false;
