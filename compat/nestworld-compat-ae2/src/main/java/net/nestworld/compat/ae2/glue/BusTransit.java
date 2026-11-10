@@ -112,7 +112,8 @@ public final class BusTransit {
         public final LongAdder inlineInactive = new LongAdder(), inlineClass = new LongAdder(), inlineCrafting = new LongAdder(),
                 inlineFuzzy = new LongAdder(), inlineRandom = new LongAdder(), inlineStrategy = new LongAdder(),
                 inlineMainNeighbour = new LongAdder(), inlineNoNeighbourBe = new LongAdder(), inlineOverlapRisk = new LongAdder(),
-                exportNoWorkMain = new LongAdder(), inlineLinkedCrossDomain = new LongAdder(), transitLinkedSameDomain = new LongAdder();
+                exportNoWorkMain = new LongAdder(), commitFailures = new LongAdder(), returnFailed = new LongAdder(),
+                stuckNonItem = new LongAdder(), stopWaitTimeout = new LongAdder(), stopWaitNanos = new LongAdder(), inlineLinkedCrossDomain = new LongAdder(), transitLinkedSameDomain = new LongAdder();
         public final LongAdder mainOpNsInline = new LongAdder(), mainOpNsTransit = new LongAdder(), commitNs = new LongAdder(),
                 regionNs = new LongAdder();
         public final LongAdder mainOpsInline = new LongAdder(), mainOpsTransit = new LongAdder();
@@ -687,7 +688,15 @@ public final class BusTransit {
         long t0 = System.nanoTime();
         BusState bs = ((NwTransitBus) r.bus).nw$transit();
         bs.regionRunning.incrementAndGet();
+        REGION_STEPS.incrementAndGet();
         try {
+            if (stopping) {            // a step that starts after the stop began does nothing (state unchanged)
+                C.regionNotTicking.increment();
+                synchronized (r) {
+                    if (r.phase == HELD_REGION) r.phase = HELD_MAIN;
+                }
+                return;
+            }
             step.run(r);
         } catch (Throwable t) {
             C.regionFailures.increment();
@@ -700,6 +709,7 @@ public final class BusTransit {
             }
             publish(r);
         } finally {
+            REGION_STEPS.decrementAndGet();
             bs.regionRunning.decrementAndGet();
             C.regionNs.add(System.nanoTime() - t0);
         }
@@ -849,7 +859,7 @@ public final class BusTransit {
                 }
                 FIFO_PENDING.poll();
                 long t0 = System.nanoTime();
-                if (!process(r, tick)) retry.add(r);
+                if (!processSafe(r, tick)) retry.add(r);
                 r.gs.mainCommitNs += System.nanoTime() - t0;
                 served++;
             }
@@ -882,7 +892,7 @@ public final class BusTransit {
                     break;
                 }
                 gs.pending.poll();
-                if (!process(r, tick)) retry.add(r);
+                if (!processSafe(r, tick)) retry.add(r);
                 served++;
             }
             gs.pending.addAll(retry);
@@ -892,6 +902,24 @@ public final class BusTransit {
             if (!gs.pending.isEmpty() && gs.inReady.compareAndSet(false, true)) READY.add(gs);
         }
         C.commitNs.add(System.nanoTime() - passStart);
+    }
+
+    private static volatile long lastFailLog;
+
+    /** {@link #process} contained: a failing record stays pending (its held amounts untouched), counted, logged rate-limited. */
+    static boolean processSafe(Rec r, int tick) {
+        try {
+            return process(r, tick);
+        } catch (Throwable t) {
+            C.commitFailures.increment();
+            long now = System.nanoTime();
+            if (now - lastFailLog > 10_000_000_000L) {
+                lastFailLog = now;
+                Ae2Compat.LOG.error("[nestworld-compat-ae2] bus transit commit step failed for transfer {} at {} (kept pending)",
+                        r.id, r.hostPos.toShortString(), t);
+            }
+            return false;
+        }
     }
 
     /** One MAIN step of a record. Returns false when it must stay pending until the next tick. */
@@ -973,19 +1001,28 @@ public final class BusTransit {
         if (!fxHold) enqueueRegion(r, BusTransit::regionPush, false);
     }
 
+    /** The node's grid, or null when AE2 destroyed the node (getGrid would throw). */
+    static IGrid liveGrid(IGridNode n) {
+        if (n == null) return null;
+        try {
+            return n.getGrid();
+        } catch (IllegalStateException destroyed) {
+            return null;
+        }
+    }
+
     /** Grid that receives network-side moves: the bus's current grid, else the op grid while it lives, else the live part at the position. */
     static Grid netGrid(Rec r) {
         BusState bs = ((NwTransitBus) r.bus).nw$transit();
         if (bs.inWorld && bs.incarnation == r.incarnation && !r.orphan) {
-            IGridNode n = r.bus.getGridNode();
-            if (n != null && n.getGrid() instanceof Grid g) return g;
+            if (liveGrid(r.bus.getGridNode()) instanceof Grid g) return g;
         }
         if (r.gridAtOp != null && r.gridAtOp.getPivot() != null) return r.gridAtOp;
         // recovery: a replacement bus at the same place (e.g. the chunk reloaded)
         LevelChunk ch = r.level.getChunkSource().getChunkNow(r.hostPos.getX() >> 4, r.hostPos.getZ() >> 4);
         if (ch == null || !domainIsMain(r.level, r.hostPos, "ae2:cable_bus")) return null;
         if (ch.getBlockEntity(r.hostPos) instanceof IPartHost host && host.getPart(r.busSide) instanceof IOBusPart p
-                && p.getGridNode() != null && p.getGridNode().getGrid() instanceof Grid g) return g;
+                && liveGrid(p.getGridNode()) instanceof Grid g) return g;
         return null;
     }
 
@@ -1059,7 +1096,11 @@ public final class BusTransit {
             finish(r, tick);
             return true;
         }
-        if (dead && r.firstHeldTick >= 0 && tick - r.firstHeldTick > DROP_AFTER_TICKS && dropItems(r)) return true;
+        if (r.pushes > 0) C.returnFailed.increment();   // neighbour already refused once: network fallback is this step
+        if ((dead || r.pushes > 0) && r.firstHeldTick >= 0 && tick - r.firstHeldTick > DROP_AFTER_TICKS) {
+            if (dropItems(r)) return true;
+            C.stuckNonItem.increment();                  // non-item keys are never dropped: kept, persisted, retried
+        }
         if (!r.export && firstImportCommit) C.importRefusedReturned.add(left);
         if (stopping) return false;   // keep it MAIN-owned: the final save writes it
         synchronized (r) {
@@ -1082,29 +1123,23 @@ public final class BusTransit {
             }
         }
         Runnable spawn = () -> {
-            long total = 0;
-            for (var e : items) {
-                AEItemKey k = (AEItemKey) e.getKey();
-                long left = e.getValue();
-                while (left > 0) {
-                    int n = (int) Math.min(left, k.getItem().getMaxStackSize());
-                    var ent = new ItemEntity(r.level, r.hostPos.getX() + 0.5, r.hostPos.getY() + 0.5, r.hostPos.getZ() + 0.5, k.toStack(n));
-                    r.level.addFreshEntity(ent);
-                    left -= n;
-                    total += n;
+            REGION_STEPS.incrementAndGet();
+            try {
+                if (stopping) {        // revert: the amounts stay held (persisted by the final save)
+                    synchronized (r) {
+                        for (var e : items) {
+                            r.inflight.remove(e.getKey());
+                            r.addHeld(e.getKey(), e.getValue(), r.firstHeldTick);
+                        }
+                        r.phase = HELD_MAIN;
+                    }
+                    publish(r);
+                    return;
                 }
+                spawnItems(r, items);
+            } finally {
+                REGION_STEPS.decrementAndGet();
             }
-            synchronized (r) {
-                for (var e : items) r.inflight.remove(e.getKey());
-                r.droppedAmt += total;
-                if (r.held.isEmpty()) {
-                    r.phase = FINALIZE;
-                    r.result = R_RECOVERED;
-                }
-            }
-            C.dropped.add(total);
-            C.recoveredDrop.add(total);
-            publish(r);
         };
         synchronized (r) {
             r.phase = HELD_REGION;   // not processed by MAIN until the drop ran
@@ -1132,6 +1167,32 @@ public final class BusTransit {
             return false;
         }
         return true;
+    }
+
+    static void spawnItems(Rec r, List<Map.Entry<AEKey, Long>> items) {
+            long total = 0;
+            for (var e : items) {
+                AEItemKey k = (AEItemKey) e.getKey();
+                long left = e.getValue();
+                while (left > 0) {
+                    int n = (int) Math.min(left, k.getItem().getMaxStackSize());
+                    var ent = new ItemEntity(r.level, r.hostPos.getX() + 0.5, r.hostPos.getY() + 0.5, r.hostPos.getZ() + 0.5, k.toStack(n));
+                    r.level.addFreshEntity(ent);
+                    left -= n;
+                    total += n;
+                }
+            }
+            synchronized (r) {
+                for (var e : items) r.inflight.remove(e.getKey());
+                r.droppedAmt += total;
+                if (r.held.isEmpty()) {
+                    r.phase = FINALIZE;
+                    r.result = R_RECOVERED;
+                } else r.phase = HELD_MAIN;     // non-item keys remain: back to the recovery owner
+            }
+            C.dropped.add(total);
+            C.recoveredDrop.add(total);
+            publish(r);
     }
 
     static void finish(Rec r, int tick) {
@@ -1172,8 +1233,8 @@ public final class BusTransit {
         if (r.modDone) return;
         r.modDone = true;
         BusState bs = ((NwTransitBus) r.bus).nw$transit();
-        if (r.tt == null || r.gridAtOp == null || r.node == null) {
-            C.modStale.increment();
+        if (r.tt == null || r.gridAtOp == null || r.node == null || r.orphan || !bs.inWorld || bs.incarnation != r.incarnation) {
+            C.modStale.increment();     // bus gone: no tracker to modulate (its node may be destroyed)
             return;
         }
         // round-robin cursor (export): AE2 advances it only when something was exported
@@ -1185,7 +1246,7 @@ public final class BusTransit {
             } else C.rrLate.increment();
         }
         IGridNode node = r.node;
-        if (!(node.getGrid() instanceof Grid g) || g != r.gridAtOp) {
+        if (!(liveGrid(node) instanceof Grid g) || g != r.gridAtOp) {
             C.modStale.increment();
             return;
         }
@@ -1220,8 +1281,25 @@ public final class BusTransit {
         UNLOADING.put(be, Boolean.TRUE);
     }
 
+    /** Region steps running right now (any bus). */
+    static final AtomicInteger REGION_STEPS = new AtomicInteger();
+
+    /**
+     * Server stop (MAIN, ServerStoppingEvent, before the final save; MAIN holds nothing here): new region steps refuse to
+     * start ({@code stopping}); a step already inside a neighbour call is waited for, bounded, so the final save never
+     * sees an in-flight reservation (dup 0: no in-flight amount is ever written). Timeout (counted) → in-flight amounts
+     * are NOT written (no dup) and are logged as at-risk.
+     */
     public static void onServerStopping() {
         stopping = true;
+        long t0 = System.nanoTime(), deadline = t0 + 5_000_000_000L;
+        while (REGION_STEPS.get() > 0 && System.nanoTime() < deadline) Thread.onSpinWait();
+        C.stopWaitNanos.add(System.nanoTime() - t0);
+        if (REGION_STEPS.get() > 0) {
+            C.stopWaitTimeout.increment();
+            Ae2Compat.LOG.error("[nestworld-compat-ae2] bus transit: {} region step(s) still running at the final save; their "
+                    + "in-flight amounts are not persisted (no duplicate)", REGION_STEPS.get());
+        }
     }
 
     public static void onServerStarting() {
@@ -1283,10 +1361,7 @@ public final class BusTransit {
                 boolean mainOwned = r.phase == HELD_MAIN;
                 if (!mainOwned && !stopping) continue;
                 Map<AEKey, Long> all = new LinkedHashMap<>(r.held);
-                if (stopping) {
-                    for (var e : r.inflight.entrySet()) all.merge(e.getKey(), e.getValue(), Long::sum);
-                    if (!r.inflight.isEmpty()) C.savedInflight.increment();
-                }
+                if (!r.inflight.isEmpty()) C.savedInflight.increment();   // never written: dup 0 (only after a stop-wait timeout)
                 if (all.isEmpty()) continue;
                 CompoundTag t = new CompoundTag();
                 t.putLong("id", r.id);
@@ -1370,7 +1445,9 @@ public final class BusTransit {
                 + c.inlineLinkedCrossDomain.sum() + " (linkedSameDomain transit=" + c.transitLinkedSameDomain.sum() + ") noNeighbourBe="
                 + c.inlineNoNeighbourBe.sum() + " overlapRisk=" + c.inlineOverlapRisk.sum() + "}"
                 + "\nrecords completed=" + c.completed.sum() + " cancelled=" + c.cancelled.sum() + " missed=" + c.missed.sum()
-                + " outstanding=" + c.outstanding.get() + " enqueueFailed=" + c.enqueueFailed.sum() + " coreTerminal="
+                + " outstanding=" + c.outstanding.get() + " commitFailures=" + c.commitFailures.sum() + " returnFailed="
+                + c.returnFailed.sum() + " stuckNonItem=" + c.stuckNonItem.sum() + " stopWaitTimeout=" + c.stopWaitTimeout.sum()
+                + " stopWaitUs=" + c.stopWaitNanos.sum() / 1000 + " enqueueFailed=" + c.enqueueFailed.sum() + " coreTerminal="
                 + c.coreTerminal.sum() + " staleRegionStep=" + c.staleRegionStep.sum() + " regionWrongDomain="
                 + c.regionWrongDomain.sum() + " regionNotTicking=" + c.regionNotTicking.sum() + " regionFailures="
                 + c.regionFailures.sum() + " regionEnergyCalls=" + c.regionEnergyCalls.sum() + " regionStorageMisuse="

@@ -266,7 +266,14 @@ public final class BusTransitFixtures {
         s.barrelSum.set(0);
         s.entityItems.set(0);
         s.countNetwork = network(s);
-        s.countHeld = BusTransit.heldNow();
+        long held = 0;
+        for (BusTransit.Rec r : BusTransit.LIVE_INDEX()) {
+            if (!s.hosts.contains(r.hostPos)) continue;
+            synchronized (r) {
+                held += r.heldTotal() + r.inflightTotal();
+            }
+        }
+        s.countHeld = held;                  // this station's records only
         s.countCreated = s.created.get();
         s.countConsumed = s.consumed.get();
         s.countDropped = BusTransit.C.dropped.sum();
