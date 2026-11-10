@@ -929,7 +929,9 @@ public final class BusTransit {
             phase = r.phase;
         }
         switch (phase) {
-            case PROBED -> plan(r, tick);
+            case PROBED -> {
+                return plan(r, tick);
+            }
             case HELD_MAIN -> {
                 return networkStep(r, tick);
             }
@@ -943,7 +945,7 @@ public final class BusTransit {
     }
 
     /** Export plan on MAIN: AE2's export loop with the probed neighbour capacity in place of the adjacent simulate. */
-    static void plan(Rec r, int tick) {
+    static boolean plan(Rec r, int tick) {
         BusState bs = ((NwTransitBus) r.bus).nw$transit();
         Grid grid = netGrid(r);
         boolean alive = bs.inWorld && bs.incarnation == r.incarnation && !r.orphan;
@@ -953,7 +955,7 @@ public final class BusTransit {
                 r.result = R_CANCELLED;
             }
             finish(r, tick);
-            return;
+            return true;
         }
         if (grid != r.gridAtOp) C.gridChanged.increment();
         MEStorage inv = grid.getStorageService().getInventory();
@@ -991,14 +993,16 @@ public final class BusTransit {
                 r.result = R_NOWORK;
             }
             finish(r, tick);
-            return;
+            return true;
         }
         synchronized (r) {
             r.phase = fxHold ? HELD_MAIN : HELD_REGION;   // fixture hold: keep the extracted amount in transit (MAIN-owned)
             r.dirtySinceSave = true;
         }
         markUnsaved(r.level, r.hostPos);
-        if (!fxHold) enqueueRegion(r, BusTransit::regionPush, false);
+        if (fxHold) return false;      // fixture hold: stays MAIN-owned AND queued (was dropped from the queue: run4 stuck records)
+        enqueueRegion(r, BusTransit::regionPush, false);
+        return true;
     }
 
     /** The node's grid, or null when AE2 destroyed the node (getGrid would throw). */
@@ -1540,6 +1544,25 @@ public final class BusTransit {
             if (acc >= target) return i == 65 ? ">64" : String.valueOf(i);
         }
         return "?";
+    }
+
+    /** Read-only dump of non-terminal records (debug / fixtures). */
+    public static String records(int max) {
+        StringBuilder sb = new StringBuilder();
+        int n = 0;
+        for (Rec r : LIVE_INDEX()) {
+            if (n++ >= max) break;
+            synchronized (r) {
+                sb.append(r.export ? "E" : "I").append(" id=").append(r.id).append(" phase=").append(r.phase).append(" result=")
+                        .append(r.result).append(" held=").append(r.heldTotal()).append(" inflight=").append(r.inflightTotal())
+                        .append(" pushes=").append(r.pushes).append(" mainSteps=").append(r.mainSteps).append(" orphan=").append(r.orphan)
+                        .append(" nbt=").append(r.recoveryFromNbt).append(" gs=").append(r.gs.id).append(" inbox=").append(r.gs.inbox.size())
+                        .append(" pending=").append(r.gs.pending.size()).append(" inReady=").append(r.gs.inReady.get())
+                        .append(" host=").append(r.hostPos.toShortString()).append('\n');
+            }
+        }
+        sb.append("READY=").append(READY.size()).append(" fifo=").append(FIFO.size()).append('/').append(FIFO_PENDING.size());
+        return sb.toString();
     }
 
     static List<GridState> ALL_GRIDS_VIEW() {

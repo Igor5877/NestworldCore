@@ -32,6 +32,7 @@ P1="-200 300 -200"; P2="-200 300 -180"; P3="200 300 200"; P4="200 300 230"; P5="
 # run (same for the reference and the transit windows); common.json is restored by the EXIT trap
 R "ae2 channelmode infinite"
 R "forceload add -232 -232 -100 -100" "forceload add 168 168 280 280" >/dev/null; sleep 20
+for i in $(seq 1 12); do R "nwcompatae2 domainat -199 300 -140" | grep -q REGION && R "nwcompatae2 domainat 201 300 201" | grep -q REGION && break; sleep 5; done; sleep 10
 {
 guard >> $E/out1.txt
 echo "== build"

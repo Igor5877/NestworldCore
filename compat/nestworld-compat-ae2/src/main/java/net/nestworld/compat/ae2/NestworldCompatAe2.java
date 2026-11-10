@@ -73,7 +73,8 @@ public final class NestworldCompatAe2 {
                                         c.getSource().getLevel(),
                                         net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "p"))))))
                 .then(Commands.literal("bustransit").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.summary()))
-                        .then(Commands.literal("grids").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.grids(20)))))
+                        .then(Commands.literal("grids").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.grids(20))))
+                        .then(Commands.literal("records").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.records(40)))))
                 .then(Commands.literal("mblane").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLane.summary()))
                         .then(Commands.literal("calculators").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLane.calculators()))))
                 .then(Commands.literal("gridcensus")
