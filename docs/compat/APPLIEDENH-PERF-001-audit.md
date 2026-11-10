@@ -170,3 +170,49 @@ only when the appliedenhancements mixin class is present; `postApply` verifies P
 glue `AppliedEnhRecheckElision` (allowlist, caps check, counters); flag default ON,
 `-Dnestworld.compatAe2.appliedEnhCacheOff=true` = negative control (mixin applied, counters run, nothing elided).
 Independent of the energy-domain gate; `-Dnestworld.compatAe2.disable=true` also disables it.
+
+## 7. Evidence (step 3, 2026-11-09/10)
+
+Evidence root: `/root/airis-2026-10-25/evidence-appliedenh/`. Harnesses: `tools/appliedenh/aeh-run.sh` (pi-smoke),
+`tools/appliedenh/aeh-rig-run.sh` (rig H401BEDOM, AE2 15.4.10, TEST-ONLY appliedenhancements-1.1.2 jar, restored).
+Every run restored jars + JVM args (cmp/sha-verified in each `result.txt`), crashNew=0.
+
+| run | jar | outcome |
+|---|---|---|
+| `invalid-pos1` (pi-smoke) | 0.8.0+aeh1 | INVALID (stopped by coordinator: live had a player). Kept: Mixin `postApply` saw the class before MixinExtras' late WrapOperation pass → static P3 check failed closed (nothing elided); null-side barrel capability is `StorageWrapper$4`, not the storage-bus `CachedFailedInsertInventoryHandler` |
+| `invalid-rig-pos1` | 0.9.1-fx2 | INVALID: rig args carried another agent's leftover flags (`compatAe2.fixtures`, `busTransit`); stopped before any trace |
+| `rig-pos2` | 0.9.1-fx2 | runtime P3 check failed closed: the stack frame above our handler is our own MixinExtras sugar bridge (`…$nestworld$elideFirstRecheck$mixinextras$bridge$23`), and it counted as a second wrapper → elided=0; all traces equal (fail-closed path is harmless) |
+| `rig-neg2` (`-D…appliedEnhCacheOff=true`) | 0.9.1-fx2 | NEG-CONTROL-OK on ItemStackHandler / barrel / chest: elidedOn=0, `disabled` counts every R1 |
+| **`rig-pos3`** | **0.9.1-fx3 (5fac84d89)** | **runtime P3 verified** ("outermost; exactly ours + audited appliedenhancements recheck") |
+
+`rig-pos3` traces (same deterministic script — 495 facade results, every wrapHandlerExtract decision
+(slot, amount, simulate, first, result) in order, final slot contents — OFF / ON / OFF on the same seeded inventory):
+
+* Forge `ItemStackHandler` (allowlisted): **PASS** — results, 692/692 decisions and contents identical, elidedOff=0,
+  **elidedOn=507**, elidedOff2=0 (twice).
+* Sophisticated barrel `CachedFailedInsertInventoryHandler`: identical (656/656), but elidedOn=478 — this exposed a
+  **P1 gate bug**: the rig's sophisticated jars are *not* the audited hashes (sophState = -1 = "none audited"), and
+  `-1 & 1 != 0` let the supplier test pass. Results were still identical, but elision must not happen on unaudited
+  closures. Fixed fail-closed in ecb1d8fd5 (`s <= 0 → false`); not yet re-run.
+* Vanilla chest `InvWrapper` (not allowlisted): EQUAL-NO-ELISION (control).
+
+`rig-pos3` bench (`benchmem`: detached ItemStackHandler, per tick 8695 × (SIMULATE 64, MODULATE, insert back), 2400
+ticks per arm, alternating, same JVM; conservation extracted == inserted in every arm):
+
+| arm | ns/iter | calls | elided | afterMutation | disabled |
+|---|---|---|---|---|---|
+| ON 1 | 613 | 62 604 010 | 41 736 000 | 20 868 005 | 0 |
+| OFF 1 | 662 | 62 604 006 | 0 | 20 868 003 | 41 736 003 |
+| ON 2 | 610 | 62 604 006 | 41 736 000 | 20 868 003 | 0 |
+| OFF 2 | 670 | 62 604 008 | 0 | 20 868 004 | 41 736 004 |
+
+→ −7.9 % ns/iter on the cheapest possible handler (2 of 3 rechecks per iteration elided, as predicted: SIMULATE R1 +
+MODULATE R1; the MODULATE terminating recheck R2 always runs). Spark (Server thread, `profile-…03.00.10` = ON1,
+`…03.02.21` = OFF1): the appliedenhancements recheck frame is **5.35 % → 0.44 %** of the thread (52.9 % → 5.3 % of the
+bench workload frame). The absolute saving per elided R1 is the cost of one handler `getStackInSlot` chain +
+`AEItemKey.matches` + boxing; on the live sophisticated chain (`CachedFailedInsertInventoryHandler` → supplier →
+InventoryHandler → partitioner) it is larger than on a bare ItemStackHandler. Live saving: HYPOTHESIS (≈ 3–4 % of the
+server thread) until the pi-smoke run on the audited sophisticated jars.
+
+Open: (1) re-run rig with ecb1d8fd5 (barrel must then be ineligible on the rig); (2) pi-smoke POS + NEG on the audited
+sophisticated barrel + spark — blocked by the 5-min live-empty rule. STOP: no live enablement proposed before (2).
