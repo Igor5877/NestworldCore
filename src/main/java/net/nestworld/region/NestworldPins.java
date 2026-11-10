@@ -94,6 +94,10 @@ public final class NestworldPins {
     // would land back on main). Opt in with -Dnestworld.autoPin=true.
     private final boolean autoPin;
     private final int autoPinThreshold;
+    /** Caught-elsewhere errors (tick-loop catch-and-continue, player-tick catches) pin the offending mod sooner than
+     *  own-tick errors: the tick-loop circuit breaker gives up after 6 failures within 60 s, so a threshold of 20 could
+     *  never fire before a full crash. Owner 2026-11-10: lower it. {@code -Dnestworld.autoPinCallbackThreshold}. */
+    static final int CALLBACK_AUTO_PIN_THRESHOLD = Math.max(1, Integer.getInteger("nestworld.autoPinCallbackThreshold", 3));
     private final ConcurrentHashMap<EntityType<?>, AtomicInteger> errorCounts =
             new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicInteger> beErrorCounts =
@@ -448,11 +452,11 @@ public final class NestworldPins {
      */
     public boolean noteCallbackError(Throwable t) {
         if (!autoPin || t == null) return false;
-        String modId = resolveModId(t);
+        String modId = resolveModId(t, pinnedMods::contains);
         if (modId == null || pinnedMods.contains(modId)) return false;
         int count = modCallbackErrorCounts.computeIfAbsent(modId, k -> new AtomicInteger()).incrementAndGet();
         saveErrorCountsThrottled();
-        if (count < autoPinThreshold) return false;
+        if (count < Math.min(autoPinThreshold, CALLBACK_AUTO_PIN_THRESHOLD)) return false;
         if (!pinnedMods.add(modId)) return false; // pinned concurrently
         saveMods();
         recordPinReason("mod", modId, "caught-elsewhere (cross-thread callback, not own tick)", count, t);
@@ -472,18 +476,33 @@ public final class NestworldPins {
      * explicitly opted into.
      */
     private static String resolveModId(Throwable t) {
+        return resolveModId(t, m -> false);
+    }
+
+    /**
+     * Root-cause-first attribution (2026-11-10): a wrapper such as AE2's {@code ReportedException("Ticking GridNode")}
+     * carries the ticking mod's frames on its own stack while the actual bug sits in the CAUSE (e.g. a
+     * ConcurrentModificationException inside MasterfulMachinery). Walk the cause chain from the deepest cause outward and
+     * return the first frame's mod that is not {@code skip}ped (already pinned) and is not a NestWorld compat module.
+     */
+    static String resolveModId(Throwable t, java.util.function.Predicate<String> skip) {
         Map<String, String> map = CLASS_TO_MOD_ID.get();
         if (map == null) {
             map = buildClassToModIdMap();
             CLASS_TO_MOD_ID.compareAndSet(null, map);
             map = CLASS_TO_MOD_ID.get();
         }
-        for (StackTraceElement frame : t.getStackTrace()) {
-            String modId = map.get(frame.getClassName());
-            if (modId != null) return modId;
+        List<Throwable> chain = new ArrayList<>();
+        java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (Throwable c = t; c != null && chain.size() < 16 && seen.add(c); c = c.getCause()) chain.add(c);
+        for (int i = chain.size() - 1; i >= 0; i--) {
+            for (StackTraceElement frame : chain.get(i).getStackTrace()) {
+                String modId = map.get(frame.getClassName());
+                if (modId == null || modId.startsWith("nestworld") || skip.test(modId)) continue;
+                return modId;
+            }
         }
-        Throwable cause = t.getCause();
-        return cause != null && cause != t ? resolveModId(cause) : null;
+        return null;
     }
 
     private static Map<String, String> buildClassToModIdMap() {
