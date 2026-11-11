@@ -54,6 +54,8 @@ public final class NestworldCompatAe2 {
                     net.nestworld.compat.ae2.glue.TeardownClosureFixtures.onServerTickEnd(e.getServer().getTickCount());
                     net.nestworld.compat.ae2.glue.MbLaneFixtures.onServerTickEnd(e.getServer().getTickCount());
                     net.nestworld.compat.ae2.glue.BusTransitFixtures.onServerTickEnd(e.getServer().getTickCount());
+                    net.nestworld.compat.ae2.glue.BusTransitPerf.tick(e.getServer());
+                    net.nestworld.compat.ae2.glue.BusTransitMmFixtures.tick(e.getServer().getTickCount());
                 }
             });
         }
@@ -73,6 +75,9 @@ public final class NestworldCompatAe2 {
                                         c.getSource().getLevel(),
                                         net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "p"))))))
                 .then(Commands.literal("bustransit").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.summary()))
+                        .then(Commands.literal("enable").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.setActive(c.getSource().getServer(), true))))
+                        .then(Commands.literal("disable").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.setActive(c.getSource().getServer(), false))))
+                        .then(Commands.literal("strategies").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.strategyRejections())))
                         .then(Commands.literal("grids").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.grids(20))))
                         .then(Commands.literal("records").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.records(40)))))
                 .then(Commands.literal("mblane").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLane.summary()))
@@ -86,6 +91,17 @@ public final class NestworldCompatAe2 {
                                 net.nestworld.compat.ae2.glue.GridCensus.devices(c.getSource().getServer().getTickCount(), 25)))));
         if (T2Fixtures.ENABLED) {
             root = root.then(Commands.literal("bustransitfx")
+                    .then(Commands.literal("mmsetup").then(Commands.argument("p", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitMmFixtures.setup(c.getSource().getLevel(),
+                                    net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "p"))))))
+                    .then(Commands.literal("mmsnapshot").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitMmFixtures.snapshot())))
+                    .then(Commands.literal("mmstatus").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitMmFixtures.status())))
+                    .then(Commands.literal("mmpause").then(Commands.argument("v", com.mojang.brigadier.arguments.StringArgumentType.word()).executes(c -> say(c.getSource(),
+                            net.nestworld.compat.ae2.glue.BusTransitMmFixtures.pause("on".equals(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "v")))))))
+                    .then(Commands.literal("perf").then(Commands.literal("start").executes(c -> say(c.getSource(),
+                            net.nestworld.compat.ae2.glue.BusTransitPerf.start(c.getSource().getServer()))))
+                            .then(Commands.literal("report").executes(c -> say(c.getSource(),
+                                    net.nestworld.compat.ae2.glue.BusTransitPerf.report(c.getSource().getServer())))))
                     .then(Commands.literal("on").executes(c -> say(c.getSource(), "transit active=" + (net.nestworld.compat.ae2.glue.BusTransit.active = true))))
                     .then(Commands.literal("off").executes(c -> say(c.getSource(), "transit active=" + (net.nestworld.compat.ae2.glue.BusTransit.active = false))))
                     .then(Commands.literal("hold").then(Commands.argument("v", com.mojang.brigadier.arguments.StringArgumentType.word()).executes(c -> say(c.getSource(),
@@ -119,6 +135,8 @@ public final class NestworldCompatAe2 {
                             .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.count(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"), com.mojang.brigadier.arguments.StringArgumentType.getString(c, "label")))))))
                     .then(Commands.literal("cstatus").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1))
                             .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.countStatus(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"))))))
+                    .then(Commands.literal("fill").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1))
+                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.fill(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"))))))
                     .then(Commands.literal("break").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1)).then(Commands.argument("k", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1))
                             .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.breakBuses(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "k")))))))
                     .then(Commands.literal("rebuild").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1)).then(Commands.argument("speed", com.mojang.brigadier.arguments.IntegerArgumentType.integer(0, 4))

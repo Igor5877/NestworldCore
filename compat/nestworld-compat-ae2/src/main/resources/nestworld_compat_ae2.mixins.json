@@ -58,6 +58,8 @@
     "MBCalculatorAccessor",
     "MBCalculatorLaneMixin",
     "IOBusPartTransitMixin",
+    "BusImportPerfMixin",
+    "BusExportPerfMixin",
     "ImportBusPartAccessor",
     "ExportBusPartAccessor",
     "StackImportFacadeAccessor",

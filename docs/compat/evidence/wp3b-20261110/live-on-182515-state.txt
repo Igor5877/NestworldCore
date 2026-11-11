@@ -1,0 +1,61 @@
+> forge tps
+Dim minecraft:overworld (minecraft:overworld): Mean tick time: 47.265 ms. Mean TPS: 20.000
+Dim dimensionalpocketsii:pocket (dimensionalpocketsii:pocket): Mean tick time: 0.480 ms. Mean TPS: 20.000
+Dim minecraft:the_nether (minecraft:the_nether): Mean tick time: 2.501 ms. Mean TPS: 20.000
+Dim allthemodium:the_beyond (allthemodium:the_beyond): Mean tick time: 0.262 ms. Mean TPS: 20.000
+Dim bloodmagic:dungeon (bloodmagic:dungeon): Mean tick time: 0.269 ms. Mean TPS: 20.000
+Dim lostcities:lostcity (lostcities:lostcity): Mean tick time: 0.254 ms. Mean TPS: 20.000
+Dim allthemodium:mining (allthemodium:mining): Mean tick time: 0.242 ms. Mean TPS: 20.000
+Dim jamd:end (jamd:end): Mean tick time: 0.267 ms. Mean TPS: 20.000
+Dim nuclearcraft:wasteland (nuclearcraft:wasteland_type): Mean tick time: 0.242 ms. Mean TPS: 20.000
+Dim twilightforest:twilight_forest (twilightforest:twilight_forest_type): Mean tick time: 0.286 ms. Mean TPS: 20.000
+Dim jamd:mining (jamd:mining): Mean tick time: 15.811 ms. Mean TPS: 20.000
+Dim allthemodium:the_other (allthemodium:the_other): Mean tick time: 0.310 ms. Mean TPS: 20.000
+Dim compactmachines:compact_world (compactmachines:compact_world): Mean tick time: 0.241 ms. Mean TPS: 20.000
+Dim jamd:nether (jamd:nether): Mean tick time: 0.275 ms. Mean TPS: 20.000
+Dim minecraft:the_end (minecraft:the_end): Mean tick time: 0.246 ms. Mean TPS: 20.000
+Dim lrdynamicdungeon:dungeon_dimension (lrdynamicdungeon:dungeon_type): Mean tick time: 0.239 ms. Mean TPS: 20.000
+Dim javd:void (javd:void): Mean tick time: 0.232 ms. Mean TPS: 20.000
+Dim mythicbotany:alfheim (mythicbotany:alfheim): Mean tick time: 0.341 ms. Mean TPS: 20.000
+Dim woot_revived:drop_simulator (woot_revived:drop_simulator_type): Mean tick time: 0.239 ms. Mean TPS: 20.000
+Dim hunting_dimension_reforged:hunting_dimension (hunting_dimension_reforged:hunting_dimension): Mean tick time: 0.238 ms. Mean TPS: 20.000
+Dim ae2:spatial_storage (ae2:spatial_storage): Mean tick time: 0.231 ms. Mean TPS: 20.000
+Overall: Mean tick time: 71.623 ms. Mean TPS: 13.962
+
+> nestworld mspt
+NW MSPT (last 100 ticks): avg=71.59 p50=65.88 p95=115.63 p99=128.72 max=128.72
+
+> nestworld status
+NestWorld
+  Unstable
+  TPS: 14.2
+  Server tick: 70.6 ms
+
+  Tick (min/med/95%/max):
+    36.5/66.3/113.3/128.7ms (10s)
+    32.4/61.5/101.9/2026.7ms (1m)
+
+  Main thread: 13.8 ms (avg since boot)
+  Worst region: #0 (7.6 ms)
+Regions: 1 active
+  autoSplit=false (automatic splitting disabled)
+
+  #0 [-1.9M..1.9M, -1.9M..1.9M] | Tick: 7.6ms | Entities: 16
+    ├─ [FreeRun +0]
+    ├─ Heat: 84217 [(0,1)=9087.7 (-1,1)=8485.0 (1,-2)=5954.0]
+    ├─ Tick: 0.9/9.9/16.0/20.6ms (10s)
+    └─ Tick: 0.9/9.9/15.6/81.3ms (1m)
+
+
+> nwcompatae2 bustransit
+busTransit{flag=true active=true budgetUs=20000 hold=false recoveryOff=false fifo=false}
+ops scheduled=50028 transitImport=0 transitExport=1025 inline{inactive=0 class=0 crafting=8174 fuzzy=0 random=832 strategy=27441 mainNeighbour=5292 linkedCrossDomain=6931 (linkedSameDomain transit=0) noNeighbourBe=222 overlapRisk=0}
+records completed=50028 cancelled=0 missed=0 outstanding=0 commitFailures=0 returnFailed=0 stuckNonItem=0 stopWaitTimeout=0 stopWaitUs=0 enqueueFailed=0 coreTerminal=0 staleRegionStep=0 regionWrongDomain=0 regionNotTicking=0 regionFailures=0 regionEnergyCalls=0 regionStorageMisuse=0 gridChanged=0
+modulation applied=1025 late=0 stale=0 exportContinuation=0 energyChargedUnits=112 energyUncharged=0 rrApplied=0 rrLate=0 importRefusedReturned=0 exportLeftoverReturned=66178
+recovery orphaned=0 toNetwork=0 toNeighbour=0 drop=0 sealedToNbt=0 sealedHeld=0 persisted=0 loaded=0 loadedHeld=0 dedupDropped=0 sealDirtyInconsistent=0 savedInflight=0 voidedNegative=0 voidedHeld=0
+ledger import fromSource=0 toNetwork=0 backToSource=0 | export fromNetwork=66290 toNeighbour=112 backToNetwork=66178 | dropped=0 heldNow=0
+time mainOpInline=26703964us/48892 mainOpTransit=334100us/1136 commit=201646us region=47690us grids=2
+
+> nwcompatae2 bustransit strategies
+busTransit rejectedStrategies={com.glodblock.github.appflux.common.me.strategy.FEStackExportStrategy=6914, com.rerurate.ifsoulsdisks.applied.stack.SoulsStackImportStrategy=20527}
+

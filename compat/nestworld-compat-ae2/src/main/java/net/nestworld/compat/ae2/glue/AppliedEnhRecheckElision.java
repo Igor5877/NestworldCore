@@ -27,6 +27,10 @@ import net.minecraftforge.items.ItemStackHandler;
 public final class AppliedEnhRecheckElision {
     public static final boolean CACHE_OFF_PROP = Boolean.getBoolean("nestworld.compatAe2.appliedEnhCacheOff");
     private static volatile boolean enabled = !CACHE_OFF_PROP;
+    /** Separate experiment: keep the audited recheck, but avoid its nested varargs Operation dispatch. */
+    public static final boolean INLINE_OFF_PROP = Boolean.getBoolean("nestworld.compatAe2.appliedEnhInlineOff");
+    private static volatile boolean inlineEnabled = !INLINE_OFF_PROP
+            && Boolean.getBoolean("nestworld.compatAe2.appliedEnhInline"); // conservative default OFF
 
     static final LongAdder CALLS = new LongAdder();
     static final LongAdder ELIDED = new LongAdder();          // "cache hits": R1 answered by AE2's own check C1
@@ -34,6 +38,8 @@ public final class AppliedEnhRecheckElision {
     static final LongAdder INELIGIBLE = new LongAdder();      // R1 on a handler outside the audited allowlist
     static final LongAdder CAPS_NOT_PURE = new LongAdder();   // R1 on a stack with attached serializable caps
     static final LongAdder DISABLED = new LongAdder();        // R1 while off / not verified
+    static final LongAdder TYPED_RECHECK = new LongAdder();   // original recheck body, typed dispatch after P3
+    static final LongAdder ORIGINAL_DISPATCH = new LongAdder(); // original Operation chain retained
 
     // ---- P1: audited handler allowlist (audit §5) ----
     static final String CACHED_FAILED = "net.p3pp3rf1y.sophisticatedcore.inventory.CachedFailedInsertInventoryHandler";
@@ -121,6 +127,20 @@ public final class AppliedEnhRecheckElision {
         }
         ELIDED.increment();
         return true;
+    }
+
+    /**
+     * Called only when mayElide returned false. P1/P2 still govern every elision above; this path skips no read or
+     * match. P3 proves that the only nested wrapper is the exact audited recheck body implemented at the call site.
+     * Do not initiate P3 from here: its first-stack check must retain the original mayElide -> outer-wrapper path.
+     */
+    public static boolean useTypedRecheck() {
+        if (inlineEnabled && runtimeState > 0) {
+            TYPED_RECHECK.increment();
+            return true;
+        }
+        ORIGINAL_DISPATCH.increment();
+        return false;
     }
 
     // ---- P3, checked once at runtime on the first R1 (Mixin postApply runs before MixinExtras' late WrapOperation
@@ -233,17 +253,29 @@ public final class AppliedEnhRecheckElision {
     }
 
     static boolean enabled() { return enabled; }
+    static boolean inlineEnabled() { return inlineEnabled; }
+
+    /** Independent hard-off negative control; enabling never overrides an unknown/unverified P3 chain. */
+    public static String setInlineEnabled(boolean on) {
+        inlineEnabled = on && !INLINE_OFF_PROP;
+        return "appliedenh typed recheck " + (inlineEnabled ? "ON" : "OFF")
+                + (on && INLINE_OFF_PROP ? " (hard-off by -Dnestworld.compatAe2.appliedEnhInlineOff=true)" : "")
+                + " | chainVerified=" + (runtimeState > 0);
+    }
 
     public static String status() {
         return "APPLIEDENH-PERF-001 present=" + AppliedEnhMixinPlugin.present() + " applied=" + AppliedEnhMixinPlugin.applied()
                 + " verified=" + (runtimeState > 0) + " enabled=" + enabled + " (cacheOffProp=" + CACHE_OFF_PROP + ")"
                 + " | calls=" + CALLS.sum() + " elided=" + ELIDED.sum() + " afterMutation=" + AFTER_MUTATION.sum()
                 + " ineligibleHandler=" + INELIGIBLE.sum() + " capsNotPure=" + CAPS_NOT_PURE.sum() + " disabled=" + DISABLED.sum()
+                + " | inlineEnabled=" + inlineEnabled + " inlineHardOff=" + INLINE_OFF_PROP
+                + " typedRechecks=" + TYPED_RECHECK.sum() + " originalDispatch=" + ORIGINAL_DISPATCH.sum()
                 + " | sophisticated: " + (sophState == 0 ? "not evaluated" : sophDetail) + " | caps: " + CAPS_DETAIL
                 + " | plugin: " + AppliedEnhMixinPlugin.detail() + " | runtime: " + runtimeDetail;
     }
 
     static void resetCounters() {
         CALLS.reset(); ELIDED.reset(); AFTER_MUTATION.reset(); INELIGIBLE.reset(); CAPS_NOT_PURE.reset(); DISABLED.reset();
+        TYPED_RECHECK.reset(); ORIGINAL_DISPATCH.reset();
     }
 }

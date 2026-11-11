@@ -312,6 +312,32 @@ public final class BusTransitFixtures {
                 + BusTransit.C.outstanding.get();
     }
 
+    /** Fill every barrel of the station completely with cobblestone (created counted), in the barrel's domain. */
+    public static String fill(int id) {
+        Station s = st(id);
+        for (BlockPos b : s.barrels) {
+            inDomain(s, b, () -> {
+                if (!(s.level.getBlockEntity(b) instanceof Container c)) return;
+                long added = 0;
+                for (int i = 0; i < c.getContainerSize(); i++) {
+                    ItemStack st = c.getItem(i);
+                    if (st.isEmpty()) {
+                        c.setItem(i, new ItemStack(Items.COBBLESTONE, 64));
+                        added += 64;
+                    } else if (st.is(Items.COBBLESTONE)) {
+                        added += 64 - st.getCount();
+                        st.setCount(64);
+                    }
+                }
+                if (added > 0) {
+                    s.created.addAndGet(added);
+                    c.setChanged();
+                }
+            });
+        }
+        return "filled barrels of station " + id;
+    }
+
     /** Break k buses (part removal; host stays). */
     public static String breakBuses(int id, int k) {
         Station s = st(id);

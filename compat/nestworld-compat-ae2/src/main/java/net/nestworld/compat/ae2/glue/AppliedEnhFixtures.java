@@ -8,9 +8,12 @@ import appeng.me.storage.ExternalStorageFacade;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Supplier;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -18,6 +21,7 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraftforge.common.capabilities.ForgeCapabilities;
 import net.minecraftforge.items.IItemHandler;
 import net.minecraftforge.items.IItemHandlerModifiable;
+import net.minecraftforge.items.ItemStackHandler;
 
 /**
  * APPLIEDENH-PERF-001 equivalence + timing fixtures (fixture-only: -Dnestworld.compatAe2.appliedEnhFixtures=true).
@@ -163,6 +167,173 @@ public final class AppliedEnhFixtures {
             AppliedEnhRecheckElision.setEnabled(was);
             restore(h, saved);
         }
+    }
+
+    /** Detached OFF/ON/OFF dispatch equivalence; the existing R1 elision setting stays fixed throughout. */
+    public static String traceDispatch() {
+        if (bench != null || AppliedEnhRecheckElision.tracing) return "APPLIEDENH-DISPATCH busy";
+        boolean inlineWas = AppliedEnhRecheckElision.inlineEnabled();
+        boolean elisionFixed = AppliedEnhRecheckElision.enabled();
+        List<String> cases = new ArrayList<>();
+        boolean pass = true;
+        try {
+            pass &= dispatchCase("plain", () -> new ItemStackHandler(27), false, ItemStack.EMPTY, cases);
+            pass &= dispatchCase("counting-getter", () -> new AccessCountingHandler(27), false, ItemStack.EMPTY, cases);
+            pass &= dispatchCase("refill-different-item", RefillHandler::new, true, ItemStack.EMPTY, cases);
+            ItemStack caps = dispatchCapabilityStack();
+            if (caps.isEmpty()) cases.add("caps=SKIP_NO_SERIALIZABLE_CANDIDATE");
+            else pass &= dispatchCase("caps:" + BuiltInRegistries.ITEM.getKey(caps.getItem()),
+                    () -> new ItemStackHandler(27), false, caps, cases);
+            pass &= AppliedEnhRecheckElision.enabled() == elisionFixed;
+            String result = "APPLIEDENH-DISPATCH " + (pass ? "PASS" : "FAIL") + " elisionFixed=" + elisionFixed
+                    + " inlineHardOff=" + AppliedEnhRecheckElision.INLINE_OFF_PROP + " | " + String.join(" | ", cases);
+            Ae2Compat.LOG.info("[nestworld-compat-ae2] {}", result);
+            return result;
+        } finally {
+            AppliedEnhRecheckElision.setInlineEnabled(inlineWas);
+        }
+    }
+
+    private record DispatchRun(List<Long> results, List<String> decisions, List<CompoundTag> contents,
+                               long gets, long extracts, long elided, long nonElided, long typedDelta,
+                               long originalDelta, boolean capsNonPure, boolean refillStopped) { }
+
+    private static boolean dispatchCase(String label, Supplier<IItemHandlerModifiable> factory, boolean refill,
+                                        ItemStack caps, List<String> report) {
+        AppliedEnhRecheckElision.setInlineEnabled(false);
+        DispatchRun off = dispatchRun(factory.get(), refill, caps);
+        AppliedEnhRecheckElision.setInlineEnabled(true);
+        DispatchRun on = dispatchRun(factory.get(), refill, caps);
+        AppliedEnhRecheckElision.setInlineEnabled(false);
+        DispatchRun off2 = dispatchRun(factory.get(), refill, caps);
+        boolean eqResults = off.results.equals(on.results) && off.results.equals(off2.results);
+        boolean eqDecisions = off.decisions.equals(on.decisions) && off.decisions.equals(off2.decisions);
+        boolean eqContents = off.contents.equals(on.contents) && off.contents.equals(off2.contents);
+        boolean eqCalls = off.gets == on.gets && off.gets == off2.gets
+                && off.extracts == on.extracts && off.extracts == off2.extracts;
+        boolean eqElision = off.elided == on.elided && off.elided == off2.elided;
+        // Per-handler trace/counts prove equivalence. Dispatch totals are global deltas: background calls can add
+        // to them, so require our non-elided calls to be covered rather than equating global and local counts.
+        boolean dispatch = off.typedDelta == 0 && off2.typedDelta == 0
+                && off.originalDelta >= off.nonElided && off2.originalDelta >= off2.nonElided
+                && (AppliedEnhRecheckElision.INLINE_OFF_PROP
+                    ? on.typedDelta == 0 && on.originalDelta >= on.nonElided
+                    : on.nonElided > 0 && on.typedDelta >= on.nonElided && on.originalDelta == 0);
+        boolean shape = (!refill || off.refillStopped && on.refillStopped && off2.refillStopped)
+                && (caps.isEmpty() || off.capsNonPure && on.capsNonPure && off2.capsNonPure);
+        boolean pass = eqResults && eqDecisions && eqContents && eqCalls && eqElision && dispatch && shape;
+        report.add(label + "=" + (pass ? "PASS" : "FAIL") + " resultsEq=" + eqResults + " decisionsEq=" + eqDecisions
+                + " contentsEq=" + eqContents + " callsEq=" + eqCalls
+                + " wrapCalls=" + off.decisions.size() + "/" + on.decisions.size() + "/" + off2.decisions.size()
+                + " gettersTracked=" + (off.gets >= 0) + " gets=" + off.gets + "/" + on.gets + "/" + off2.gets
+                + " extracts=" + off.extracts + "/" + on.extracts + "/" + off2.extracts
+                + " elided=" + off.elided + "/" + on.elided + "/" + off2.elided
+                + " typed=" + off.typedDelta + "/" + on.typedDelta + "/" + off2.typedDelta
+                + " original=" + off.originalDelta + "/" + on.originalDelta + "/" + off2.originalDelta
+                + " capsNonPure=" + on.capsNonPure + " refillStopped=" + on.refillStopped);
+        return pass;
+    }
+
+    private static DispatchRun dispatchRun(IItemHandlerModifiable handler, boolean refill, ItemStack caps) {
+        if (refill || !caps.isEmpty()) {
+            for (int slot = 0; slot < handler.getSlots(); slot++) handler.setStackInSlot(slot, ItemStack.EMPTY);
+            handler.setStackInSlot(0, refill ? new ItemStack(Items.COBBLESTONE, 64) : caps.copy());
+        } else seed(handler);
+        boolean capsNonPure = false;
+        AEItemKey capsKey = null;
+        if (!caps.isEmpty()) {
+            ItemStack stored = handler.getStackInSlot(0);
+            boolean energyPresent = stored.getCapability(ForgeCapabilities.ENERGY).isPresent();
+            capsNonPure = energyPresent && !AppliedEnhRecheckElision.capsSerializationPure(stored);
+            capsKey = AEItemKey.of(stored);
+        }
+        if (handler instanceof AccessCountingHandler counted) counted.clearCounts();
+        List<Long> results = new ArrayList<>();
+        List<String> decisions = new ArrayList<>();
+        long[] local = new long[2];
+        long id = System.identityHashCode(handler);
+        long typedBefore = AppliedEnhRecheckElision.TYPED_RECHECK.sum();
+        long originalBefore = AppliedEnhRecheckElision.ORIGINAL_DISPATCH.sum();
+        AppliedEnhRecheckElision.setSink(t -> {
+            if (t[0] != id) return;
+            decisions.add(t[1] + "/" + t[2] + "/" + t[3] + "/" + t[4] + "/" + t[5] + "/" + t[6]);
+            local[t[5] != 0 ? 0 : 1]++;
+        });
+        boolean refillStopped = !refill;
+        try {
+            ExternalStorageFacade facade = ExternalStorageFacade.of(handler); // fresh observed-slot/index state
+            IActionSource source = IActionSource.empty();
+            if (refill) {
+                AEItemKey cobble = AEItemKey.of(Items.COBBLESTONE), dirt = AEItemKey.of(Items.DIRT);
+                results.add(facade.extract(cobble, 128, Actionable.SIMULATE, source));
+                long extracted = facade.extract(cobble, 128, Actionable.MODULATE, source);
+                results.add(extracted);
+                long dirtLeft = facade.extract(dirt, 64, Actionable.SIMULATE, source);
+                results.add(dirtLeft);
+                refillStopped = extracted == 64 && dirtLeft == 64;
+            } else if (capsKey != null) {
+                results.add(facade.extract(capsKey, 1, Actionable.SIMULATE, source));
+                long extracted = facade.extract(capsKey, 1, Actionable.MODULATE, source);
+                results.add(extracted);
+                results.add(facade.insert(capsKey, extracted, Actionable.MODULATE, source));
+                results.add(facade.extract(capsKey, 1, Actionable.SIMULATE, source));
+            } else {
+                AEItemKey[] keys = {AEItemKey.of(Items.COBBLESTONE), AEItemKey.of(Items.DIRT), AEItemKey.of(named("nw-a"))};
+                for (int round = 0; round < 2; round++) for (AEItemKey key : keys) for (long amount : new long[]{1, 65, 128}) {
+                    results.add(facade.extract(key, amount, Actionable.SIMULATE, source));
+                    long extracted = facade.extract(key, amount, Actionable.MODULATE, source);
+                    results.add(extracted);
+                    results.add(facade.insert(key, extracted, Actionable.MODULATE, source));
+                }
+            }
+        } finally { AppliedEnhRecheckElision.setSink(null); }
+        long gets = handler instanceof AccessCountingHandler counted ? counted.gets : -1;
+        long extracts = handler instanceof AccessCountingHandler counted ? counted.extracts : -1;
+        List<CompoundTag> contents = new ArrayList<>();
+        for (int slot = 0; slot < handler.getSlots(); slot++) contents.add(handler.getStackInSlot(slot).save(new CompoundTag()));
+        return new DispatchRun(results, decisions, contents, gets, extracts, local[0], local[1],
+                AppliedEnhRecheckElision.TYPED_RECHECK.sum() - typedBefore,
+                AppliedEnhRecheckElision.ORIGINAL_DISPATCH.sum() - originalBefore, capsNonPure, refillStopped);
+    }
+
+    /** Deliberately ineligible subclass: its live getter has a measurable side effect. */
+    private static class AccessCountingHandler extends ItemStackHandler {
+        long gets, extracts;
+        AccessCountingHandler(int slots) { super(slots); }
+        void clearCounts() { gets = 0; extracts = 0; }
+        @Override public ItemStack getStackInSlot(int slot) { gets++; return super.getStackInSlot(slot); }
+        @Override public ItemStack extractItem(int slot, int amount, boolean simulate) {
+            extracts++; return super.extractItem(slot, amount, simulate);
+        }
+    }
+
+    private static final class RefillHandler extends AccessCountingHandler {
+        private boolean refilled;
+        RefillHandler() { super(1); }
+        @Override public ItemStack extractItem(int slot, int amount, boolean simulate) {
+            ItemStack result = super.extractItem(slot, amount, simulate);
+            if (!simulate && !refilled && !result.isEmpty()) {
+                setStackInSlot(slot, new ItemStack(Items.DIRT, 64));
+                refilled = true;
+            }
+            return result;
+        }
+    }
+
+    private static ItemStack dispatchCapabilityStack() {
+        // Bounded known candidates only; creating detached item stacks performs no world/entity edits.
+        for (String id : new String[]{"mekanism:energy_tablet", "mekanism:basic_energy_cube", "thermal:flux_capacitor"}) {
+            try {
+                var item = BuiltInRegistries.ITEM.get(new ResourceLocation(id));
+                if (item == Items.AIR) continue;
+                ItemStack stack = new ItemStack(item);
+                boolean energyPresent = stack.getCapability(ForgeCapabilities.ENERGY).isPresent();
+                if (energyPresent && !AppliedEnhRecheckElision.capsSerializationPure(stack)) return stack;
+            } catch (RuntimeException | LinkageError unavailable) {
+                // A missing/incompatible optional item is not evidence that its capability gate passed.
+            }
+        }
+        return ItemStack.EMPTY;
     }
 
     // ---- bench: N iterations per server tick for T ticks (profiled externally with spark) ----

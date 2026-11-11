@@ -1,0 +1,42 @@
+> nwcompatae2 gridcensus report
+grid census over 4031 ticks (275.7 s): grids=85 totalGridMs/tick=34.11 | single-domain unlinked: 84 grids, 2.46 ms/tick | linked (storage bus to another grid / QNB): 1 grids, 31.65 ms/tick
+#1 nodes=3930 ms/tick=31.651 (levelEnd 25.969, serverEnd 5.681) levels={jamd:mining=399, minecraft:overworld=3531} domains={MAIN=3919, REGION#0=11} storageBus->otherGrid=0 p2p=2 qnb=27
+#2 nodes=263 ms/tick=0.091 (levelEnd 0.083, serverEnd 0.008) levels={jamd:mining=263} domains={MAIN=263} storageBus->otherGrid=0 p2p=0 qnb=0
+#3 nodes=1 ms/tick=0.081 (levelEnd 0.058, serverEnd 0.023) levels={minecraft:overworld=1} domains={MAIN=1} storageBus->otherGrid=0 p2p=0 qnb=0
+#4 nodes=1 ms/tick=0.038 (levelEnd 0.034, serverEnd 0.004) levels={minecraft:overworld=1} domains={MAIN=1} storageBus->otherGrid=0 p2p=0 qnb=0
+#5 nodes=1 ms/tick=0.038 (levelEnd 0.033, serverEnd 0.005) levels={minecraft:overworld=1} domains={MAIN=1} storageBus->otherGrid=0 p2p=0 qnb=0
+#6 nodes=1 ms/tick=0.037 (levelEnd 0.024, serverEnd 0.014) levels={minecraft:overworld=1} domains={MAIN=1} storageBus->otherGrid=0 p2p=0 qnb=0
+#7 nodes=1 ms/tick=0.031 (levelEnd 0.026, serverEnd 0.005) levels={minecraft:overworld=1} domains={MAIN=1} storageBus->otherGrid=0 p2p=0 qnb=0
+#8 nodes=1 ms/tick=0.031 (levelEnd 0.025, serverEnd 0.005) levels={minecraft:overworld=1} domains={MAIN=1} storageBus->otherGrid=0 p2p=0 qnb=0
+#9 nodes=1 ms/tick=0.030 (levelEnd 0.026, serverEnd 0.004) levels={minecraft:overworld=1} domains={MAIN=1} storageBus->otherGrid=0 p2p=0 qnb=0
+#10 nodes=5 ms/tick=0.030 (levelEnd 0.023, serverEnd 0.007) levels={jamd:mining=5} domains={MAIN=5} storageBus->otherGrid=0 p2p=0 qnb=0
+#11 nodes=1 ms/tick=0.030 (levelEnd 0.025, serverEnd 0.005) levels={minecraft:overworld=1} domains={MAIN=1} storageBus->otherGrid=0 p2p=0 qnb=0
+#12 nodes=1 ms/tick=0.029 (levelEnd 0.024, serverEnd 0.005) levels={minecraft:overworld=1} domains={MAIN=1} storageBus->otherGrid=0 p2p=0 qnb=0
+#13 nodes=1 ms/tick=0.029 (levelEnd 0.024, serverEnd 0.005) levels={minecraft:overworld=1} domains={MAIN=1} storageBus->otherGrid=0 p2p=0 qnb=0
+#14 nodes=1 ms/tick=0.029 (levelEnd 0.024, serverEnd 0.005) levels={minecraft:overworld=1} domains={MAIN=1} storageBus->otherGrid=0 p2p=0 qnb=0
+#15 nodes=1 ms/tick=0.029 (levelEnd 0.024, serverEnd 0.004) levels={minecraft:overworld=1} domains={MAIN=1} storageBus->otherGrid=0 p2p=0 qnb=0
+
+> nwcompatae2 gridcensus devices
+device ticks over 4031 ticks (domain = where the device BE would tick):
+9.212 ms/tick calls/tick=10.9 mainDomain=44054 regionDomain=0 com.glodblock.github.extendedae.common.parts.PartExImportBus
+6.762 ms/tick calls/tick=15.8 mainDomain=63672 regionDomain=0 com.glodblock.github.extendedae.common.parts.PartExExportBus
+2.431 ms/tick calls/tick=2.7 mainDomain=10841 regionDomain=0 net.pedroksl.advanced_ae.common.parts.ImportExportBusPart
+2.408 ms/tick calls/tick=4.7 mainDomain=19078 regionDomain=0 appeng.parts.automation.ExportBusPart
+2.017 ms/tick calls/tick=3.3 mainDomain=13235 regionDomain=0 appeng.parts.automation.ImportBusPart
+1.101 ms/tick calls/tick=11.9 mainDomain=47843 regionDomain=0 appeng.parts.storagebus.StorageBusPart
+0.961 ms/tick calls/tick=0.6 mainDomain=2280 regionDomain=0 com.glodblock.github.extendedae.common.parts.PartOversizeInterface
+0.186 ms/tick calls/tick=0.2 mainDomain=806 regionDomain=0 net.oktawia.crazyae2addons.entities.EntropyCradleControllerBE
+0.175 ms/tick calls/tick=1.0 mainDomain=4031 regionDomain=0 com.glodblock.github.extendedae.common.tileentities.TileExInterface
+0.099 ms/tick calls/tick=0.5 mainDomain=2059 regionDomain=0 appeng.blockentity.misc.InterfaceBlockEntity
+0.046 ms/tick calls/tick=0.5 mainDomain=1967 regionDomain=0 com.extendedae_plus.content.matrix.supermatrix.SuperAssemblerMatrixFrameBlockEntity
+0.043 ms/tick calls/tick=0.1 mainDomain=0 regionDomain=202 com.almostreliable.merequester.requester.RequesterBlockEntity
+0.037 ms/tick calls/tick=0.2 mainDomain=806 regionDomain=0 net.pedroksl.advanced_ae.common.parts.StockExportBusPart
+0.026 ms/tick calls/tick=0.0 mainDomain=162 regionDomain=0 net.pedroksl.advanced_ae.common.parts.AdvancedIOBusPart
+0.021 ms/tick calls/tick=8.0 mainDomain=32248 regionDomain=0 com.glodblock.github.extendedae.common.tileentities.TileCircuitCutter
+0.021 ms/tick calls/tick=2.0 mainDomain=8062 regionDomain=0 appeng.blockentity.networking.EnergyCellBlockEntity
+0.011 ms/tick calls/tick=0.2 mainDomain=806 regionDomain=0 net.oktawia.crazyae2addons.entities.ResearchStationBE
+0.005 ms/tick calls/tick=2.4 mainDomain=9672 regionDomain=0 appeng.blockentity.misc.GrowthAcceleratorBlockEntity
+0.001 ms/tick calls/tick=0.0 mainDomain=20 regionDomain=0 com.glodblock.github.extendedae.common.parts.PartExPatternProvider
+0.001 ms/tick calls/tick=0.0 mainDomain=37 regionDomain=0 appeng.parts.misc.InterfacePart
+0.001 ms/tick calls/tick=0.1 mainDomain=403 regionDomain=0 appeng.blockentity.misc.ChargerBlockEntity
+

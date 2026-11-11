@@ -1,0 +1,232 @@
+{
+  "validLiveGate": true,
+  "completedWindows": 4,
+  "transitOperations": 0,
+  "causalBenefitDemonstrated": false,
+  "rows": [
+    {
+      "phase": "phase-1-off",
+      "ticks": 1459,
+      "wallSeconds": 202.87516409899945,
+      "mainCpuMsPerTick": 129.427316,
+      "MSPT": {
+        "MSPTavg": 127.568879,
+        "p50": 116.844054,
+        "p95": 178.024866,
+        "p99": 260.311043,
+        "max": 1421.884243
+      },
+      "inlineImportItemsPerTick": 24.33173406442769,
+      "inlineExportItemsPerTick": 36.026730637422894,
+      "transitImportItemsPerTick": 0.0,
+      "transitExportItemsPerTick": 0.0,
+      "regionCpuMsPerTick": 151.2679917751885,
+      "regionCpuCoreEquivalents": 1.087861104044763,
+      "busTimingMsPerTick": {
+        "mainOpInline": 2.75192186429061,
+        "mainOpTransit": 0.0,
+        "commit": 0.001968471555860178,
+        "region": 0.0
+      },
+      "deltaCounters": {
+        "scheduled": 7594,
+        "transitImport": 0,
+        "transitExport": 0,
+        "missed": 0,
+        "commitFailures": 0,
+        "regionWrongDomain": 0,
+        "regionFailures": 0,
+        "dropped": 0
+      },
+      "deviceMsPerTick": {
+        "com.glodblock.github.extendedae.common.parts.PartExExportBus": 5.622,
+        "com.glodblock.github.extendedae.common.parts.PartExImportBus": 3.559,
+        "appeng.parts.automation.ExportBusPart": 1.956,
+        "appeng.parts.automation.ImportBusPart": 0.807,
+        "appeng.parts.storagebus.StorageBusPart": 0.667,
+        "com.glodblock.github.extendedae.common.parts.PartOversizeInterface": 0.476,
+        "net.pedroksl.advanced_ae.common.parts.ImportExportBusPart": 0.454,
+        "com.almostreliable.merequester.requester.RequesterBlockEntity": 0.424,
+        "net.oktawia.crazyae2addons.entities.EntropyCradleControllerBE": 0.184,
+        "com.extendedae_plus.content.matrix.supermatrix.SuperAssemblerMatrixFrameBlockEntity": 0.046,
+        "com.glodblock.github.extendedae.common.tileentities.TileExInterface": 0.043,
+        "com.glodblock.github.extendedae.common.tileentities.TileCircuitCutter": 0.023,
+        "net.pedroksl.advanced_ae.common.parts.AdvancedIOBusPart": 0.021,
+        "appeng.blockentity.misc.InterfaceBlockEntity": 0.018,
+        "appeng.blockentity.networking.EnergyCellBlockEntity": 0.015,
+        "net.pedroksl.advanced_ae.common.parts.StockExportBusPart": 0.012,
+        "net.oktawia.crazyae2addons.entities.ResearchStationBE": 0.011,
+        "appeng.blockentity.misc.GrowthAcceleratorBlockEntity": 0.007,
+        "appeng.blockentity.misc.ChargerBlockEntity": 0.001
+      }
+    },
+    {
+      "phase": "phase-2-on",
+      "ticks": 1544,
+      "wallSeconds": 201.79467327099974,
+      "mainCpuMsPerTick": 122.398319,
+      "MSPT": {
+        "MSPTavg": 119.922095,
+        "p50": 112.157318,
+        "p95": 151.547593,
+        "p99": 289.127117,
+        "max": 597.236411
+      },
+      "inlineImportItemsPerTick": 14.376943005181348,
+      "inlineExportItemsPerTick": 31.4889896373057,
+      "transitImportItemsPerTick": 0.0,
+      "transitExportItemsPerTick": 0.0,
+      "regionCpuMsPerTick": 128.52979274611394,
+      "regionCpuCoreEquivalents": 0.9834253639266876,
+      "busTimingMsPerTick": {
+        "mainOpInline": 2.521999352331606,
+        "mainOpTransit": 0.0,
+        "commit": 0.001533678756476684,
+        "region": 0.0
+      },
+      "deltaCounters": {
+        "scheduled": 7474,
+        "transitImport": 0,
+        "transitExport": 0,
+        "missed": 0,
+        "commitFailures": 0,
+        "regionWrongDomain": 0,
+        "regionFailures": 0,
+        "dropped": 0
+      },
+      "deviceMsPerTick": {
+        "com.glodblock.github.extendedae.common.parts.PartExExportBus": 4.906,
+        "com.glodblock.github.extendedae.common.parts.PartExImportBus": 3.147,
+        "appeng.parts.automation.ExportBusPart": 1.812,
+        "appeng.parts.automation.ImportBusPart": 0.72,
+        "appeng.parts.storagebus.StorageBusPart": 0.607,
+        "net.pedroksl.advanced_ae.common.parts.ImportExportBusPart": 0.548,
+        "com.almostreliable.merequester.requester.RequesterBlockEntity": 0.402,
+        "com.glodblock.github.extendedae.common.parts.PartOversizeInterface": 0.375,
+        "net.oktawia.crazyae2addons.entities.EntropyCradleControllerBE": 0.172,
+        "com.extendedae_plus.content.matrix.supermatrix.SuperAssemblerMatrixFrameBlockEntity": 0.047,
+        "com.glodblock.github.extendedae.common.tileentities.TileExInterface": 0.039,
+        "com.glodblock.github.extendedae.common.tileentities.TileCircuitCutter": 0.021,
+        "appeng.blockentity.misc.InterfaceBlockEntity": 0.016,
+        "net.pedroksl.advanced_ae.common.parts.AdvancedIOBusPart": 0.013,
+        "appeng.blockentity.networking.EnergyCellBlockEntity": 0.012,
+        "net.pedroksl.advanced_ae.common.parts.StockExportBusPart": 0.011,
+        "net.oktawia.crazyae2addons.entities.ResearchStationBE": 0.009,
+        "appeng.blockentity.misc.GrowthAcceleratorBlockEntity": 0.005,
+        "appeng.blockentity.misc.ChargerBlockEntity": 0.001
+      }
+    },
+    {
+      "phase": "phase-3-off",
+      "ticks": 1551,
+      "wallSeconds": 200.72907432800002,
+      "mainCpuMsPerTick": 122.343658,
+      "MSPT": {
+        "MSPTavg": 118.709198,
+        "p50": 112.458247,
+        "p95": 148.378468,
+        "p99": 241.971086,
+        "max": 341.731997
+      },
+      "inlineImportItemsPerTick": 23.88716956802063,
+      "inlineExportItemsPerTick": 30.791747259832366,
+      "transitImportItemsPerTick": 0.0,
+      "transitExportItemsPerTick": 0.0,
+      "regionCpuMsPerTick": 128.3494519664732,
+      "regionCpuCoreEquivalents": 0.9917347582379168,
+      "busTimingMsPerTick": {
+        "mainOpInline": 2.751852353320438,
+        "mainOpTransit": 0.0,
+        "commit": 0.001618955512572534,
+        "region": 0.0
+      },
+      "deltaCounters": {
+        "scheduled": 7893,
+        "transitImport": 0,
+        "transitExport": 0,
+        "missed": 0,
+        "commitFailures": 0,
+        "regionWrongDomain": 0,
+        "regionFailures": 0,
+        "dropped": 0
+      },
+      "deviceMsPerTick": {
+        "com.glodblock.github.extendedae.common.parts.PartExExportBus": 4.82,
+        "com.glodblock.github.extendedae.common.parts.PartExImportBus": 2.856,
+        "appeng.parts.automation.ExportBusPart": 1.894,
+        "appeng.parts.automation.ImportBusPart": 0.869,
+        "appeng.parts.storagebus.StorageBusPart": 0.609,
+        "net.pedroksl.advanced_ae.common.parts.ImportExportBusPart": 0.46,
+        "com.almostreliable.merequester.requester.RequesterBlockEntity": 0.405,
+        "com.glodblock.github.extendedae.common.parts.PartOversizeInterface": 0.31,
+        "net.oktawia.crazyae2addons.entities.EntropyCradleControllerBE": 0.167,
+        "com.extendedae_plus.content.matrix.supermatrix.SuperAssemblerMatrixFrameBlockEntity": 0.052,
+        "com.glodblock.github.extendedae.common.tileentities.TileExInterface": 0.035,
+        "com.glodblock.github.extendedae.common.tileentities.TileCircuitCutter": 0.021,
+        "appeng.blockentity.misc.InterfaceBlockEntity": 0.016,
+        "net.pedroksl.advanced_ae.common.parts.AdvancedIOBusPart": 0.013,
+        "appeng.blockentity.networking.EnergyCellBlockEntity": 0.012,
+        "net.pedroksl.advanced_ae.common.parts.StockExportBusPart": 0.012,
+        "net.oktawia.crazyae2addons.entities.ResearchStationBE": 0.009,
+        "appeng.blockentity.misc.GrowthAcceleratorBlockEntity": 0.005,
+        "appeng.blockentity.misc.ChargerBlockEntity": 0.001
+      }
+    },
+    {
+      "phase": "phase-4-on",
+      "ticks": 1541,
+      "wallSeconds": 199.43108518400004,
+      "mainCpuMsPerTick": 120.134819,
+      "MSPT": {
+        "MSPTavg": 118.932394,
+        "p50": 111.505125,
+        "p95": 144.846304,
+        "p99": 239.220797,
+        "max": 1198.433071
+      },
+      "inlineImportItemsPerTick": 20.250486696950034,
+      "inlineExportItemsPerTick": 30.848150551589878,
+      "transitImportItemsPerTick": 0.0,
+      "transitExportItemsPerTick": 0.0,
+      "regionCpuMsPerTick": 125.53536664503565,
+      "regionCpuCoreEquivalents": 0.9700092632074794,
+      "busTimingMsPerTick": {
+        "mainOpInline": 2.7411447112264766,
+        "mainOpTransit": 0.0,
+        "commit": 0.0016586632057105776,
+        "region": 0.0
+      },
+      "deltaCounters": {
+        "scheduled": 7926,
+        "transitImport": 0,
+        "transitExport": 0,
+        "missed": 0,
+        "commitFailures": 0,
+        "regionWrongDomain": 0,
+        "regionFailures": 0,
+        "dropped": 0
+      },
+      "deviceMsPerTick": {
+        "com.glodblock.github.extendedae.common.parts.PartExExportBus": 4.671,
+        "com.glodblock.github.extendedae.common.parts.PartExImportBus": 2.635,
+        "appeng.parts.automation.ExportBusPart": 1.904,
+        "appeng.parts.automation.ImportBusPart": 0.841,
+        "appeng.parts.storagebus.StorageBusPart": 0.597,
+        "net.pedroksl.advanced_ae.common.parts.ImportExportBusPart": 0.451,
+        "com.almostreliable.merequester.requester.RequesterBlockEntity": 0.393,
+        "com.glodblock.github.extendedae.common.parts.PartOversizeInterface": 0.299,
+        "net.oktawia.crazyae2addons.entities.EntropyCradleControllerBE": 0.17,
+        "com.extendedae_plus.content.matrix.supermatrix.SuperAssemblerMatrixFrameBlockEntity": 0.049,
+        "com.glodblock.github.extendedae.common.tileentities.TileExInterface": 0.034,
+        "com.glodblock.github.extendedae.common.tileentities.TileCircuitCutter": 0.02,
+        "net.pedroksl.advanced_ae.common.parts.AdvancedIOBusPart": 0.017,
+        "appeng.blockentity.misc.InterfaceBlockEntity": 0.017,
+        "net.pedroksl.advanced_ae.common.parts.StockExportBusPart": 0.012,
+        "net.oktawia.crazyae2addons.entities.ResearchStationBE": 0.008,
+        "appeng.blockentity.networking.EnergyCellBlockEntity": 0.006,
+        "appeng.blockentity.misc.GrowthAcceleratorBlockEntity": 0.006,
+        "appeng.blockentity.misc.ChargerBlockEntity": 0.001
+      }
+    }
+  ]
+}

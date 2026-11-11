@@ -35,6 +35,9 @@ public final class AppliedEnhCommands {
     @SubscribeEvent
     public static void onRegister(RegisterCommandsEvent e) {
         var root = Commands.literal("nwappliedenh").requires(s -> s.hasPermission(2))
+                .then(Commands.literal("inline")
+                        .then(Commands.literal("on").executes(c -> say(c.getSource(), AppliedEnhRecheckElision.setInlineEnabled(true))))
+                        .then(Commands.literal("off").executes(c -> say(c.getSource(), AppliedEnhRecheckElision.setInlineEnabled(false)))))
                 .then(Commands.literal("status").executes(c -> say(c.getSource(), AppliedEnhRecheckElision.status())));
         if (AppliedEnhFixtures.ENABLED) {
             root = root
@@ -44,6 +47,7 @@ public final class AppliedEnhCommands {
                     .then(Commands.literal("trace").then(Commands.argument("pos", BlockPosArgument.blockPos())
                             .executes(c -> say(c.getSource(), AppliedEnhFixtures.trace(c.getSource().getLevel(), BlockPosArgument.getBlockPos(c, "pos"))))))
                     .then(Commands.literal("tracemem").executes(c -> say(c.getSource(), AppliedEnhFixtures.traceMem())))
+                    .then(Commands.literal("tracedispatch").executes(c -> say(c.getSource(), AppliedEnhFixtures.traceDispatch())))
                     .then(Commands.literal("benchmem").then(Commands.argument("ticks", IntegerArgumentType.integer(1, 72000))
                             .then(Commands.argument("iters", IntegerArgumentType.integer(1, 100000))
                                     .executes(c -> say(c.getSource(), AppliedEnhFixtures.benchStart(c.getSource().getLevel(), null,

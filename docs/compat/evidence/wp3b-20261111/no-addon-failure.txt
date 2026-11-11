@@ -1,0 +1,22 @@
+---- Minecraft Crash Report ----
+// Don't do that.
+
+Time: 2026-11-11 14:07:56
+Description: Ticking grid on end of level tick
+
+java.lang.NullPointerException: Cannot invoke "java.lang.Comparable.compareTo(Object)" because "c" is null
+	at java.util.PriorityQueue.siftDownComparable(PriorityQueue.java:692) ~[?:?] {}
+	at java.util.PriorityQueue.poll(PriorityQueue.java:583) ~[?:?] {}
+	at appeng.me.service.TickManagerService.tickQueue(TickManagerService.java:111) ~[appliedenergistics2-forge-15.4.11.jar%23474!/:?] {re:classloading}
+	at appeng.me.service.TickManagerService.tickLevelQueue(TickManagerService.java:90) ~[appliedenergistics2-forge-15.4.11.jar%23474!/:?] {re:classloading}
+	at appeng.me.service.TickManagerService.onLevelEndTick(TickManagerService.java:75) ~[appliedenergistics2-forge-15.4.11.jar%23474!/:?] {re:classloading}
+	at appeng.me.Grid.onLevelEndTick(Grid.java:226) ~[appliedenergistics2-forge-15.4.11.jar%23474!/:?] {re:mixin,re:classloading,pl:mixin:APP:molecularmanipulator.mixins.json:GridActiveMachinesMixin,pl:mixin:A}
+	at appeng.hooks.ticking.TickHandler.onServerLevelTickEnd(TickHandler.java:282) ~[appliedenergistics2-forge-15.4.11.jar%23474!/:?] {re:classloading,re:mixin}
+	at appeng.hooks.ticking.TickHandler.onLevelTick(TickHandler.java:248) ~[appliedenergistics2-forge-15.4.11.jar%23474!/:?] {re:classloading,re:mixin}
+	at net.minecraftforge.eventbus.EventBus.doCastFilter(EventBus.java:260) ~[eventbus-6.0.5.jar%2352!/:?] {}
+	at net.minecraftforge.eventbus.EventBus.lambda$addListener$11(EventBus.java:252) ~[eventbus-6.0.5.jar%2352!/:?] {}
+	at net.minecraftforge.eventbus.EventBus.post(EventBus.java:315) ~[eventbus-6.0.5.jar%2352!/:?] {}
+	at net.minecraftforge.eventbus.EventBus.post(EventBus.java:296) ~[eventbus-6.0.5.jar%2352!/:?] {}
+	at net.minecraftforge.event.ForgeEventFactory.onPostLevelTick$mixinlite$scope$0(ForgeEventFactory.java:955) ~[forge-1.20.1-47.4.445-claude-nestworld-hybrid-arch-invq4h-universal.jar%23800!/:?] {re:mixin,re:classloading,pl:mixin:APP:modernfix-modernfix.mixins.json:perf.potential_spawns_alloc.ForgeEventFactoryMixin,pl:mixin:APP:serverwarashi.mixins.json:ticktiming.EventHooksTickMixin,pl:mixin:APP:blueprint.mixins.json:ForgeEventFactoryMixin,pl:mixin:A}
+	at net.minecraftforge.event.ForgeEventFactory.onPostLevelTick(ForgeEventFactory.java) ~[forge-1.20.1-47.4.445-claude-nestworld-hybrid-arch-invq4h-universal.jar%23800!/:?] {re:mixin,re:classloading,pl:mixin:APP:modernfix-modernfix.mixins.json:perf.potential_spawns_alloc.ForgeEventFactoryMixin,pl:mixin:APP:serverwarashi.mixins.json:ticktiming.EventHooksTickMixin,pl:mixin:APP:blueprint.mixins.json:ForgeEventFactoryMixin,pl:mixin:A}
+	at net.minecraft.server.MinecraftServer.m_5703_(MinecraftServer.java:1086) ~[server-1.20.1-20230612.114412-srg.jar%23795!/:?] {re:mixin,pl:accesstransformer:B,re:computing_frames,pl:accesstransformer:B,re:classloading,pl:accesstransformer:B,pl:mixin:APP:modernfix-modernfix.mixins.json:perf.fix_loop_spin_waiting.MinecraftServerMixin,pl:mixin:APP:modernfix-modernfix.mixins.json:perf.dedicated_reload_executor.MinecraftServerMixin,pl:mixin:APP:modernfix-modernfix.mixins.json:perf.resourcepacks.MinecraftServerMixin,pl:mixin:APP:modernfix-modernfix.mixins.json:core.MinecraftServerMixin,pl:mixin:APP:rechiseled.mixins.json:MinecraftServerMixin,pl:mixin:APP:alltheleaks.mixins.json:main.MinecraftServerMixin,pl:mixin:APP:structureessentials.mixins.json:LevelCreatedCallback,pl:mixin:APP:mixins.mm.json:ServerMixin,pl:mixin:APP:balm.mixins.json:MinecraftServerMixin,pl:mixin:APP:serverwarashi.mixins.json:runtime.MinecraftServerRuntimeMixin,pl:mixin:APP:dankstorage.mixins.json:MinecraftServerAccess,pl:mixin:APP:ali.forge.mixins.json:MixinMinecraftServer,pl:mixin:APP:kubejs-common.mixins.json:MinecraftServerMixin,pl:mixin:APP:kubejs-common.mixins.json:inject_resources.MinecraftServerMixin,pl:mixin:APP:blueprint.mixins.json:MinecraftServerMixin,pl:mixin:APP:ae2.mixins.json:spatial.MinecraftServerMixin,pl:mixin:A}

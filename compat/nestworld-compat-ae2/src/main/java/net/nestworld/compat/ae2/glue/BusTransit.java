@@ -43,6 +43,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -112,11 +113,14 @@ public final class BusTransit {
         public final LongAdder inlineInactive = new LongAdder(), inlineClass = new LongAdder(), inlineCrafting = new LongAdder(),
                 inlineFuzzy = new LongAdder(), inlineRandom = new LongAdder(), inlineStrategy = new LongAdder(),
                 inlineMainNeighbour = new LongAdder(), inlineNoNeighbourBe = new LongAdder(), inlineOverlapRisk = new LongAdder(),
-                exportNoWorkMain = new LongAdder(), commitFailures = new LongAdder(), returnFailed = new LongAdder(),
+                exportNoWorkMain = new LongAdder(), exportContinuation = new LongAdder(), energyChargedUnits = new LongAdder(),
+                energyUncharged = new LongAdder(), commitFailures = new LongAdder(), returnFailed = new LongAdder(),
                 stuckNonItem = new LongAdder(), stopWaitTimeout = new LongAdder(), stopWaitNanos = new LongAdder(), inlineLinkedCrossDomain = new LongAdder(), transitLinkedSameDomain = new LongAdder();
         public final LongAdder mainOpNsInline = new LongAdder(), mainOpNsTransit = new LongAdder(), commitNs = new LongAdder(),
                 regionNs = new LongAdder();
         public final LongAdder mainOpsInline = new LongAdder(), mainOpsTransit = new LongAdder();
+        public final LongAdder pumpQueued = new LongAdder(), pumpRan = new LongAdder(), pumpTerminal = new LongAdder(),
+                pumpFailed = new LongAdder(), pumpWrongThread = new LongAdder(), passBudgetExhausted = new LongAdder();
         public final LongAdder modApplied = new LongAdder(), modLate = new LongAdder(), modStale = new LongAdder(),
                 rrApplied = new LongAdder(), rrLate = new LongAdder();
         public final LongAdder completed = new LongAdder(), cancelled = new LongAdder(), missed = new LongAdder(),
@@ -283,6 +287,13 @@ public final class BusTransit {
     private static final ArrayDeque<Rec> FIFO_PENDING = new ArrayDeque<>();
     private static int rotation;
     private static volatile boolean stopping;
+    /** At most one extra MAIN safe-point pump is queued. A unique ticket rejects callbacks from an old server run. */
+    private static final AtomicReference<Object> MAIN_PUMP = new AtomicReference<>();
+    /** MAIN only: pump callbacks and END fallback share one soft budget for the entire server tick. */
+    private static MinecraftServer budgetServer;
+    private static int budgetTick = Integer.MIN_VALUE;
+    private static long spentThisTickNs;
+    private static boolean commitPassRunning;
 
     static {
         ALL_GRIDS.add(ORPHANS);
@@ -376,7 +387,7 @@ public final class BusTransit {
 
     static boolean namespaceHasTypePin(ServerLevel level, String ns) {
         int now = level.getServer().getTickCount();
-        if (now - nsPinnedTick > 200 || now < nsPinnedTick) {
+        if (nsPinnedTick == Integer.MIN_VALUE || (long) now - nsPinnedTick > 200 || now < nsPinnedTick) {
             NS_TYPE_PINNED.clear();
             nsPinnedTick = now;
         }
@@ -426,7 +437,20 @@ public final class BusTransit {
     // ---------------------------------------------------------------- eligibility
 
     public static boolean manages(Object part) {
-        return FLAG && part != null && (part.getClass() == ImportBusPart.class || part.getClass() == ExportBusPart.class);
+        return FLAG && part != null && (part.getClass() == ImportBusPart.class || part.getClass() == ExportBusPart.class
+                || AuditedExtendedBuses.manages(part));
+    }
+
+    /** Admin control, called on server MAIN. Refuse disabling while any transfer can still touch a neighbour. */
+    public static String setActive(MinecraftServer server, boolean enable) {
+        if (!server.isSameThread()) return "busTransit unchanged: server MAIN required";
+        if (enable && !FLAG) return "busTransit unchanged: startup feature flag is OFF (restart required)";
+        if (enable && stopping) return "busTransit unchanged: server is stopping";
+        if (!enable && (C.outstanding.get() != 0 || REGION_STEPS.get() != 0 || commitPassRunning))
+            return "busTransit unchanged: busy; retry at quiescence (outstanding=" + C.outstanding.get()
+                    + " regionSteps=" + REGION_STEPS.get() + ")";
+        active = enable;
+        return "busTransit active=" + active + " (startup flag=" + FLAG + ")";
     }
 
     static final Set<String> IMPORT_STRATEGIES = Set.of(
@@ -451,19 +475,32 @@ public final class BusTransit {
         return null;
     }
 
+    private static final Map<String, LongAdder> REJECTED_STRATEGIES = new ConcurrentHashMap<>();
+
+    private static boolean rejectedStrategy(Object strategy) {
+        REJECTED_STRATEGIES.computeIfAbsent(strategy == null ? "null" : strategy.getClass().getName(), key -> new LongAdder()).increment();
+        return false;
+    }
+
+    public static String strategyRejections() {
+        Map<String, Long> result = new java.util.TreeMap<>();
+        REJECTED_STRATEGIES.forEach((key, count) -> result.put(key, count.sum()));
+        return "busTransit rejectedStrategies=" + result;
+    }
+
     static boolean strategiesAllowed(IOBusPart bus) {
         if (bus instanceof ImportBusPart ib) {
             StackImportStrategy s = importFacade(ib);
-            if (!(s instanceof StackImportFacade f)) return false;
+            if (!(s instanceof StackImportFacade f)) return rejectedStrategy(s);
             for (var st : ((StackImportFacadeAccessor) f).nw$strategies()) {
-                if (!IMPORT_STRATEGIES.contains(st.getClass().getName())) return false;
+                if (!IMPORT_STRATEGIES.contains(st.getClass().getName()) && !ItemNoopStrategies.allowed(bus, st)) return rejectedStrategy(st);
             }
             return true;
         }
         StackExportStrategy s = ((ExportBusPartAccessor) bus).nw$exportStrategy();
-        if (!(s instanceof StackExportFacade f)) return false;
+        if (!(s instanceof StackExportFacade f)) return rejectedStrategy(s);
         for (var st : ((StackExportFacadeAccessor) f).nw$strategies()) {
-            if (!EXPORT_STRATEGIES.contains(st.getClass().getName())) return false;
+            if (!EXPORT_STRATEGIES.contains(st.getClass().getName()) && !ItemNoopStrategies.allowed(bus, st)) return rejectedStrategy(st);
         }
         return true;
     }
@@ -553,9 +590,11 @@ public final class BusTransit {
             if (why != C.inlineMainNeighbour && why != C.inlineNoNeighbourBe) ensurePinned(bus, bs);
             if (bs.regionRunning.get() > 0) C.inlineOverlapRisk.increment();
             boolean work;
+            Boolean perfPrevious = BusTransitPerf.beginInline();
             try {
                 work = inline.get();
             } finally {
+                BusTransitPerf.endInline(perfPrevious);
                 long d = System.nanoTime() - t0;
                 C.mainOpNsInline.add(d);
                 C.mainOpsInline.increment();
@@ -593,6 +632,8 @@ public final class BusTransit {
             bs.live.add(r);
             C.outstanding.incrementAndGet();
             gs.outstanding.incrementAndGet();
+            // Register ownership BEFORE any MODULATE extraction. Export first probes its neighbour, then the MAIN
+            // plan uses AE2's poweredExtraction(MODULATE); capacity refusal does not withdraw items or debit energy.
             enqueueRegion(r, export ? BusTransit::regionProbe : BusTransit::regionImport, true);
             return DEFERRED;
         } finally {
@@ -814,6 +855,7 @@ public final class BusTransit {
                 if (r.export) {
                     r.committed += n;
                     C.expToNeighbour.add(n);
+                    if (e.getKey() instanceof AEItemKey) BusTransitPerf.transitItems(true, n);
                 } else {
                     r.returned += n;
                     C.impBackToSource.add(n);
@@ -833,27 +875,87 @@ public final class BusTransit {
     static void publish(Rec r) {
         if (fxFifo) {
             FIFO.add(r);
-            return;
+        } else {
+            GridState gs = r.gs;
+            gs.inbox.add(r);
+            if (gs.inReady.compareAndSet(false, true)) READY.add(gs);
         }
-        GridState gs = r.gs;
-        gs.inbox.add(r);
-        if (gs.inReady.compareAndSet(false, true)) READY.add(gs);
+        requestMainPump(r);
+    }
+
+    /**
+     * Wake the same fair scheduler at an existing Core MAIN safe point. The Core primitive never executes inline;
+     * its MAIN mailbox drains the tasks present at entry, so publication during a pass cannot recurse into this pass.
+     * The host is only a pinned MAIN scheduling anchor: every record is still processed by the ordinary lifecycle
+     * checks below. A terminal/failed/unloaded anchor leaves the records queued for the server-END fallback.
+     */
+    private static void requestMainPump(Rec r) {
+        if (stopping || !BeDomainReady.primitive()) return;
+        Object ticket = new Object();
+        if (!MAIN_PUMP.compareAndSet(null, ticket)) return;
+        C.pumpQueued.increment();
+        try {
+            BeDomainReady.enqueueTo(r.level, r.hostPos, "ae2:cable_bus", () -> {
+                if (!MAIN_PUMP.compareAndSet(ticket, null)) return;
+                if (stopping) return;
+                MinecraftServer server = r.level.getServer();
+                if (!server.isSameThread()) {
+                    C.pumpWrongThread.increment();
+                    return; // a policy/domain change must never run AE2's network half on a region thread
+                }
+                C.pumpRan.increment();
+                onServerTickEnd(server);
+            }, kind -> {
+                if (MAIN_PUMP.compareAndSet(ticket, null)) C.pumpTerminal.increment();
+            });
+        } catch (Throwable unavailable) {
+            if (MAIN_PUMP.compareAndSet(ticket, null)) C.pumpFailed.increment();
+            // Publication is already durable in the per-grid inbox; END continues to service it.
+        }
     }
 
     // ---------------------------------------------------------------- MAIN commit scheduler
 
-    /** Server tick END (priority LOWEST, after AE2's TickHandler). */
+    /** Core MAIN safe-point pump and server tick END fallback, sharing one budget for the entire server tick. */
     public static void onServerTickEnd(MinecraftServer server) {
-        if (!FLAG) return;
+        if (!FLAG || stopping) return;
+        if (!server.isSameThread()) {
+            C.pumpWrongThread.increment();
+            return;
+        }
+        if (commitPassRunning) return;
         int tick = server.getTickCount();
+        if (budgetServer != server || budgetTick != tick) {
+            budgetServer = server;
+            budgetTick = tick;
+            spentThisTickNs = 0;
+        }
         long passStart = System.nanoTime();
+        commitPassRunning = true;
+        try {
+            long availableNs = Math.max(0, budgetNs - spentThisTickNs);
+            if (availableNs == 0) {
+                C.passBudgetExhausted.increment();
+                return; // READY/inbox/pending ownership is unchanged; the next server tick gets a fresh budget
+            }
+            drainCommitQueues(tick, availableNs, passStart);
+        } finally {
+            long elapsed = System.nanoTime() - passStart;
+            spentThisTickNs += elapsed;
+            C.commitNs.add(elapsed);
+            commitPassRunning = false;
+        }
+    }
+
+    /** MAIN only. Retains the existing soft-quantum minimum of one record per active grid for GRID_ISOLATION. */
+    private static void drainCommitQueues(int tick, long availableNs, long passStart) {
         if (!FIFO.isEmpty() || !FIFO_PENDING.isEmpty()) {
             Rec r;
             while ((r = FIFO.poll()) != null) FIFO_PENDING.add(r);
             ArrayList<Rec> retry = new ArrayList<>();
             int served = 0;
             while ((r = FIFO_PENDING.peek()) != null) {
-                if (served > 0 && System.nanoTime() - passStart > budgetNs) {
+                if (served > 0 && System.nanoTime() - passStart > availableNs) {
                     r.gs.budgetExhausted++;
                     break;
                 }
@@ -874,11 +976,8 @@ public final class BusTransit {
             if (!g.pending.isEmpty()) active.add(g);
         }
         int n = active.size();
-        if (n == 0) {
-            C.commitNs.add(System.nanoTime() - passStart);
-            return;
-        }
-        long quantum = Math.max(1, budgetNs / n);
+        if (n == 0) return;
+        long quantum = Math.max(1, (availableNs - (System.nanoTime() - passStart)) / n);
         int start = Math.floorMod(rotation++, n);
         for (int i = 0; i < n; i++) {
             GridState gs = active.get((start + i) % n);
@@ -901,7 +1000,6 @@ public final class BusTransit {
             gs.mainCommitNs += System.nanoTime() - t0;
             if (!gs.pending.isEmpty() && gs.inReady.compareAndSet(false, true)) READY.add(gs);
         }
-        C.commitNs.add(System.nanoTime() - passStart);
     }
 
     private static volatile long lastFailLog;
@@ -980,6 +1078,7 @@ public final class BusTransit {
                         r.extracted += ext;
                     }
                     C.expFromNetwork.add(ext);
+                    C.energyChargedUnits.add(ext); // reference poweredExtraction already debited energy on MAIN
                     planned.merge(what, ext, Long::sum);
                     total += ext;
                     ops -= (int) Math.max(1, ext / factor);
@@ -1066,12 +1165,14 @@ public final class BusTransit {
                 if (r.export) {
                     C.expBackToNetwork.add(ins);
                     if (!r.orphan && !r.recoveryFromNbt) C.exportLeftoverReturned.add(ins);
-                } else C.impToNetwork.add(ins);
+                } else {
+                    C.impToNetwork.add(ins);
+                    if (e.getKey() instanceof AEItemKey) BusTransitPerf.transitItems(false, ins);
+                }
                 if (r.orphan || r.recoveryFromNbt) C.recoveredNetwork.add(ins);
             }
         }
         if (firstImportCommit && !r.recoveryFromNbt) applyModulation(r, r.extracted > 0);
-        if (r.export && r.pushes > 0 && !r.recoveryFromNbt) applyModulation(r, r.committed > 0);
         long left;
         synchronized (r) {
             left = r.heldTotal();
@@ -1296,6 +1397,7 @@ public final class BusTransit {
      */
     public static void onServerStopping() {
         stopping = true;
+        MAIN_PUMP.set(null);
         long t0 = System.nanoTime(), deadline = t0 + 5_000_000_000L;
         while (REGION_STEPS.get() > 0 && System.nanoTime() < deadline) Thread.onSpinWait();
         C.stopWaitNanos.add(System.nanoTime() - t0);
@@ -1307,6 +1409,11 @@ public final class BusTransit {
     }
 
     public static void onServerStarting() {
+        MAIN_PUMP.set(null);
+        budgetServer = null;
+        budgetTick = Integer.MIN_VALUE;
+        spentThisTickNs = 0;
+        commitPassRunning = false;
         stopping = false;
     }
 
@@ -1456,8 +1563,12 @@ public final class BusTransit {
                 + c.regionWrongDomain.sum() + " regionNotTicking=" + c.regionNotTicking.sum() + " regionFailures="
                 + c.regionFailures.sum() + " regionEnergyCalls=" + c.regionEnergyCalls.sum() + " regionStorageMisuse="
                 + c.regionStorageMisuse.sum() + " gridChanged=" + c.gridChanged.sum()
+                + "\npump queued=" + c.pumpQueued.sum() + " ran=" + c.pumpRan.sum() + " terminal=" + c.pumpTerminal.sum()
+                + " failed=" + c.pumpFailed.sum() + " wrongThread=" + c.pumpWrongThread.sum()
+                + " passBudgetExhausted=" + c.passBudgetExhausted.sum()
                 + "\nmodulation applied=" + c.modApplied.sum() + " late=" + c.modLate.sum() + " stale=" + c.modStale.sum()
-                + " rrApplied=" + c.rrApplied.sum() + " rrLate=" + c.rrLate.sum() + " importRefusedReturned="
+                + " exportContinuation=" + c.exportContinuation.sum() + " energyChargedUnits=" + c.energyChargedUnits.sum()
+                + " energyUncharged=" + c.energyUncharged.sum() + " rrApplied=" + c.rrApplied.sum() + " rrLate=" + c.rrLate.sum() + " importRefusedReturned="
                 + c.importRefusedReturned.sum() + " exportLeftoverReturned=" + c.exportLeftoverReturned.sum()
                 + "\nrecovery orphaned=" + c.orphaned.sum() + " toNetwork=" + c.recoveredNetwork.sum() + " toNeighbour="
                 + c.recoveredNeighbour.sum() + " drop=" + c.recoveredDrop.sum() + " sealedToNbt=" + c.sealedToNbt.sum()

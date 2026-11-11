@@ -1,0 +1,41 @@
+{
+  "scope": "WP3-B single-key export and import fallback, not production acceptance",
+  "counts": {
+    "c1": 0,
+    "partial": 0,
+    "returnFailed": 0,
+    "gonebrokenOn": 0,
+    "rebuilt": 0,
+    "negGoneBroken": -512
+  },
+  "export_p100_ticks": [
+    1,
+    1,
+    1
+  ],
+  "windows": [
+    [
+      "600",
+      "false",
+      "960",
+      "-30720",
+      "32.0"
+    ],
+    [
+      "600",
+      "true",
+      "960",
+      "-30720",
+      "32.0"
+    ],
+    [
+      "1200",
+      "true",
+      "1920",
+      "-61440",
+      "32.0"
+    ]
+  ],
+  "status": "PASS",
+  "failures": []
+}
