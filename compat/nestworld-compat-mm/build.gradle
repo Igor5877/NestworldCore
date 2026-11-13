@@ -1,0 +1,44 @@
+// nestworld-compat-mm: an ordinary Forge mod (docs/compat/MM-GROUP-DOMAIN-TZ-2026-11-11.md, MM-GROUP-DOMAIN-001 quick fix).
+// Not part of NestWorld Core and no dependency on any other NestWorld addon: Core is reached reflectively only.
+//
+// MasterfulMachinery is a compile-only dependency staged by hand (not redistributed from this repository):
+//   cp MasterfulMachinery-3-1.20.1-0.1.35.10.jar compat/nestworld-compat-mm/libs/
+// sha256 d60a442ee86a7236f5f14813c5213289ef4ed95fa2effebaf58e2ada8b3c2624 (checked by verifyMmJar).
+plugins {
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+    id 'org.spongepowered.mixin' version '0.7.38'
+}
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+version = '0.2.0'
+group = 'net.nestworld.compat'
+
+def mmJar = file('libs/MasterfulMachinery-3-1.20.1-0.1.35.10.jar')
+def mmSha256 = 'd60a442ee86a7236f5f14813c5213289ef4ed95fa2effebaf58e2ada8b3c2624'
+
+minecraft { mappings channel: 'official', version: '1.20.1' }
+mixin {
+    add sourceSets.main, 'nestworld_compat_mm.refmap.json'
+    config 'nestworld_compat_mm.mixins.json'
+}
+repositories {
+    mavenCentral()
+    flatDir { dirs 'libs' }
+}
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.4.20'
+    compileOnly fg.deobf('blank:MasterfulMachinery-3-1.20.1:0.1.35.10')
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+}
+tasks.register('verifyMmJar') {
+    doLast {
+        if (!mmJar.exists()) throw new GradleException("missing ${mmJar} (see build.gradle header)")
+        def sha = java.security.MessageDigest.getInstance('SHA-256').digest(mmJar.bytes).encodeHex().toString()
+        if (sha != mmSha256) throw new GradleException("MasterfulMachinery jar sha256 ${sha} != ${mmSha256}")
+    }
+}
+tasks.named('compileJava') { dependsOn 'verifyMmJar' }
+tasks.named('jar', Jar).configure {
+    archiveBaseName = 'nestworld-compat-mm'
+    manifest.attributes('MixinConfigs': 'nestworld_compat_mm.mixins.json')
+    finalizedBy 'reobfJar'
+}

@@ -1,0 +1,20 @@
+// nestworld-inspector: optional admin visualisation mod (docs/NESTWORLD_INSPECTOR_VISUAL.md).
+// Not part of NestWorld Core and no dependency on any other NestWorld addon: Core is reached reflectively only.
+// One jar for both sides; optional on both (a vanilla client can join a server with it, a client with it can join
+// any server).
+plugins {
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+}
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+version = '0.1.0'
+group = 'net.nestworld.inspector'
+
+minecraft { mappings channel: 'official', version: '1.20.1' }
+repositories { mavenCentral() }
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.4.20'
+}
+tasks.named('jar', Jar).configure {
+    archiveBaseName = 'nestworld-inspector'
+    finalizedBy 'reobfJar'
+}

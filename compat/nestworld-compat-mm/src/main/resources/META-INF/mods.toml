@@ -1,0 +1,14 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="All rights reserved"
+[[mods]]
+modId="nestworld_compat_mm"
+version="0.2.0"
+displayName="NestWorld compatibility: Masterful Machinery"
+description="MM-GROUP-DOMAIN-001: each MasterfulMachinery multiblock (controller + ports) is registered as one Core block-entity group and runs on one thread — its region when possible, MAIN only when it would otherwise be split. Exact-version gated; no dependency on other NestWorld addons."
+[[dependencies.nestworld_compat_mm]]
+    modId="mm"
+    mandatory=false
+    versionRange="*"
+    ordering="AFTER"
+    side="BOTH"

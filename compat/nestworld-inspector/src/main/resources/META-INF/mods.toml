@@ -1,0 +1,21 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="All rights reserved"
+[[mods]]
+modId="nestworld_inspector"
+version="0.1.0"
+displayName="NestWorld Inspector"
+description="Admin visualisation for NestWorld Core: shows which region/thread each chunk and block entity executes on, and why. Read-only; optional on both sides; data is sent only to operators who enable it with /nwinspect on."
+displayTest="IGNORE_ALL_VERSION"
+[[dependencies.nestworld_inspector]]
+    modId="forge"
+    mandatory=true
+    versionRange="[47,)"
+    ordering="NONE"
+    side="BOTH"
+[[dependencies.nestworld_inspector]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[1.20.1,1.20.2)"
+    ordering="NONE"
+    side="BOTH"
