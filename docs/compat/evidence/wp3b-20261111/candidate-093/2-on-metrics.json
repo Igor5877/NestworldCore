@@ -1,0 +1,40 @@
+{
+  "startedAt": "2026-11-11T16:47:51.866382188Z",
+  "testCwd": "/root/airis-2026-10-25/WP3B-MINING-20261111",
+  "pid": "55922",
+  "targetSeconds": 120,
+  "observedSeconds": 120.002728456,
+  "pollMs": 200,
+  "polls": 600,
+  "samples": 1276,
+  "absoluteTickCountAvailable": false,
+  "ringSequenceValidated": true,
+  "ambiguousPolls": 0,
+  "sameMainThread": true,
+  "qualified": true,
+  "maxPollGapMs": 308.095413,
+  "maxReadMs": 110.823887,
+  "MSPTavg": 80.129534374,
+  "MSPTp50": 68.393828,
+  "MSPTp95": 158.125997,
+  "MSPTp99": 175.989708,
+  "MSPTmax": 245.716884,
+  "observedTicksPerSecond": 10.633091567,
+  "MAINcpuMsPerObservedTick": 88.109978899,
+  "MAINcpuBoundaryLowMsPerTick": 88.106606293,
+  "MAINcpuBoundaryHighMsPerTick": 88.113351505,
+  "managementAgentStartedByCollector": false,
+  "gcDeltas": {
+    "G1 Old Generation": {
+      "collectionCount": 0,
+      "collectionTimeMs": 0
+    },
+    "G1 Young Generation": {
+      "collectionCount": 22,
+      "collectionTimeMs": 642
+    }
+  },
+  "invalidReasons": [],
+  "readErrors": [],
+  "limitations": "Neutral Minecraft bean exposes no absolute tick counter. Validated contiguous changed slots provide observed completed-tick samples; identical-nanosecond overwrites and an undetectable full wrap cannot be ruled out mathematically. CPU is whole Server-thread counter delta normalized by observed completed ticks, includes between-tick work, and has partial-tick boundary uncertainty. GC collection time is an MXBean aggregate, not pause quantiles. JMX polling overhead is present equally in all test variants; use read latency and sequence validity to reject poor windows."
+}

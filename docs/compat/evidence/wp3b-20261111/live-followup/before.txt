@@ -1,0 +1,37 @@
+> forge tps
+Dim minecraft:overworld (minecraft:overworld): Mean tick time: 68.069 ms. Mean TPS: 14.691
+Dim dimensionalpocketsii:pocket (dimensionalpocketsii:pocket): Mean tick time: 0.488 ms. Mean TPS: 20.000
+Dim lrdynamicdungeon:dungeon_dimension (lrdynamicdungeon:dungeon_type): Mean tick time: 0.241 ms. Mean TPS: 20.000
+Dim hunting_dimension_reforged:hunting_dimension (hunting_dimension_reforged:hunting_dimension): Mean tick time: 0.230 ms. Mean TPS: 20.000
+Dim allthemodium:mining (allthemodium:mining): Mean tick time: 0.204 ms. Mean TPS: 20.000
+Dim jamd:nether (jamd:nether): Mean tick time: 0.246 ms. Mean TPS: 20.000
+Dim allthemodium:the_other (allthemodium:the_other): Mean tick time: 0.205 ms. Mean TPS: 20.000
+Dim mythicbotany:alfheim (mythicbotany:alfheim): Mean tick time: 0.298 ms. Mean TPS: 20.000
+Dim compactmachines:compact_world (compactmachines:compact_world): Mean tick time: 0.202 ms. Mean TPS: 20.000
+Dim woot_revived:drop_simulator (woot_revived:drop_simulator_type): Mean tick time: 0.207 ms. Mean TPS: 20.000
+Dim allthemodium:the_beyond (allthemodium:the_beyond): Mean tick time: 0.201 ms. Mean TPS: 20.000
+Dim minecraft:the_end (minecraft:the_end): Mean tick time: 0.559 ms. Mean TPS: 20.000
+Dim jamd:mining (jamd:mining): Mean tick time: 23.596 ms. Mean TPS: 20.000
+Dim lostcities:lostcity (lostcities:lostcity): Mean tick time: 0.401 ms. Mean TPS: 20.000
+Dim nuclearcraft:wasteland (nuclearcraft:wasteland_type): Mean tick time: 0.241 ms. Mean TPS: 20.000
+Dim bloodmagic:dungeon (bloodmagic:dungeon): Mean tick time: 0.245 ms. Mean TPS: 20.000
+Dim twilightforest:twilight_forest (twilightforest:twilight_forest_type): Mean tick time: 0.278 ms. Mean TPS: 20.000
+Dim minecraft:the_nether (minecraft:the_nether): Mean tick time: 0.713 ms. Mean TPS: 20.000
+Dim jamd:end (jamd:end): Mean tick time: 0.260 ms. Mean TPS: 20.000
+Dim javd:void (javd:void): Mean tick time: 0.217 ms. Mean TPS: 20.000
+Dim ae2:spatial_storage (ae2:spatial_storage): Mean tick time: 0.217 ms. Mean TPS: 20.000
+Overall: Mean tick time: 99.179 ms. Mean TPS: 10.083
+
+> nwcompatae2 bustransit
+busTransit{flag=true active=true budgetUs=20000 hold=false recoveryOff=false fifo=false}
+ops scheduled=1680386 transitImport=0 transitExport=39164 inline{inactive=0 class=0 crafting=249945 fuzzy=0 random=28491 strategy=959703 mainNeighbour=218461 linkedCrossDomain=161454 (linkedSameDomain transit=0) noNeighbourBe=19863 overlapRisk=0}
+records completed=1680386 cancelled=0 missed=0 outstanding=0 commitFailures=0 returnFailed=0 stuckNonItem=0 stopWaitTimeout=0 stopWaitUs=0 enqueueFailed=0 coreTerminal=0 staleRegionStep=0 regionWrongDomain=0 regionNotTicking=0 regionFailures=0 regionEnergyCalls=0 regionStorageMisuse=0 gridChanged=0
+modulation applied=39164 late=0 stale=0 exportContinuation=0 energyChargedUnits=41238 energyUncharged=0 rrApplied=0 rrLate=0 importRefusedReturned=0 exportLeftoverReturned=3038306
+recovery orphaned=0 toNetwork=0 toNeighbour=0 drop=0 sealedToNbt=0 sealedHeld=0 persisted=2 loaded=0 loadedHeld=0 dedupDropped=0 sealDirtyInconsistent=0 savedInflight=0 voidedNegative=0 voidedHeld=0
+ledger import fromSource=0 toNetwork=0 backToSource=0 | export fromNetwork=3079544 toNeighbour=41238 backToNetwork=3038306 | dropped=0 heldNow=0
+time mainOpInline=913537458us/1637917 mainOpTransit=13014365us/42469 commit=12985292us region=2918413us grids=2
+
+> nwcompatae2 census
+Incorrect argument for command
+...compatae2 census<--[HERE]
+
