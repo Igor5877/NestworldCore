@@ -22,8 +22,23 @@ public final class PromoteDiagnosticWindow {
 
     /** Called once, from {@code RegionSplitManager#promoteFreeRunning}'s PROMOTE_BEGIN point.
      *  Opens (or extends) the window {@code durationNanos} out from now. */
+    /** Owner 2026-11-13: the automatic per-promotion window (NWJFR per-scheduled-tick tracing) filled ~95 % of the
+     *  live log (a promotion every ~25 s). Off unless {@code -Dnestworld.diag.promoteTrace=true}; on demand via
+     *  {@code /nestworld diag trace <seconds>} ({@link #openManual}). */
+    public static final boolean AUTO = Boolean.getBoolean("nestworld.diag.promoteTrace");
+
     public static void open(long durationNanos) {
+        if (!AUTO) return;
         deadlineNanos = System.nanoTime() + durationNanos;
+    }
+
+    /** Operator command: open the tracing window now for {@code seconds} (bounded to 300 s). */
+    public static void openManual(int seconds) {
+        deadlineNanos = System.nanoTime() + Math.max(1, Math.min(300, seconds)) * 1_000_000_000L;
+    }
+
+    public static void close() {
+        deadlineNanos = 0L;
     }
 
     /** Cheap, side-effect-free check -- safe to call from any thread, any hot path. */

@@ -169,6 +169,7 @@ public class NestworldRegionSystem {
     public static void onServerStarting(ServerStartingEvent event) {
         INSTANCE = new NestworldRegionSystem();
         INSTANCE.init(event.getServer());
+        net.nestworld.region.jfr.CrashForensics.register();   // owner 2026-11-13: thread dump + Core state in crash reports
         // API-1A.6 (docs/contracts/SetVelocityPrimitive.md): install the region-aware
         // setVelocity backend for THIS server instance. VelocityBackendRegistry's server-token
         // check means a stale uninstall from a previous integrated-server session (same JVM)
@@ -183,6 +184,8 @@ public class NestworldRegionSystem {
         // player UUID on the main thread -- see NestworldInventorySetBackend's own javadoc).
         net.nestworld.modapi.inventory.InventorySetBackendRegistry.install(
                 event.getServer(), new net.nestworld.region.NestworldInventorySetBackend(event.getServer()));
+        // CORE-GRID-DOMAIN-001 (docs/contracts/ExecutionDomainPrimitive.md): dedicated execution domains for addons.
+        net.nestworld.region.ExecutionDomains.install(event.getServer());
         // Start the always-on profiler (no-op unless AUTO_SPARK + spark present).
         SparkBridge.autoStart(event.getServer());
         // CPU Capacity Planner (2026-08-30, Phase 1) -- full parameter inventory + demand model +
@@ -225,6 +228,8 @@ public class NestworldRegionSystem {
         net.nestworld.modapi.inventory.InventorySetBackendRegistry.uninstall(event.getServer());
         net.nestworld.modapi.inventory.PlayerIncarnationRegistry.resetAll();
         net.nestworld.modapi.inventory.InventorySlotVersionTracker.resetAll();
+        // CORE-GRID-DOMAIN-001: drain and stop execution domains before anything else tears down.
+        net.nestworld.region.ExecutionDomains.uninstall(event.getServer());
         // MODULE-1: drive every RUNNING module through QUIESCING -> DISABLED (or FAILED) before
         // Core itself tears down -- this is the one QUIESCING precedent Core's own shutdown
         // does NOT provide (docs/MODULE0_AUDIT.md §C: RegionThread.shutdown()'s mailbox isn't

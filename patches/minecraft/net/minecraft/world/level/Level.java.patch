@@ -33,7 +33,15 @@
        this.f_46446_ = p_270692_;
        this.f_46442_ = p_270739_;
        this.f_204147_ = p_270240_;
-@@ -196,13 +_,89 @@
+@@ -191,18 +_,97 @@
+    }
+ 
+    public boolean m_6933_(BlockPos p_46605_, BlockState p_46606_, int p_46607_, int p_46608_) {
++      net.nestworld.region.ExecutionDomains.beforeBlockChange(this, p_46605_);   // model A lifecycle barrier
++      int nestworldDeferred = net.nestworld.region.ExecutionDomains.domainSetBlock(this, p_46605_, p_46606_, p_46607_, p_46608_);   // BlockMutationOp
++      if (nestworldDeferred >= 0) return nestworldDeferred != 0;
+       if (this.m_151570_(p_46605_)) {
+          return false;
        } else if (!this.f_46443_ && this.m_46659_()) {
           return false;
        } else {
@@ -134,15 +142,22 @@
           }
        }
     }
-@@ -279,6 +_,7 @@
+@@ -279,19 +_,27 @@
     }
  
     public void m_46672_(BlockPos p_46673_, Block p_46674_) {
++      if (net.nestworld.region.ExecutionDomains.domainNeighbor(this, 0, p_46673_, p_46674_, null)) return;   // NeighborNotifyOp
 +      net.minecraftforge.event.ForgeEventFactory.onNeighborNotify(this, p_46673_, this.m_8055_(p_46673_), java.util.EnumSet.allOf(Direction.class), false).isCanceled();
     }
  
     public void m_46590_(BlockPos p_46591_, Block p_46592_, Direction p_46593_) {
-@@ -291,7 +_,12 @@
+    }
+ 
+    public void m_46586_(BlockPos p_46587_, Block p_46588_, BlockPos p_46589_) {
++      if (net.nestworld.region.ExecutionDomains.domainNeighbor(this, 1, p_46587_, p_46588_, p_46589_)) return;   // NeighborNotifyOp
+    }
+ 
+    public void m_213960_(BlockState p_220379_, BlockPos p_220380_, Block p_220381_, BlockPos p_220382_, boolean p_220383_) {
     }
  
     public void m_213683_(Direction p_220385_, BlockState p_220386_, BlockPos p_220387_, BlockPos p_220388_, int p_220389_, int p_220390_) {
@@ -156,7 +171,7 @@
     }
  
     public int m_6924_(Heightmap.Types p_46571_, int p_46572_, int p_46573_) {
-@@ -395,41 +_,103 @@
+@@ -395,41 +_,106 @@
     }
  
     public void m_151525_(TickingBlockEntity p_151526_) {
@@ -177,6 +192,8 @@
     }
  
     protected void m_46463_() {
++      // NestWorld CORE-GRID-DOMAIN-001: never start this level's BE phase while a domain job touching it runs.
++      net.nestworld.region.ExecutionDomains.beforeBlockEntities(this);
        ProfilerFiller profilerfiller = this.m_46473_();
        profilerfiller.m_6180_("blockEntities");
 +      synchronized (this.pendingFreshBlockEntities) {
@@ -204,8 +221,9 @@
           TickingBlockEntity tickingblockentity = iterator.next();
           if (tickingblockentity.m_142220_()) {
              iterator.remove();
-          } else if (this.m_220393_(tickingblockentity.m_142689_())) {
+-         } else if (this.m_220393_(tickingblockentity.m_142689_())) {
 -            tickingblockentity.m_142224_();
++         } else if (net.nestworld.region.ExecutionDomains.keepOnMain(this.m_220393_(tickingblockentity.m_142689_()), this, tickingblockentity)) {
 +            if (nestworldDue != null) {
 +               nestworldDue.add(tickingblockentity);
 +            } else {
@@ -220,8 +238,9 @@
  
        this.f_151504_ = false;
        profilerfiller.m_7238_();
++      net.nestworld.region.ExecutionDomains.flushDiverted(this);   // CORE-GRID-DOMAIN-001 model A: owned tickers → domain
     }
- 
++
 +   // NestWorld: overworld entities are protected from a single bad tick taking down the
 +   // whole server by RegionThread.tickEntities()'s own catch(Throwable) (see RegionThread.java).
 +   // This vanilla method is the ONLY per-entity guard for Nether/End (and single-player/
@@ -235,7 +254,7 @@
 +   // Recover unconditionally instead, mirroring RegionThread's own resilience so every
 +   // dimension gets the same guarantee regardless of that config flag.
 +   private static final java.util.concurrent.atomic.AtomicInteger NESTWORLD_ENTITY_TICK_ERROR_STACKS = new java.util.concurrent.atomic.AtomicInteger();
-+
+ 
     public <T extends Entity> void m_46653_(Consumer<T> p_46654_, T p_46655_) {
        try {
 +         net.minecraftforge.server.timings.TimeTracker.ENTITY_UPDATE.trackStart(p_46655_);
@@ -314,7 +333,7 @@
 +   // from a region thread under real mod load (e.g. productivebees bee tick), not just
 +   // cross-region ones.
 +   public BlockEntity nestworldGetBlockEntityRaw(BlockPos p_46716_) {
-+      return !this.f_46443_ && Thread.currentThread() != this.f_46423_ && !(Thread.currentThread() instanceof net.nestworld.region.RegionThread) ? null : this.m_46745_(p_46716_).m_5685_(p_46716_, LevelChunk.EntityCreationType.IMMEDIATE);
++      return !this.f_46443_ && Thread.currentThread() != this.f_46423_ && !net.nestworld.region.ExecutionDomains.isRegionOrLease(Thread.currentThread()) ? null : this.m_46745_(p_46716_).m_5685_(p_46716_, LevelChunk.EntityCreationType.IMMEDIATE);
     }
  
     public void m_151523_(BlockEntity p_151524_) {
@@ -371,11 +390,12 @@
     }
  
     @Nullable
-@@ -760,16 +_,15 @@
+@@ -760,16 +_,16 @@
     public abstract Scoreboard m_6188_();
  
     public void m_46717_(BlockPos p_46718_, Block p_46719_) {
 -      for(Direction direction : Direction.Plane.HORIZONTAL) {
++      if (net.nestworld.region.ExecutionDomains.domainNeighbor(this, 2, p_46718_, p_46719_, null)) return;   // NeighborNotifyOp
 +      for(Direction direction : Direction.values()) {
           BlockPos blockpos = p_46718_.m_121945_(direction);
           if (this.m_46805_(blockpos)) {

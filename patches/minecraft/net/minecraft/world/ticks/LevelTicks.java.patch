@@ -41,12 +41,13 @@
        long i = p_193230_.m_45588_();
        LevelChunkTicks<T> levelchunkticks = this.f_193202_.remove(i);
        this.f_193203_.remove(i);
-@@ -74,7 +_,13 @@
+@@ -74,7 +_,14 @@
  
     }
  
 -   public void m_183393_(ScheduledTick<T> p_193252_) {
 +   public synchronized void m_183393_(ScheduledTick<T> p_193252_) {
++      if (net.nestworld.region.ExecutionDomains.domainScheduleTick(this, p_193252_)) return;   // ScheduleTickOp
 +      net.nestworld.region.NestworldTickOwnership.assertOwnerThread("schedule", p_193252_.f_193377_());
 +      if (net.nestworld.region.jfr.RedstoneDiagFilter.matches(p_193252_.f_193377_())) {
 +         Thread nestworldT = Thread.currentThread();

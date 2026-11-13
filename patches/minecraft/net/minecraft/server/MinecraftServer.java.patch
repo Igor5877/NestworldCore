@@ -61,6 +61,22 @@
           }
        }
  
+@@ -493,6 +_,7 @@
+    public abstract boolean m_6983_();
+ 
+    public boolean m_129885_(boolean p_129886_, boolean p_129887_, boolean p_129888_) {
++      net.nestworld.region.ExecutionDomains.awaitAllDomains();
+       boolean flag = false;
+ 
+       for(ServerLevel serverlevel : this.m_129785_()) {
+@@ -538,6 +_,7 @@
+    }
+ 
+    public void m_7041_() {
++      net.nestworld.region.ExecutionDomains.awaitAllDomains();
+       if (this.f_177872_.m_142763_()) {
+          this.m_236737_();
+       }
 @@ -582,6 +_,7 @@
        for(ServerLevel serverlevel2 : this.m_129785_()) {
           if (serverlevel2 != null) {

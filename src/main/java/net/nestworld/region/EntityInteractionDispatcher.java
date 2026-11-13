@@ -86,7 +86,7 @@ public final class EntityInteractionDispatcher {
             long waitStart = System.nanoTime();
             long cpuStart = PlayerInteractionWaitBudget.currentThreadCpuTime();
             try {
-                completed = latch.await(grantedNanos, TimeUnit.NANOSECONDS);
+                completed = ExecutionDomains.awaitServicing(latch, grantedNanos);   // MVP-001: no MAIN⇢REGION⇢P(G)⇢worker⇢MAIN stall
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } finally {

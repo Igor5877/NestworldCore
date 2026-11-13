@@ -72,6 +72,9 @@ public class FMLServiceProvider implements ITransformationService
         } catch (java.io.IOException canaryConfigFailure) {
             throw new IllegalStateException("Cannot verify Canary compatibility configuration", canaryConfigFailure);
         }
+        // NestWorld (owner 2026-11-13): config/nestworld/core.toml → nestworld.* system properties, before any Mixin
+        // config plugin or Core class reads them. Never throws (failures are logged; -D / defaults stay in effect).
+        NestworldCoreConfig.load(FMLPaths.CONFIGDIR.get(), org.slf4j.LoggerFactory.getLogger("NestWorld/Config"));
         LOGGER.debug(CORE, "Loading configuration");
         FMLConfig.load();
         LOGGER.debug(CORE, "Preparing ModFile");

@@ -183,7 +183,7 @@ public final class BlockEntityExecutionDomain {
     private static void execute(Task task, AtomicLong counter) {
         counter.incrementAndGet();
         try {
-            task.op().run();
+            BlockEntityDomainHandoff.runDomainTask(task.op());
         } catch (Throwable t) {
             opFailures.incrementAndGet();
             LOGGER.warn("[BE-DOMAIN] task {} at {} failed: {}", task.id(), task.pos(), t.toString());

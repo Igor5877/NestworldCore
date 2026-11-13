@@ -385,6 +385,7 @@ public class RegionThreadPool {
         long pollTaskNanos = 0;
         boolean timedOut = false;
         while (latch.getCount() > 0) {
+            ExecutionDomains.serviceMainCalls();   // AE2-GRID-DOMAIN-MVP-001: top-level MAIN service point
             long pollStart = System.nanoTime();
             boolean didWork = level.getChunkSource().pollTask();
             pollTaskNanos += System.nanoTime() - pollStart;

@@ -1,6 +1,6 @@
 --- a/net/minecraft/server/level/DistanceManager.java
 +++ b/net/minecraft/server/level/DistanceManager.java
-@@ -45,7 +_,290 @@
+@@ -45,7 +_,328 @@
     private final DistanceManager.FixedPlayerDistanceChunkTracker f_140763_ = new DistanceManager.FixedPlayerDistanceChunkTracker(8);
     private final TickingTracker f_183901_ = new TickingTracker();
     private final DistanceManager.PlayerTicketTracker f_140764_ = new DistanceManager.PlayerTicketTracker(32);
@@ -92,11 +92,49 @@
 +   // backlog-drain (it means the safety valve is doing its job, not that something is broken).
 +   private long nestworldPumpDeadlineHits = 0;
 +
++   // NestWorld DISTANCEMANAGER-CME-001 TEST-ONLY hooks (net.nestworld.region.DmCme001RegressionTest,
++   // `/nestworld test dmcme001`). All default OFF; set/cleared only by that test, on MAIN, for the
++   // duration of one synchronous run. Production cost while off: one static null/boolean/int read
++   // per runAllUpdates / setLevel / updateFutures call. Never set these from config or live tuning.
++   public interface NestworldTestProbe {
++      /** setLevel() (re)classified {@code holder}; {@code wasPending} = it was already in a set. */
++      void onPending(ChunkHolder holder, boolean wasPending, int updateDepth);
++      /** about to run updateFutures(); {@code updateDepth} >= 1 (1 = outermost). */
++      void beforeUpdate(ChunkHolder holder, int updateDepth);
++      /** runAllUpdates() entered; {@code updateDepth} > 0 means re-entered from inside updateFutures(). */
++      void onRunAllUpdates(int updateDepth);
++   }
++   public static NestworldTestProbe NESTWORLD_TEST_PROBE = null;
++   /** Negative control: run the PRE-FIX loops (unlimited forEach+clear; Tier 1b/2 unconditional remove+update). */
++   public static boolean NESTWORLD_TEST_LEGACY_LOOP = false;
++   /** 0 = branch by NestworldTuning.CHUNK_GEN_BUDGET (production); 1 = force unlimited branch; 2 = force tiered branch. */
++   public static int NESTWORLD_TEST_FORCE_BRANCH = 0;
++   private int nestworldTestUpdateDepth = 0;
++
++   /** TEST-ONLY: is {@code holder} currently pending in either promotion set? */
++   public boolean nestworldTestIsPending(ChunkHolder holder) {
++      return this.chunksToUpdateFuturesPlayer.contains(holder) || this.chunksToUpdateFuturesBulk.contains(holder);
++   }
++
++   /** TEST-ONLY: number of pending holders whose position matches {@code pos} (O(pending), test use only). */
++   public int nestworldTestPendingIn(java.util.function.LongPredicate pos) {
++      int n = 0;
++      for (ChunkHolder h : this.chunksToUpdateFuturesPlayer) if (pos.test(h.m_140092_().m_45588_())) n++;
++      for (ChunkHolder h : this.chunksToUpdateFuturesBulk) if (pos.test(h.m_140092_().m_45588_())) n++;
++      return n;
++   }
++
 +   /** Main-thread-only (this whole class only mutates on the main thread) — wraps a
 +    *  single updateFutures() call with timing and records the sample. */
 +   private void nestworldTimedUpdateFutures(ChunkHolder holder, ChunkMap map) {
++      NestworldTestProbe nestworldProbe = NESTWORLD_TEST_PROBE;
++      if (nestworldProbe != null) nestworldProbe.beforeUpdate(holder, ++this.nestworldTestUpdateDepth);
 +      long start = System.nanoTime();
-+      holder.m_143003_(map, this.f_140770_);
++      try {
++         holder.m_143003_(map, this.f_140770_);
++      } finally {
++         if (nestworldProbe != null) this.nestworldTestUpdateDepth--;
++      }
 +      long elapsed = System.nanoTime() - start;
 +      this.nestworldPromotionTotalApplied++;
 +      this.nestworldPromotionTotalNanos += elapsed;
@@ -301,7 +339,7 @@
     protected DistanceManager(Executor p_140774_, Executor p_140775_) {
        ProcessorHandle<Runnable> processorhandle = ProcessorHandle.m_18714_("player ticket throttler", p_140775_::execute);
        ChunkTaskPriorityQueueSorter chunktaskpriorityqueuesorter = new ChunkTaskPriorityQueueSorter(ImmutableList.of(processorhandle), p_140774_, 4);
-@@ -104,22 +_,249 @@
+@@ -104,22 +_,292 @@
     @Nullable
     protected abstract ChunkHolder m_7288_(long p_140780_, int p_140781_, @Nullable ChunkHolder p_140782_, int p_140783_);
  
@@ -316,6 +354,7 @@
 +   }
 +
     public boolean m_140805_(ChunkMap p_140806_) {
++      if (NESTWORLD_TEST_PROBE != null) NESTWORLD_TEST_PROBE.onRunAllUpdates(this.nestworldTestUpdateDepth); // CME-001 test hook
 +      // NestWorld P0.1 follow-up (docs/P0_REGIONTHREADPOOL_REDESIGN_SPEC.md): this method was
 +      // found to be 80.4% of all pollTask() time. It mixes vanilla ticket-propagation machinery
 +      // with our own Tier 1a/1b/2 budget bookkeeping in the same body -- timing each existing
@@ -358,7 +397,8 @@
 +
 +      if (!(this.chunksToUpdateFuturesPlayer.isEmpty() && this.chunksToUpdateFuturesBulk.isEmpty())
 +            && this.nestworldFutureBudget > 0) {
-+         if (net.nestworld.region.NestworldTuning.CHUNK_GEN_BUDGET <= 0) {
++         if (NESTWORLD_TEST_FORCE_BRANCH == 0 ? net.nestworld.region.NestworldTuning.CHUNK_GEN_BUDGET <= 0
++               : NESTWORLD_TEST_FORCE_BRANCH == 1) { // CME-001 test hook: 0 = production selection
 +            // NestWorld: the pump-budget deadline clamp (CHUNK_PROMOTION_PUMP_BUDGET_MS)
 +            // deliberately does NOT apply in this branch -- an operator who explicitly sets
 +            // chunkGenBudget<=0 has opted out of admission throttling entirely (this branch's
@@ -366,15 +406,52 @@
 +            // live incident data for what a time-clamped version of unlimited-admission would
 +            // even mean semantically. Not a silent gap: budget<=0 is not the deployed default
 +            // (2), and every default-config server gets the clamp via the branch below.
-+            this.chunksToUpdateFuturesPlayer.forEach((p_183908_) -> {
-+               this.nestworldTimedUpdateFutures(p_183908_, p_140806_);
-+            });
-+            this.chunksToUpdateFuturesPlayer.clear();
-+            this.chunksToUpdateFuturesBulk.forEach((p_183908_) -> {
-+               this.nestworldTimedUpdateFutures(p_183908_, p_140806_);
-+            });
-+            this.chunksToUpdateFuturesBulk.clear();
-+            this.nestworldTier2Ready.clear(); // P0.4: keep the ready-heap from leaking entries in this (unused in production) path
++            // NestWorld DISTANCEMANAGER-CME-001: updateFutures() is NOT leaf work -- it runs
++            // ChunkMap.onFullChunkStatusChange synchronously on a demotion (entity visibility
++            // callbacks -> EntityLeaveLevelEvent handlers, WireNetworkColdStart.seedChunk ->
++            // diode neighborChanged -> neighbour-chunk getChunk(FULL, true)), and any MAIN
++            // getChunk(load=true) of an absent chunk re-enters runAllUpdates() via
++            // getChunkFutureMainThread -> runDistanceManagerUpdates (or managedBlock -> pollTask),
++            // whose setLevel() remove()/add()s into these very sets. Vanilla's forEach + clear()
++            // threw CME on that (live 2026-11-08/09/13) and would otherwise have silently DROPPED
++            // the re-added holders. Iterate a snapshot instead; membership == "still pending":
++            //  - remove() BEFORE updateFutures, skip if already gone (a nested runAllUpdates
++            //    already processed it -- no double processing);
++            //  - a holder (re-)added during the loop stays in the set for the next pass
++            //    (runAllUpdates runs on every pollTask, so "next pass" is sub-tick).
++            // Same holders, same order class (Player first, then Bulk), same updateFutures calls
++            // as before whenever no re-entrant mutation happens.
++            if (NESTWORLD_TEST_LEGACY_LOOP) {
++               // CME-001 TEST-ONLY negative control: the pre-fix loop shape (iterate the LIVE set, then clear()).
++               // Iterator form instead of vanilla's forEach lambda so no synthetic lambda is added to this
++               // class (mixin lambda-ordinal fragility); both throw CME on a structural change mid-iteration.
++               for (ChunkHolder nestworldH : this.chunksToUpdateFuturesPlayer) {
++                  this.nestworldTimedUpdateFutures(nestworldH, p_140806_);
++               }
++               this.chunksToUpdateFuturesPlayer.clear();
++               for (ChunkHolder nestworldH : this.chunksToUpdateFuturesBulk) {
++                  this.nestworldTimedUpdateFutures(nestworldH, p_140806_);
++               }
++               this.chunksToUpdateFuturesBulk.clear();
++            } else {
++            for (ChunkHolder nestworldH : this.chunksToUpdateFuturesPlayer.toArray(new ChunkHolder[0])) {
++               if (this.chunksToUpdateFuturesPlayer.remove(nestworldH)) {
++                  this.nestworldTimedUpdateFutures(nestworldH, p_140806_);
++               }
++            }
++            for (ChunkHolder nestworldH : this.chunksToUpdateFuturesBulk.toArray(new ChunkHolder[0])) {
++               if (this.chunksToUpdateFuturesBulk.remove(nestworldH)) {
++                  this.nestworldTimedUpdateFutures(nestworldH, p_140806_);
++               }
++            }
++            }
++            // P0.4: keep the ready-heap from leaking entries in this path -- but only when the Bulk
++            // set really drained: holders re-added re-entrantly above were pushed by setLevel and
++            // must stay selectable if the budget is switched on later (lazy deletion handles the
++            // stale entries left behind otherwise).
++            if (this.chunksToUpdateFuturesBulk.isEmpty()) {
++               this.nestworldTier2Ready.clear();
++            }
 +            net.nestworld.region.DistanceManagerAttribution.record(
 +               net.nestworld.region.DistanceManagerAttribution.Category.UNLIMITED_PROMOTION,
 +               System.nanoTime() - nestworldDmaT5);
@@ -425,13 +502,15 @@
 +               net.nestworld.region.DistanceManagerAttribution.Category.URGENT_SET_BUILD, nestworldDmaT7 - nestworldDmaT6);
 +
 +            java.util.List<ChunkHolder> nestworldTier1b = new java.util.ArrayList<>();
-+            java.util.Iterator<ChunkHolder> nestworldPlayerIt = this.chunksToUpdateFuturesPlayer.iterator();
-+            while (nestworldPlayerIt.hasNext()) {
-+               ChunkHolder nestworldH = nestworldPlayerIt.next();
++            // NestWorld DISTANCEMANAGER-CME-001: same re-entrancy exposure as the unlimited branch
++            // above (updateFutures inside a live iterator over chunksToUpdateFuturesPlayer) --
++            // snapshot, remove-then-update, skip holders a nested pass already consumed.
++            for (ChunkHolder nestworldH : this.chunksToUpdateFuturesPlayer.toArray(new ChunkHolder[0])) {
 +               long nestworldPos = nestworldH.m_140092_().m_45588_();
 +               if (nestworldUrgentChunks.contains(nestworldPos)) {
-+                  this.nestworldTimedUpdateFutures(nestworldH, p_140806_); // Tier 1a: never throttled
-+                  nestworldPlayerIt.remove();
++                  if (this.chunksToUpdateFuturesPlayer.remove(nestworldH)) {
++                     this.nestworldTimedUpdateFutures(nestworldH, p_140806_); // Tier 1a: never throttled
++                  }
 +               } else {
 +                  nestworldTier1b.add(nestworldH); // Tier 1b: own budget, below
 +               }
@@ -475,8 +554,9 @@
 +                  if (nestworldPumpExhausted) {
 +                     continue; // stays in chunksToUpdateFuturesPlayer (never removed) -- re-drives next tick
 +                  }
-+                  this.chunksToUpdateFuturesPlayer.remove(nestworldH);
-+                  this.nestworldTimedUpdateFutures(nestworldH, p_140806_);
++                  if (this.chunksToUpdateFuturesPlayer.remove(nestworldH) | NESTWORLD_TEST_LEGACY_LOOP) { // CME-001: skip if a nested pass consumed it (legacy test: always update)
++                     this.nestworldTimedUpdateFutures(nestworldH, p_140806_);
++                  }
 +               }
 +            }
 +            // Any Tier 1b holder not selected this tick stays in chunksToUpdateFuturesPlayer
@@ -543,8 +623,9 @@
 +                  this.nestworldTier2Push(nestworldH);
 +                  continue;
 +               }
-+               this.chunksToUpdateFuturesBulk.remove(nestworldH);
-+               this.nestworldTimedUpdateFutures(nestworldH, p_140806_);
++               if (this.chunksToUpdateFuturesBulk.remove(nestworldH) | NESTWORLD_TEST_LEGACY_LOOP) { // CME-001: skip if a nested pass consumed it (legacy test: always update)
++                  this.nestworldTimedUpdateFutures(nestworldH, p_140806_);
++               }
 +            }
 +            this.nestworldFutureBudget -= nestworldSelected.size();
 +            net.nestworld.region.DistanceManagerAttribution.record(
@@ -684,7 +765,7 @@
     private void m_143207_(String p_143208_) {
        try (FileOutputStream fileoutputstream = new FileOutputStream(new File(p_143208_))) {
           for(Long2ObjectMap.Entry<SortedArraySet<Ticket<?>>> entry : this.f_140761_.long2ObjectEntrySet()) {
-@@ -369,9 +_,26 @@
+@@ -369,9 +_,29 @@
           if (i != p_140881_) {
              chunkholder = DistanceManager.this.m_7288_(p_140880_, p_140881_, chunkholder, i);
              if (chunkholder != null) {
@@ -695,13 +776,16 @@
 +               // residual staleness gap this doesn't fully close on its own). Unconditional
 +               // remove from BOTH sets first guarantees no double-membership regardless of
 +               // how many times setLevel fires for this position or what it transitions from.
-+               DistanceManager.this.chunksToUpdateFuturesPlayer.remove(chunkholder);
-+               DistanceManager.this.chunksToUpdateFuturesBulk.remove(chunkholder);
++               boolean nestworldWasPending = DistanceManager.this.chunksToUpdateFuturesPlayer.remove(chunkholder);
++               nestworldWasPending |= DistanceManager.this.chunksToUpdateFuturesBulk.remove(chunkholder);
 +               if (DistanceManager.this.nestworldHasPlayerTicket(p_140880_)) {
 +                  DistanceManager.this.chunksToUpdateFuturesPlayer.add(chunkholder);
 +               } else {
 +                  DistanceManager.this.chunksToUpdateFuturesBulk.add(chunkholder);
 +                  DistanceManager.this.nestworldTier2Push(chunkholder); // P0.4: this is THE incremental push point (setLevel is the only other Bulk-add site)
++               }
++               if (NESTWORLD_TEST_PROBE != null) { // CME-001 test hook
++                  NESTWORLD_TEST_PROBE.onPending(chunkholder, nestworldWasPending, DistanceManager.this.nestworldTestUpdateDepth);
 +               }
              }
 -

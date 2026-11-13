@@ -33,10 +33,17 @@
     @Nullable
     @VisibleForDebug
     private NaturalSpawner.SpawnState f_8340_;
-@@ -109,6 +_,51 @@
+@@ -109,6 +_,58 @@
     @Nullable
     public ChunkAccess m_7587_(int p_8360_, int p_8361_, ChunkStatus p_8362_, boolean p_8363_) {
        if (Thread.currentThread() != this.f_8330_) {
++         // NestWorld CORE-GRID-DOMAIN-001: an acting-main lease holder reads loaded chunks directly; an unloaded chunk
++         // is "absent" (null for load=false, empty chunk for load=true) — never a blocking hop to MAIN.
++         if (net.nestworld.region.ExecutionDomains.leaseHolds(this.f_8329_)) {
++            LevelChunk nestworldLeased = this.nestworldGetLoadedChunk(p_8360_, p_8361_);
++            if (nestworldLeased != null) return nestworldLeased;
++            return p_8363_ ? net.nestworld.region.ExecutionDomains.emptyChunk(this.f_8329_) : null;
++         }
 +         if (Thread.currentThread() instanceof net.nestworld.region.RegionThread nestworldRt) {
 +            LevelChunk nestworldChunk = this.nestworldGetLoadedChunk(p_8360_, p_8361_);
 +            if (nestworldChunk != null) return nestworldChunk;
@@ -247,7 +254,7 @@
           ChunkAccess chunkaccess1 = completablefuture.join().map((p_8406_) -> {
              return p_8406_;
           }, (p_8423_) -> {
-@@ -143,10 +_,34 @@
+@@ -143,10 +_,35 @@
        }
     }
  
@@ -279,6 +286,7 @@
     public LevelChunk m_7131_(int p_8357_, int p_8358_) {
        if (Thread.currentThread() != this.f_8330_) {
 -         return null;
++         if (net.nestworld.region.ExecutionDomains.leaseHolds(this.f_8329_)) return net.nestworld.region.ExecutionDomains.leaseLoadedChunk(this, p_8357_, p_8358_);
 +         return Thread.currentThread() instanceof net.nestworld.region.RegionThread ? this.nestworldGetLoadedChunk(p_8357_, p_8358_) : null;
        } else {
           this.f_8329_.m_46473_().m_6174_("getChunkNow");
@@ -396,10 +404,11 @@
        ChunkPos chunkpos = new ChunkPos(p_8457_, p_8458_);
        long i = chunkpos.m_45588_();
        int j = ChunkLevel.m_287141_(p_8459_);
-@@ -265,12 +_,35 @@
+@@ -265,12 +_,36 @@
     }
  
     public boolean m_8466_() {
++      net.nestworld.region.ExecutionDomains.beforeChunkTasks(this.f_8329_);
 +      // NestWorld: the one truly universal pump point — reached from every
 +      // managedBlock loop (MinecraftServer's own, e.g. during prepareLevels startup,
 +      // AND mainThreadProcessor's, e.g. a synchronous getChunk(load=true) wait) as well
@@ -635,7 +644,7 @@
        this.f_8325_.m_140199_(p_8464_);
     }
  
-@@ -531,14 +_,44 @@
+@@ -531,14 +_,45 @@
  
        protected void m_6367_(Runnable p_8502_) {
           ServerChunkCache.this.f_8329_.m_46473_().m_6174_("runTask");
@@ -664,6 +673,7 @@
 +         // startup/tick wait loops) dispatches to THIS override directly, bypassing
 +         // ServerChunkCache's own pollTask() wrapper entirely — so the admit-budget
 +         // drain has to live here too, not just there, to cover every synchronous wait.
++         net.nestworld.region.ExecutionDomains.beforeChunkTasks(ServerChunkCache.this.f_8329_);
 +         long nestworldT0 = System.nanoTime();
 +         ServerChunkCache.this.f_8325_.nestworldDrainDeferredAdmissions();
 +         net.nestworld.region.PollTaskAttribution.record(

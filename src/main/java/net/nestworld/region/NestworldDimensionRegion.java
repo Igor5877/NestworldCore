@@ -565,9 +565,9 @@ public final class NestworldDimensionRegion {
                             ? regionThread.getRegion().getId()
                             : net.nestworld.gmeil.ExecutionContext.NO_REGION;
                     GMEIL_GATEWAY.observe(key, level.getServer().getTickCount(), "BLOCK_ENTITY",
-                            regionId, level.getServer().isSameThread(), ticker::tick);
+                            regionId, level.getServer().isSameThread(), () -> BlockEntityDomainHandoff.tickOrRoute(level, ticker));
                 } else {
-                    ticker.tick();
+                    BlockEntityDomainHandoff.tickOrRoute(level, ticker);
                 }
                 long nestworldTickAttrNanos = System.nanoTime() - nestworldTickAttrStart;
                 String nestworldBeType = ticker.getType();

@@ -346,9 +346,68 @@ public final class NestworldCommand {
         }
     }
 
+    /** owner 2026-11-13: config/nestworld/core.toml — effective values and their sources (read from core-effective.txt
+     *  written by the early loader in fmlloader NestworldCoreConfig). */
+    private static int configShow(CommandSourceStack src, boolean check) {
+        String report = System.getProperty("nestworld.config.report");
+        if (report == null) {
+            src.sendFailure(Component.literal("core.toml не завантажено цим ядром (стара версія ядра або помилка — див. лог 'NestWorld/Config')"));
+            return 0;
+        }
+        try {
+            java.util.List<String> lines = java.nio.file.Files.readAllLines(java.nio.file.Path.of(report));
+            StringBuilder sb = new StringBuilder("Файл: " + System.getProperty("nestworld.config.file") + "\n");
+            int file = 0, jvm = 0, def = 0;
+            java.util.List<String> set = new java.util.ArrayList<>(), warn = new java.util.ArrayList<>();
+            for (String l : lines) {
+                if (l.startsWith("# ") && !l.startsWith("# ключ") && !l.startsWith("# NestWorld") && !l.startsWith("# Попередження")) { warn.add(l.substring(2)); continue; }
+                String[] c = l.split("\t");
+                if (c.length < 4) continue;
+                switch (c[2]) {
+                    case "FILE" -> { file++; set.add(c[0] + " = " + c[1] + "  [файл]"); }
+                    case "JVM" -> { jvm++; set.add(c[0] + " = " + c[1] + "  [-D]"); }
+                    default -> def++;
+                }
+            }
+            if (check) {
+                sb.append(warn.isEmpty() ? "Попереджень немає." : "Попередження (" + warn.size() + "):");
+                for (String w : warn) sb.append("\n  ").append(w);
+            } else {
+                sb.append("З файлу: ").append(file).append(", з -D: ").append(jvm).append(", типових: ").append(def)
+                        .append(", попереджень: ").append(warn.size()).append(warn.isEmpty() ? "" : " (/nestworld config check)");
+                for (String l : set) sb.append("\n  ").append(l);
+                sb.append("\nПовний список: ").append(report);
+            }
+            String out = sb.toString();
+            src.sendSuccess(() -> Component.literal(out), false);
+            return 1;
+        } catch (java.io.IOException e) {
+            src.sendFailure(Component.literal("Не вдалося прочитати " + report + ": " + e.getMessage()));
+            return 0;
+        }
+    }
+
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("nestworld")
                 .requires(src -> src.hasPermission(2))
+                .then(Commands.literal("config")
+                        .executes(ctx -> configShow(ctx.getSource(), false))
+                        .then(Commands.literal("check").executes(ctx -> configShow(ctx.getSource(), true))))
+                .then(Commands.literal("diag")
+                        .then(Commands.literal("trace")
+                                .then(Commands.literal("off").executes(ctx -> {
+                                    net.nestworld.region.jfr.PromoteDiagnosticWindow.close();
+                                    ctx.getSource().sendSuccess(() -> net.minecraft.network.chat.Component.literal("NWJFR tracing window closed"), true);
+                                    return 1;
+                                }))
+                                .then(Commands.argument("seconds", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 300))
+                                        .executes(ctx -> {
+                                            int sec = com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "seconds");
+                                            net.nestworld.region.jfr.PromoteDiagnosticWindow.openManual(sec);
+                                            ctx.getSource().sendSuccess(() -> net.minecraft.network.chat.Component.literal(
+                                                    "NWJFR per-scheduled-tick tracing ON for " + sec + " s (grep NWJFR logs/latest.log)"), true);
+                                            return 1;
+                                        }))))
                 .then(Commands.literal("status").executes(ctx -> status(ctx.getSource(), false))
                         .then(Commands.literal("full").executes(ctx -> status(ctx.getSource(), true)))
                         .then(Commands.literal("all").executes(ctx -> statusAll(ctx.getSource(), false))
@@ -820,7 +879,9 @@ public final class NestworldCommand {
                         .then(buildInventoryDeterministicTestNode())
                         .then(buildMailboxLifecycleTestNode())
                         .then(buildBeDomainTestNode()))
-                .then(buildModuleTestNode()));
+                .then(buildModuleTestNode())
+                // DISTANCEMANAGER-CME-001 regression test (TEST-ONLY, runs on MAIN across ticks).
+                .then(Commands.literal("test").then(DmCme001RegressionTest.buildNode())));
 
         // /spark — in-game access to the spark standalone agent (see SparkBridge).
         // Only when the real spark mod is absent (dev runtime can't load it);

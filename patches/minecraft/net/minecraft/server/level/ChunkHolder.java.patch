@@ -117,3 +117,16 @@
        } else {
           return completablefuture == null ? f_139996_ : completablefuture;
        }
+@@ -342,7 +_,11 @@
+ 
+    private void m_287189_(ChunkMap p_287599_, FullChunkStatus p_287649_) {
+       this.f_142981_.cancel(false);
+-      p_287599_.m_287285_(this.f_140009_, p_287649_);
++      // NestWorld DISTANCEMANAGER-CME-001: a DEMOTION (runs synchronously inside
++      // DistanceManager.runAllUpdates' promotion loop) must not run the FULL cold-start seed --
++      // the chunk was already seeded on its way up, and seeding here calls diode neighborChanged,
++      // which reads neighbour chunks via getChunk(FULL, true) and re-enters runAllUpdates.
++      p_287599_.nestworldOnFullChunkStatusChange(this.f_140009_, p_287649_, false);
+    }
+ 
+    protected void m_143003_(ChunkMap p_143004_, Executor p_143005_) {

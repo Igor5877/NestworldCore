@@ -1396,10 +1396,18 @@
     }
  
     protected PoiManager m_140424_() {
-@@ -1293,7 +_,25 @@
+@@ -1293,7 +_,33 @@
     }
  
     void m_287285_(ChunkPos p_287612_, FullChunkStatus p_287685_) {
++      this.nestworldOnFullChunkStatusChange(p_287612_, p_287685_, true);
++   }
++
++   /** CME-001 TEST-ONLY negative control (DmCme001RegressionTest): re-enable the pre-fix seed on demotion. Default off. */
++   public static boolean NESTWORLD_TEST_SEED_ON_DEMOTION = false;
++
++   /** NestWorld CME-001: {@code promotion=false} for ChunkHolder#demoteFullChunk (skips the seed). */
++   void nestworldOnFullChunkStatusChange(ChunkPos p_287612_, FullChunkStatus p_287685_, boolean promotion) {
 +      // NestWorld P1.2/P1.4 (docs/P1_WORLDGEN_MAINTHREAD_DECOUPLING_SPEC.md): a direct, precise
 +      // hook for bucket A ("справді необхідна main-thread робота") -- this is vanilla's own
 +      // deliberate main-thread commit point for a chunk's full-status transition, called via
@@ -1416,7 +1424,7 @@
 +      // down -- so this fires exactly once per chunk-load lifecycle. See
 +      // WireNetworkColdStart's own javadoc for why this is needed at all (AC's WireHandler never
 +      // scans existing chunk data on its own).
-+      if (p_287685_ == FullChunkStatus.FULL) {
++      if ((promotion || NESTWORLD_TEST_SEED_ON_DEMOTION) && p_287685_ == FullChunkStatus.FULL) {
 +         net.nestworld.region.WireNetworkColdStart.seedChunk(this.f_140133_, p_287612_);
 +      }
     }

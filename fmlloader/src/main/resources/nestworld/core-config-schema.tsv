@@ -1,0 +1,188 @@
+# key	type	default	restart	section	purpose  (generated from the Core property inventory; edit to document new keys)
+timingLog	boolean	true	yes	diagnostics	Періодичний лог таймінгів по фазах тіку (увімкнено, якщо не задано =false).
+layoutSaveIntervalTicks	long	6000	yes	regions	Інтервал періодичного збереження розкладки регіонів (ticks, ~5 хв), якщо розкладка змінилася.
+beTracePos	string	null	yes	diagnostics	Лише для налагодження: координати x,y,z одного block entity, який трасується через реєстрацію/тікання BE.
+apiStats	boolean	false	yes	diagnostics	Телеметрія швидкості/затримок Mod API (вибіркова статистика латентності операцій). Діагностика.
+apiStatsFile	string	null	yes	diagnostics	Файл для дампу телеметрії nestworld.apiStats. Діагностика.
+apiOpTrace	boolean	false	yes	diagnostics	Трасування кожної операції Mod API (STRESS-001); за замовчуванням вимкнено, можна перемикати під час роботи. Діагностика.
+maxRegionCrashes	int	5	yes	safety	Скільки падінь потоку регіону за 5 хв допускається, після чого регіон заморожується замість перезапуску.
+autoPinCallbackThreshold	int	3	yes	safety	Знижений поріг auto-pin для помилок, перехоплених в інших місцях (catch у tick-loop/player-tick).
+autoPin	boolean	false	yes	safety	Автоматично закріплювати (pin) на головному потоці моди, чиї тікери повторно кидають винятки на потоках регіонів.
+autoPinThreshold	int	20	yes	safety	Кількість помилок, після якої auto-pin закріплює мод на головному потоці.
+diagDimensionChange	boolean	true	yes	diagnostics	Діагностика телепорту гравця між вимірами (портал, платформа End, gateway): при прибутті і через 0.5 s / 3 s / 10 s логує, що саме СЕРВЕР бачить у точці прибуття.
+shutdownWatchdogMs	long	90_000L	yes	safety	Затримка watchdog при зупинці сервера (ms), після якої JVM примусово завершується, якщо зупинка зависла.
+predictiveGen	boolean	false	yes	chunks	Головний перемикач попередньої (предиктивної) генерації чанків у напрямку руху гравця.
+predictiveLookahead	int	5	yes	chunks	На скільки чанків за межу view distance попередньо генерувати вздовж напрямку руху.
+predictiveFan	int	1	yes	chunks	Напівширина (у чанках) віяла попередньої генерації, щоб покривати рух убік/по дузі.
+predictiveLog	boolean	false	yes	diagnostics	Періодичний діагностичний лог попередньої генерації (-Dnestworld.predictiveLog=true). Діагностика.
+spark.jar	string	null	no	diagnostics	Шлях до standalone-агента spark (jar) для автоматичного підключення auto-spark.
+strictCompat	boolean	false	no	compat	Відмовитися стартувати (виняток), якщо активні потоконебезпечні mixin-и perf-модів (напр. Canary), замість простого запису в лог.
+splitGuardTelemetry	boolean	true	yes	regions_split	Збір телеметрії split-guard (увімкнено, якщо не задано =false).
+splitGuardPostSplitSeconds	int	30	yes	regions_split	Вікно спостереження split-guard після поділу регіону (s).
+splitGuardDefaultBeSaveUs	double	8	yes	regions_split	Оцінка split-guard за замовчуванням вартості збереження одного BE (us).
+splitGuardMarginMs	double	3.0	yes	regions_split	Запас (ms) для тіньового оцінювача split-guard.
+splitGuard	string	shadow	yes	regions_split	Режим split-guard: off|shadow|enforce (shadow — лише оцінює і логує, enforce — реально блокує погані поділи).
+splitGuardRegretMs	double	3.0	yes	regions_split	Поріг (ms) для злиття регіонів після невдалого поділу (regret-merge) у split-guard.
+splitGuardBadLineMinutes	long	30	yes	regions_split	Скільки хвилин split-guard пам'ятає погані лінії розрізу (TTL).
+cpuPlanner	boolean	true	yes	diagnostics	Планувальник CPU-потужності (рекомендації з урахуванням контейнера, команда /nestworld cpuplanner).
+cpuPlannerMinNettyWorkers	int	8	yes	diagnostics	Нижня межа рекомендованої кількості Netty worker-потоків у CPU-планувальнику.
+cpuPlannerMaxNettyWorkers	int	32	yes	diagnostics	Верхня межа рекомендованої кількості Netty worker-потоків у CPU-планувальнику.
+cpuPlannerReservePercent	double	20	yes	diagnostics	Відсоток CPU, який CPU-планувальник резервує (обмежено 0-90).
+nettyWorkerThreads	string	null (=0, Netty default 2x CPUs)	yes	network	Кількість Netty worker-потоків: число, "auto" (за CPU-планувальником) або не задано = Netty default 2x CPUs.
+splitTargetParallelism	int	Math.max(1, Runtime.getRuntime().availableProcessors() - 1) | Math.max(1, hw.logicalCpus - 1) | Math.max(1, logical - 1)	yes	regions	Цільова кількість паралельних регіонів у сталому режимі (до скількох регіонів ділити, щоб зайняти вільні ядра).
+clientLifecycleTest.heapDump	string	null	no	experimental	Лише для тестів: шлях для heap dump як доказу витоку в lifecycle-тесті; на live не вмикати.
+recipeCandidateIndexProduction	boolean	true	yes	compat	Продакшн-режим індексу кандидатів рецептів (увімкнено, якщо не задано =false); можна змінити через RCON.
+mailboxAudit	boolean	false	yes	diagnostics	Аудит-лог повідомлень mailbox (також env NESTWORLD_MAILBOX_AUDIT). Діагностика.
+cpuBenchmark	boolean	true	yes	diagnostics	Запускати при старті короткий бенчмарк масштабування CPU для планувальника.
+cpuBenchmarkDurationMs	long	150	yes	diagnostics	Тривалість кожного навантаження CPU-бенчмарку (ms).
+entityGuard	boolean	false	yes	safety	Перевірки охоронця власності сутностей (entity ownership guard; також env NESTWORLD_ENTITY_GUARD).
+parkedWindowMs	long	15_000L	yes	experimental	Лише для тестів: вікно відтворення CORE-PARKED-REGION-001 (ms); на live не вмикати.
+parkedDeliveryMs	long	2_000L	yes	experimental	Лише для тестів (CORE-PARKED-REGION-001): обмежений дедлайн доставки для припаркованого регіону (ms); на live не вмикати.
+cutTest	boolean	false	yes	experimental	Лише для тестів: самоперевірка RegionSplitManager при старті сервера; на live не вмикати.
+autoPinTest	boolean	false	yes	experimental	Лише для тестів: самоперевірка NestworldPins при старті сервера; на live не вмикати.
+layoutTest	boolean	false	yes	experimental	Лише для тестів: самоперевірка RegionTree при старті сервера; на live не вмикати.
+mailboxTest	boolean	false	yes	experimental	Лише для тестів: самоперевірка mailbox у BoundaryManager при старті сервера; на live не вмикати.
+marginTest	boolean	false	yes	experimental	Лише для тестів: самоперевірка відступів WorldGrid при старті сервера; на live не вмикати.
+naturalSpawnerPlayerIndexVerify	boolean	false	yes	experimental	Діагностика (перевірка коректності Phase C): викликає обидві реалізації пошуку найближчого гравця для NaturalSpawner і порівнює результати; подвоює вартість кожного виклику, на live не вмикати.
+domains	boolean	true	yes	compat	Головний перемикач бекенду execution domains (увімкнено, якщо не задано =false).
+domains.awaitWarnMs	long	200	yes	compat	Попереджати в лозі, якщо очікування домену перевищує це значення (ms).
+domains.lifecycleWaitMs	long	250	yes	compat	Максимальне очікування домену при переходах життєвого циклу (ms; домен може бути припаркований на виклику в MAIN).
+clientLifecycleTest	boolean	false	yes	experimental	Лише для тестів: драйвер життєвого циклу інтегрованого сервера на клієнті; на live не вмикати.
+modCallbackAttribution	boolean	false	yes	diagnostics	Атрибуція вартості/потоку колбеків модів. Діагностика, додає накладні витрати.
+crashTestRegion	int	-1	yes	experimental	Лише для тестів: id регіону, потік якого падає кожен тік; на live не вмикати.
+autoSplit	boolean	true	yes	regions	Аварійний вимикач (власник, 2026-11-09, після інцидентів watchdog на live): -Dnestworld.autoSplit=false зупиняє автоматичну евристику поділу регіонів.
+splitFillCoresMs	double	12.0	yes	regions	Знижений поріг вартості регіону (ms) для поділу, коли активних регіонів менше за splitTargetParallelism (щоб зайняти вільні ядра); злиття при цьому придушене, щоб не було циклу поділ/злиття. Дуже велике значення вимикає (лишається правило 25 ms).
+maxRegions	int	Runtime.getRuntime().availableProcessors() * 2	yes	regions	Жорстка межа загальної кількості активних регіонів.
+freeRunPromoteChecks	int	5	yes	regions	Скільки поспіль перевірок «зайнятий» (~1/s) потрібно, щоб перевести регіон у free-running.
+freeRunDemoteIdleChecks	int	5	yes	regions	Скільки поспіль перевірок «простій/понад ліміт» потрібно, щоб вивести регіон із free-running.
+freeRunDemoteMs	double	2.0	yes	regions	Вартість регіону (ms), нижче якої free-running регіон вважається спокійним.
+freeRunDemoteQuietChecks	int	20	yes	regions	Скільки поспіль «спокійних» перевірок (~20 s) потрібно до виведення з free-running.
+saveRendezvousMaxDutyPct	int	10	yes	regions	Максимальний відсоток часу у вікні, що витрачається на синхронізацію регіонів для збереження (save rendezvous).
+saveRendezvousMaxIntervalMs	long	500	yes	regions	Максимальний інтервал між вікнами save rendezvous (ms).
+gmeil.observe	boolean	false	yes	compat	GMEIL Phase 1: лише спостереження — ідентичність колбеку, потік, тривалість і результат. Діагностика.
+maxMinecartPush	int	8	yes	entities	Максимум сутностей, з якими одна вагонетка зіштовхується за тік.
+maxEntityPush	int	8	yes	entities	Максимум сутностей, які штовхає човен або жива сутність за тік (та сама O(n^2) вартість скупчення, що й у вагонеток).
+maxFallingBlocks	int	0	yes	entities	Жорсткий ліміт кількості FallingBlockEntity (пісок, гравій, бетонний порошок, риштування, сталактити тощо) на всьому сервері одночасно; 0 = без ліміту. Запобіжник від лаг-машин, а не обмеження звичайної гри.
+regionEntityBudgetMs	int	40	yes	regions	Бюджет (ms) на один раунд сутностей регіону за тік; решта сутностей переноситься на наступний тік (round-robin). Має бути вищим за поріг поділу 25 ms.
+borderBandChunks	int	2	yes	regions	Ширина (у чанках) прикордонної смуги біля кожного краю регіону, яка обробляється на головному потоці: каскади scheduled-tick/поршнів/компараторів і читання воронок із сусідніх чанків можуть сягати на кілька блоків за межу.
+crossRegionReadLockTimeoutMs	int	2	yes	safety	Скільки максимум потік регіону чекає на read-lock чанка ІНШОГО регіону при читанні block entity через межу регіонів (RegionChunkView), ms.
+cascadeSafetyMarginBlocks	int	48	yes	regions	Запас (у блоках) навколо відкладеного запису з прикордонної смуги: перед застосуванням EXPLOSION_APPLY/BLOCK_WRITE блокуються всі регіони в цьому радіусі (смуга 32 + максимальний каскад редстоуну 15, округлено до 48).
+cascadeLockTimeoutMs	int	2	yes	safety	Скільки максимум застосування відкладеного запису з прикордонної смуги чекає на chunkLock ІНШОГО регіону (ms; див. cascadeSafetyMarginBlocks).
+maxDeferredSpawnsPerTick	int	1000	yes	entities	Анти-гріф: скільки сутностей, заспавнених на потоках регіонів, реєструвати на головному потоці за тік (решта переноситься на наступні тіки).
+deferredSpawnQueueCap	int	200_000	yes	entities	Анти-гріф: максимальний розмір черги відкладених спавнів сутностей із потоків регіонів.
+deferredSpawnBudgetMs	int	5	yes	entities	Бюджет часу (ms) на обробку відкладених спавнів за тік, на додачу до ліміту кількості.
+maxPortalArrivalsPerTick	int	1000	yes	entities	Анти-гріф (Stage 0.5, Nether/End): скільки сутностей, що прибули через портал, обробляти за тік; решта — на наступні тіки.
+portalArrivalQueueCap	int	50_000	yes	entities	Анти-гріф (Stage 0.5, Nether/End): максимальний розмір черги сутностей, що прибувають через портал.
+maxDeferredDimensionChangesPerTick	int	50	yes	entities	Скільки відкладених змін виміру (changeDimension з потоку регіону, перенесених на головний потік) обробляти за тік; решта — на наступні тіки. Виправлення реального дедлоку на live.
+shardedDimensions	string		yes	regions	Виміри (через кому, напр. minecraft:the_end), які шардуються на регіони ДОДАТКОВО до Overworld; за замовчуванням порожньо = лише Overworld.
+mailboxDrainBudgetMs	int	5	yes	regions	Спільний для всіх регіонів бюджет часу (ms) на застосування відкладених міжрегіональних повідомлень mailbox (EXPLOSION_APPLY, BLOCK_WRITE) після тіку регіонів.
+batchApplyMaxSize	int	16	yes	regions	Максимум повідомлень EXPLOSION_APPLY/BLOCK_WRITE (той самий регіон-адресат і тип), які застосовуються під ОДНИМ захопленням cascade-guard lock замість окремого для кожного.
+freeRunningRegions	boolean	false	yes	regions	Жорсткий вимикач усього коду free-running регіонів (Step 3).
+freeRunningSaveRendezvousTimeoutMs	int	2000	yes	safety	Обмежене очікування (ms) підтвердження від free-running регіону, що він зупинився для збереження світу (save rendezvous).
+freeRunningReservedCores	int	2	yes	regions	Рекомендаційний ліміт одночасних free-running регіонів: availableProcessors() мінус стільки ядер, зарезервованих для головного потоку і RegionThreadPool.
+autoFreeRunning	boolean	false	yes	regions	Автоматична політика переведення регіонів у free-running і назад (Step 5), поверх ручного /nestworld freerun.
+mailboxBackpressureThreshold	int	300	yes	regions	Глибина mailbox регіону-адресата, вище якої відправник притримує нові повідомлення до нього (backpressure без втрати повідомлень).
+mailboxBackpressureFlushBudget	int	64	yes	regions	Скільки відкладених через backpressure відправлень регіон повторює за свій тік (обмежує вартість самого скидання).
+mailboxMaxRedeliveries	int	8	yes	regions	CORE-MAILBOX-MERGE-001: скільки разів повідомлення може бути перенаправлене після вилучення регіону-адресата, перш ніж закриється зі статусом REDELIVERY_LIMIT_DROPPED.
+retireJoinTimeoutMs	long	50	yes	safety	CORE-MAILBOX-MERGE-001: скільки головний потік чекає (після зняття lock-ів регіонів) на завершення worker-а вилученого регіону (ms).
+retireExitDeadlineMs	long	10_000L	yes	regions	CORE-MAILBOX-MERGE-001: якщо worker вилученого регіону ще живий через стільки ms, це фіксується як RETIREMENT_FAILED (WARN + лічильник).
+cutHeatWeight	double	0.15	yes	regions	Вага «тепла» блокових тіків відносно однієї власної сутності при оцінці ліній розрізу регіону.
+nonBlockingChunkReads	boolean	false	yes	chunks	Неблокуючі читання чанків у стилі Folia (ЕКСПЕРИМЕНТАЛЬНО, за замовчуванням вимкнено).
+chunkGenBudget	int	0	yes	chunks	Скільки оновлень ChunkHolder (просування до FULL/ticking на головному потоці) DistanceManager застосовує за тік; 0 = без ліміту. Не вмикати >0 на live без soak-тесту (був OOM).
+playerUrgentChunkRadius	int	3	yes	chunks	Радіус (у чанках, квадрат навколо поточного чанка гравця), у межах якого очікуване просування чанка — «Tier 1a, термінове»: обробляється щотіку без бюджету.
+chunkPriorityCriticalRadius	int	2	yes	chunks	Region-Owned Chunk Scheduler, Phase 1: поріг відстані до гравця (у чанках) для пріоритету CRITICAL запиту чанка.
+chunkPriorityHighRadius	int	6	yes	chunks	Region-Owned Chunk Scheduler, Phase 1: поріг відстані до гравця (у чанках) для пріоритету HIGH запиту чанка.
+chunkPriorityNormalRadius	int	12	yes	chunks	Region-Owned Chunk Scheduler, Phase 1: поріг відстані до гравця (у чанках) для пріоритету NORMAL запиту чанка.
+chunkSchedulerShadowMode	boolean	false	yes	experimental	Region-Owned Chunk Scheduler, Phase 2: вмикає тіньовий (лише спостереження) режим планувальника чанків. Діагностика/експеримент.
+chunkGenTier1bBudget	int	64	yes	chunks	Ліміт за тік на просування чанків Tier 1b (з тікетом гравця, але поза playerUrgentChunkRadius); окремо від chunkGenBudget (Tier 2, масова/forceload генерація).
+chunkGenAdmitBudget	int	0	yes	chunks	Скільки НОВИХ одиниць генерації чанків (пара ChunkHolder+ChunkStatus) допускається в конвеєр за тік для генерації, не пов'язаної з гравцями (масова/forceload); 0 = без ліміту.
+chunkGenAdmitInflightCap	int	0	yes	chunks	Постійний ліміт одночасно допущених, але ще не завершених одиниць масової генерації чанків (незалежно від швидкості chunkGenAdmitBudget); 0 = без ліміту.
+chunkGenMaxConcurrent	int	0	yes	chunks	Ліміт одночасних викликів генерації статусу чанка (CPU-важка робота ChunkStatus.generate()) у пулі; 0 = без ліміту.
+chunkGenFeaturesMaxConcurrent	int	0	yes	chunks	Як chunkGenMaxConcurrent, але окремий ліміт лише для ChunkStatus.FEATURES (руди, дерева, частини структур); 0 = без ліміту.
+worldgenShards	int	1	yes	chunks	Кількість паралельних шардів worldgenMailbox на вимір (ЕКСПЕРИМЕНТАЛЬНО; 1 = поведінка vanilla).
+worldgenShardBlockShift	int	5	yes	chunks	Зсув координат чанка для групування в квадратні блоки при маршрутизації worldgenShards: розмір блока 2^shift чанків (5 = 32x32, як один region-файл).
+trackerSpatialCull	boolean	false	yes	entities	Просторове відсікання при оновленні трекера сутностей на рух гравця (ЕКСПЕРИМЕНТАЛЬНО, вимкнено).
+naturalSpawnerPlayerIndex	boolean	false	yes	entities	Просторовий індекс для пошуку найближчого гравця в NaturalSpawner (ЕКСПЕРИМЕНТАЛЬНО, вимкнено).
+eventDrivenOwnership	boolean	true	yes	regions	Перепризначення власності регіонів за подіями (перевірено, увімкнено за замовчуванням).
+ownershipFullPassTicks	int	200	yes	regions	Інтервал (ticks) страхувального повного сканування власності, коли eventDrivenOwnership увімкнено.
+trackerMoveThrottle	boolean	true	yes	entities	Обмежити переоцінку трекінгу сутностей у ChunkMap.move(player) до одного разу за тік на гравця (увімкнено).
+trackerParallelBroadcast	boolean	true	yes	entities	Паралелізувати періодичну розсилку трекера сутностей (ChunkMap.tick → ServerEntity.sendChanges).
+trackerParallelBroadcastThreshold	int	512	yes	entities	Мінімальна кількість сутностей для розсилки, з якої trackerParallelBroadcast вмикає паралелізм.
+trackerParallelDetection	boolean	true	yes	entities	Паралелізувати цикл виявлення трекера за тік (перевірено, увімкнено).
+trackerParallelDetectionThreshold	int	4096	yes	entities	Мінімальна кількість відстежуваних сутностей, з якої trackerParallelDetection паралелізує сканування.
+skipEmptyEntityCollision	boolean	true	yes	entities	C1 — пропускати broad-phase колізій сутностей, коли жодна сутність не може блокувати рух (перевірено, увімкнено).
+cacheExplosionExposure	boolean	false	yes	entities	C2 — кешувати exposure вибуху для позиції блока (ЕКСПЕРИМЕНТАЛЬНО, вимкнено).
+resilientFeaturePlacement	boolean	true	yes	chunks	Стійке розміщення features при генерації світу (увімкнено).
+levelTicksOwnershipStrict	boolean	false	yes	safety	Режим NestworldTickOwnership: STRICT (кидати виняток) чи DIAGNOSTIC (лише лог); за замовчуванням DIAGNOSTIC = false.
+ownershipAssertionsEnabled	boolean	false	yes	safety	Phase 9: загальні перевірки assertEntityOwner/assertBlockOwner/assertBlockEntityOwner (NestworldOwnershipAssertions).
+ownershipAssertionsStrict	boolean	false	yes	safety	STRICT-режим для ownershipAssertionsEnabled: false (DIAGNOSTIC) — повний звіт у лог і лічильник без винятку; true — кидати виняток.
+entityMutateMaxRerouteHops	int	5	yes	entities	Phase 9.2: скільки разів повідомлення ENTITY_MUTATE можна перенаправити, якщо регіон-виконавець уже не володіє цільовою сутністю.
+playerInputRegionExecution	boolean	false	yes	entities	Phase 11 #31.2: головний перемикач транспорту вводу гравця через mailbox регіону.
+playerInputQueueLimitPerPlayer	int	256	yes	entities	Phase 11 #31.2: жорсткий ліміт очікуваних (надісланих, ще не застосованих) повідомлень вводу для одного гравця.
+playerInputMaxRerouteHops	int	5	yes	entities	Phase 11 #31.2: ліміт перенаправлень повідомлень вводу, якщо гравець перейшов в інший регіон між відправкою і застосуванням.
+playerTickRegionExecution	boolean	false	yes	entities	Phase 11 #31.3: окремий головний перемикач виконання тіку гравця на потоці регіону (незалежний від playerInputRegionExecution).
+playerAttackRegionExecution	boolean	false	yes	entities	Phase 11 #31.4: окремий головний перемикач виконання атак гравця на потоці регіону.
+playerInteractionRegionExecution	boolean	false	yes	entities	Phase 11 #31.4 крок 2: окремий головний перемикач виконання взаємодії гравця з блоками на потоці регіону.
+playerInteractionTimeoutMs	long	100	yes	safety	Phase 11 #31.4 крок 2: скільки головний потік чекає (ms) на обробку взаємодії з блоком потоком регіону, після чого безпечно виконує її сам.
+maxInteractionWaitPerTickMs	long	2	yes	entities	Сумарний ліміт очікування головного потоку на взаємодії гравців за тік (ms); виник після реального watchdog-краху. Замінено механізмом interactionMaxWaitSlotsPerTick.
+interactionMaxWaitSlotsPerTick	int	1	yes	entities	Механізм K-first-slots: скільки перших взаємодій за тік головний потік чекає від потоків регіонів (замінює maxInteractionWaitPerTickMs).
+interactionMaxWaitPerCallMs	long	50	yes	entities	Максимальне очікування головного потоку на один делегований виклик взаємодії (ms); змінюється через RCON.
+playerUseItemRegionExecution	boolean	false	yes	entities	Phase 11 #31.4 крок 3: виконання використання предмета (handleUseItem → useItem) на потоці регіону.
+playerUseItemOnBlockRegionExecution	boolean	false	yes	entities	Phase 11 #31.4 крок 4: виконання використання предмета на блоці (useItemOn → ItemStack.useOn) на потоці регіону.
+playerEntityInteractRegionExecution	boolean	false	yes	entities	Phase 11 #31.4: виконання взаємодії предметом із сутністю (Entity.interact()/interactAt()) на потоці регіону.
+regionalizedTracker	boolean	false	yes	entities	Phase 2 / крок у стилі Folia: розбити трекер сутностей по регіонах (ЕКСПЕРИМЕНТАЛЬНО, вимкнено).
+autoSpark	boolean	true	yes	diagnostics	Auto-spark (увімкнено; нічого не робить, якщо standalone-агент spark відсутній).
+spikeLogThresholdMs	int	50	yes	diagnostics	Поріг (ms), понад який тік записується в лог стрибків із розбивкою по фазах (vanilla/signals/entityXfer/regionPool/ghostZones/splitMerge).
+forceloadWaitTimeoutMs	long	20_000L	yes	safety	Скільки максимум /forceload add блокує головний потік, чекаючи генерації запитаних чанків (ms).
+forceloadBurstBudgetMs	long	3_000L	yes	chunks	Layer 12: сумарний бюджет очікування (ms) для серії швидких викликів /forceload add у межах вікна forceloadBurstWindowMs (forceloadWaitTimeoutMs обмежує лише один виклик).
+forceloadBurstWindowMs	long	5_000L	yes	chunks	Ковзне вікно (ms), у якому витрачається і поновлюється forceloadBurstBudgetMs.
+getChunkWaitTimeoutMs	long	20_000L	yes	safety	Скільки максимум головний потік чекає, коли мод напряму викликає Level.getChunk(x, z) для ще не готового чанка (ms).
+getChunkBurstBudgetMs	long	3_000L	yes	chunks	Сумарний ліміт часу (ms) блокування головного потоку в ServerChunkCache.getChunk() (FULL, load=true) за ОДИН тік, на додачу до ліміту на виклик getChunkWaitTimeoutMs.
+chunkPromotionPumpBudgetMs	long	250	yes	chunks	Дедлайн (ms) на прохід просування ChunkHolder Tier 1b + Tier 2 у DistanceManager.runAllUpdates() за тік; незалежно від chunkGenBudget.
+getChunkZeroWaitMainThread	boolean	true	yes	chunks	Layer 10: жорсткий інваріант — головний потік ніколи не чекає на генерацію чанка в getChunk (вимога власника).
+bypassForgeHandshake	boolean	false	yes	experimental	Лише для тестів: пропускає узгодження списку модів Forge FML2 (для ботів); на live не вмикати.
+diag.promoteTrace	boolean	false	yes	diagnostics	Автоматичне вікно JFR/трасування для кожного просування (вимкнено; вручну через /nestworld diag trace). Діагностика.
+clientLifecycleTest.titleHoldMs	long	5_000L	yes	experimental	Лише для тестів (API-1B-CLOSURE): скільки тримати титульний екран у клієнтському драйвері (ms); на live не вмикати.
+clientLifecycleTest.createScreenCancels	int	0	yes	experimental	Лише для тестів (MODULE-LIFECYCLE-001): скільки разів відкрити «Create New World» і скасувати перед світом A; на live не вмикати.
+clientLifecycleTest.worlds	int	2	yes	experimental	Лише для тестів: кількість послідовних світів (життєвих циклів сервера) в одній JVM: 2 = A,B; 3 = A,B,C; на live не вмикати.
+mekRegistryAudit	boolean	false	yes	diagnostics	Облік для MEKANISM-REGISTRY-RACE-001 (лічильники вставок/публікацій у реєстрі Mekanism), вимкнено: -Dnestworld.mekRegistryAudit=true. Діагностика.
+modules.external	boolean	true	yes	compat	Завантажувати зовнішні модулі NestWorld із nestworld-modules/ (true за замовчуванням).
+modules.dir	string	null	yes	compat	Перевизначити каталог зовнішніх модулів (за замовчуванням <gamedir>/nestworld-modules).
+raceDetectMode	string	null	yes	compat	Режим детектора гонок: OFF (за замовчуванням), DISCOVERY, WATCH, DEEP, CONFIRMED. Вмикає фонове ASM-сканування всіх jar модів; також через /nestworld race mode. Діагностика.
+disableAlternateCurrent	boolean	false	yes	compat	Діагностика: вимикає вбудований Alternate Current (WireHandler) для A/B-перевірки втрати оновлень діодних блоків; на live не вмикати.
+compatAe2.neighborAffinityOff	boolean	false	yes	experimental	AE2-NEIGHBOR-AFFINITY-001: вимикає прив'язку хостів автоматизації AE2 (шини, інтерфейси, pattern provider) до сусіднього блока. Лише для тестів/експериментів.
+compatAe2.pYieldUs	long	0	yes	ae2	Гранулярність P(G): власник фази віддає FAIR P(G) черговим споживачам у безпечних точках, якщо тримав її щонайменше стільки us; 0 = тримати всю фазу.
+compatAe2.endTickRoutingOff	boolean	false	yes	experimental	Вимикає маршрутизацію колбеків стану end-tick AE2. Експеримент/негативний контроль; на live не вмикати.
+compatAe2.appliedEnhFixtures	boolean	false	yes	experimental	Лише для тестів: фікстури еквівалентності та таймінгу APPLIEDENH-PERF-001; на live не вмикати.
+compatAe2.blockCallbackRoutingOff	boolean	false	yes	experimental	Вимикає маршрутизацію блокових колбеків AE2. Експеримент/негативний контроль; на live не вмикати.
+compatAe2.ingressSample	int	64	yes	experimental	Діагностика (AE2-GRID-DOMAIN-001 D0): частота вибірки — стек аналізується для 1 із N викликів у сховище/енергію AE2 ззовні тіку грида.
+compatAe2.fixtures	boolean	false	yes	experimental	Лише для тестів: застосовує fixture/probe mixin-и AE2 і фікстури T2/bus-transit; на live не вмикати.
+compatAe2.ingressCensus	boolean	false	yes	experimental	Діагностика (AE2-GRID-DOMAIN-001 D0): вмикає mixin-и перепису зовнішніх викликів у AE2; поведінку не змінює.
+compatAe2.mbLaneOff	boolean	false	yes	experimental	Негативний контроль: вимикає MB lane AE2 (AE2 без змін). Лише для тестів; на live не вмикати.
+compatAe2.appliedEnhCacheOff	boolean	false	yes	experimental	Негативний контроль APPLIEDENH-PERF-001: вимикає пропуск повторної перевірки appliedenhancements (лише рахується). Лише для тестів; на live не вмикати.
+compatAe2.appliedEnhInlineOff	boolean	false	yes	experimental	Окремий експеримент: примусово вимикає inline-варіант повторної перевірки appliedenhancements (без вкладеного varargs Operation dispatch).
+compatAe2.appliedEnhInline	boolean	false	yes	experimental	Окремий експеримент: вмикає inline-варіант повторної перевірки appliedenhancements без вкладеного varargs Operation dispatch (вимкнено за замовчуванням).
+compatAe2.disable	boolean	false	yes	ae2	Вимикає весь AE2 compat addon (mixin-и не застосовуються; pin-и зберігаються).
+compatAe2.ownershipMax	int	50_000	yes	ae2	Модель A: максимальна кількість BE-учасників грида (хости, їхні сусіди, групи на кшталт MM-мультиблоків); якщо більше — грид не переходить у власність домену AE2.
+compatAe2.gridWorker	boolean	false	yes	ae2	Вмикає mixin-и grid-worker AE2 (домен грида поза MAIN).
+compatAe2.lifeAdmissionOff	boolean	false	yes	experimental	Вимикає допуск життєвого циклу вузлів AE2. Експеримент; на live не вмикати.
+compatAe2.chestGuardMinNodes	int	1000	yes	ae2	Захист сундука AE2 вмикається для гридів із кількістю вузлів >= цього значення.
+compatAe2.busImportCursor	boolean	false	yes	ae2	Опційне впорядковане продовження імпорту шин AE2 (вимкнено за замовчуванням).
+compatAe2.busTransit	boolean	false	yes	ae2	Прапорець функції bus transit AE2 (вимкнено): -Dnestworld.compatAe2.busTransit=true.
+compatAe2.busTransitBudgetUs	long	20_000L	yes	ae2	Загальний бюджет commit на MAIN за тік для bus transit (us); кожен грид отримує справедливу частку, щонайменше один запис.
+compatAe2.busTransitLinked	string	mm	yes	ae2	Простори імен (namespaces) сусідніх BE, чий стан capability спільний з ІНШИМ BE (порти MasterfulMachinery); для них transit дозволено лише якщо вся область — домен регіону порту, інакше виконується на MAIN.
+compatAe2.busTransitLinkedRadius	int	32	yes	ae2	Радіус (у блоках) області навколо порту з busTransitLinked, яка має повністю належати домену регіону порту, щоб transit був дозволений.
+compatAe2.busInlineTypesOff	boolean	false	yes	experimental	Вимикає швидкий inline-шлях для типів у bus transit AE2. Експеримент; на live не вмикати.
+compatAe2.clusterTeardownOff	boolean	false	yes	experimental	Негативний контроль: оригінальне розбирання кластерів AE2 (без координатора). Лише для тестів; на live не вмикати.
+compatAe2.gridOwnership	boolean	false	yes	ae2	Модель A: BE-хости, що беруть участь у гриді, належать домену AE2, поки він виконує грид.
+compatAe2.overlapStart	boolean	false	yes	experimental	Експеримент AE2-GRID-DOMAIN-MVP-001: фази START гридів теж передаються домену (FIFO після END попереднього тіку), і MAIN більше не чекає їх на початку тіку.
+compatAe2.failLoud	boolean	false	no	ae2	Кидати виняток при порушеннях main-affinity в AE2 замість підрахунку. Діагностика.
+compatMekanism.gateDump	string	null	yes	experimental	Діагностика: записати у файл кожен клас, який читає gate Mekanism.
+compatMekanism.disable	boolean	false	yes	mekanism	Вимикає Mekanism compat addon.
+compatMekanism.gateCompare	boolean	false	yes	experimental	Діагностика: додатково запускати старий gate Mekanism і порівнювати результати.
+compatMekanism.gateImpl	string	unset (v2 gate; "legacy" = old gate)	yes	experimental	Діагностика: =legacy — рішення приймає старий (до 0.1.1) gate Mekanism.
+compatMekanism.audit	boolean	false	yes	mekanism	Облік MEKANISM-REGISTRY-RACE-001 (produced / published / dropped / mergedDuplicate / generations): -Dnestworld.compatMekanism.audit=true. Діагностика.
+compatMm.scanInterval	int	20	yes	mm	Інтервал сканування контролерів MM (ticks).
+compatMm.releaseScans	int	3	yes	mm	Кількість сканувань MM перед звільненням claim контролера.
+compatMm.wholeGroupClaimSafe	boolean	false	yes	mm	Явна політика адаптера: повний мультиблок MM може цілком належати окремому домену.
+compatMm.disable	boolean	false	yes	mm	Вимикає MM compat addon.

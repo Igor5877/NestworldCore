@@ -449,6 +449,14 @@
        }
     }
  
+@@ -857,6 +_,7 @@
+    }
+ 
+    public void m_8712_(LevelChunk p_8713_) {
++      net.nestworld.region.ExecutionDomains.beforeChunkUnload(this, p_8713_.m_7697_());   // model A: release claims first
+       p_8713_.m_187957_();
+       p_8713_.m_187979_(this);
+    }
 @@ -880,10 +_,22 @@
     }
  
