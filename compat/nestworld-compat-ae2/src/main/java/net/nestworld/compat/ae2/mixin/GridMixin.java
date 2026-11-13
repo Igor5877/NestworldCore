@@ -63,6 +63,8 @@ public abstract class GridMixin implements NwGrid {
         ((NwGridBound) storage).nw$bindGrid(self);
         ((NwGridBound) ((StorageServiceAccessor) storage).nw$interestManager()).nw$bindGrid(self);
         ((NwGridBound) crafting).nw$bindGrid(self);
+        // AE2-GRID-DOMAIN-001 G1: NetworkStorage knows its grid for P(G) ingress (mixin present only with the worker on)
+        if (self.getStorageService().getInventory() instanceof NwGridBound ns) ns.nw$bindGrid(self);
         ((NwGridBound) ((CraftingServiceAccessor) crafting).nw$interestManager()).nw$bindGrid(self);
     }
 
@@ -70,27 +72,87 @@ public abstract class GridMixin implements NwGrid {
 
     @WrapMethod(method = "onServerStartTick")
     private void nw$serverStart(Operation<Void> op) {
-        GridPhaseGate.phase((Grid) (Object) this, false, () -> op.call());
+        Grid self = (Grid) (Object) this;
+        if (nw$startOnWorker(self, () -> op.call())) return;
+        net.nestworld.compat.ae2.glue.GridWorker.awaitAll();   // AE2-GRID-DOMAIN-001: previous tick's phases first
+        GridPhaseGate.phase(self, false, () -> op.call());
     }
 
     @WrapMethod(method = "onLevelStartTick")
     private void nw$levelStart(Level level, Operation<Void> op) {
-        GridPhaseGate.phase((Grid) (Object) this, false, () -> op.call(level));
+        Grid self = (Grid) (Object) this;
+        if (nw$startOnWorker(self, () -> op.call(level))) return;
+        net.nestworld.compat.ae2.glue.GridWorker.awaitAll();
+        GridPhaseGate.phase(self, false, () -> op.call(level));
+    }
+
+    /** MVP-001 overlapStart: the unchanged START phase on the domain (FIFO), MAIN does not wait. false ⇒ inline as before. */
+    private static boolean nw$startOnWorker(Grid self, Runnable call) {
+        if (!net.nestworld.compat.ae2.glue.GridWorker.OVERLAP_START) return false;
+        Runnable body = () -> {
+            net.nestworld.compat.ae2.glue.MainService.enter(self);
+            try {
+                GridPhaseGate.phase(self, false, () -> { call.run(); return null; });
+            } finally {
+                net.nestworld.compat.ae2.glue.MainService.exit();
+            }
+        };
+        if (!net.nestworld.compat.ae2.glue.GridWorker.submit(self, body)) return false;
+        net.nestworld.compat.ae2.glue.GridWorker.startSubmitted.increment();
+        return true;
     }
 
     @WrapMethod(method = "onLevelEndTick")
     private void nw$levelEnd(Level level, Operation<Void> op) {
-        long t0 = GridCensus.on ? System.nanoTime() : 0;
-        GridPhaseGate.phase((Grid) (Object) this, false, () -> op.call(level));
-        if (t0 != 0) GridCensus.record((Grid) (Object) this, false, System.nanoTime() - t0);
+        Grid self = (Grid) (Object) this;
+        Runnable body = () -> {
+            long t0 = GridCensus.on ? System.nanoTime() : 0;
+            boolean worker = net.nestworld.compat.ae2.glue.GridWorker.isWorkerThread();
+            if (worker) net.nestworld.compat.ae2.glue.MainService.enter(self);
+            try {
+                GridPhaseGate.phase(self, false, () -> {
+                    if (worker) net.nestworld.compat.ae2.glue.BusTransit.drainOwnedGrid(self, level.getServer().getTickCount());
+                    return op.call(level);
+                });
+            } finally {
+                if (worker) net.nestworld.compat.ae2.glue.MainService.exit();
+            }
+            if (t0 != 0) GridCensus.record(self, false, System.nanoTime() - t0);
+        };
+        net.nestworld.compat.ae2.glue.GridWorker.endOfTickBarrier();   // MVP-001 overlapStart: one barrier per tick
+        // AE2-GRID-DOMAIN-001 G1: eligible grid ⇒ the unchanged phase runs on the Core "ae2" domain (FIFO)
+        if (!net.nestworld.compat.ae2.glue.GridWorker.submit(self, body)) {
+            net.nestworld.compat.ae2.glue.GridWorker.awaitAll();   // AE2 never ticks two grids at once (shared hosts)
+            body.run();
+        }
     }
 
     /** Server END runs Storage/Crafting phases: staged service mutations are drained first (the cut). */
     @WrapMethod(method = "onServerEndTick")
     private void nw$serverEnd(Operation<Void> op) {
-        long t0 = GridCensus.on ? System.nanoTime() : 0;
-        GridPhaseGate.phase((Grid) (Object) this, true, () -> op.call());
-        if (t0 != 0) GridCensus.record((Grid) (Object) this, true, System.nanoTime() - t0);
+        Grid self = (Grid) (Object) this;
+        Runnable body = () -> {
+            long t0 = GridCensus.on ? System.nanoTime() : 0;
+            boolean worker = net.nestworld.compat.ae2.glue.GridWorker.isWorkerThread();
+            if (worker) net.nestworld.compat.ae2.glue.MainService.enter(self);
+            try {
+                GridPhaseGate.phase(self, true, () -> {
+                    if (worker) {
+                        var srv = net.minecraftforge.server.ServerLifecycleHooks.getCurrentServer();
+                        if (srv != null) net.nestworld.compat.ae2.glue.BusTransit.drainOwnedGrid(self, srv.getTickCount());
+                    }
+                    return op.call();
+                });
+            } finally {
+                if (worker) net.nestworld.compat.ae2.glue.MainService.exit();
+            }
+            if (t0 != 0) GridCensus.record(self, true, System.nanoTime() - t0);
+        };
+        net.nestworld.compat.ae2.glue.GridWorker.endOfTickBarrier();
+        if (!net.nestworld.compat.ae2.glue.GridWorker.submit(self, body)) {
+            net.nestworld.compat.ae2.glue.GridWorker.awaitAll();   // AE2 never ticks two grids at once (shared hosts)
+            body.run();
+        }
     }
 
     // ---------------------------------------------------------------- topology (G1)

@@ -50,11 +50,13 @@ public final class Staging {
             case RUN -> now.run();
             case RUN_UNDER_P -> {
                 ReentrantLock p = ((NwGrid) g).nw$p();
-                p.lock();
+                MainService.lockOnMain(g, p);   // MVP-001 audit: raw lock() on MAIN could deadlock with a parked worker
+                PLocks.acquired();
                 try {
                     if (GridPhaseGate.phaseActive(g)) stage.run();
                     else now.run();
                 } finally {
+                    PLocks.released();
                     p.unlock();
                 }
                 COUNTERS.stagingRunUnderP.increment();

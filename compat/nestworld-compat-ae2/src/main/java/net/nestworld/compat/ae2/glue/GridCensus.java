@@ -56,7 +56,27 @@ public final class GridCensus {
             c[1]++;
             c[main ? 2 : 3]++;
         }
+        // AE2-GRID-DOMAIN-MVP-001: per-grid device cost (grid #1 census: impact per blocker class)
+        var grid = node.getGrid();
+        if (grid != null) {
+            Map<String, long[]> per;
+            synchronized (DEVICE_BY_GRID) { per = DEVICE_BY_GRID.computeIfAbsent(grid, g -> new java.util.concurrent.ConcurrentHashMap<>()); }
+            long[] d = per.computeIfAbsent(cls, k -> new long[2]);
+            synchronized (d) { d[0] += nanos; d[1]++; }
+        }
     }
+
+    private static final Map<Object, Map<String, long[]>> DEVICE_BY_GRID = new java.util.WeakHashMap<>();
+
+    /** device class → {nanos, calls} of one grid since {@link #start}. */
+    static Map<String, long[]> devicesOf(Object grid) {
+        synchronized (DEVICE_BY_GRID) {
+            var m = DEVICE_BY_GRID.get(grid);
+            return m == null ? Map.of() : new java.util.HashMap<>(m);
+        }
+    }
+
+    static long ticksSinceStart(int serverTick) { return Math.max(1, serverTick - startTick); }
 
     public static String devices(int serverTick, int top) {
         long ticks = Math.max(1, serverTick - startTick);
@@ -73,6 +93,7 @@ public final class GridCensus {
 
     public static String start(int serverTick) {
         COST.clear();
+        synchronized (DEVICE_BY_GRID) { DEVICE_BY_GRID.clear(); }
         DEVICE.clear();
         startNanos = System.nanoTime();
         startTick = serverTick;

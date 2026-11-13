@@ -35,6 +35,50 @@ public final class GridPhaseGate {
         return ((NwEnergyService) g.getEnergyService()).nw$lock().serial();
     }
 
+    // ---------------------------------------------------------------- MVP-001 bounded yield points (owner 2026-11-13)
+
+    /** P(G) granularity (audit 2026-11-13, option A): the phase owner hands the FAIR P(G) to queued accessors at safe points
+     *  (after a device tick outside T1; between BusTransit records) once it held it ≥ this long. 0 = phase-wide hold. */
+    static final long YIELD_NS = Long.getLong("nestworld.compatAe2.pYieldUs", 0L) * 1000L;
+    private static final java.util.Map<Grid, Thread> PHASE_OWNER = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final ThreadLocal<long[]> LAST_ACQUIRE = ThreadLocal.withInitial(() -> new long[1]);
+    static final java.util.concurrent.atomic.LongAdder pYields = new java.util.concurrent.atomic.LongAdder(),
+            pYieldHandoffNs = new java.util.concurrent.atomic.LongAdder(), pYieldSkipped = new java.util.concurrent.atomic.LongAdder(),
+            pTopologyPhaseActive = new java.util.concurrent.atomic.LongAdder();
+
+    /** Is a phase of {@code g} active on ANOTHER thread (a yield gap)? Topology must not run there. */
+    static boolean phaseActiveElsewhere(Grid g) {
+        Thread o = PHASE_OWNER.get(g);
+        return o != null && o != Thread.currentThread();
+    }
+
+    /** Phase owner, at a safe point: if accessors queue for P(G) and it was held ≥ YIELD_NS, let them through. */
+    public static void yieldPoint(Grid g, String site) {
+        if (YIELD_NS <= 0 || g == null) return;
+        ReentrantLock p = ((NwGrid) g).nw$p();
+        if (!p.isHeldByCurrentThread() || !p.hasQueuedThreads()) return;
+        long now = System.nanoTime();
+        long[] last = LAST_ACQUIRE.get();
+        if (now - last[0] < YIELD_NS) return;
+        if (p.getHoldCount() != 1 || PLocks.depth() != 1 || KERNEL.inSection() || PHASE_OWNER.get(g) != Thread.currentThread()) {
+            pYieldSkipped.increment();
+            return;
+        }
+        PLocks.released();
+        p.unlock();
+        p.lock();                      // fair: every thread queued before us goes first; worker holds nothing else here
+        PLocks.acquired();
+        long t = System.nanoTime();
+        pYieldHandoffNs.add(t - now);
+        last[0] = t;
+        pYields.increment();
+    }
+
+    public static String yieldStatus() {
+        return "pYield{us=" + YIELD_NS / 1000 + " yields=" + pYields.sum() + " handoffMs=" + pYieldHandoffNs.sum() / 1_000_000
+                + " skipped=" + pYieldSkipped.sum() + " topologyPhaseActive=" + pTopologyPhaseActive.sum() + "}";
+    }
+
     public static boolean holds(Grid g) {
         return g != null && ((NwGrid) g).nw$p().isHeldByCurrentThread();
     }
@@ -50,21 +94,26 @@ public final class GridPhaseGate {
         NwGrid n = (NwGrid) g;
         ReentrantLock p = n.nw$p();
         long t0 = System.nanoTime();
-        p.lock();
+        MainService.lockOnMain(g, p);
+        PLocks.acquired();
         COUNTERS.pWaitNs.add(System.nanoTime() - t0);
         try {
             if (drain) {
                 Staging.drain(g);
                 Staging.point("drain-done", g);
             }
+            boolean outer = n.nw$phaseDepth() == 0;
             n.nw$phaseDepth(n.nw$phaseDepth() + 1);
+            if (outer) { PHASE_OWNER.put(g, Thread.currentThread()); LAST_ACQUIRE.get()[0] = System.nanoTime(); }
             try {
                 if (drain) Staging.point("phase-active", g);
                 return body.get();
             } finally {
                 n.nw$phaseDepth(n.nw$phaseDepth() - 1);
+                if (outer) PHASE_OWNER.remove(g);
             }
         } finally {
+            PLocks.released();
             p.unlock();
         }
     }
@@ -92,11 +141,13 @@ public final class GridPhaseGate {
     }
 
     private static void release(Grid g) {
+        PLocks.released();
         ((NwGrid) g).nw$p().unlock();
     }
 
     private static List<Grid> acquireOuter(Supplier<List<Grid>> affected) {
         boolean main = Ae2Compat.onMainThread();
+        if (main) GridWorker.awaitAll();      // AE2-GRID-DOMAIN-001: MAIN topology never overtakes a queued grid phase
         long start = System.nanoTime();
         boolean warned = false;
         for (int attempt = 0; ; attempt++) {
@@ -106,16 +157,22 @@ public final class GridPhaseGate {
             for (Grid g : want) {
                 ReentrantLock p = ((NwGrid) g).nw$p();
                 boolean ok;
-                if (main) {
-                    p.lock();                                  // main may wait while holding only P
+                if (main && !PLocks.holdsAny()) {
+                    MainService.lockOnMain(g, p);              // main may wait only while holding NO P (services MVP calls)
                     ok = true;
                 } else {
-                    ok = p.tryLock();
+                    ok = p.tryLock();                          // MVP-001: already holding a P ⇒ never block for another
+                }
+                if (ok && phaseActiveElsewhere(g)) {          // MVP-001: acquired in a yield gap — never mid-phase
+                    p.unlock();
+                    pTopologyPhaseActive.increment();
+                    ok = false;
                 }
                 if (!ok) {
                     contended = g;
                     break;
                 }
+                PLocks.acquired();
                 got.add(g);
             }
             if (contended == null) {
@@ -141,8 +198,12 @@ public final class GridPhaseGate {
             if (contended != null && attempt >= ESCALATE_AFTER) {
                 // holding nothing: wait for the contended P in the fair queue, then retry the whole set
                 ReentrantLock p = ((NwGrid) contended).nw$p();
-                p.lock();
-                p.unlock();
+                if (!PLocks.holdsAny()) {                     // holding nothing: wait (MAIN services calls), else back off
+                    MainService.lockOnMain(contended, p);
+                    p.unlock();
+                } else {
+                    LockSupport.parkNanos(200_000L);
+                }
             } else {
                 LockSupport.parkNanos(Math.min(2_000_000L, 20_000L << Math.min(attempt, 7)));
             }
@@ -160,8 +221,17 @@ public final class GridPhaseGate {
             ReentrantLock p = ((NwGrid) g).nw$p();
             if (p.isHeldByCurrentThread()) {
                 p.lock();                                        // reentrant level, never blocks
+                PLocks.acquired();
                 got.add(g);
             } else if (p.tryLock()) {
+                if (phaseActiveElsewhere(g)) {                  // MVP-001: yield gap of another thread's phase
+                    p.unlock();
+                    pTopologyPhaseActive.increment();
+                    for (int i = got.size() - 1; i >= 0; i--) release(got.get(i));
+                    COUNTERS.pNestedUnresolved.increment();
+                    throw KERNEL.unaudited("P(G) taken in a phase yield gap inside a topology section");
+                }
+                PLocks.acquired();
                 got.add(g);
             } else {
                 for (int i = got.size() - 1; i >= 0; i--) release(got.get(i));

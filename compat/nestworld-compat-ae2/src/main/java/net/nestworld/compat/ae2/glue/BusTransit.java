@@ -84,7 +84,7 @@ import net.nestworld.compat.ae2.mixin.TickManagerServiceAccessor;
 public final class BusTransit {
     /** Feature flag (default OFF): {@code -Dnestworld.compatAe2.busTransit=true}. */
     public static final boolean FLAG = Boolean.getBoolean("nestworld.compatAe2.busTransit");
-    /** Runtime switch; only the fixtures flag can change it (negative control). */
+    /** Runtime switch; admin disable is allowed only after all transit work has quiesced. */
     public static volatile boolean active = FLAG;
     public static final String NBT_KEY = "nwTransit";
     public static final int INLINE_NOWORK = 0, INLINE_WORK = 1, DEFERRED = 2;
@@ -115,7 +115,12 @@ public final class BusTransit {
                 inlineMainNeighbour = new LongAdder(), inlineNoNeighbourBe = new LongAdder(), inlineOverlapRisk = new LongAdder(),
                 exportNoWorkMain = new LongAdder(), exportContinuation = new LongAdder(), energyChargedUnits = new LongAdder(),
                 energyUncharged = new LongAdder(), commitFailures = new LongAdder(), returnFailed = new LongAdder(),
-                stuckNonItem = new LongAdder(), stopWaitTimeout = new LongAdder(), stopWaitNanos = new LongAdder(), inlineLinkedCrossDomain = new LongAdder(), transitLinkedSameDomain = new LongAdder();
+                stuckNonItem = new LongAdder(), stopWaitTimeout = new LongAdder(), stopWaitNanos = new LongAdder(), inlineLinkedCrossDomain = new LongAdder(), transitLinkedSameDomain = new LongAdder(),
+                inlineSourceTypeNotLocal = new LongAdder(), returnSourceNotLocal = new LongAdder(),
+                // AE2-GRID-DOMAIN-001 model A
+                leaseReleaseToMain = new LongAdder(), exportEmptyConfig = new LongAdder(), inlineMainServiced = new LongAdder(), ownerFlipsToWorker = new LongAdder(), ownerFlipsToMain = new LongAdder(), ownedDrains = new LongAdder(),
+                ownedDrainNs = new LongAdder(), ownedDrainWithoutP = new LongAdder(), ownedTransitMainNeighbour = new LongAdder(),
+                ownedInlineRefused = new LongAdder(), ownedNeighbourInline = new LongAdder(), inlineOwnedNeighbour = new LongAdder();
         public final LongAdder mainOpNsInline = new LongAdder(), mainOpNsTransit = new LongAdder(), commitNs = new LongAdder(),
                 regionNs = new LongAdder();
         public final LongAdder mainOpsInline = new LongAdder(), mainOpsTransit = new LongAdder();
@@ -184,6 +189,7 @@ public final class BusTransit {
         final boolean recoveryFromNbt;
         // import
         StackImportStrategy importStrategy;
+        BusImportContinuation importContinuation;
         int ops;
         IPartitionList filter;
         boolean inverted;
@@ -265,7 +271,10 @@ public final class BusTransit {
         final String id;
         final java.lang.ref.WeakReference<Grid> grid;
         final ConcurrentLinkedQueue<Rec> inbox = new ConcurrentLinkedQueue<>();
-        final ArrayDeque<Rec> pending = new ArrayDeque<>();          // MAIN only
+        final ArrayDeque<Rec> pending = new ArrayDeque<>();          // the grid's commit owner only (MAIN, or the AE2 worker in model A)
+        /** AE2-GRID-DOMAIN-001 model A: this grid's commit queue is drained by the AE2 worker inside the grid's phase
+         *  (under P(G)); the MAIN pump/END pass never touch it. Flipped only at the ownership barrier. */
+        volatile boolean workerOwned;
         final AtomicBoolean inReady = new AtomicBoolean();
         final LongAdder scheduled = new LongAdder(), completed = new LongAdder(), missed = new LongAdder(), cancelled = new LongAdder();
         final AtomicLong outstanding = new AtomicLong();
@@ -380,6 +389,43 @@ public final class BusTransit {
     private static final Map<String, Boolean> NS_TYPE_PINNED = new ConcurrentHashMap<>();
     private static volatile int nsPinnedTick = Integer.MIN_VALUE;
 
+    /**
+     * AE2-GRID-DOMAIN-001 model A coverage: would every operation of this bus toward {@code nType} go through transit
+     * (owner executes), with no inline foreign access? Static view of the same eligibility onBusWork applies per op;
+     * a runtime change (card inserted) is caught there and demotes the grid.
+     */
+    static boolean transitSafe(IOBusPart bus, String nType) {
+        if (!FLAG || !manages(bus) || configIneligible(bus) != null || !strategiesAllowed(bus) || nType == null) return false;
+        // Non-local import sources (any type) are transit-safe in model A: the continuation hands the source to MAIN and
+        // BusImportContinuation.runSuffixOnOwnerModelA extracts into the transit buffer there (fixture: importchest).
+        if (!isLinked(nType)) return true;
+        // owner 2026-11-13 (MVP-001): MM groups stay OUT of model A (region threads); a linked port that belongs to a
+        // Core-registered group is reached by transit executed in the group's own domain (MM-GROUP-DOMAIN-001 stage 2)
+        return linkedGroupPort(bus);
+    }
+
+    static boolean linkedGroupPort(IOBusPart bus) {
+        if (!(bus.getLevel() instanceof ServerLevel level) || bus.getHost() == null) return false;
+        BlockPos port = bus.getHost().getBlockEntity().getBlockPos().relative(bus.getSide());
+        Boolean registered = CoreBeGroups.registered(level, port);
+        return registered != null && registered;
+    }
+
+    /** Coverage census (read-only): why {@link #transitSafe} refuses this bus; null = transit-safe. */
+    static String whyNotTransitSafe(IOBusPart bus, String nType) {
+        if (!FLAG) return "flag off";
+        if (!manages(bus)) return "unmanaged class";
+        LongAdder c = configIneligible(bus);
+        if (c != null) {
+            return c == C.inlineCrafting ? "crafting/craft-only" : c == C.inlineRandom ? "random scheduling"
+                    : c == C.inlineFuzzy ? "fuzzy card" : c == C.inlineInactive ? "inactive" : "config";
+        }
+        if (!strategiesAllowed(bus)) return "strategy " + lastRejectedStrategy;
+        if (nType == null) return "no type";
+        if (isLinked(nType) && !linkedGroupPort(bus)) return "linked namespace (no Core group)";
+        return null;
+    }
+
     static boolean isLinked(String type) {
         int c = type.indexOf(':');
         return c > 0 && LINKED_NAMESPACES.contains(type.substring(0, c));
@@ -401,6 +447,11 @@ public final class BusTransit {
 
     static boolean linkedSameDomain(ServerLevel level, BlockPos port, String type) {
         if (RESOLVE == null) return false;
+        // MM-GROUP-DOMAIN-001: a group registered in Core (e.g. by nestworld-compat-mm) is decided exactly — every
+        // member, with its own type (type pins included), on the port's domain — instead of the namespace-pin and
+        // radius approximations below.
+        Boolean registered = CoreBeGroups.registered(level, port);
+        if (registered != null && registered) return CoreBeGroups.together(level, port, type);
         if (namespaceHasTypePin(level, type.substring(0, type.indexOf(':')))) return false;
         try {
             Object d = RESOLVE.invokeExact(level, port, type);
@@ -477,9 +528,22 @@ public final class BusTransit {
 
     private static final Map<String, LongAdder> REJECTED_STRATEGIES = new ConcurrentHashMap<>();
 
+    private static volatile String lastRejectedStrategy = "-";
+
     private static boolean rejectedStrategy(Object strategy) {
+        lastRejectedStrategy = strategy == null ? "null" : strategy.getClass().getSimpleName();
         REJECTED_STRATEGIES.computeIfAbsent(strategy == null ? "null" : strategy.getClass().getName(), key -> new LongAdder()).increment();
         return false;
+    }
+
+    private static final boolean INLINE_TYPES_ON = !Boolean.getBoolean("nestworld.compatAe2.busInlineTypesOff");
+    private static final Map<String, LongAdder> INLINE_TYPES = new java.util.concurrent.ConcurrentHashMap<>();
+
+    public static String inlineTypes() {
+        StringBuilder sb = new StringBuilder("busTransit inlineTypes (top 30):");
+        INLINE_TYPES.entrySet().stream().sorted((a, b) -> Long.compare(b.getValue().sum(), a.getValue().sum())).limit(30)
+                .forEach(e -> sb.append("\n  ").append(e.getValue().sum()).append("  ").append(e.getKey()));
+        return sb.toString();
     }
 
     public static String strategyRejections() {
@@ -493,15 +557,27 @@ public final class BusTransit {
             StackImportStrategy s = importFacade(ib);
             if (!(s instanceof StackImportFacade f)) return rejectedStrategy(s);
             for (var st : ((StackImportFacadeAccessor) f).nw$strategies()) {
-                if (!IMPORT_STRATEGIES.contains(st.getClass().getName()) && !ItemNoopStrategies.allowed(bus, st)) return rejectedStrategy(st);
+                if (BusImportContinuation.available() && !ImportStrategyCursor.audited(st)) return rejectedStrategy(st);
+                if (!IMPORT_STRATEGIES.contains(st.getClass().getName()) && !ItemNoopStrategies.allowed(bus, st)
+                        && !BusImportContinuation.accepts(st)) return rejectedStrategy(st);
             }
             return true;
         }
+        // AE2 15.4.x ExportBusPart.doBusWork: a null config key skips the slot; the export strategy is called only per
+        // configured key. Empty config ⇒ no strategy call, no neighbour access ⇒ safe no-op for ANY strategy (owner
+        // 2026-11-12: empty-config export bus must not be a refusal/demotion).
+        if (exportConfigEmpty(bus)) { C.exportEmptyConfig.increment(); return true; }
         StackExportStrategy s = ((ExportBusPartAccessor) bus).nw$exportStrategy();
         if (!(s instanceof StackExportFacade f)) return rejectedStrategy(s);
         for (var st : ((StackExportFacadeAccessor) f).nw$strategies()) {
             if (!EXPORT_STRATEGIES.contains(st.getClass().getName()) && !ItemNoopStrategies.allowed(bus, st)) return rejectedStrategy(st);
         }
+        return true;
+    }
+
+    static boolean exportConfigEmpty(IOBusPart bus) {
+        int n = ((NwTransitBus) bus).nw$availableSlots();
+        for (int slot = 0; slot < n; slot++) if (bus.getConfig().getKey(slot) != null) return false;
         return true;
     }
 
@@ -564,6 +640,9 @@ public final class BusTransit {
         GridState gs = gridState(grid);
         gs.scheduled.increment();
         LongAdder why = configIneligible(bus);
+        // MVP-001: a device served on MAIN for the parked worker ⇒ AE2's own inline path (MAIN legitimately owns the
+        // pinned neighbours, the grid is delegated) — never a second transit hop from MAIN
+        if (why == null && MainService.delegatedFor(grid)) why = C.inlineMainServiced;
         ServerLevel level = bus.getLevel() instanceof ServerLevel l ? l : null;
         String nType = null;
         BlockPos hostPos = null;
@@ -577,7 +656,20 @@ public final class BusTransit {
                 if (nType == null) why = C.inlineNoNeighbourBe;
                 else {
                     if (bs.pin != null) releasePin(bs);
-                    if (domainIsMain(level, nPos, nType)) why = C.inlineMainNeighbour;
+                    if (gs.workerOwned && GridWorker.ownsPosition(level, nPos)) {
+                        // model A class 1′: the target is owned by the same AE2 domain (claimed validated group) —
+                        // same thread, AE2's own inline path is correct; nothing foreign is touched
+                        C.ownedNeighbourInline.increment();
+                        why = C.inlineOwnedNeighbour;
+                    } else if (gs.workerOwned) {
+                        // model A: the worker never mutates a foreign inventory inline — MAIN-owned targets go through
+                        // transit to MAIN exactly like region-owned ones (owner executes)
+                        if (domainIsMain(level, nPos, nType)) C.ownedTransitMainNeighbour.increment();
+                    } else if (domainIsMain(level, nPos, nType)) why = C.inlineMainNeighbour;
+                    // Import cursor: only source types that CAN be proven local are admitted; everything else keeps
+                    // AE2's native MAIN path (type id only — no source state is read from MAIN).
+                    else if (bus instanceof ImportBusPart && BusImportContinuation.available()
+                            && !LocalImportSource.possibleType(nType)) why = C.inlineSourceTypeNotLocal;
                     else if (isLinked(nType)) {
                         if (linkedSameDomain(level, nPos, nType)) C.transitLinkedSameDomain.increment();
                         else why = C.inlineLinkedCrossDomain;
@@ -585,8 +677,25 @@ public final class BusTransit {
                 }
             }
         }
+        if (why != null && gs.workerOwned && MainService.delegatedFor(grid)) {
+            // MVP-001: a MAIN-serviced device (unsupported config / foreign-pull host) on MAIN acting for the parked
+            // worker: AE2's own inline path with MAIN's neighbours — legitimate, counted as inline below
+        } else if (why != null && gs.workerOwned && why != C.inlineNoNeighbourBe && why != C.inlineOwnedNeighbour) {
+            // model A coverage was violated at runtime (e.g. a card inserted): no inline foreign access from the worker.
+            // The op is skipped and the grid is sent back to model B at the next barrier.
+            C.ownedInlineRefused.increment();
+            GridWorker.requestDemotion(grid);
+            return INLINE_NOWORK;
+        }
         if (why != null) {
             why.increment();
+            // Diagnosis only (WP3-B coverage): which neighbour types keep bus work inline on MAIN, per reason.
+            if (INLINE_TYPES_ON && nType != null) {
+                String reason = why == C.inlineSourceTypeNotLocal ? "sourceTypeNotLocal" : why == C.inlineLinkedCrossDomain ? "linkedCrossDomain"
+                        : why == C.inlineMainNeighbour ? "mainNeighbour" : null;
+                if (reason != null) INLINE_TYPES.computeIfAbsent((bus instanceof ImportBusPart ? "import " : "export ") + reason + " " + nType,
+                        k -> new LongAdder()).increment();
+            }
             if (why != C.inlineMainNeighbour && why != C.inlineNoNeighbourBe) ensurePinned(bus, bs);
             if (bs.regionRunning.get() > 0) C.inlineOverlapRisk.increment();
             boolean work;
@@ -627,6 +736,11 @@ public final class BusTransit {
                 r.ops = ((NwTransitBus) bus).nw$opsPerTick();
                 r.filter = ((NwTransitBus) bus).nw$filter();
                 r.inverted = bus.isUpgradedWith(AEItems.INVERTER_CARD);
+                if (BusImportContinuation.available()
+                        && ((StackImportFacadeAccessor) r.importStrategy).nw$strategies().stream()
+                        .anyMatch(BusImportContinuation::accepts)) {
+                    r.importContinuation = new BusImportContinuation(r);
+                }
                 C.opsTransitImport.increment();
             }
             bs.live.add(r);
@@ -779,10 +893,11 @@ public final class BusTransit {
             (stopping || !blockEntitiesTicking(r.level, r.nPos) ? C.regionNotTicking : C.regionWrongDomain).increment();
         } else {
             BusTransitContext ctx = new BusTransitContext(r, tickNow(r));
-            r.importStrategy.transfer(ctx);
+            if (r.importContinuation == null) r.importStrategy.transfer(ctx);
+            else r.importContinuation.runRegion(ctx);
         }
         synchronized (r) {
-            if (r.held.isEmpty()) {
+            if (r.held.isEmpty() && (r.importContinuation == null || !r.importContinuation.pendingMain())) {
                 r.phase = FINALIZE;
                 if (r.result == R_NONE) r.result = r.extracted > 0 ? R_COMMITTED : R_NOWORK;
             } else {
@@ -835,6 +950,12 @@ public final class BusTransit {
         }
         boolean ok = !stopping && blockEntitiesTicking(r.level, r.nPos) && inNeighbourDomain(r);
         if (!ok) (stopping || !blockEntitiesTicking(r.level, r.nPos) ? C.regionNotTicking : C.regionWrongDomain).increment();
+        // Import return under the cursor: the source must still be provably local on its owner thread; otherwise the
+        // items stay held and take the existing accounted fallback (network retry, then recovery).
+        if (ok && !r.export && r.importContinuation != null && !LocalImportSource.local(r.level.getBlockEntity(r.nPos))) {
+            ok = false;
+            C.returnSourceNotLocal.increment();
+        }
         StackExportStrategy facade = r.export ? r.exportStrategy : null;
         if (ok && facade == null) {
             if (r.pushFacade == null) r.pushFacade = StackWorldBehaviors.createExportFacade(r.level, r.nPos, r.fromSide);
@@ -878,6 +999,7 @@ public final class BusTransit {
         } else {
             GridState gs = r.gs;
             gs.inbox.add(r);
+            if (gs.workerOwned) return;                     // model A: the worker drains it at the grid's next phase
             if (gs.inReady.compareAndSet(false, true)) READY.add(gs);
         }
         requestMainPump(r);
@@ -971,6 +1093,7 @@ public final class BusTransit {
         GridState g;
         while ((g = READY.poll()) != null) {
             g.inReady.set(false);
+            if (g.workerOwned) continue;                    // model A: drained by the AE2 worker, never by MAIN
             Rec r;
             while ((r = g.inbox.poll()) != null) g.pending.add(r);
             if (!g.pending.isEmpty()) active.add(g);
@@ -1000,6 +1123,50 @@ public final class BusTransit {
             gs.mainCommitNs += System.nanoTime() - t0;
             if (!gs.pending.isEmpty() && gs.inReady.compareAndSet(false, true)) READY.add(gs);
         }
+    }
+
+    // ---------------------------------------------------------------- model A: commit queue on the AE2 worker
+
+    /** Barrier only (MAIN, AE2 domain idle, no MAIN commit pass running): hand a grid's commit queue to / back from
+     *  the worker. Back to MAIN re-arms the MAIN scheduler for anything still queued. */
+    public static void setWorkerOwned(Grid grid, boolean owned) {
+        GridState gs = gridState(grid);
+        if (gs == ORPHANS || gs.workerOwned == owned) return;
+        if (commitPassRunning) throw new IllegalStateException("ownership flip during a MAIN commit pass");
+        gs.workerOwned = owned;
+        if (!owned && (!gs.inbox.isEmpty() || !gs.pending.isEmpty()) && gs.inReady.compareAndSet(false, true)) READY.add(gs);
+        (owned ? C.ownerFlipsToWorker : C.ownerFlipsToMain).increment();
+    }
+
+    /** AE2 worker, inside the grid's phase (P(G) held): drain this grid's commit queue only. */
+    public static void drainOwnedGrid(Grid grid, int tick) {
+        if (!FLAG || stopping || grid == null) return;
+        GridState gs = gridState(grid);
+        if (!gs.workerOwned) return;
+        if (!GridPhaseGate.holds(grid)) { C.ownedDrainWithoutP.increment(); return; }
+        long t0 = System.nanoTime();
+        Rec r;
+        while ((r = gs.inbox.poll()) != null) gs.pending.add(r);
+        ArrayList<Rec> retry = new ArrayList<>();
+        while ((r = gs.pending.poll()) != null) {
+            if (!processSafe(r, tick)) retry.add(r);
+            GridPhaseGate.yieldPoint(grid, "busTransit");   // MVP-001: between records only
+            if (!gs.workerOwned) break;                      // ownership flips only at the barrier; defensive
+        }
+        gs.pending.addAll(retry);
+        gs.maxBacklog = Math.max(gs.maxBacklog, gs.outstanding.get());
+        long d = System.nanoTime() - t0;
+        gs.mainCommitNs += d;
+        C.ownedDrainNs.add(d);
+        C.ownedDrains.increment();
+    }
+
+    static boolean commitPassRunning() {
+        return commitPassRunning;
+    }
+
+    static boolean workerOwned(Grid grid) {
+        return grid != null && gridState(grid).workerOwned;
     }
 
     private static volatile long lastFailLog;
@@ -1065,10 +1232,13 @@ public final class BusTransit {
         for (x = 0; x < r.availableSlots && ops > 0; x++) {
             AEKey what = r.keys[x];
             if (what == null) continue;
+            // The target refused this key, or an earlier duplicate consumed its probed capacity.
+            // No extraction can commit here: avoid a second MAIN Storage Bus scan whose result is discarded.
+            long capLeft = r.cap[x] - planned.getOrDefault(what, 0L);
+            if (capLeft <= 0) continue;
             long factor = what.getAmountPerOperation();
             long amount = (long) ops * factor;
             long sim = StorageHelper.poweredExtraction(energy, inv, what, amount, r.source, Actionable.SIMULATE);
-            long capLeft = r.cap[x] - planned.getOrDefault(what, 0L);
             long wasIns = Math.min(sim, capLeft);
             if (wasIns > 0) {
                 long ext = StorageHelper.poweredExtraction(energy, inv, what, wasIns, r.source, Actionable.MODULATE);
@@ -1135,6 +1305,7 @@ public final class BusTransit {
         boolean alive = bs.inWorld && bs.incarnation == r.incarnation && !r.orphan;
         Grid grid = netGrid(r);
         List<Map.Entry<AEKey, Long>> take;
+        if (r.importContinuation != null && !r.importContinuation.canProcess(alive)) return false;
         if (fxHold) return false;   // fixture hold: transit stays MAIN-owned, nothing moves
         if (r.export && r.pushes == 0) {
             // export: the destination is the neighbour — deliver first (normal path after a hold, and the recovery policy)
@@ -1172,7 +1343,13 @@ public final class BusTransit {
                 if (r.orphan || r.recoveryFromNbt) C.recoveredNetwork.add(ins);
             }
         }
-        if (firstImportCommit && !r.recoveryFromNbt) applyModulation(r, r.extracted > 0);
+        if (r.importContinuation != null && r.importContinuation.resume(grid)) {
+            // The suffix may have added builtin items to the accounted buffer. Commit those in this same MAIN
+            // pass, after the prefix; completed suffixes are never replayed by the recursive ledger pass.
+            return networkStep(r, tick);
+        }
+        if (firstImportCommit && !r.recoveryFromNbt) applyModulation(r, r.extracted > 0
+                || r.importContinuation != null && r.importContinuation.didWork());
         long left;
         synchronized (r) {
             left = r.heldTotal();
@@ -1303,7 +1480,8 @@ public final class BusTransit {
     static void finish(Rec r, int tick) {
         if (!r.recoveryFromNbt) {
             if (r.export) applyModulation(r, r.committed > 0);
-            else applyModulation(r, r.extracted > 0);
+            else applyModulation(r, r.extracted > 0
+                    || r.importContinuation != null && r.importContinuation.didWork());
         }
         synchronized (r) {
             r.phase = DONE;
@@ -1314,6 +1492,16 @@ public final class BusTransit {
     static void terminal(Rec r, int tick) {
         BusState bs = ((NwTransitBus) r.bus).nw$transit();
         if (!bs.live.remove(r)) return;   // already terminal (duplicate queue entry)
+        if (r.importContinuation != null) {
+            // Core handoff leases close on MAIN only; model A reaches terminal() on the AE2 worker.
+            var server = r.level.getServer();
+            if (server.isSameThread()) r.importContinuation.release();
+            else {
+                C.leaseReleaseToMain.increment();
+                BusImportContinuation cont = r.importContinuation;
+                server.execute(cont::release);
+            }
+        }
         C.outstanding.decrementAndGet();
         r.gs.outstanding.decrementAndGet();
         if (r.result == R_CANCELLED) {
@@ -1549,12 +1737,18 @@ public final class BusTransit {
         }
         return "busTransit{flag=" + FLAG + " active=" + active + " budgetUs=" + budgetNs / 1000 + " hold=" + fxHold
                 + " recoveryOff=" + fxRecoveryOff + " fifo=" + fxFifo + "}"
+                + "\n" + BusImportContinuation.status() + "\n" + CoreBeGroups.status()
                 + "\nops scheduled=" + c.scheduled.sum() + " transitImport=" + c.opsTransitImport.sum() + " transitExport="
                 + c.opsTransitExport.sum() + " inline{inactive=" + c.inlineInactive.sum() + " class=" + c.inlineClass.sum()
                 + " crafting=" + c.inlineCrafting.sum() + " fuzzy=" + c.inlineFuzzy.sum() + " random=" + c.inlineRandom.sum()
                 + " strategy=" + c.inlineStrategy.sum() + " mainNeighbour=" + c.inlineMainNeighbour.sum() + " linkedCrossDomain="
-                + c.inlineLinkedCrossDomain.sum() + " (linkedSameDomain transit=" + c.transitLinkedSameDomain.sum() + ") noNeighbourBe="
+                + c.inlineLinkedCrossDomain.sum() + " sourceTypeNotLocal=" + c.inlineSourceTypeNotLocal.sum() + " returnSourceNotLocal="
+                + c.returnSourceNotLocal.sum() + " (linkedSameDomain transit=" + c.transitLinkedSameDomain.sum() + ") noNeighbourBe="
                 + c.inlineNoNeighbourBe.sum() + " overlapRisk=" + c.inlineOverlapRisk.sum() + "}"
+                + "\nmodelA flipsToWorker=" + c.ownerFlipsToWorker.sum() + " flipsToMain=" + c.ownerFlipsToMain.sum() + " ownedDrains="
+                + c.ownedDrains.sum() + " ownedDrainUs=" + c.ownedDrainNs.sum() / 1000 + " drainWithoutP=" + c.ownedDrainWithoutP.sum()
+                + " transitToMainNeighbour=" + c.ownedTransitMainNeighbour.sum() + " ownedNeighbourInline=" + c.ownedNeighbourInline.sum()
+                + " inlineRefused(must be 0)=" + c.ownedInlineRefused.sum() + " leaseReleaseToMain=" + c.leaseReleaseToMain.sum() + " exportEmptyConfig=" + c.exportEmptyConfig.sum() + " inlineMainServiced=" + c.inlineMainServiced.sum()
                 + "\nrecords completed=" + c.completed.sum() + " cancelled=" + c.cancelled.sum() + " missed=" + c.missed.sum()
                 + " outstanding=" + c.outstanding.get() + " commitFailures=" + c.commitFailures.sum() + " returnFailed="
                 + c.returnFailed.sum() + " stuckNonItem=" + c.stuckNonItem.sum() + " stopWaitTimeout=" + c.stopWaitTimeout.sum()
@@ -1669,7 +1863,11 @@ public final class BusTransit {
                         .append(" pushes=").append(r.pushes).append(" mainSteps=").append(r.mainSteps).append(" orphan=").append(r.orphan)
                         .append(" nbt=").append(r.recoveryFromNbt).append(" gs=").append(r.gs.id).append(" inbox=").append(r.gs.inbox.size())
                         .append(" pending=").append(r.gs.pending.size()).append(" inReady=").append(r.gs.inReady.get())
-                        .append(" host=").append(r.hostPos.toShortString()).append('\n');
+                        .append(" host=").append(r.hostPos.toShortString())
+                        .append(" sourceType=").append(r.nType).append(" heldTypes=");
+                Map<String, Long> heldTypes = new java.util.TreeMap<>();
+                r.held.forEach((key, amount) -> heldTypes.merge(key.getType().getId().toString(), amount, Long::sum));
+                sb.append(heldTypes).append('\n');
             }
         }
         sb.append("READY=").append(READY.size()).append(" fifo=").append(FIFO.size()).append('/').append(FIFO_PENDING.size());

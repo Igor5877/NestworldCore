@@ -1,0 +1,14 @@
+{
+  "required": false,
+  "minVersion": "0.8.5",
+  "package": "net.nestworld.compat.ae2.cost.mixin",
+  "plugin": "net.nestworld.compat.ae2.glue.CostMixinPlugin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "nestworld_compat_ae2.refmap.json",
+  "mixins": [
+    "ItemHandlerFacadeIndexMixin",
+    "GridMachinesMemoMixin"
+  ],
+  "injectors": { "defaultRequire": 1 },
+  "mixinextras": { "minVersion": "0.4.1" }
+}

@@ -69,6 +69,8 @@ public final class NestworldCompatAe2 {
                     return 1;
                 }))
                 .then(Commands.literal("status").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.CompatStatus.render())))
+                .then(Commands.literal("cost").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.CostCommand.render()))
+                        .then(Commands.literal("reset").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.CostCommand.reset()))))
                 .then(Commands.literal("domainat")
                         .then(Commands.argument("p", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
                                 .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.NeighborAffinity.domainAt(
@@ -78,6 +80,7 @@ public final class NestworldCompatAe2 {
                         .then(Commands.literal("enable").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.setActive(c.getSource().getServer(), true))))
                         .then(Commands.literal("disable").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.setActive(c.getSource().getServer(), false))))
                         .then(Commands.literal("strategies").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.strategyRejections())))
+                        .then(Commands.literal("inlinetypes").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.inlineTypes())))
                         .then(Commands.literal("grids").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.grids(20))))
                         .then(Commands.literal("records").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransit.records(40)))))
                 .then(Commands.literal("mblane").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.MbLane.summary()))
@@ -88,9 +91,37 @@ public final class NestworldCompatAe2 {
                         .then(Commands.literal("report").executes(c -> say(c.getSource(),
                                 net.nestworld.compat.ae2.glue.GridCensus.report(c.getSource().getServer().getTickCount(), 15))))
                         .then(Commands.literal("devices").executes(c -> say(c.getSource(),
-                                net.nestworld.compat.ae2.glue.GridCensus.devices(c.getSource().getServer().getTickCount(), 25)))));
+                                net.nestworld.compat.ae2.glue.GridCensus.devices(c.getSource().getServer().getTickCount(), 25))))
+                        .then(Commands.literal("coverage").executes(c -> say(c.getSource(),
+                                net.nestworld.compat.ae2.glue.GridCoverageCommand.run(c.getSource().getServer()))))
+                        .then(Commands.literal("tickreset").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.GridCoverageCommand.tickReset())))
+                        .then(Commands.literal("chests")
+                                .then(Commands.literal("start").executes(c -> say(c.getSource(),
+                                        net.nestworld.compat.ae2.glue.ChestTouchCensus.start(c.getSource().getServer()))))
+                                .then(Commands.literal("report").executes(c -> say(c.getSource(),
+                                        net.nestworld.compat.ae2.glue.ChestTouchCensus.report()))))
+                        .then(Commands.literal("grid1").executes(c -> say(c.getSource(),
+                                net.nestworld.compat.ae2.glue.GridCoverageCommand.grid1(c.getSource().getServer()))))
+                        .then(Commands.literal("worker").executes(c -> say(c.getSource(),
+                                net.nestworld.compat.ae2.glue.GridWorker.status())))
+                        .then(Commands.literal("ingress")
+                                .then(Commands.literal("start").executes(c -> say(c.getSource(),
+                                        net.nestworld.compat.ae2.glue.IngressCensus.start())))
+                                .then(Commands.literal("report").executes(c -> say(c.getSource(),
+                                        net.nestworld.compat.ae2.glue.IngressCensus.report(30))))));
+        if (net.nestworld.compat.ae2.glue.CostFixtures.ENABLED) {
+            root = root.then(Commands.literal("costfx").then(Commands.literal("diff")
+                    .then(Commands.argument("chests", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 64))
+                    .then(Commands.argument("ops", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 1000000))
+                    .then(Commands.argument("seed", com.mojang.brigadier.arguments.IntegerArgumentType.integer())
+                    .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.CostFixtures.diff(c.getSource().getServer(),
+                            com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "chests"),
+                            com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "ops"),
+                            com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "seed")))))))));
+        }
         if (T2Fixtures.ENABLED) {
             root = root.then(Commands.literal("bustransitfx")
+                    .then(Commands.literal("cursorstatus").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusImportCursorFixtures.status())))
                     .then(Commands.literal("mmsetup").then(Commands.argument("p", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
                             .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitMmFixtures.setup(c.getSource().getLevel(),
                                     net.minecraft.commands.arguments.coordinates.BlockPosArgument.getBlockPos(c, "p"))))))
@@ -141,8 +172,30 @@ public final class NestworldCompatAe2 {
                             .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.breakBuses(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "k")))))))
                     .then(Commands.literal("rebuild").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1)).then(Commands.argument("speed", com.mojang.brigadier.arguments.IntegerArgumentType.integer(0, 4))
                             .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.rebuild(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "speed")))))))
+                    .then(Commands.literal("chestguard")
+                            .then(Commands.literal("build").then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                    .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.ChestGuardFixture.build(c.getSource().getLevel(),
+                                            net.minecraft.commands.arguments.coordinates.BlockPosArgument.getLoadedBlockPos(c, "pos"))))))
+                            .then(Commands.literal("gen").then(Commands.argument("v", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                    .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.ChestGuardFixture.gen("on".equals(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "v")))))))
+                            .then(Commands.literal("pause").then(Commands.argument("v", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                    .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.ChestGuardFixture.pause("on".equals(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "v")))))))
+                            .then(Commands.literal("hopper").then(Commands.argument("v", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                    .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.ChestGuardFixture.hopper("on".equals(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "v")))))))
+                            .then(Commands.literal("count").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.ChestGuardFixture.count())))
+                            .then(Commands.literal("cstatus").executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.ChestGuardFixture.status()))))
+                    .then(Commands.literal("pause").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1)).then(Commands.argument("v", com.mojang.brigadier.arguments.StringArgumentType.word())
+                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.pause(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"), "on".equals(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "v"))))))))
                     .then(Commands.literal("split").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1)).then(Commands.argument("v", com.mojang.brigadier.arguments.StringArgumentType.word())
                             .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.split(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"), "cut".equals(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "v"))))))))
+                    .then(Commands.literal("replace").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1)).then(Commands.argument("v", com.mojang.brigadier.arguments.StringArgumentType.word())
+                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.replaceTargets(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"),
+                                    "restore".equals(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "v"))))))))
+                    .then(Commands.literal("pintargets").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1)).then(Commands.argument("v", com.mojang.brigadier.arguments.StringArgumentType.word())
+                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.pinTargets(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"),
+                                    "on".equals(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "v"))))))))
+                    .then(Commands.literal("dupdeliver").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1))
+                            .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.duplicateDelivery(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"))))))
                     .then(Commands.literal("power").then(Commands.argument("id", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1)).then(Commands.argument("v", com.mojang.brigadier.arguments.StringArgumentType.word())
                             .executes(c -> say(c.getSource(), net.nestworld.compat.ae2.glue.BusTransitFixtures.power(com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "id"), "on".equals(com.mojang.brigadier.arguments.StringArgumentType.getString(c, "v")))))))));
             root = root.then(Commands.literal("mblanefx")

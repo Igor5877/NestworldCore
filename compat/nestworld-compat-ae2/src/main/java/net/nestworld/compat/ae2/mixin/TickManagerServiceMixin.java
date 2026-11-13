@@ -182,7 +182,26 @@ public abstract class TickManagerServiceMixin implements NwTickManager {
         TickRateModulation mod;
         try {
             long t0 = net.nestworld.compat.ae2.glue.GridCensus.on ? System.nanoTime() : 0;
-            mod = KERNEL.suspendedUnchecked(Specs.grid(nw$grid), () -> op.call(self, tt, diff));
+            mod = KERNEL.suspendedUnchecked(Specs.grid(nw$grid), () -> {
+                // AE2-GRID-DOMAIN-MVP-001: a MAIN-serviced device's tick is one synchronous MAIN call (worker parks)
+                TickRateModulation res;
+                if (net.nestworld.compat.ae2.glue.GridWorker.isWorkerThread()
+                        && net.nestworld.compat.ae2.glue.MainServiced.device(tt.getNode())) {
+                    try {
+                        res = net.nestworld.compat.ae2.glue.MainService.call(
+                                net.nestworld.compat.ae2.glue.MainServiced.key(tt.getNode()), () -> op.call(self, tt, diff));
+                    } catch (net.nestworld.compat.ae2.glue.MainService.Refused r) {
+                        net.nestworld.compat.ae2.glue.MainServicedCounters.refused();
+                        res = TickRateModulation.SAME;     // no work this tick; counted (gate requires 0)
+                    }
+                } else {
+                    res = op.call(self, tt, diff);
+                }
+                // MVP-001 P(G) granularity (audit option A): AFTER the device op, T1 not held (T2-suspended) — the
+                // vanilla-faithful point where outside accessors may slip in (foreign wake/sleep handled by T2 revalidation)
+                net.nestworld.compat.ae2.glue.GridPhaseGate.yieldPoint(nw$grid, "device");
+                return res;
+            });
             if (t0 != 0) net.nestworld.compat.ae2.glue.GridCensus.recordDevice(tt.getNode(), System.nanoTime() - t0);
         } catch (Throwable t) {
             nw$suspTt = null;

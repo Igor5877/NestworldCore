@@ -46,6 +46,8 @@ public final class BusTransitFixtures {
         final ServerLevel level;
         final BlockPos base;
         final int n;
+        String sourceType = "minecraft:barrel";
+        Direction busSide = Direction.SOUTH;
         final List<BlockPos> hosts = new ArrayList<>(), barrels = new ArrayList<>();
         final BlockPos drive, cell;
         final AtomicLong created = new AtomicLong(), consumed = new AtomicLong();
@@ -89,18 +91,31 @@ public final class BusTransitFixtures {
     public static String build(ServerLevel level, String kind, BlockPos base, int n, int speedCards, long prefill) {
         boolean export = kind.startsWith("e");
         Station s = new Station(STATIONS.size() + 1, export, level, base, n);
+        if (kind.equals("importenergy")) { s.sourceType = "minecraft:furnace"; s.busSide = Direction.UP; }
+        if (kind.equals("importchest")) s.sourceType = "minecraft:chest";   // never LocalImportSource.local (handoff path)
         level.setBlockAndUpdate(s.cell, AEBlocks.CREATIVE_ENERGY_CELL.block().defaultBlockState());
         level.setBlockAndUpdate(s.drive, AEBlocks.DRIVE.block().defaultBlockState());
         if (level.getBlockEntity(s.drive) instanceof DriveBlockEntity d) {
             for (int i = 0; i < 4; i++) d.getInternalInventory().setItemDirect(i, AEItems.ITEM_CELL_256K.stack());
+            if (kind.equals("importenergy")) {
+                var energyCell = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(
+                        new net.minecraft.resources.ResourceLocation("appflux", "fe_1k_cell"));
+                if (energyCell == Items.AIR) return "fixture requires AppliedFlux FE cell";
+                d.getInternalInventory().setItemDirect(4, new ItemStack(energyCell));
+            }
         } else return "drive not placed";
         for (int i = 0; i < n; i++) {
             BlockPos h = base.east(2 + i);
-            BlockPos b = h.south();
-            level.setBlockAndUpdate(b, Blocks.BARREL.defaultBlockState());
+            BlockPos b = h.relative(s.busSide);
+            if (kind.equals("importenergy")) BusImportCursorFixtures.prepare(level, b);
+            level.setBlockAndUpdate(b, sourceBlock(s).defaultBlockState());
+            if (kind.equals("importenergy") && level.getBlockEntity(b) instanceof Container source) {
+                source.setItem(2, new ItemStack(Items.COBBLESTONE));
+                s.created.incrementAndGet();
+            }
             PartHelper.setPart(level, h, null, null, AEParts.GLASS_CABLE.item(AEColor.TRANSPARENT));
-            IOBusPart bus = export ? PartHelper.setPart(level, h, Direction.SOUTH, null, AEParts.EXPORT_BUS.asItem())
-                    : PartHelper.setPart(level, h, Direction.SOUTH, null, AEParts.IMPORT_BUS.asItem());
+            IOBusPart bus = export ? PartHelper.setPart(level, h, s.busSide, null, AEParts.EXPORT_BUS.asItem())
+                    : PartHelper.setPart(level, h, s.busSide, null, AEParts.IMPORT_BUS.asItem());
             if (bus == null) return "bus not placed at " + h;
             for (int k = 0; k < speedCards; k++) bus.getUpgrades().addItems(AEItems.SPEED_CARD.stack());
             if (export) bus.getConfig().setStack(0, new GenericStack(COBBLE, 1));
@@ -112,16 +127,18 @@ public final class BusTransitFixtures {
         s.countLabel = "prefill-pending:" + prefill;
         pendingPrefill.add(new long[]{s.id, prefill});
         return "station " + s.id + " " + kind + " n=" + n + " speedCards=" + speedCards + " base=" + base.toShortString()
-                + " barrel0 domain=" + BeDomainReady.domainName(level, s.barrels.get(0), "minecraft:barrel")
+                + " barrel0 domain=" + BeDomainReady.domainName(level, s.barrels.get(0), s.sourceType)
                 + " host0 domain=" + BeDomainReady.domainName(level, s.hosts.get(0), "ae2:cable_bus");
     }
 
     /** Re-register an existing station after a restart (no blocks placed; counters start at 0). */
     public static String attach(ServerLevel level, String kind, BlockPos base, int n) {
         Station s = new Station(STATIONS.size() + 1, kind.startsWith("e"), level, base, n);
+        if (kind.equals("importenergy")) { s.sourceType = "minecraft:furnace"; s.busSide = Direction.UP; }
+        if (kind.equals("importchest")) s.sourceType = "minecraft:chest";   // never LocalImportSource.local (handoff path)
         for (int i = 0; i < n; i++) {
             s.hosts.add(base.east(2 + i));
-            s.barrels.add(base.east(2 + i).south());
+            s.barrels.add(base.east(2 + i).relative(s.busSide));
         }
         STATIONS.add(s);
         s.countLabel = "attached";
@@ -129,6 +146,14 @@ public final class BusTransitFixtures {
     }
 
     static final List<long[]> pendingPrefill = new ArrayList<>();
+
+    static net.minecraft.world.level.block.Block sourceBlock(Station s) {
+        return switch (s.sourceType) {
+            case "minecraft:furnace" -> Blocks.FURNACE;
+            case "minecraft:chest" -> Blocks.CHEST;
+            default -> Blocks.BARREL;
+        };
+    }
 
     static Grid gridOf(Station s) {
         if (!(s.level.getBlockEntity(s.drive) instanceof DriveBlockEntity d)) return null;
@@ -139,7 +164,58 @@ public final class BusTransitFixtures {
     static long network(Station s) {
         Grid g = gridOf(s);
         if (g == null) return -1;
-        return g.getStorageService().getInventory().getAvailableStacks().get(COBBLE);
+        // the grid may be run by the AE2 worker (model A/B): read it under P(G), never concurrently with its phase
+        var p = ((NwGrid) g).nw$p();
+        p.lock();
+        try {
+            return g.getStorageService().getInventory().getAvailableStacks().get(COBBLE);
+        } finally {
+            p.unlock();
+        }
+    }
+
+    // ---------------------------------------------------------------- AE2-GRID-DOMAIN-001 (c) gate scenarios
+
+    /** Target replacement between enqueue and execute: every barrel becomes stone (contents drop as loose items,
+     *  counted), and back to an empty barrel on the second call. Runs in each barrel's own domain. */
+    public static String replaceTargets(int id, boolean restore) {
+        Station s = st(id);
+        for (BlockPos b : s.barrels) inDomain(s, b, () -> {
+            if (!restore && s.level.getBlockEntity(b) instanceof Container c) {
+                // the replaced inventory's contents leave the world through the ledger (consumed), not as falling
+                // item entities that drift out of the counting box — only transit accounting is under test here
+                long n = 0;
+                for (int i = 0; i < c.getContainerSize(); i++) {
+                    if (c.getItem(i).is(Items.COBBLESTONE)) n += c.getItem(i).getCount();
+                    c.setItem(i, ItemStack.EMPTY);
+                }
+                s.consumed.addAndGet(n);
+            }
+            s.level.setBlockAndUpdate(b, restore ? sourceBlock(s).defaultBlockState()
+                    : Blocks.STONE.defaultBlockState());
+        });
+        return "station " + id + " targets " + (restore ? "restored" : "replaced");
+    }
+
+    /** Owner/domain change before execution: position-pin the targets to MAIN (and release on the second call). */
+    public static String pinTargets(int id, boolean pin) {
+        Station s = st(id);
+        long[] pos = new long[s.barrels.size()];
+        for (int i = 0; i < pos.length; i++) pos[i] = s.barrels.get(i).asLong();
+        if (pin) NeighborAffinity.pinRaw(s.level, pos); else NeighborAffinity.releaseRaw(s.level, pos);
+        return "station " + id + " targets " + (pin ? "pinned to MAIN" : "released") + " now " + BeDomainReady.domainName(s.level, s.barrels.get(0), s.sourceType);
+    }
+
+    /** Duplicate delivery of one opId: re-publish every live record of the station once more. */
+    public static String duplicateDelivery(int id) {
+        Station s = st(id);
+        int n = 0;
+        for (BusTransit.Rec r : BusTransit.LIVE_INDEX()) {
+            if (!s.hosts.contains(r.hostPos)) continue;
+            BusTransit.publish(r);
+            n++;
+        }
+        return "station " + id + " re-published " + n + " live record(s)";
     }
 
     // ---------------------------------------------------------------- per-tick (MAIN, server END)
@@ -159,6 +235,7 @@ public final class BusTransitFixtures {
                 it.remove();
             }
         }
+        ChestGuardFixture.tick();
         for (Station s : STATIONS) {
             if (s.gen) for (BlockPos b : s.barrels) inDomain(s, b, () -> genStep(s, b));
             if (s.winStart == tick) {
@@ -196,8 +273,8 @@ public final class BusTransitFixtures {
 
     static void inDomain(Station s, BlockPos b, Runnable r) {
         try {
-            if (BusTransit.domainIsMain(s.level, b, "minecraft:barrel")) r.run();
-            else BeDomainReady.enqueueTo(s.level, b, "minecraft:barrel", r, k -> { });
+            if (BusTransit.domainIsMain(s.level, b, s.sourceType)) r.run();
+            else BeDomainReady.enqueueTo(s.level, b, s.sourceType, r, k -> { });
         } catch (Throwable t) {
             Ae2Compat.LOG.warn("[nestworld-compat-ae2] bus transit fixture enqueue failed: {}", t.toString());
         }
@@ -343,8 +420,8 @@ public final class BusTransitFixtures {
         Station s = st(id);
         int done = 0;
         for (int i = 0; i < Math.min(k, s.hosts.size()); i++) {
-            if (s.level.getBlockEntity(s.hosts.get(i)) instanceof IPartHost h && h.getPart(Direction.SOUTH) != null) {
-                h.removePartFromSide(Direction.SOUTH);
+            if (s.level.getBlockEntity(s.hosts.get(i)) instanceof IPartHost h && h.getPart(s.busSide) != null) {
+                h.removePartFromSide(s.busSide);
                 done++;
             }
         }
@@ -356,9 +433,9 @@ public final class BusTransitFixtures {
         Station s = st(id);
         int done = 0;
         for (BlockPos h : s.hosts) {
-            if (s.level.getBlockEntity(h) instanceof IPartHost host && host.getPart(Direction.SOUTH) == null) {
-                IOBusPart bus = s.export ? PartHelper.setPart(s.level, h, Direction.SOUTH, null, AEParts.EXPORT_BUS.asItem())
-                        : PartHelper.setPart(s.level, h, Direction.SOUTH, null, AEParts.IMPORT_BUS.asItem());
+            if (s.level.getBlockEntity(h) instanceof IPartHost host && host.getPart(s.busSide) == null) {
+                IOBusPart bus = s.export ? PartHelper.setPart(s.level, h, s.busSide, null, AEParts.EXPORT_BUS.asItem())
+                        : PartHelper.setPart(s.level, h, s.busSide, null, AEParts.IMPORT_BUS.asItem());
                 if (bus == null) continue;
                 for (int k = 0; k < speedCards; k++) bus.getUpgrades().addItems(AEItems.SPEED_CARD.stack());
                 if (s.export) bus.getConfig().setStack(0, new GenericStack(COBBLE, 1));
@@ -366,6 +443,31 @@ public final class BusTransitFixtures {
             }
         }
         return "rebuilt " + done;
+    }
+
+    /** Quiescence for counting: clear (pause) / restore the station's export-bus config under P(G) — an export bus
+     *  with nothing configured does no work and touches no neighbour, so network + barrels + transit stop moving.
+     *  Import stations quiesce with the generator off (barrels drain). No topology change. */
+    public static String pause(int id, boolean pause) {
+        Station s = st(id);
+        if (!s.export) return "station " + id + " is an import station (use gen off)";
+        Grid g = gridOf(s);
+        if (g == null) return "station " + id + " has no grid";
+        var p = ((NwGrid) g).nw$p();
+        int done = 0;
+        p.lock();
+        try {
+            for (BlockPos h : s.hosts) {
+                if (s.level.getBlockEntity(h) instanceof IPartHost host && host.getPart(s.busSide) instanceof IOBusPart bus) {
+                    if (pause) bus.getConfig().setStack(0, null);
+                    else bus.getConfig().setStack(0, new GenericStack(COBBLE, 1));
+                    done++;
+                }
+            }
+        } finally {
+            p.unlock();
+        }
+        return (pause ? "paused " : "resumed ") + done + " export buses of station " + id + " outstanding=" + BusTransit.C.outstanding.get();
     }
 
     /** Grid split: remove the center cable of the first host (all buses lose the drive) / restore it. */
@@ -391,7 +493,7 @@ public final class BusTransitFixtures {
         StringBuilder sb = new StringBuilder();
         for (BlockPos h : s.hosts) {
             if (s.level.getBlockEntity(h) instanceof IPartHost host) {
-                var p = host.getPart(Direction.SOUTH);
+                var p = host.getPart(s.busSide);
                 sb.append(p == null ? "-" : p instanceof ImportBusPart ? "I" : p instanceof ExportBusPart ? "E" : "?");
             }
         }
@@ -405,7 +507,7 @@ public final class BusTransitFixtures {
             sb.append("station ").append(s.id).append(s.export ? " export" : " import").append(" n=").append(s.n).append(" grid=")
                     .append(g).append(" buses=").append(busTypes(s.id)).append(" created=").append(s.created.get())
                     .append(" consumed=").append(s.consumed.get()).append(" gen=").append(s.gen).append(" barrel0=")
-                    .append(BeDomainReady.domainName(s.level, s.barrels.get(0), "minecraft:barrel")).append(" ")
+                    .append(BeDomainReady.domainName(s.level, s.barrels.get(0), s.sourceType)).append(" ")
                     .append(s.countLabel).append('\n');
         }
         return sb.toString();

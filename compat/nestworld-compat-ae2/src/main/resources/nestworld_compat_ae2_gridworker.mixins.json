@@ -1,0 +1,29 @@
+{
+  "required": false,
+  "minVersion": "0.8.5",
+  "package": "net.nestworld.compat.ae2.gridworker.mixin",
+  "plugin": "net.nestworld.compat.ae2.glue.GridWorkerMixinPlugin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "nestworld_compat_ae2.refmap.json",
+  "mixins": [
+    "NetworkStorageGridMixin",
+    "GrowthAcceleratorMainHopMixin",
+    "ExtendedAeWirelessConnectorDeferMixin",
+    "ExtendedAeWirelessHubDeferMixin",
+    "QuantumBridgeDeferMixin",
+    "CraftingCpuMainServiceMixin",
+    "ExportBusCraftedMainServiceMixin",
+    "SophisticatedChestGuardMixin",
+    "ChemicalP2PInputGuardMixin",
+    "MekanismChemicalFacadeMainServiceMixin",
+    "MekanismFluidTankGuardMixin",
+    "MekanismVariableFluidTankGuardMixin",
+    "ForgeFluidTankGuardMixin",
+    "TitaniumFluidTankGuardMixin",
+    "InterfaceInvGuardMixin",
+    "InterfaceConfigInvGuardMixin",
+    "AppFluxDistributeMainServiceMixin"
+  ],
+  "injectors": { "defaultRequire": 1 },
+  "mixinextras": { "minVersion": "0.4.1" }
+}

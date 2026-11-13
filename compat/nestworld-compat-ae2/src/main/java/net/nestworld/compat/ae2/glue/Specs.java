@@ -35,11 +35,21 @@ public final class Specs {
             EnergyService s = work.pop();
             if (!into.add(s)) continue;
             for (IEnergyOverlayGridConnection c : List.copyOf(s.getOverlayGridConnections())) {
-                work.addAll(c.connectedEnergyServices());
+                try {
+                    work.addAll(c.connectedEnergyServices());
+                } catch (NullPointerException halfLinked) {
+                    // LIVE 2026-11-12 22:36 (crash): a quartz fiber whose other-side node is not (yet / any more) present —
+                    // AE2 QuartzFiberPart.getTheirEnergyServices requireNonNull. AE2 itself only builds the overlay at
+                    // consistent points; our per-tick lock-set walk must not fail the tick: such a connection links
+                    // nothing now (the lock spec is recomputed under the locks and re-validated anyway).
+                    HALF_LINKED_FIBERS.increment();
+                }
             }
         }
         return into;
     }
+
+    static final java.util.concurrent.atomic.LongAdder HALF_LINKED_FIBERS = new java.util.concurrent.atomic.LongAdder();
 
     static Set<EnergyService> newSet() {
         return java.util.Collections.newSetFromMap(new IdentityHashMap<>());

@@ -24,12 +24,31 @@ final class ItemNoopStrategies {
 
     static boolean allowed(IOBusPart bus, Object strategy) {
         String name = strategy.getClass().getName();
-        if (!HASHES.containsKey(name) || !itemsOnly(bus)) return false;
+        if (!HASHES.containsKey(name)) return false;
+        // AppliedFlux FEStackExportStrategy (audited bytecode): transfer/push return 0 for ANY key that is not a FluxKey —
+        // not only items. An export bus with no configured FluxKey never reaches its FE path (MVP-001, fluids/chemicals).
+        String ownKey = OWN_KEY.get(name);
+        if (ownKey != null ? !noConfiguredKey(bus, ownKey) : !itemsOnly(bus)) return false;
         return VERIFIED.computeIfAbsent(strategy.getClass(), type -> {
             try (var in = type.getResourceAsStream("/" + type.getName().replace('.', '/') + ".class")) {
                 return in != null && HASHES.get(name).equals(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(in.readAllBytes())));
             } catch (Exception unavailable) { return false; }
         });
+    }
+
+    /** Export strategies whose transfer/push return 0 for every key that is not their own key type (audited bytecode:
+     *  `!(key instanceof K) ⇒ return 0`). An export bus with no configured K never reaches their work. */
+    private static final Map<String, String> OWN_KEY = Map.of(
+            "com.glodblock.github.appflux.common.me.strategy.FEStackExportStrategy", "com.glodblock.github.appflux.common.me.key.FluxKey",
+            "com.rerurate.ifsoulsdisks.applied.stack.SoulsStackExportStrategy", "com.buuz135.industrialforegoingsouls.soulplied_energistics.applied.SoulKey");
+
+    private static boolean noConfiguredKey(IOBusPart bus, String keyClass) {
+        if (!(bus instanceof ExportBusPart)) return false;
+        for (int slot = 0; slot < ((NwTransitBus) bus).nw$availableSlots(); slot++) {
+            var key = bus.getConfig().getKey(slot);
+            if (key != null && key.getClass().getName().equals(keyClass)) return false;
+        }
+        return true;
     }
 
     private static boolean itemsOnly(IOBusPart bus) {
